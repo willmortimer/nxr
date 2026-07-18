@@ -5,6 +5,7 @@ pub mod capabilities;
 pub mod command;
 pub mod discovery;
 pub mod resolve;
+pub mod suggest;
 
 use camino::Utf8PathBuf;
 
@@ -13,6 +14,7 @@ pub use capabilities::{NixFailureKind, detect_system, locate_nix, run_nix};
 pub use command::{NIX_EXECUTABLE_ENV, current_system_args, flake_show_args, nix_run_args};
 pub use discovery::{discover_apps, parse_apps_from_flake_show};
 pub use resolve::{AppNotFoundError, resolve_app_by_name};
+pub use suggest::{DEFAULT_SUGGESTION_LIMIT, rank_app_suggestions};
 
 /// Errors from the Nix adapter boundary.
 #[derive(Debug, thiserror::Error)]

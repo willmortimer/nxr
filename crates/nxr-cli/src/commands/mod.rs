@@ -4,6 +4,7 @@ pub mod common;
 pub mod list;
 pub mod plan;
 pub mod run;
+pub mod select;
 
 use nxr_core::diagnostics::exit;
 

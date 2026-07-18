@@ -23,6 +23,19 @@ pub struct AppRequest<'a> {
     pub cwd: Option<&'a str>,
 }
 
+/// Inputs for flake discovery without a resolved app target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiscoverRequest<'a> {
+    pub flake_arg: Option<&'a str>,
+    pub nix_override: Option<&'a str>,
+}
+
+/// Discovered apps for a selected flake.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscoveredApps {
+    pub apps: Vec<App>,
+}
+
 /// Prepared execution plan for an app target.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedPlan {
@@ -72,6 +85,20 @@ pub fn strip_one_separator(args: &[String]) -> Vec<String> {
         [first, rest @ ..] if first == "--" => rest.to_vec(),
         other => other.to_vec(),
     }
+}
+
+/// Discover apps for the selected flake without resolving a target name.
+///
+/// # Errors
+///
+/// Returns [`PrepareError`] when directories, flake selection, or discovery fail.
+pub fn discover_apps(request: DiscoverRequest<'_>) -> Result<DiscoveredApps, PrepareError> {
+    let invocation_cwd = current_invocation_directory()?;
+    let flake = resolve_flake(request.flake_arg, &invocation_cwd)?;
+    let adapter = build_adapter(request.nix_override)?;
+    let apps = adapter.discover_apps(&flake.nix_ref)?;
+
+    Ok(DiscoveredApps { apps })
 }
 
 /// Resolve invocation CWD, flake, apps, and build a [`Plan`].

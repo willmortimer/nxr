@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 
 /// Nix-native flake app runner.
 #[derive(Debug, Parser)]
+#[allow(clippy::struct_excessive_bools)]
 #[command(
     name = "nxr",
     version,
@@ -34,6 +35,10 @@ pub struct Cli {
     /// Override Nix executable
     #[arg(long = "nix", global = true, value_name = "PATH")]
     pub nix: Option<String>,
+
+    /// Open interactive app selector
+    #[arg(short = 's', long = "select", global = true)]
+    pub select: bool,
 
     #[command(subcommand)]
     pub command: Option<Command>,

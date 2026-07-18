@@ -24,13 +24,27 @@ fn version_flag_succeeds() {
 }
 
 #[test]
-fn reserved_command_reports_unimplemented() {
+fn select_without_tty_is_usage_error() {
     cargo_bin_cmd!("nxr")
         .arg("select")
         .assert()
         .failure()
         .code(2)
-        .stderr(predicate::str::contains("not implemented yet"));
+        .stderr(predicate::str::contains(
+            "interactive selection requires a terminal",
+        ));
+}
+
+#[test]
+fn global_select_without_tty_is_usage_error() {
+    cargo_bin_cmd!("nxr")
+        .arg("--select")
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "interactive selection requires a terminal",
+        ));
 }
 
 #[test]
@@ -52,6 +66,24 @@ fn unknown_app_exits_not_found() {
         .failure()
         .code(6)
         .stderr(predicate::str::contains("app not found"));
+}
+
+#[test]
+fn unknown_app_suggests_close_match() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "helo"])
+        .assert()
+        .failure()
+        .code(6)
+        .stderr(predicate::str::contains("app not found: helo"))
+        .stderr(predicate::str::contains("Did you mean:"))
+        .stderr(predicate::str::contains("hello"));
 }
 
 #[test]

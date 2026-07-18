@@ -11,8 +11,8 @@ use clap::Parser;
 use nxr_core::diagnostics::exit;
 
 use crate::cli::{Cli, Command};
-use crate::commands::common::AppRequest;
-use crate::commands::{UnimplementedCommandError, list, plan, run};
+use crate::commands::common::{AppRequest, DiscoverRequest};
+use crate::commands::{UnimplementedCommandError, list, plan, run, select};
 
 fn main() {
     let cli = Cli::parse();
@@ -35,6 +35,8 @@ enum RunError {
     Run(#[from] run::RunError),
     #[error(transparent)]
     Plan(#[from] plan::PlanError),
+    #[error(transparent)]
+    Select(#[from] select::SelectError),
     #[error("missing app name")]
     MissingAppName,
     #[error(transparent)]
@@ -47,6 +49,7 @@ impl RunError {
             Self::List(error) => error.exit_code(),
             Self::Run(error) => error.exit_code(),
             Self::Plan(error) => error.exit_code(),
+            Self::Select(error) => error.exit_code(),
             Self::MissingAppName => exit::USAGE,
             Self::Unimplemented(_) => UnimplementedCommandError::exit_code(),
         }
@@ -55,13 +58,19 @@ impl RunError {
 
 fn dispatch(cli: &Cli) -> Result<i32, RunError> {
     match &cli.command {
+        None if cli.select => run_with_selected_app(cli, &[]),
         None | Some(Command::List) => {
             list::run(cli.flake.as_deref(), cli.nix.as_deref(), cli.json)?;
             Ok(exit::SUCCESS)
         }
+        Some(Command::Select) => run_with_selected_app(cli, &[]),
         Some(Command::Run { app, args }) => {
-            let request = app_request(cli, app, args);
-            run::execute(request, cli.dry_run, cli.json).map_err(RunError::from)
+            if cli.select {
+                run_with_selected_app(cli, args)
+            } else {
+                let request = app_request(cli, app, args);
+                run::execute(request, cli.dry_run, cli.json).map_err(RunError::from)
+            }
         }
         Some(Command::Plan { app, args }) => {
             let request = app_request(cli, app, args);
@@ -70,12 +79,15 @@ fn dispatch(cli: &Cli) -> Result<i32, RunError> {
         }
         Some(Command::External(tokens)) => {
             let (app, forwarded) = split_external(tokens)?;
-            let request = app_request(cli, app, forwarded);
-            run::execute(request, cli.dry_run, cli.json).map_err(RunError::from)
+            if cli.select {
+                run_with_selected_app(cli, forwarded)
+            } else {
+                let request = app_request(cli, app, forwarded);
+                run::execute(request, cli.dry_run, cli.json).map_err(RunError::from)
+            }
         }
         Some(
-            command @ (Command::Select
-            | Command::Doctor
+            command @ (Command::Doctor
             | Command::Completion
             | Command::Inspect
             | Command::Task
@@ -85,6 +97,19 @@ fn dispatch(cli: &Cli) -> Result<i32, RunError> {
             command: command.label(),
         }
         .into()),
+    }
+}
+
+fn run_with_selected_app(cli: &Cli, args: &[String]) -> Result<i32, RunError> {
+    let app = select::pick_app_name(discover_request(cli))?;
+    let request = app_request(cli, &app, args);
+    run::execute(request, cli.dry_run, cli.json).map_err(RunError::from)
+}
+
+fn discover_request(cli: &Cli) -> DiscoverRequest<'_> {
+    DiscoverRequest {
+        flake_arg: cli.flake.as_deref(),
+        nix_override: cli.nix.as_deref(),
     }
 }
 
