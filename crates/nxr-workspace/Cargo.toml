@@ -8,7 +8,12 @@ publish.workspace = true
 description = "Flake root discovery and repository context for nxr"
 
 [dependencies]
+camino = { workspace = true }
 nxr-core = { path = "../nxr-core" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

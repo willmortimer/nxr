@@ -2,3 +2,5 @@
 
 pub mod discovery;
 pub mod paths;
+
+pub use discovery::{DiscoveryError, WorkspaceContext, discover_from};
