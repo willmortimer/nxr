@@ -16,6 +16,7 @@ camino = { workspace = true }
 clap = { workspace = true }
 nxr-core = { path = "../nxr-core" }
 nxr-nix = { path = "../nxr-nix" }
+nxr-process = { path = "../nxr-process" }
 nxr-workspace = { path = "../nxr-workspace" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

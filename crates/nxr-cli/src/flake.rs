@@ -1,6 +1,6 @@
 //! Flake reference resolution for CLI invocations.
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use nxr_workspace::{DiscoveryError, WorkspaceContext, discover_from};
 
 /// Selected flake reference for discovery and JSON output.
@@ -8,8 +8,10 @@ use nxr_workspace::{DiscoveryError, WorkspaceContext, discover_from};
 pub struct FlakeSelection {
     /// User-facing flake string for list JSON (`flake` field).
     pub display: String,
-    /// Reference passed to `nix flake show`.
+    /// Reference passed to `nix flake show` / `nix run`.
     pub nix_ref: String,
+    /// Absolute local flake root when the selection is a local path.
+    pub local_root: Option<Utf8PathBuf>,
 }
 
 /// Errors while resolving which flake to use.
@@ -28,7 +30,7 @@ impl FlakeResolveError {
     }
 }
 
-/// Resolve the flake to list from an optional `--flake` override.
+/// Resolve the flake to use from an optional `--flake` override.
 ///
 /// Local paths are resolved relative to `invocation_cwd`. Remote flake URIs are
 /// passed through unchanged.
@@ -41,10 +43,7 @@ pub fn resolve_flake(
     invocation_cwd: &Utf8Path,
 ) -> Result<FlakeSelection, FlakeResolveError> {
     if let Some(reference) = flake_arg {
-        Ok(FlakeSelection {
-            display: reference.to_owned(),
-            nix_ref: resolve_explicit_flake_ref(reference, invocation_cwd),
-        })
+        Ok(resolve_explicit_selection(reference, invocation_cwd))
     } else {
         let context = discover_from(invocation_cwd)?;
         Ok(flake_selection_from_context(&context))
@@ -56,14 +55,29 @@ fn flake_selection_from_context(context: &WorkspaceContext) -> FlakeSelection {
     FlakeSelection {
         display: flake.clone(),
         nix_ref: flake,
+        local_root: Some(context.flake_root.clone()),
+    }
+}
+
+fn resolve_explicit_selection(reference: &str, invocation_cwd: &Utf8Path) -> FlakeSelection {
+    if is_flake_uri(reference) {
+        return FlakeSelection {
+            display: reference.to_owned(),
+            nix_ref: reference.to_owned(),
+            local_root: None,
+        };
+    }
+
+    let nix_ref = resolve_explicit_flake_ref(reference, invocation_cwd);
+    let local_root = Some(Utf8PathBuf::from(&nix_ref));
+    FlakeSelection {
+        display: reference.to_owned(),
+        nix_ref,
+        local_root,
     }
 }
 
 fn resolve_explicit_flake_ref(reference: &str, invocation_cwd: &Utf8Path) -> String {
-    if is_flake_uri(reference) {
-        return reference.to_owned();
-    }
-
     let joined = invocation_cwd.join(reference);
     joined.canonicalize_utf8().unwrap_or(joined).into_string()
 }
@@ -95,7 +109,9 @@ mod tests {
     use camino::Utf8Path;
     use tempfile::TempDir;
 
-    use super::{is_flake_uri, resolve_explicit_flake_ref, resolve_flake};
+    use super::{
+        is_flake_uri, resolve_explicit_flake_ref, resolve_explicit_selection, resolve_flake,
+    };
 
     fn utf8_path(temp: &TempDir) -> camino::Utf8PathBuf {
         camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf())
@@ -105,10 +121,9 @@ mod tests {
     #[test]
     fn remote_refs_are_not_resolved_against_cwd() {
         assert!(is_flake_uri("github:owner/repo"));
-        assert_eq!(
-            resolve_explicit_flake_ref("github:owner/repo", Utf8Path::new("/tmp")),
-            "github:owner/repo"
-        );
+        let selection = resolve_explicit_selection("github:owner/repo", Utf8Path::new("/tmp"));
+        assert_eq!(selection.nix_ref, "github:owner/repo");
+        assert!(selection.local_root.is_none());
     }
 
     #[test]
@@ -137,10 +152,18 @@ mod tests {
 
         let selection = resolve_flake(None, &root).expect("discover flake");
         assert_eq!(selection.display, selection.nix_ref);
+        assert!(selection.local_root.is_some());
         assert!(
             selection
                 .nix_ref
                 .ends_with(temp.path().file_name().unwrap().to_str().unwrap())
         );
+    }
+
+    #[test]
+    fn remote_explicit_flake_has_no_local_root() {
+        let selection = resolve_explicit_selection("github:owner/repo", Utf8Path::new("/tmp"));
+        assert!(selection.local_root.is_none());
+        assert_eq!(selection.nix_ref, "github:owner/repo");
     }
 }

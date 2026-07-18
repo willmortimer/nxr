@@ -26,7 +26,7 @@ fn version_flag_succeeds() {
 #[test]
 fn reserved_command_reports_unimplemented() {
     cargo_bin_cmd!("nxr")
-        .arg("run")
+        .arg("select")
         .assert()
         .failure()
         .code(2)
@@ -34,12 +34,24 @@ fn reserved_command_reports_unimplemented() {
 }
 
 #[test]
-fn unknown_subcommand_is_usage_error() {
+fn run_without_app_is_usage_error() {
+    cargo_bin_cmd!("nxr").arg("run").assert().failure().code(2);
+}
+
+#[test]
+fn unknown_app_exits_not_found() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
     cargo_bin_cmd!("nxr")
-        .arg("not-a-command")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "not-a-command"])
         .assert()
         .failure()
-        .code(2);
+        .code(6)
+        .stderr(predicate::str::contains("app not found"));
 }
 
 #[test]
@@ -197,4 +209,117 @@ fn list_basic_apps_lexicographic_sort_is_stable() {
         .collect();
     let expected = ["default", "echo-args", "fail", "hello", "pwd", "succeed"];
     assert_eq!(names, expected);
+}
+
+#[test]
+fn run_hello_prints_greeting() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello from basic-apps"));
+}
+
+#[test]
+fn run_fail_propagates_exit_code() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "fail"])
+        .assert()
+        .failure()
+        .code(42);
+}
+
+#[test]
+fn plan_hello_json_matches_schema_shape() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "plan", "hello", "--json"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse plan json");
+
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["kind"], "app");
+    assert_eq!(value["target"], "hello");
+    assert!(
+        value["flake"]
+            .as_str()
+            .expect("flake")
+            .contains("basic-apps")
+    );
+    assert!(value["command"]["program"].is_string());
+    let arguments = value["command"]["arguments"]
+        .as_array()
+        .expect("command.arguments");
+    assert!(arguments.len() >= 2);
+    assert_eq!(arguments[0], "run");
+    assert!(
+        arguments[1]
+            .as_str()
+            .expect("installable")
+            .ends_with("#hello")
+    );
+    assert!(
+        value["forwarded_arguments"]
+            .as_array()
+            .expect("forwarded")
+            .is_empty()
+    );
+}
+
+#[test]
+fn dry_run_prints_plan_without_executing() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "--dry-run", "fail"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("run"))
+        .stdout(predicate::str::contains("#fail"));
+}
+
+#[test]
+fn run_echo_args_strips_one_separator() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/basic-apps",
+            "echo-args",
+            "--",
+            "alpha",
+            "beta",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("alpha\nbeta\n"));
 }

@@ -289,6 +289,7 @@ dependencies = [
  "clap",
  "nxr-core",
  "nxr-nix",
+ "nxr-process",
  "nxr-workspace",
  "predicates",
  "serde_json",

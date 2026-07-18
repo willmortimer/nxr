@@ -1,10 +1,13 @@
 //! CLI subcommands.
 
+pub mod common;
 pub mod list;
+pub mod plan;
+pub mod run;
 
 use nxr_core::diagnostics::exit;
 
-/// User-facing error for reserved commands that are not implemented in Phase 1.
+/// User-facing error for reserved commands that are not implemented yet.
 #[derive(Debug, thiserror::Error)]
 #[error("nxr {command} is not implemented yet")]
 pub struct UnimplementedCommandError {
