@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Build nxr
+        run: nix build .#nxr -L
+
+      - name: Format check
+        run: nix run .#fmt -- --check
+
+      - name: Lint
+        run: nix run .#lint
+
+      - name: Test
+        run: nix run .#test
+
+      - name: Dependency policy
+        run: nix run .#deny
+
+      - name: Fixture smoke (basic-apps)
+        run: |
+          nix run ./fixtures/basic-apps#hello
+          nix run ./fixtures/basic-apps#echo-args -- a b
+          nix run ./fixtures/basic-apps#succeed
+          if nix run ./fixtures/basic-apps#fail; then
+            echo "expected fail app to exit non-zero" >&2
+            exit 1
+          fi

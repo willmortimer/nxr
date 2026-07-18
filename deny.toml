@@ -1,0 +1,21 @@
+# cargo-deny policy — tighten as dependencies are introduced.
+# See https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+allow = ["MIT"]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

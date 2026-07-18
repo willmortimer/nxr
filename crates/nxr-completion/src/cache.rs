@@ -1,0 +1,1 @@
+//! Completion discovery cache (scaffold).

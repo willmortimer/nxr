@@ -1,0 +1,1 @@
+//! Task schema types (scaffold).

@@ -1,0 +1,1 @@
+//! Foreground child execution (scaffold).

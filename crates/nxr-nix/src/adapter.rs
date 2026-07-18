@@ -1,0 +1,1 @@
+//! Nix CLI adapter (scaffold).

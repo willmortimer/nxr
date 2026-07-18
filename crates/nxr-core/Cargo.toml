@@ -1,0 +1,13 @@
+[package]
+name = "nxr-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Shared models, schemas, and diagnostics for nxr"
+
+[dependencies]
+
+[lints]
+workspace = true

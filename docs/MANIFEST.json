@@ -1,0 +1,21 @@
+{
+  "project": "nxr",
+  "package_version": 2,
+  "scope": "Design and roadmap documentation from V1 through V3.5",
+  "document_count": 13,
+  "documents": [
+    "ADR_INDEX.md",
+    "ADR_TEMPLATE.md",
+    "APP_AUTHORING.md",
+    "ARCHITECTURE.md",
+    "CLI_CONTRACT.md",
+    "CONTRACT_SUMMARY.md",
+    "DESIGN.md",
+    "DEV_ENV_INTEGRATION.md",
+    "ECOSYSTEM_SYNTHESIS.md",
+    "FEATURES.md",
+    "README.md",
+    "ROADMAP.md",
+    "TECH_STACK_AND_REPO_SHAPE.md"
+  ]
+}

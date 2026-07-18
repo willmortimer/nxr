@@ -1,0 +1,1 @@
+//! Filesystem event watching (scaffold).
