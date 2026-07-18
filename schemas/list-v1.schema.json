@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/list-v1.schema.json",
+  "title": "nxr list output",
+  "description": "Machine-readable output for `nxr list --json` (schema version 1).",
+  "type": "object",
+  "required": ["schema_version", "flake", "system", "apps"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "flake": {
+      "type": "string",
+      "description": "Selected flake reference."
+    },
+    "system": {
+      "type": "string",
+      "description": "Nix system string for the listed app set."
+    },
+    "apps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/list_app"
+      }
+    }
+  },
+  "$defs": {
+    "list_app": {
+      "type": "object",
+      "required": ["name", "attr_path", "default"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "attr_path": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "default": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}
