@@ -59,4 +59,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**0.1.0** — V1 standard flake app runner: discover, list, run, plan, select, completion, cache, doctor, and app-authoring helpers. See [CHANGELOG.md](CHANGELOG.md) and [docs/ROADMAP.md](docs/ROADMAP.md) Phase 6 for stabilization work toward V1.0.
+**1.0.0** — V1 standard flake app runner (Phases 0–6). Discover, list, run, plan, select, completion, cache, doctor, man page, and app-authoring helpers. See [CHANGELOG.md](CHANGELOG.md).

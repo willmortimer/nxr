@@ -13,7 +13,7 @@ _nxr_dynamic_apps() {
     local first="${COMP_WORDS[1]:-}"
 
     case "$first" in
-        completion|__complete|help|--help|-h)
+        completion|__complete|__manpage|help|--help|-h)
             return 1
             ;;
         list|plan|select|doctor|inspect|task|watch|graph)

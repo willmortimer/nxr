@@ -119,6 +119,9 @@ pub enum Command {
         /// Completion target
         target: CompleteTarget,
     },
+    /// Hidden man-page generator for packaging
+    #[command(name = "__manpage", hide = true)]
+    Manpage,
     /// Inspect flake metadata
     Inspect,
     /// Run a V2 task
@@ -144,6 +147,7 @@ impl Command {
             Self::Doctor { .. } => "doctor",
             Self::Completion { .. } => "completion",
             Self::Complete { .. } => "__complete",
+            Self::Manpage => "__manpage",
             Self::Inspect => "inspect",
             Self::Task => "task",
             Self::Watch => "watch",

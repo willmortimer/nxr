@@ -8,7 +8,7 @@
 
 rustPlatform.buildRustPackage {
   pname = "nxr";
-  version = "0.1.0";
+  version = "1.0.0";
 
   inherit src;
 
@@ -29,6 +29,8 @@ rustPlatform.buildRustPackage {
       --bash <($out/bin/nxr completion bash) \
       --zsh  <($out/bin/nxr completion zsh) \
       --fish <($out/bin/nxr completion fish)
+    $out/bin/nxr __manpage > nxr.1
+    installManPage nxr.1
   '';
 
   meta = {

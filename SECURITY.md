@@ -19,6 +19,8 @@ Before tagging a release or adopting `nxr` in CI, confirm:
 5. **Environment policy** — use `nxr doctor --clean-env` when validating apps that must not depend on a dev-shell `PATH`.
 6. **No hidden telemetry** — V1 collects no usage data ([docs/TELEMETRY.md](docs/TELEMETRY.md)).
 
+V1.0 engineering review: [docs/SECURITY_REVIEW_V1.md](docs/SECURITY_REVIEW_V1.md).
+
 Full requirements: [ARCHITECTURE.md §8](docs/ARCHITECTURE.md#8-security-model).
 
 ## Reporting

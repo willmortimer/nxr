@@ -5,6 +5,7 @@ pub mod complete;
 pub mod completion;
 pub mod doctor;
 pub mod list;
+pub mod manpage;
 pub mod plan;
 pub mod run;
 pub mod select;

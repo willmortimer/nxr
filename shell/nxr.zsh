@@ -22,7 +22,7 @@ _nxr_complete_apps() {
 
 _nxr_dynamic_apps() {
     local -a reserved
-    reserved=(list run plan select doctor completion inspect task watch graph)
+    reserved=(list run plan select doctor completion inspect task watch graph __complete __manpage)
 
     if (( CURRENT == 2 )) && [[ ${words[2]} != -* ]] && [[ ${reserved[(Ie)${words[2]}]} -eq 0 ]]; then
         _nxr_complete_apps

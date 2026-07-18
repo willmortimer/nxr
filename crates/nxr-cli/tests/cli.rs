@@ -568,6 +568,26 @@ fn completion_unknown_shell_is_usage_error() {
 }
 
 #[test]
+fn manpage_writes_roff_to_stdout_only() {
+    let assert = cargo_bin_cmd!("nxr")
+        .arg("__manpage")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".TH nxr"))
+        .stdout(predicate::str::contains("flake app runner"));
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8 stderr");
+    assert!(
+        !stderr.contains("info:"),
+        "__manpage must not emit runner diagnostics, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("discovering apps"),
+        "__manpage must not emit runner diagnostics, got:\n{stderr}"
+    );
+}
+
+#[test]
 fn complete_apps_writes_only_to_stdout() {
     let repo_root = repo_root();
     let assert = cargo_bin_cmd!("nxr")

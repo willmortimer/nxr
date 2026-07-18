@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-18
+
+V1.0 standard flake app runner (Phases 0–6 complete).
+
+### Added
+
+- Man page `nxr(1)` via `clap_mangen` (`nxr __manpage`; installed by `nix build .#nxr`).
+- [Performance baselines](docs/PERFORMANCE.md) for list/cache/completion.
+- [V1 security review](docs/SECURITY_REVIEW_V1.md) against ARCHITECTURE §8.
+- Direnv/session-local shell completion wiring (`.envrc`, `shell/direnv-zsh-hook.zsh`).
+
+### Changed
+
+- Workspace and Nix package version **1.0.0**.
+
 ## [0.1.0] - 2026-07-18
 
 First taggable V1 prerelease: a standard Nix flake app runner through Phase 5 of the [roadmap](docs/ROADMAP.md).
@@ -63,4 +78,5 @@ First taggable V1 prerelease: a standard Nix flake app runner through Phase 5 of
 - [Compatibility matrix](docs/COMPATIBILITY.md), [CLI reference](docs/CLI_REFERENCE.md), and [telemetry decision](docs/TELEMETRY.md) (default: none).
 - Tag-triggered [release workflow](.github/workflows/release.yml) (quality gate only; no publish secrets).
 
+[1.0.0]: https://github.com/willmortimer/nxr/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/willmortimer/nxr/compare/v0.0.0...v0.1.0

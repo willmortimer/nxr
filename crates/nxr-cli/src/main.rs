@@ -16,7 +16,7 @@ use nxr_core::diagnostics::exit;
 use crate::cli::{Cli, Command};
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
-    UnimplementedCommandError, complete, completion, doctor, list, plan, run, select,
+    UnimplementedCommandError, complete, completion, doctor, list, manpage, plan, run, select,
 };
 use crate::error_format::format_error_message;
 use crate::output_options::OutputOptions;
@@ -56,6 +56,8 @@ enum RunError {
     #[error(transparent)]
     Complete(#[from] complete::CompleteError),
     #[error(transparent)]
+    Manpage(#[from] manpage::ManpageError),
+    #[error(transparent)]
     Unimplemented(#[from] UnimplementedCommandError),
 }
 
@@ -69,6 +71,7 @@ impl RunError {
             Self::Doctor(error) => error.exit_code(),
             Self::Completion(_) => completion::CompletionError::exit_code(),
             Self::Complete(_) => exit::SUCCESS,
+            Self::Manpage(_) => manpage::ManpageError::exit_code(),
             Self::MissingAppName => exit::USAGE,
             Self::Unimplemented(_) => UnimplementedCommandError::exit_code(),
         }
@@ -137,6 +140,10 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 cli.nix.as_deref(),
                 cli.refresh,
             )?;
+            Ok(exit::SUCCESS)
+        }
+        Some(Command::Manpage) => {
+            manpage::run()?;
             Ok(exit::SUCCESS)
         }
         Some(command @ (Command::Inspect | Command::Task | Command::Watch | Command::Graph)) => {

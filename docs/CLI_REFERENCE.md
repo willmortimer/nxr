@@ -54,6 +54,10 @@ nxr plan test --json
 nxr doctor --clean-env test
 nxr completion zsh > ~/.zfunc/_nxr
 
+# Packaging / maintainers: generate man page
+cargo run -p xtask -- man nxr.1
+# or: nix build .#nxr  → share/man/man1/nxr.1
+
 # In this repo, direnv materializes completions under .direnv/ (see .envrc).
 # Zsh: source "$NXR_COMPLETION_HOOK" once, or add the precmd hook from
 # docs/DEV_ENV_INTEGRATION.md.

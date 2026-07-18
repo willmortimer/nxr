@@ -189,6 +189,8 @@ nxr doctor --clean-env test
 - security review;
 - V1.0 release.
 
+**Status (2026-07-18):** Deliverables landed; tag **`v1.0.0`**.
+
 ### V1.0 acceptance criteria
 
 A user can clone a flake-based repository and run:
@@ -196,7 +198,7 @@ A user can clone a flake-based repository and run:
 ```bash
 nxr
 nxr test
-nxr test -- --nocapture
+nxr test -- --help
 ```
 
 without another task manifest, while retaining equivalent native `nix run` commands.
