@@ -2,10 +2,11 @@
 
 use std::io;
 
+use nxr_completion::cache::{DiscoveryCacheOptions, DiscoveryContext, discover_with_cache};
 use nxr_nix::NixError;
 
 use crate::commands::common::{PrepareError, build_adapter, current_invocation_directory};
-use crate::flake::{FlakeResolveError, resolve_flake};
+use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
 use crate::output::{JsonListError, write_human_list, write_json_list};
 use crate::runner_output::RunnerOutput;
 
@@ -45,6 +46,7 @@ pub fn run(
     flake_arg: Option<&str>,
     nix_override: Option<&str>,
     json: bool,
+    refresh: bool,
     runner: RunnerOutput,
 ) -> Result<(), ListError> {
     let invocation_cwd = current_invocation_directory()?;
@@ -53,7 +55,7 @@ pub fn run(
         .info(format!("discovering apps for {}", flake.display))
         .map_err(ListError::Io)?;
     let adapter = build_adapter(nix_override)?;
-    let apps = adapter.discover_apps(&flake.nix_ref)?;
+    let apps = discover_apps(&flake, &adapter, refresh)?;
     runner
         .verbose(format!(
             "found {} app(s) for system {}",
@@ -70,6 +72,23 @@ pub fn run(
     }
 
     Ok(())
+}
+
+fn discover_apps(
+    flake: &FlakeSelection,
+    adapter: &nxr_nix::NixAdapter,
+    refresh: bool,
+) -> Result<Vec<nxr_core::App>, NixError> {
+    let context = DiscoveryContext {
+        flake_ref: flake.nix_ref.clone(),
+        local_root: flake.local_root.clone(),
+        system: adapter.system.clone(),
+    };
+    let flake_ref = flake.nix_ref.clone();
+
+    discover_with_cache(&context, DiscoveryCacheOptions { refresh }, || {
+        adapter.discover_apps(&flake_ref)
+    })
 }
 
 #[cfg(test)]

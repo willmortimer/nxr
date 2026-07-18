@@ -72,7 +72,13 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
     match &cli.command {
         None if cli.select => run_with_selected_app(cli, &[], runner),
         None | Some(Command::List) => {
-            list::run(cli.flake.as_deref(), cli.nix.as_deref(), cli.json, runner)?;
+            list::run(
+                cli.flake.as_deref(),
+                cli.nix.as_deref(),
+                cli.json,
+                cli.refresh,
+                runner,
+            )?;
             Ok(exit::SUCCESS)
         }
         Some(Command::Select) => run_with_selected_app(cli, &[], runner),

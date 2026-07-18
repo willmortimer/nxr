@@ -42,6 +42,10 @@ pub struct Cli {
     #[arg(short = 's', long = "select", global = true)]
     pub select: bool,
 
+    /// Ignore nxr discovery cache
+    #[arg(long = "refresh", global = true)]
+    pub refresh: bool,
+
     /// Suppress non-error nxr messages
     #[arg(short = 'q', long = "quiet", global = true, action = ArgAction::Count)]
     pub quiet: u8,
