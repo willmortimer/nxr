@@ -10,5 +10,9 @@ description = "Process supervision and signal handling for nxr"
 [dependencies]
 nxr-core = { path = "../nxr-core" }
 
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["signal"] }
+signal-hook = { workspace = true }
+
 [lints]
 workspace = true
