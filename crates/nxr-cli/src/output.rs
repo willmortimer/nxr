@@ -2,6 +2,7 @@
 
 use std::io::{self, Write};
 
+use nxr_core::sanitize::sanitize_terminal_text;
 use nxr_core::{App, AppList};
 
 /// Write human-readable app listing to `stdout`.
@@ -28,7 +29,7 @@ pub fn write_human_list(writer: &mut impl Write, system: &str, apps: &[App]) -> 
     for app in apps {
         write!(writer, "  {:<name_width$}", app.name)?;
         if let Some(description) = &app.description {
-            writeln!(writer, "{description}")?;
+            writeln!(writer, "{}", sanitize_terminal_text(description))?;
         } else {
             writeln!(writer)?;
         }
@@ -167,5 +168,24 @@ Available apps for aarch64-darwin
             rendered.contains("root-marker Confirm"),
             "expected a space between name and description, got:\n{rendered}"
         );
+    }
+
+    #[test]
+    fn human_list_sanitizes_control_sequences_in_descriptions() {
+        let apps = vec![App {
+            name: "evil".to_owned(),
+            attr_path: "apps.aarch64-darwin.evil".to_owned(),
+            flake_ref: ".".to_owned(),
+            system: "aarch64-darwin".to_owned(),
+            description: Some("\u{1b}[31mhidden\u{1b}[0m".to_owned()),
+            is_default: false,
+            metadata: BTreeMap::new(),
+        }];
+
+        let mut output = Vec::new();
+        write_human_list(&mut output, "aarch64-darwin", &apps).expect("write human list");
+        let rendered = String::from_utf8(output).expect("utf-8");
+        assert!(rendered.contains("  evil       hidden"));
+        assert!(!rendered.contains('\u{1b}'));
     }
 }

@@ -86,5 +86,7 @@ mod tests {
             kind: NixFailureKind::Evaluation,
         };
         assert_eq!(error.exit_code(), exit::EVALUATION);
+        assert!(error.user_message().contains("failed to evaluate flake"));
+        assert!(error.user_message().contains("nix flake show"));
     }
 }

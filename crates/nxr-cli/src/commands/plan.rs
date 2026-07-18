@@ -6,6 +6,7 @@ use nxr_core::Plan;
 use nxr_core::diagnostics::exit;
 
 use crate::commands::common::{AppRequest, PrepareError, prepare_app_plan};
+use crate::runner_output::RunnerOutput;
 
 /// Errors while printing a plan.
 #[derive(Debug, thiserror::Error)]
@@ -14,6 +15,8 @@ pub enum PlanError {
     Prepare(#[from] PrepareError),
     #[error(transparent)]
     Render(#[from] PlanRenderError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 impl PlanError {
@@ -21,7 +24,7 @@ impl PlanError {
     pub const fn exit_code(&self) -> i32 {
         match self {
             Self::Prepare(error) => error.exit_code(),
-            Self::Render(_) => exit::EVALUATION,
+            Self::Render(_) | Self::Io(_) => exit::EVALUATION,
         }
     }
 }
@@ -40,8 +43,11 @@ pub enum PlanRenderError {
 /// # Errors
 ///
 /// Returns [`PlanError`] when planning or rendering fails.
-pub fn run(request: AppRequest<'_>, json: bool) -> Result<(), PlanError> {
+pub fn run(request: AppRequest<'_>, json: bool, runner: RunnerOutput) -> Result<(), PlanError> {
     let prepared = prepare_app_plan(request)?;
+    runner
+        .info(format!("planning app {}", prepared.plan.target))
+        .map_err(PlanError::Io)?;
     let mut stdout = io::stdout().lock();
     write_plan(&mut stdout, &prepared.plan, json)?;
     Ok(())

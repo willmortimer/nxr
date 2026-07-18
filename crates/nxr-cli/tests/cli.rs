@@ -474,3 +474,66 @@ fn plan_root_json_sets_execution_directory_to_flake_root() {
         flake_root
     );
 }
+
+#[test]
+fn quiet_list_suppresses_runner_info_on_stderr() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--quiet", "--flake", "fixtures/basic-apps", "list"])
+        .assert()
+        .success();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8 stderr");
+    assert!(
+        !stderr.contains("discovering apps"),
+        "quiet mode should suppress runner info on stderr, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn verbose_run_emits_runner_diagnostics_on_stderr_not_stdout() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--verbose", "--flake", "fixtures/basic-apps", "hello"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8 stderr");
+
+    assert!(
+        stdout.contains("hello from basic-apps"),
+        "app output should remain on stdout, got:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("running app hello"),
+        "verbose runner diagnostics should be on stderr, got:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("running app hello"),
+        "runner diagnostics must not appear on stdout, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn global_output_flags_are_documented_in_help() {
+    cargo_bin_cmd!("nxr")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--quiet"))
+        .stdout(predicate::str::contains("--verbose"))
+        .stdout(predicate::str::contains("--plain"))
+        .stdout(predicate::str::contains("--no-color"))
+        .stdout(predicate::str::contains("--color"));
+}

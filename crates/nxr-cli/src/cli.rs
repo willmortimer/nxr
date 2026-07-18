@@ -1,6 +1,8 @@
 //! Clap-derived CLI definition.
 
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
+
+use crate::output_options::ColorWhen;
 
 /// Nix-native flake app runner.
 #[derive(Debug, Parser)]
@@ -39,6 +41,31 @@ pub struct Cli {
     /// Open interactive app selector
     #[arg(short = 's', long = "select", global = true)]
     pub select: bool,
+
+    /// Suppress non-error nxr messages
+    #[arg(short = 'q', long = "quiet", global = true, action = ArgAction::Count)]
+    pub quiet: u8,
+
+    /// Increase runner diagnostics
+    #[arg(short = 'v', long = "verbose", global = true, action = ArgAction::Count)]
+    pub verbose: u8,
+
+    /// Disable decorative terminal output
+    #[arg(long = "plain", global = true)]
+    pub plain: bool,
+
+    /// Disable runner color
+    #[arg(long = "no-color", global = true)]
+    pub no_color: bool,
+
+    /// When to colorize runner output
+    #[arg(
+        long = "color",
+        global = true,
+        value_name = "WHEN",
+        default_value = "auto"
+    )]
+    pub color: ColorWhen,
 
     #[command(subcommand)]
     pub command: Option<Command>,

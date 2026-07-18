@@ -6,6 +6,7 @@ use nxr_core::diagnostics::exit;
 
 use crate::commands::common::{AppRequest, PrepareError, prepare_app_plan};
 use crate::commands::plan::{PlanRenderError, write_plan};
+use crate::runner_output::RunnerOutput;
 
 /// Errors while running an app.
 #[derive(Debug, thiserror::Error)]
@@ -37,7 +38,12 @@ impl RunError {
 /// cannot be supervised.
 ///
 /// On success, returns the child exit code (or `0` for dry-run).
-pub fn execute(request: AppRequest<'_>, dry_run: bool, json: bool) -> Result<i32, RunError> {
+pub fn execute(
+    request: AppRequest<'_>,
+    dry_run: bool,
+    json: bool,
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
     let prepared = prepare_app_plan(request)?;
 
     if dry_run {
@@ -45,6 +51,19 @@ pub fn execute(request: AppRequest<'_>, dry_run: bool, json: bool) -> Result<i32
         write_plan(&mut stdout, &prepared.plan, json)?;
         return Ok(exit::SUCCESS);
     }
+
+    runner
+        .verbose(format!(
+            "running app {} from {}",
+            prepared.plan.target, prepared.plan.flake
+        ))
+        .map_err(RunError::Supervision)?;
+    runner
+        .verbose(format!(
+            "execution directory: {}",
+            prepared.execution_directory
+        ))
+        .map_err(RunError::Supervision)?;
 
     let code = nxr_process::run_in(
         prepared.nix.as_std_path(),

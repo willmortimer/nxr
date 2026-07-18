@@ -4,10 +4,12 @@ pub mod config;
 pub mod diagnostics;
 pub mod model;
 pub mod plan;
+pub mod sanitize;
 
 pub use diagnostics::{Diagnostic, DiagnosticLevel};
 pub use model::{App, AppList, FlakeRef, ListApp};
 pub use plan::{EnvironmentPolicy, Plan, PlanCommand, PlanKind};
+pub use sanitize::sanitize_terminal_text;
 
 #[cfg(test)]
 mod tests {

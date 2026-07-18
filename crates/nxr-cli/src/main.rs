@@ -2,8 +2,11 @@
 
 mod cli;
 mod commands;
+mod error_format;
 mod flake;
 mod output;
+mod output_options;
+mod runner_output;
 
 use std::process;
 
@@ -13,15 +16,20 @@ use nxr_core::diagnostics::exit;
 use crate::cli::{Cli, Command};
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{UnimplementedCommandError, list, plan, run, select};
+use crate::error_format::format_error_message;
+use crate::output_options::OutputOptions;
+use crate::runner_output::RunnerOutput;
 
 fn main() {
     let cli = Cli::parse();
-    let result = dispatch(&cli);
+    let output = output_options_from_cli(&cli);
+    let runner = RunnerOutput::new(output);
+    let result = dispatch(&cli, runner);
 
     match result {
         Ok(code) => process::exit(code),
         Err(error) => {
-            eprintln!("error: {error}");
+            let _ = runner.error(format_error_message(&error));
             process::exit(error.exit_code());
         }
     }
@@ -56,34 +64,38 @@ impl RunError {
     }
 }
 
-fn dispatch(cli: &Cli) -> Result<i32, RunError> {
+fn output_options_from_cli(cli: &Cli) -> OutputOptions {
+    OutputOptions::new(cli.quiet, cli.verbose, cli.plain, cli.no_color, cli.color)
+}
+
+fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
     match &cli.command {
-        None if cli.select => run_with_selected_app(cli, &[]),
+        None if cli.select => run_with_selected_app(cli, &[], runner),
         None | Some(Command::List) => {
-            list::run(cli.flake.as_deref(), cli.nix.as_deref(), cli.json)?;
+            list::run(cli.flake.as_deref(), cli.nix.as_deref(), cli.json, runner)?;
             Ok(exit::SUCCESS)
         }
-        Some(Command::Select) => run_with_selected_app(cli, &[]),
+        Some(Command::Select) => run_with_selected_app(cli, &[], runner),
         Some(Command::Run { app, args }) => {
             if cli.select {
-                run_with_selected_app(cli, args)
+                run_with_selected_app(cli, args, runner)
             } else {
                 let request = app_request(cli, app, args);
-                run::execute(request, cli.dry_run, cli.json).map_err(RunError::from)
+                run::execute(request, cli.dry_run, cli.json, runner).map_err(RunError::from)
             }
         }
         Some(Command::Plan { app, args }) => {
             let request = app_request(cli, app, args);
-            plan::run(request, cli.json)?;
+            plan::run(request, cli.json, runner)?;
             Ok(exit::SUCCESS)
         }
         Some(Command::External(tokens)) => {
             let (app, forwarded) = split_external(tokens)?;
             if cli.select {
-                run_with_selected_app(cli, forwarded)
+                run_with_selected_app(cli, forwarded, runner)
             } else {
                 let request = app_request(cli, app, forwarded);
-                run::execute(request, cli.dry_run, cli.json).map_err(RunError::from)
+                run::execute(request, cli.dry_run, cli.json, runner).map_err(RunError::from)
             }
         }
         Some(
@@ -100,10 +112,14 @@ fn dispatch(cli: &Cli) -> Result<i32, RunError> {
     }
 }
 
-fn run_with_selected_app(cli: &Cli, args: &[String]) -> Result<i32, RunError> {
+fn run_with_selected_app(
+    cli: &Cli,
+    args: &[String],
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
     let app = select::pick_app_name(discover_request(cli))?;
     let request = app_request(cli, &app, args);
-    run::execute(request, cli.dry_run, cli.json).map_err(RunError::from)
+    run::execute(request, cli.dry_run, cli.json, runner).map_err(RunError::from)
 }
 
 fn discover_request(cli: &Cli) -> DiscoverRequest<'_> {

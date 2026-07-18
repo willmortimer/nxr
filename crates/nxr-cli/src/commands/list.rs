@@ -7,6 +7,7 @@ use nxr_nix::NixError;
 use crate::commands::common::{PrepareError, build_adapter, current_invocation_directory};
 use crate::flake::{FlakeResolveError, resolve_flake};
 use crate::output::{JsonListError, write_human_list, write_json_list};
+use crate::runner_output::RunnerOutput;
 
 /// Errors while running the list command.
 #[derive(Debug, thiserror::Error)]
@@ -44,11 +45,22 @@ pub fn run(
     flake_arg: Option<&str>,
     nix_override: Option<&str>,
     json: bool,
+    runner: RunnerOutput,
 ) -> Result<(), ListError> {
     let invocation_cwd = current_invocation_directory()?;
     let flake = resolve_flake(flake_arg, &invocation_cwd)?;
+    runner
+        .info(format!("discovering apps for {}", flake.display))
+        .map_err(ListError::Io)?;
     let adapter = build_adapter(nix_override)?;
     let apps = adapter.discover_apps(&flake.nix_ref)?;
+    runner
+        .verbose(format!(
+            "found {} app(s) for system {}",
+            apps.len(),
+            adapter.system
+        ))
+        .map_err(ListError::Io)?;
 
     let mut stdout = io::stdout().lock();
     if json {
