@@ -130,6 +130,12 @@
             packages = rustDevInputs ++ [
               self'.packages.nxr
             ];
+            # Surface package-installed completions to direnv / nix develop.
+            # Interactive zsh still needs shell/direnv-zsh-hook.zsh (see .envrc).
+            shellHook = ''
+              export XDG_DATA_DIRS="${self'.packages.nxr}/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+              export FPATH="${self'.packages.nxr}/share/zsh/site-functions''${FPATH:+:$FPATH}"
+            '';
           };
         };
     };

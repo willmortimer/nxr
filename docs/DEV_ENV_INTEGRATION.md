@@ -53,10 +53,12 @@ This is an explicit execution policy, not an automatic assumption.
 
 ## 3. direnv and nix-direnv
 
-Typical `.envrc`:
+Typical `.envrc` (this repository):
 
 ```bash
 use flake
+# …then materialize `nxr completion` scripts under `.direnv/` and export
+# NXR_COMPLETION_HOOK for interactive zsh (see shell/direnv-zsh-hook.zsh).
 ```
 
 The development shell becomes active when entering the directory.
@@ -69,6 +71,26 @@ That shell may provide:
 - project environment variables;
 - local service configuration;
 - shell completion integration.
+
+### Zsh + direnv
+
+direnv cannot inject shell functions into the parent shell. After
+`eval "$(direnv hook zsh)"` in `~/.zshrc`, add:
+
+```zsh
+# Load project-local completion hooks exported by .envrc (nxr, etc.).
+_direnv_completion_hooks() {
+  [[ -n ${NXR_COMPLETION_HOOK:-} && -f $NXR_COMPLETION_HOOK ]] || return 0
+  [[ ${NXR_COMPLETION_HOOK_LOADED:-} == $NXR_COMPLETION_HOOK ]] && return 0
+  # shellcheck disable=SC1090
+  source "$NXR_COMPLETION_HOOK"
+  NXR_COMPLETION_HOOK_LOADED=$NXR_COMPLETION_HOOK
+}
+autoload -Uz add-zsh-hook
+add-zsh-hook precmd _direnv_completion_hooks
+```
+
+Or source once per session: `source "$NXR_COMPLETION_HOOK"`.
 
 The process relationship is:
 

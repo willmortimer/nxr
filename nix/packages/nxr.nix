@@ -2,6 +2,7 @@
 {
   lib,
   rustPlatform,
+  installShellFiles,
   src,
 }:
 
@@ -18,8 +19,17 @@ rustPlatform.buildRustPackage {
     "nxr-cli"
   ];
 
+  nativeBuildInputs = [ installShellFiles ];
+
   # Hermetic tests run via `apps.test` / CI, not during every package build.
   doCheck = false;
+
+  postInstall = ''
+    installShellCompletion --cmd nxr \
+      --bash <($out/bin/nxr completion bash) \
+      --zsh  <($out/bin/nxr completion zsh) \
+      --fish <($out/bin/nxr completion fish)
+  '';
 
   meta = {
     description = "Ergonomic runner for Nix flake apps";

@@ -53,6 +53,10 @@ nxr --flake ../other test
 nxr plan test --json
 nxr doctor --clean-env test
 nxr completion zsh > ~/.zfunc/_nxr
+
+# In this repo, direnv materializes completions under .direnv/ (see .envrc).
+# Zsh: source "$NXR_COMPLETION_HOOK" once, or add the precmd hook from
+# docs/DEV_ENV_INTEGRATION.md.
 ```
 
 Argument forwarding: one leading `--` is stripped; arguments are never shell-evaluated. See [CLI_CONTRACT.md](CLI_CONTRACT.md) §5.
