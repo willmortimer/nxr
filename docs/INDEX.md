@@ -19,6 +19,9 @@ Product and architecture contract for `nxr`. Prefer these docs over inventing st
 | [DESIGN.md](DESIGN.md) | Principles, tradeoffs, and semantic decisions |
 | [FEATURES.md](FEATURES.md) | Feature set by capability area |
 | [CLI_CONTRACT.md](CLI_CONTRACT.md) | Command surface and behavioral contract |
+| [CLI_REFERENCE.md](CLI_REFERENCE.md) | Quick CLI index (`--help` companion) |
+| [COMPATIBILITY.md](COMPATIBILITY.md) | Supported platforms and Nix expectations |
+| [TELEMETRY.md](TELEMETRY.md) | Telemetry decision (V1 default: none) |
 | [APP_AUTHORING.md](APP_AUTHORING.md) | Conventions for robust flake apps |
 | [MIGRATE_FROM_MISE_JUST.md](MIGRATE_FROM_MISE_JUST.md) | How-to: move from mise/just/aliases to flake apps |
 | [DEV_ENV_INTEGRATION.md](DEV_ENV_INTEGRATION.md) | Dev shells, direnv, DevPod, containers |

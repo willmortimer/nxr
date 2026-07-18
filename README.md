@@ -59,4 +59,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-Phase 0 foundation: packaged `nxr` binary (scaffold CLI), flake apps, fixtures, CI. Product behavior follows [docs/ROADMAP.md](docs/ROADMAP.md) Phase 1+.
+**0.1.0** — V1 standard flake app runner: discover, list, run, plan, select, completion, cache, doctor, and app-authoring helpers. See [CHANGELOG.md](CHANGELOG.md) and [docs/ROADMAP.md](docs/ROADMAP.md) Phase 6 for stabilization work toward V1.0.

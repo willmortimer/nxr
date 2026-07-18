@@ -21,8 +21,6 @@
       systems = [
         "aarch64-darwin"
         "x86_64-linux"
-        "x86_64-darwin"
-        "aarch64-linux"
       ];
 
       perSystem =
@@ -42,6 +40,7 @@
               ./Cargo.lock
               ./deny.toml
               ./crates
+              ./shell
               ./xtask
             ];
           };

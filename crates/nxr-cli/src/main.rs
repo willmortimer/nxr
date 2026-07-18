@@ -139,12 +139,12 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             )?;
             Ok(exit::SUCCESS)
         }
-        Some(
-            command @ (Command::Inspect | Command::Task | Command::Watch | Command::Graph),
-        ) => Err(UnimplementedCommandError {
-            command: command.label(),
+        Some(command @ (Command::Inspect | Command::Task | Command::Watch | Command::Graph)) => {
+            Err(UnimplementedCommandError {
+                command: command.label(),
+            }
+            .into())
         }
-        .into()),
     }
 }
 
