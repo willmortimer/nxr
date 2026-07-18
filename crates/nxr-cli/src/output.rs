@@ -17,12 +17,13 @@ pub fn write_human_list(writer: &mut impl Write, system: &str, apps: &[App]) -> 
         return Ok(());
     }
 
-    let name_width = apps
+    // Leave at least one padding space before descriptions when a name fills the column.
+    let max_name_len = apps
         .iter()
         .map(|app| app.name.len())
         .max()
-        .unwrap_or_default()
-        .max(11);
+        .unwrap_or_default();
+    let name_width = max_name_len.max(11).max(max_name_len.saturating_add(1));
 
     for app in apps {
         write!(writer, "  {:<name_width$}", app.name)?;
@@ -145,5 +146,26 @@ Available apps for aarch64-darwin
         assert_eq!(apps[0]["attr_path"], "apps.aarch64-darwin.dev");
         assert_eq!(apps[0]["description"], "Start local development services");
         assert_eq!(apps[0]["default"], false);
+    }
+
+    #[test]
+    fn human_list_keeps_gap_when_name_fills_min_width() {
+        let apps = vec![App {
+            name: "root-marker".to_owned(),
+            attr_path: "apps.aarch64-darwin.root-marker".to_owned(),
+            flake_ref: ".".to_owned(),
+            system: "aarch64-darwin".to_owned(),
+            description: Some("Confirm the flake root marker file is readable".to_owned()),
+            is_default: false,
+            metadata: BTreeMap::new(),
+        }];
+
+        let mut output = Vec::new();
+        write_human_list(&mut output, "aarch64-darwin", &apps).expect("write human list");
+        let rendered = String::from_utf8(output).expect("utf-8");
+        assert!(
+            rendered.contains("root-marker Confirm"),
+            "expected a space between name and description, got:\n{rendered}"
+        );
     }
 }
