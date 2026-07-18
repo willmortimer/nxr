@@ -3,9 +3,11 @@
 pub mod config;
 pub mod diagnostics;
 pub mod model;
+pub mod plan;
 
 pub use diagnostics::{Diagnostic, DiagnosticLevel};
 pub use model::{App, AppList, FlakeRef, ListApp};
+pub use plan::{EnvironmentPolicy, Plan, PlanCommand, PlanKind};
 
 #[cfg(test)]
 mod tests {
@@ -13,6 +15,7 @@ mod tests {
 
     use super::diagnostics::exit;
     use super::model::{App, AppList, ListApp};
+    use super::plan::{EnvironmentPolicy, Plan, PlanCommand, PlanKind};
     use serde_json::json;
 
     #[test]
@@ -83,6 +86,80 @@ mod tests {
                 ]
             })
         );
+    }
+
+    #[test]
+    fn plan_serde_round_trip_matches_contract_shape() {
+        let flake = "/absolute/project/path";
+        let invocation = "/absolute/project/path/crates/api";
+        let envelope = Plan {
+            schema_version: Plan::SCHEMA_VERSION,
+            kind: PlanKind::App,
+            flake: flake.to_owned(),
+            system: "aarch64-darwin".to_owned(),
+            target: "test".to_owned(),
+            attr_path: "apps.aarch64-darwin.test".to_owned(),
+            invocation_directory: invocation.to_owned(),
+            execution_directory: invocation.to_owned(),
+            environment_policy: EnvironmentPolicy::Inherit,
+            command: PlanCommand {
+                program: "nix".to_owned(),
+                arguments: vec!["run".to_owned(), format!("{flake}#test"), "--".to_owned()],
+            },
+            forwarded_arguments: vec![],
+        };
+
+        let value = serde_json::to_value(&envelope).expect("serialize Plan");
+        assert_eq!(
+            value,
+            json!({
+                "schema_version": 1,
+                "kind": "app",
+                "flake": flake,
+                "system": "aarch64-darwin",
+                "target": "test",
+                "attr_path": "apps.aarch64-darwin.test",
+                "invocation_directory": invocation,
+                "execution_directory": invocation,
+                "environment_policy": "inherit",
+                "command": {
+                    "program": "nix",
+                    "arguments": [
+                        "run",
+                        "/absolute/project/path#test",
+                        "--"
+                    ]
+                },
+                "forwarded_arguments": []
+            })
+        );
+
+        let restored: Plan = serde_json::from_value(value).expect("deserialize Plan");
+        assert_eq!(restored, envelope);
+    }
+
+    #[test]
+    fn plan_serde_round_trip_preserves_forwarded_arguments() {
+        let envelope = Plan {
+            schema_version: Plan::SCHEMA_VERSION,
+            kind: PlanKind::App,
+            flake: ".".to_owned(),
+            system: "x86_64-linux".to_owned(),
+            target: "lint".to_owned(),
+            attr_path: "apps.x86_64-linux.lint".to_owned(),
+            invocation_directory: "/work".to_owned(),
+            execution_directory: "/work".to_owned(),
+            environment_policy: EnvironmentPolicy::Inherit,
+            command: PlanCommand {
+                program: "nix".to_owned(),
+                arguments: vec!["run".to_owned(), ".#lint".to_owned(), "--".to_owned()],
+            },
+            forwarded_arguments: vec!["--fix".to_owned(), "--".to_owned(), "extra".to_owned()],
+        };
+
+        let value = serde_json::to_value(&envelope).expect("serialize Plan");
+        let restored: Plan = serde_json::from_value(value).expect("deserialize Plan");
+        assert_eq!(restored, envelope);
     }
 
     #[test]

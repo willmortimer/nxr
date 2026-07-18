@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/plan-v1.schema.json",
+  "title": "nxr plan output",
+  "description": "Machine-readable output for `nxr plan --json` and `--dry-run` (schema version 1).",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "flake",
+    "system",
+    "target",
+    "attr_path",
+    "invocation_directory",
+    "execution_directory",
+    "environment_policy",
+    "command",
+    "forwarded_arguments"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "type": "string",
+      "const": "app"
+    },
+    "flake": {
+      "type": "string",
+      "description": "Selected flake reference (absolute path when local)."
+    },
+    "system": {
+      "type": "string",
+      "description": "Nix system string for the planned app."
+    },
+    "target": {
+      "type": "string",
+      "description": "Resolved app or task name."
+    },
+    "attr_path": {
+      "type": "string",
+      "description": "Nix attribute path for the planned target."
+    },
+    "invocation_directory": {
+      "type": "string",
+      "description": "Absolute path of the caller working directory when nxr was invoked."
+    },
+    "execution_directory": {
+      "type": "string",
+      "description": "Absolute path where the child process will run."
+    },
+    "environment_policy": {
+      "type": "string",
+      "enum": ["inherit"]
+    },
+    "command": {
+      "$ref": "#/$defs/plan_command"
+    },
+    "forwarded_arguments": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "plan_command": {
+      "type": "object",
+      "required": ["program", "arguments"],
+      "additionalProperties": false,
+      "properties": {
+        "program": {
+          "type": "string"
+        },
+        "arguments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
