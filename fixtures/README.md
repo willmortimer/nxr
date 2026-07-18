@@ -25,6 +25,19 @@ nix run ./fixtures/basic-apps#pwd
 nix flake show ./fixtures/app-metadata
 ```
 
+## Try them with nxr
+
+From the repo root (requires `nix` on `PATH`):
+
+```bash
+cargo run -p nxr-cli -- --flake fixtures/basic-apps list
+cargo run -p nxr-cli -- --flake fixtures/basic-apps --json list
+cargo run -p nxr-cli -- --flake fixtures/app-metadata list
+(cd fixtures/nested-directory/deep/down/here && cargo run -p nxr-cli -- list)
+```
+
+Integration tests in `crates/nxr-cli/tests/` exercise the same fixtures; they soft-skip when `nix` is missing locally. CI provides Nix.
+
 ## Project quality apps (this repo)
 
 ```bash

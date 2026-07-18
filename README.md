@@ -36,12 +36,16 @@ nix run .#deny           # cargo-deny
 ## How we test
 
 1. **Repo quality apps** — `fmt` / `lint` / `test` / `deny` above (and `.github/workflows/ci.yml`).
-2. **Fixture flakes** under [`fixtures/`](fixtures/README.md) — stand-ins for user projects with common task shapes (`hello`, `echo-args`, `fail`, `pwd`, metadata, nested dirs). Use them with `nix run` today; later `nxr` will discover the same apps.
+2. **Fixture flakes** under [`fixtures/`](fixtures/README.md) — stand-ins for user projects with common task shapes (`hello`, `echo-args`, `fail`, `pwd`, metadata, nested dirs).
 
 ```bash
 nix run ./fixtures/basic-apps#hello
 nix run ./fixtures/basic-apps#echo-args -- one two
 (cd fixtures/nested-directory/deep/down/here && nix run ../..#pwd)
+
+# nxr list (requires nix on PATH)
+cargo run -p nxr-cli -- --flake fixtures/basic-apps list
+cargo run -p nxr-cli -- --flake fixtures/basic-apps --json list
 ```
 
 ## License

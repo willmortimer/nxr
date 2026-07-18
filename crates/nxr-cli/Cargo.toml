@@ -23,7 +23,9 @@ thiserror = { workspace = true }
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
+serde_json = { workspace = true }
 tempfile = { workspace = true }
+which = { workspace = true }
 
 [lints]
 workspace = true

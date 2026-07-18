@@ -121,9 +121,7 @@ mod tests {
         fs::create_dir_all(&nested).expect("create nested dir");
 
         let resolved = resolve_explicit_flake_ref("../..", &nested);
-        let expected = root
-            .canonicalize_utf8()
-            .unwrap_or_else(|_| root.clone());
+        let expected = root.canonicalize_utf8().unwrap_or_else(|_| root.clone());
         let actual = camino::Utf8PathBuf::from(&resolved)
             .canonicalize_utf8()
             .map(|path| path.to_string())
