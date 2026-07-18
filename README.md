@@ -43,9 +43,14 @@ nix run ./fixtures/basic-apps#hello
 nix run ./fixtures/basic-apps#echo-args -- one two
 (cd fixtures/nested-directory/deep/down/here && nix run ../..#pwd)
 
-# nxr list (requires nix on PATH)
+# nxr (requires nix on PATH)
 cargo run -p nxr-cli -- --flake fixtures/basic-apps list
 cargo run -p nxr-cli -- --flake fixtures/basic-apps --json list
+cargo run -p nxr-cli -- --flake fixtures/basic-apps hello
+cargo run -p nxr-cli -- --flake fixtures/basic-apps run hello
+cargo run -p nxr-cli -- --flake fixtures/basic-apps plan hello --json
+cargo run -p nxr-cli -- --flake fixtures/basic-apps --dry-run fail
+(cd fixtures/nested-directory/deep/down/here && cargo run -p nxr-cli -- pwd)
 ```
 
 ## License

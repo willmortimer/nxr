@@ -33,7 +33,14 @@ From the repo root (requires `nix` on `PATH`):
 cargo run -p nxr-cli -- --flake fixtures/basic-apps list
 cargo run -p nxr-cli -- --flake fixtures/basic-apps --json list
 cargo run -p nxr-cli -- --flake fixtures/app-metadata list
+cargo run -p nxr-cli -- --flake fixtures/basic-apps hello
+cargo run -p nxr-cli -- --flake fixtures/basic-apps run hello
+cargo run -p nxr-cli -- --flake fixtures/basic-apps plan hello --json
+cargo run -p nxr-cli -- --flake fixtures/basic-apps echo-args -- alpha beta
+cargo run -p nxr-cli -- --flake fixtures/basic-apps --dry-run fail
 (cd fixtures/nested-directory/deep/down/here && cargo run -p nxr-cli -- list)
+(cd fixtures/nested-directory/deep/down/here && cargo run -p nxr-cli -- pwd)
+(cd fixtures/nested-directory/deep/down/here && cargo run -p nxr-cli -- --root pwd)
 ```
 
 Integration tests in `crates/nxr-cli/tests/` exercise the same fixtures; they soft-skip when `nix` is missing locally. CI provides Nix.

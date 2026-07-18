@@ -323,3 +323,122 @@ fn run_echo_args_strips_one_separator() {
         .success()
         .stdout(predicate::str::contains("alpha\nbeta\n"));
 }
+
+#[test]
+fn run_explicit_run_subcommand_executes_app() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "run", "hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello from basic-apps"));
+}
+
+#[test]
+fn run_pwd_from_nested_cwd_preserves_invocation_directory() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let nested_cwd = repo_root().join("fixtures/nested-directory/deep/down/here");
+    let expected = nested_cwd
+        .canonicalize()
+        .expect("canonicalize nested cwd")
+        .to_string_lossy()
+        .into_owned();
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&nested_cwd)
+        .arg("pwd")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(expected));
+}
+
+#[test]
+fn run_root_flag_executes_from_flake_root() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let nested_cwd = repo_root.join("fixtures/nested-directory/deep/down/here");
+    let flake_root = repo_root
+        .join("fixtures/nested-directory")
+        .canonicalize()
+        .expect("canonicalize flake root")
+        .to_string_lossy()
+        .into_owned();
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&nested_cwd)
+        .args(["--root", "pwd"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(flake_root));
+}
+
+#[test]
+fn run_cwd_flag_sets_child_working_directory() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let target = repo_root
+        .canonicalize()
+        .expect("canonicalize repo root")
+        .to_string_lossy()
+        .into_owned();
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/basic-apps",
+            "-C",
+            target.as_str(),
+            "pwd",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(target));
+}
+
+#[test]
+fn plan_root_json_sets_execution_directory_to_flake_root() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let nested_cwd = repo_root.join("fixtures/nested-directory/deep/down/here");
+    let flake_root = repo_root
+        .join("fixtures/nested-directory")
+        .canonicalize()
+        .expect("canonicalize flake root")
+        .to_string_lossy()
+        .into_owned();
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&nested_cwd)
+        .args(["--root", "plan", "pwd", "--json"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse plan json");
+
+    assert_eq!(value["target"], "pwd");
+    assert_eq!(
+        value["execution_directory"]
+            .as_str()
+            .expect("execution_directory"),
+        flake_root
+    );
+}
