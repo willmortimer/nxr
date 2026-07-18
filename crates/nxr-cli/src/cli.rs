@@ -99,7 +99,13 @@ pub enum Command {
     /// Open interactive selector
     Select,
     /// Diagnose environment and flake configuration
-    Doctor,
+    Doctor {
+        /// Run clean-environment diagnostics (may dry-run plan only)
+        #[arg(long = "clean-env")]
+        clean_env: bool,
+        /// Optional app name to validate
+        app: Option<String>,
+    },
     /// Generate shell completion script
     Completion,
     /// Inspect flake metadata
@@ -124,7 +130,7 @@ impl Command {
             Self::Run { .. } => "run",
             Self::Plan { .. } => "plan",
             Self::Select => "select",
-            Self::Doctor => "doctor",
+            Self::Doctor { .. } => "doctor",
             Self::Completion => "completion",
             Self::Inspect => "inspect",
             Self::Task => "task",

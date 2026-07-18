@@ -15,7 +15,7 @@ use nxr_core::diagnostics::exit;
 
 use crate::cli::{Cli, Command};
 use crate::commands::common::{AppRequest, DiscoverRequest};
-use crate::commands::{UnimplementedCommandError, list, plan, run, select};
+use crate::commands::{UnimplementedCommandError, doctor, list, plan, run, select};
 use crate::error_format::format_error_message;
 use crate::output_options::OutputOptions;
 use crate::runner_output::RunnerOutput;
@@ -45,6 +45,8 @@ enum RunError {
     Plan(#[from] plan::PlanError),
     #[error(transparent)]
     Select(#[from] select::SelectError),
+    #[error(transparent)]
+    Doctor(#[from] doctor::DoctorError),
     #[error("missing app name")]
     MissingAppName,
     #[error(transparent)]
@@ -58,6 +60,7 @@ impl RunError {
             Self::Run(error) => error.exit_code(),
             Self::Plan(error) => error.exit_code(),
             Self::Select(error) => error.exit_code(),
+            Self::Doctor(error) => error.exit_code(),
             Self::MissingAppName => exit::USAGE,
             Self::Unimplemented(_) => UnimplementedCommandError::exit_code(),
         }
@@ -95,6 +98,17 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             plan::run(request, cli.json, runner)?;
             Ok(exit::SUCCESS)
         }
+        Some(Command::Doctor { clean_env, app }) => {
+            let request = doctor::DoctorRequest {
+                flake_arg: cli.flake.as_deref(),
+                nix_override: cli.nix.as_deref(),
+                app: app.as_deref(),
+                clean_env: *clean_env,
+                root: cli.root,
+                cwd: cli.cwd.as_deref(),
+            };
+            doctor::run(request, cli.json, runner).map_err(RunError::from)
+        }
         Some(Command::External(tokens)) => {
             let (app, forwarded) = split_external(tokens)?;
             if cli.select {
@@ -105,8 +119,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             }
         }
         Some(
-            command @ (Command::Doctor
-            | Command::Completion
+            command @ (Command::Completion
             | Command::Inspect
             | Command::Task
             | Command::Watch

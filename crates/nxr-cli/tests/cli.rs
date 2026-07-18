@@ -537,3 +537,113 @@ fn global_output_flags_are_documented_in_help() {
         .stdout(predicate::str::contains("--no-color"))
         .stdout(predicate::str::contains("--color"));
 }
+
+#[test]
+fn doctor_help_documents_clean_env_flag() {
+    cargo_bin_cmd!("nxr")
+        .args(["doctor", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--clean-env"));
+}
+
+#[test]
+fn doctor_fixture_reports_nix_and_apps() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "doctor"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("info: nix.found:"))
+        .stdout(predicate::str::contains("info: system.detected:"))
+        .stdout(predicate::str::contains("info: flake.discovered:"))
+        .stdout(predicate::str::contains("info: apps.listed:"));
+}
+
+#[test]
+fn doctor_named_app_found() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "doctor", "hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "info: app.found: app found: hello",
+        ));
+}
+
+#[test]
+fn doctor_missing_app_exits_nonzero() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "doctor", "missing-app"])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("error: app.missing:"));
+}
+
+#[test]
+fn doctor_json_reports_findings_envelope() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "--json", "doctor"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse doctor json");
+    assert_eq!(value["schema_version"], 1);
+    assert!(value["findings"].is_array());
+    let codes: Vec<&str> = value["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .map(|finding| finding["code"].as_str().expect("code"))
+        .collect();
+    assert!(codes.contains(&"nix.found"));
+    assert!(codes.contains(&"apps.listed"));
+}
+
+#[test]
+fn doctor_clean_env_reports_policy_without_executing_app() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/basic-apps",
+            "doctor",
+            "--clean-env",
+            "fail",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("info: clean_env.policy:"))
+        .stdout(predicate::str::contains("info: plan.available:"))
+        .stdout(predicate::str::contains("#fail"));
+}

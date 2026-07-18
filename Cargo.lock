@@ -383,6 +383,7 @@ dependencies = [
  "nxr-process",
  "nxr-workspace",
  "predicates",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",
