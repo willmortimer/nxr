@@ -1,6 +1,8 @@
 //! CLI subcommands.
 
 pub mod common;
+pub mod complete;
+pub mod completion;
 pub mod doctor;
 pub mod list;
 pub mod plan;

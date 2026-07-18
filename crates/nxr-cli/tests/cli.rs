@@ -526,6 +526,68 @@ fn verbose_run_emits_runner_diagnostics_on_stderr_not_stdout() {
 }
 
 #[test]
+fn completion_bash_emits_script() {
+    cargo_bin_cmd!("nxr")
+        .arg("completion")
+        .arg("bash")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("nxr"))
+        .stdout(predicate::str::contains("_nxr_complete_apps"));
+}
+
+#[test]
+fn completion_zsh_emits_script() {
+    cargo_bin_cmd!("nxr")
+        .arg("completion")
+        .arg("zsh")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("#compdef nxr"))
+        .stdout(predicate::str::contains("_nxr_complete_apps"));
+}
+
+#[test]
+fn completion_fish_emits_script() {
+    cargo_bin_cmd!("nxr")
+        .arg("completion")
+        .arg("fish")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("complete -c nxr"))
+        .stdout(predicate::str::contains("__nxr_complete_apps"));
+}
+
+#[test]
+fn completion_unknown_shell_is_usage_error() {
+    cargo_bin_cmd!("nxr")
+        .args(["completion", "powershell"])
+        .assert()
+        .failure()
+        .code(2);
+}
+
+#[test]
+fn complete_apps_writes_only_to_stdout() {
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["__complete", "apps"])
+        .assert()
+        .success();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8 stderr");
+    assert!(
+        !stderr.contains("discovering apps"),
+        "__complete must not emit runner diagnostics, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("info:"),
+        "__complete must not emit runner diagnostics, got:\n{stderr}"
+    );
+}
+
+#[test]
 fn global_output_flags_are_documented_in_help() {
     cargo_bin_cmd!("nxr")
         .arg("--help")

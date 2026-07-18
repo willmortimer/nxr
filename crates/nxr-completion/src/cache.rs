@@ -38,6 +38,15 @@ impl DiscoveryCacheOptions {
     }
 }
 
+/// Return cached apps when the on-disk entry is still valid.
+///
+/// Returns `None` on cache miss, corruption, or when the flake is remote.
+#[must_use]
+pub fn cached_apps(context: &DiscoveryContext) -> Option<Vec<App>> {
+    let local_root = context.local_root.as_ref()?;
+    load_cached_apps(local_root, context).ok().flatten()
+}
+
 /// Return cached apps when valid, otherwise run `discover` and update the cache.
 ///
 /// Remote flakes (no `local_root`) always call `discover` directly. Cache read and

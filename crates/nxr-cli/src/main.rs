@@ -15,7 +15,9 @@ use nxr_core::diagnostics::exit;
 
 use crate::cli::{Cli, Command};
 use crate::commands::common::{AppRequest, DiscoverRequest};
-use crate::commands::{UnimplementedCommandError, doctor, list, plan, run, select};
+use crate::commands::{
+    UnimplementedCommandError, complete, completion, doctor, list, plan, run, select,
+};
 use crate::error_format::format_error_message;
 use crate::output_options::OutputOptions;
 use crate::runner_output::RunnerOutput;
@@ -50,6 +52,10 @@ enum RunError {
     #[error("missing app name")]
     MissingAppName,
     #[error(transparent)]
+    Completion(#[from] completion::CompletionError),
+    #[error(transparent)]
+    Complete(#[from] complete::CompleteError),
+    #[error(transparent)]
     Unimplemented(#[from] UnimplementedCommandError),
 }
 
@@ -61,6 +67,8 @@ impl RunError {
             Self::Plan(error) => error.exit_code(),
             Self::Select(error) => error.exit_code(),
             Self::Doctor(error) => error.exit_code(),
+            Self::Completion(_) => completion::CompletionError::exit_code(),
+            Self::Complete(_) => exit::SUCCESS,
             Self::MissingAppName => exit::USAGE,
             Self::Unimplemented(_) => UnimplementedCommandError::exit_code(),
         }
@@ -118,12 +126,21 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 run::execute(request, cli.dry_run, cli.json, runner).map_err(RunError::from)
             }
         }
+        Some(Command::Completion { shell }) => {
+            completion::run(*shell)?;
+            Ok(exit::SUCCESS)
+        }
+        Some(Command::Complete { target }) => {
+            complete::run(
+                *target,
+                cli.flake.as_deref(),
+                cli.nix.as_deref(),
+                cli.refresh,
+            )?;
+            Ok(exit::SUCCESS)
+        }
         Some(
-            command @ (Command::Completion
-            | Command::Inspect
-            | Command::Task
-            | Command::Watch
-            | Command::Graph),
+            command @ (Command::Inspect | Command::Task | Command::Watch | Command::Graph),
         ) => Err(UnimplementedCommandError {
             command: command.label(),
         }

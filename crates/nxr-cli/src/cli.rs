@@ -2,6 +2,8 @@
 
 use clap::{ArgAction, Parser, Subcommand};
 
+use nxr_completion::{CompleteTarget, Shell};
+
 use crate::output_options::ColorWhen;
 
 /// Nix-native flake app runner.
@@ -107,7 +109,16 @@ pub enum Command {
         app: Option<String>,
     },
     /// Generate shell completion script
-    Completion,
+    Completion {
+        /// Target shell
+        shell: Shell,
+    },
+    /// Hidden dynamic completion protocol for shell integrations
+    #[command(name = "__complete", hide = true)]
+    Complete {
+        /// Completion target
+        target: CompleteTarget,
+    },
     /// Inspect flake metadata
     Inspect,
     /// Run a V2 task
@@ -131,7 +142,8 @@ impl Command {
             Self::Plan { .. } => "plan",
             Self::Select => "select",
             Self::Doctor { .. } => "doctor",
-            Self::Completion => "completion",
+            Self::Completion { .. } => "completion",
+            Self::Complete { .. } => "__complete",
             Self::Inspect => "inspect",
             Self::Task => "task",
             Self::Watch => "watch",

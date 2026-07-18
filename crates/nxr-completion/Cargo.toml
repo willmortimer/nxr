@@ -9,6 +9,8 @@ description = "Shell completion generation and discovery cache for nxr"
 
 [dependencies]
 camino = { workspace = true }
+clap = { workspace = true }
+clap_complete = { workspace = true }
 directories = { workspace = true }
 fs2 = { workspace = true }
 nxr-core = { path = "../nxr-core" }
