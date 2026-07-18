@@ -3,8 +3,14 @@
 
 let
   inherit (pkgs) lib;
+
+  metadata = import ./metadata.nix { inherit lib; };
+  mkApp = import ./mk-app.nix;
 in
 {
+  inherit mkApp;
+  inherit (metadata) mkAppMeta mkAppsMetadataEntry schemaVersion;
+
   /*
     Create a flake app backed by writeShellApplication.
 
@@ -41,7 +47,7 @@ in
     {
       type = "app";
       program = "${drv}/bin/${name}";
-      meta.description = description;
+      meta = metadata.mkAppMeta { inherit description; };
     };
 
   /*
@@ -54,14 +60,7 @@ in
       runtimeInputs ? [ ],
       text,
     }:
-    let
-      drv = pkgs.writeShellApplication {
-        inherit name runtimeInputs text;
-      };
-    in
-    {
-      type = "app";
-      program = "${drv}/bin/${name}";
-      meta.description = description;
+    mkApp {
+      inherit pkgs name description runtimeInputs text;
     };
 }

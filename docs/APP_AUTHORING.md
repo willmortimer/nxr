@@ -252,7 +252,7 @@ Share Nix values, but do not make the app enter the development shell.
 
 ## 14. Optional nxr helper API
 
-Conceptual helper:
+`nxr.lib.mkApp` is available from this flake:
 
 ```nix
 nxr.lib.mkApp {
@@ -276,13 +276,17 @@ Generated output:
 }
 ```
 
-The helper should be transparent and easy to replace with native Nix.
+The helper is transparent and easy to replace with native Nix.
+
+See [examples/mk-app/](../examples/mk-app/) for a runnable flake using `mkApp` and the flake-parts module.
 
 ## 15. flake-parts module
 
-Conceptual syntax:
+Import `nxr.flakeModules.default` and declare apps under `perSystem.nxr.apps`:
 
 ```nix
+imports = [ nxr.flakeModules.default ];
+
 perSystem = { pkgs, ... }: {
   nxr.apps.test = {
     description = "Run the test suite";

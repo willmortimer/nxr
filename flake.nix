@@ -7,8 +7,17 @@
   };
 
   outputs =
-    inputs@{ flake-parts, ... }:
+    inputs@{ flake-parts, nixpkgs, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
+      flake = {
+        lib = {
+          mkApp = import ./nix/lib/mk-app.nix;
+          metadata = import ./nix/lib/metadata.nix { lib = nixpkgs.lib; };
+        };
+
+        flakeModules.default = import ./nix/modules/flake-parts.nix;
+      };
+
       systems = [
         "aarch64-darwin"
         "x86_64-linux"
