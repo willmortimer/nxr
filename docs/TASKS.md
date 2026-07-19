@@ -37,6 +37,7 @@ perSystem = { ... }: {
       dependsOn = [ "test" ];
       app = "ci";
       category = "validation";
+      aliases = [ "check" ];
     };
   };
 };
@@ -52,10 +53,22 @@ perSystem = { ... }: {
 | `workingDirectory` | no | Policy or path (for example `flake-root`) |
 | `hidden` | no | Omit from default listings; default `false` |
 | `category` | no | Logical grouping for listings |
+| `aliases` | no | Alternate names for explicit task commands (see below); default `[]` |
 
 Field names use the camelCase vocabulary (`dependsOn`, `workingDirectory`) that
 matches [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json) and the
 Rust `TaskDefinition` type.
+
+### Name resolution
+
+| Invocation | Resolves aliases? |
+|---|---|
+| `nxr <name>` (bare app run) | **No** — apps only |
+| `nxr task`, `nxr graph`, `nxr inspect task`, `nxr watch` | Yes |
+| `nxr plan <name>` | Yes when no app matches (apps win first) |
+
+Aliases map to a single canonical task name. Ambiguous aliases (claimed by more
+than one task) are rejected.
 
 ## Evaluable flake attribute
 

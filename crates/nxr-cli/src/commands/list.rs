@@ -1,9 +1,14 @@
 //! `nxr list` command implementation.
 
-use std::io;
+use std::collections::BTreeMap;
+use std::io::{self, Write};
 
 use nxr_completion::cache::{DiscoveryCacheOptions, DiscoveryContext, discover_with_cache};
-use nxr_nix::NixError;
+use nxr_core::sanitize::sanitize_terminal_text;
+use nxr_core::{App, AppList};
+use nxr_nix::{NixError, TaskDiscoveryError};
+use nxr_task::{TaskDefinition, TaskDocument, listable_tasks};
+use serde::Serialize;
 
 use crate::commands::common::{PrepareError, build_adapter, current_invocation_directory};
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
@@ -20,6 +25,8 @@ pub enum ListError {
     #[error(transparent)]
     Nix(#[from] NixError),
     #[error(transparent)]
+    Tasks(#[from] TaskDiscoveryError),
+    #[error(transparent)]
     Json(#[from] JsonListError),
     #[error(transparent)]
     Io(#[from] io::Error),
@@ -32,12 +39,13 @@ impl ListError {
             Self::Prepare(error) => error.exit_code(),
             Self::Flake(error) => error.exit_code(),
             Self::Nix(error) => error.exit_code(),
+            Self::Tasks(error) => error.exit_code(),
             Self::Json(_) | Self::Io(_) => nxr_core::diagnostics::exit::EVALUATION,
         }
     }
 }
 
-/// Discover and print apps for the selected flake.
+/// Discover and print apps (and tasks when present) for the selected flake.
 ///
 /// # Errors
 ///
@@ -47,6 +55,7 @@ pub fn run(
     nix_override: Option<&str>,
     json: bool,
     refresh: bool,
+    category: Option<&str>,
     runner: RunnerOutput,
 ) -> Result<(), ListError> {
     let invocation_cwd = current_invocation_directory()?;
@@ -56,19 +65,43 @@ pub fn run(
         .map_err(ListError::Io)?;
     let adapter = build_adapter(nix_override)?;
     let apps = discover_apps(&flake, &adapter, refresh)?;
+    let task_doc = adapter.discover_tasks(&flake.nix_ref)?;
+    let tasks = listable_tasks(&task_doc, category);
     runner
         .verbose(format!(
-            "found {} app(s) for system {}",
+            "found {} app(s) and {} task(s) for system {}",
             apps.len(),
+            tasks.len(),
             adapter.system
         ))
         .map_err(ListError::Io)?;
 
     let mut stdout = io::stdout().lock();
     if json {
-        write_json_list(&mut stdout, &flake.display, &adapter.system, &apps)?;
+        if tasks.is_empty() {
+            write_json_list(&mut stdout, &flake.display, &adapter.system, &apps)?;
+        } else {
+            write_json_list_with_tasks(
+                &mut stdout,
+                &flake.display,
+                &adapter.system,
+                &apps,
+                &task_doc,
+                &tasks,
+            )?;
+        }
     } else {
         write_human_list(&mut stdout, &adapter.system, &apps)?;
+        if !tasks.is_empty() {
+            writeln!(stdout)?;
+            writeln!(
+                stdout,
+                "Available tasks (schema version {}):",
+                task_doc.schema_version
+            )?;
+            writeln!(stdout)?;
+            write_human_tasks(&mut stdout, &tasks)?;
+        }
     }
 
     Ok(())
@@ -78,7 +111,7 @@ fn discover_apps(
     flake: &FlakeSelection,
     adapter: &nxr_nix::NixAdapter,
     refresh: bool,
-) -> Result<Vec<nxr_core::App>, NixError> {
+) -> Result<Vec<App>, NixError> {
     let context = DiscoveryContext {
         flake_ref: flake.nix_ref.clone(),
         local_root: flake.local_root.clone(),
@@ -91,13 +124,96 @@ fn discover_apps(
     })
 }
 
+#[derive(Serialize)]
+struct ListEnvelope {
+    #[serde(flatten)]
+    apps: AppList,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_schema_version: Option<u32>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    tasks: BTreeMap<String, TaskDefinition>,
+}
+
+fn write_json_list_with_tasks(
+    writer: &mut impl Write,
+    flake: &str,
+    system: &str,
+    apps: &[App],
+    task_doc: &TaskDocument,
+    tasks: &BTreeMap<String, TaskDefinition>,
+) -> Result<(), JsonListError> {
+    let envelope = ListEnvelope {
+        apps: AppList::from_apps(flake, system, apps.iter().cloned()),
+        task_schema_version: (!tasks.is_empty()).then_some(task_doc.schema_version),
+        tasks: tasks.clone(),
+    };
+    let json = serde_json::to_string_pretty(&envelope)?;
+    writeln!(writer, "{json}")?;
+    Ok(())
+}
+
+fn write_human_tasks(
+    writer: &mut impl Write,
+    tasks: &BTreeMap<String, TaskDefinition>,
+) -> io::Result<()> {
+    let max_name_len = tasks.keys().map(String::len).max().unwrap_or_default();
+    let name_width = max_name_len.max(4).max(max_name_len.saturating_add(1));
+
+    for (name, task) in tasks {
+        write!(writer, "  {name:<name_width$}")?;
+        if let Some(description) = &task.description {
+            writeln!(writer, "{}", sanitize_terminal_text(description))?;
+        } else {
+            writeln!(writer)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use nxr_task::{TaskDefinition, TaskDocument, listable_tasks};
+
     use crate::commands::common::current_invocation_directory;
 
     #[test]
     fn invocation_directory_is_valid_utf8_path() {
         let cwd = current_invocation_directory().expect("current directory");
         assert!(cwd.is_absolute() || !cwd.as_str().is_empty());
+    }
+
+    #[test]
+    fn listable_tasks_honor_hidden_and_category() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert(
+            "ci".to_owned(),
+            TaskDefinition {
+                description: None,
+                depends_on: Vec::new(),
+                app: "ci".to_owned(),
+                working_directory: None,
+                hidden: false,
+                category: Some("validation".to_owned()),
+                aliases: Vec::new(),
+            },
+        );
+        tasks.insert(
+            "hidden".to_owned(),
+            TaskDefinition {
+                description: None,
+                depends_on: Vec::new(),
+                app: "x".to_owned(),
+                working_directory: None,
+                hidden: true,
+                category: Some("validation".to_owned()),
+                aliases: Vec::new(),
+            },
+        );
+        let doc = TaskDocument::new(tasks);
+        let filtered = listable_tasks(&doc, Some("validation"));
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered.contains_key("ci"));
     }
 }

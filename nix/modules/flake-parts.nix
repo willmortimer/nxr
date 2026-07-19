@@ -25,6 +25,9 @@ let
     }
     // lib.optionalAttrs (task.category != null) {
       category = task.category;
+    }
+    // lib.optionalAttrs (task.aliases != [ ]) {
+      aliases = task.aliases;
     };
 
   taskDocument = tasksCfg: {

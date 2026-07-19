@@ -1169,6 +1169,186 @@ fn inspect_task_json_parses() {
 }
 
 #[test]
+fn task_alias_resolves_to_canonical_ci() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !task_dag_discovery_available(&repo_root) {
+        return;
+    }
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "task", "check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fmt\ntest\nci\n"));
+}
+
+#[test]
+fn graph_alias_resolves_to_canonical_ci() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !task_dag_discovery_available(&repo_root) {
+        return;
+    }
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "graph", "check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fmt\ntest\nci"));
+}
+
+#[test]
+fn inspect_task_alias_resolves_to_canonical_name() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !task_dag_discovery_available(&repo_root) {
+        return;
+    }
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "inspect", "task", "check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Task: ci"));
+}
+
+#[test]
+fn plan_task_ci_emits_execution_plan_json() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !task_dag_discovery_available(&repo_root) {
+        return;
+    }
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "plan", "check", "--json"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).expect("parse execution plan json");
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["root"], "ci");
+    assert_eq!(
+        value["serial_order"],
+        serde_json::json!(["fmt", "test", "ci"])
+    );
+}
+
+#[test]
+fn plan_task_alias_resolves_before_app_lookup() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !task_dag_discovery_available(&repo_root) {
+        return;
+    }
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "plan", "check", "--json"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).expect("parse execution plan json");
+    assert_eq!(value["root"], "ci");
+}
+
+#[test]
+fn inspect_category_filter_limits_overview_tasks() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !task_dag_discovery_available(&repo_root) {
+        return;
+    }
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/task-dag",
+            "inspect",
+            "--category",
+            "validation",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse inspect json");
+    let tasks = value["tasks"].as_object().expect("tasks object");
+    assert_eq!(tasks.len(), 1);
+    assert!(tasks.contains_key("ci"));
+    assert!(!tasks.contains_key("fmt"));
+}
+
+#[test]
+fn list_category_filter_limits_tasks_section() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !task_dag_discovery_available(&repo_root) {
+        return;
+    }
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/task-dag",
+            "list",
+            "--category",
+            "validation",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Available tasks"))
+        .stdout(predicate::str::contains("ci  CI gate"))
+        .stdout(predicate::str::contains("fmt  Format sources").not());
+}
+
+fn task_dag_discovery_available(repo_root: &std::path::Path) -> bool {
+    let list = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root)
+        .args(["--flake", "fixtures/task-dag", "list"])
+        .output()
+        .expect("spawn nxr list");
+    if !list.status.success() {
+        eprintln!("skipping task-dag test: app discovery failed on this host");
+        return false;
+    }
+    true
+}
+
+#[test]
 fn task_ci_dry_run_prints_plans_in_serial_order() {
     let Some(()) = require_nix() else {
         return;

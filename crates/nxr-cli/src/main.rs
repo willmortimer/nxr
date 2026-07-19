@@ -109,16 +109,8 @@ fn output_options_from_cli(cli: &Cli) -> OutputOptions {
 fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
     match &cli.command {
         None if cli.select => run_with_selected_app(cli, &[], runner),
-        None | Some(Command::List) => {
-            list::run(
-                cli.flake.as_deref(),
-                cli.nix.as_deref(),
-                cli.json,
-                cli.refresh,
-                runner,
-            )?;
-            Ok(exit::SUCCESS)
-        }
+        None => run_list(cli, None, runner),
+        Some(Command::List { category }) => run_list(cli, category.as_deref(), runner),
         Some(Command::Select) => run_with_selected_app(cli, &[], runner),
         Some(Command::Run { app, args }) => {
             if cli.select {
@@ -185,7 +177,9 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             manpage::run()?;
             Ok(exit::SUCCESS)
         }
-        Some(Command::Inspect { target }) => run_inspect(cli, target.as_ref(), runner),
+        Some(Command::Inspect { category, target }) => {
+            run_inspect(cli, category.as_deref(), target.as_ref(), runner)
+        }
         Some(Command::Watch {
             name,
             debounce,
@@ -207,8 +201,21 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
     }
 }
 
+fn run_list(cli: &Cli, category: Option<&str>, runner: RunnerOutput) -> Result<i32, RunError> {
+    list::run(
+        cli.flake.as_deref(),
+        cli.nix.as_deref(),
+        cli.json,
+        cli.refresh,
+        category,
+        runner,
+    )?;
+    Ok(exit::SUCCESS)
+}
+
 fn run_inspect(
     cli: &Cli,
+    category: Option<&str>,
     target: Option<&InspectSubcommand>,
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
@@ -224,6 +231,7 @@ fn run_inspect(
             flake_arg: cli.flake.as_deref(),
             nix_override: cli.nix.as_deref(),
             target: inspect_target,
+            category,
         },
         cli.json,
         cli.refresh,

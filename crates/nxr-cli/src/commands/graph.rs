@@ -5,7 +5,10 @@ use std::io::{self, Write};
 use clap::ValueEnum;
 use nxr_core::diagnostics::exit;
 use nxr_nix::TaskDiscoveryError;
-use nxr_task::{GraphError as TaskGraphError, TaskGraph, plan_serial, render_mermaid, render_text};
+use nxr_task::{
+    GraphError as TaskGraphError, TaskGraph, plan_serial, render_mermaid, render_text,
+    resolve_task_name,
+};
 use serde::Serialize;
 
 use crate::commands::common::{PrepareError, build_adapter, current_invocation_directory};
@@ -91,16 +94,18 @@ pub fn run(
     runner: RunnerOutput,
 ) -> Result<(), GraphError> {
     let doc = discover_task_document(request)?;
+    let canonical = resolve_task_name(&doc, request.task)
+        .map_err(|error| GraphError::Plan(TaskGraphError::UnknownRoot { root: error.name }))?;
     runner
-        .info(format!("planning task graph for {}", request.task))
+        .info(format!("planning task graph for {canonical}"))
         .map_err(GraphError::Io)?;
 
-    let order = plan_serial(&doc.tasks, request.task)?;
-    let graph = TaskGraph::subgraph(&doc.tasks, request.task)?;
+    let order = plan_serial(&doc.tasks, canonical)?;
+    let graph = TaskGraph::subgraph(&doc.tasks, canonical)?;
 
     let mut stdout = io::stdout().lock();
     if json {
-        write_json_graph(&mut stdout, request.task, format, &order, &graph)?;
+        write_json_graph(&mut stdout, canonical, format, &order, &graph)?;
     } else {
         write_human_graph(&mut stdout, format, &order, &graph)?;
     }
