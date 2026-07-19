@@ -1100,3 +1100,66 @@ fn inspect_task_json_parses() {
     assert_eq!(value["app"], "ci");
     assert_eq!(value["dependsOn"], serde_json::json!(["test"]));
 }
+
+#[test]
+fn task_ci_dry_run_prints_plans_in_serial_order() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "--dry-run", "task", "ci"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let fmt_pos = stdout.find("#fmt").expect("fmt plan");
+    let test_pos = stdout.find("#test").expect("test plan");
+    let ci_pos = stdout.find("#ci").expect("ci plan");
+    assert!(
+        fmt_pos < test_pos && test_pos < ci_pos,
+        "expected fmt → test → ci order in dry-run output:\n{stdout}"
+    );
+}
+
+#[test]
+fn task_ci_runs_apps_in_serial_order() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "task", "ci"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fmt\ntest\nci\n"));
+}
+
+#[test]
+fn task_unknown_name_exits_not_found() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "task", "missing-task"])
+        .assert()
+        .failure()
+        .code(6)
+        .stderr(predicate::str::contains("unknown task root `missing-task`"));
+}
+
+#[test]
+fn task_without_name_is_usage_error() {
+    cargo_bin_cmd!("nxr")
+        .args(["task"])
+        .assert()
+        .failure()
+        .code(2);
+}

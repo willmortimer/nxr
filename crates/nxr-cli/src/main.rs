@@ -19,7 +19,7 @@ use crate::cli::{Cli, Command, InspectSubcommand};
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
     UnimplementedCommandError, complete, completion, doctor, graph, inspect, list, manpage, plan,
-    run, select,
+    run, select, task,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -50,6 +50,8 @@ enum RunError {
     #[error(transparent)]
     Plan(#[from] plan::PlanError),
     #[error(transparent)]
+    Task(#[from] task::TaskError),
+    #[error(transparent)]
     Select(#[from] select::SelectError),
     #[error(transparent)]
     Doctor(#[from] doctor::DoctorError),
@@ -79,6 +81,7 @@ impl RunError {
             Self::List(error) => error.exit_code(),
             Self::Run(error) => error.exit_code(),
             Self::Plan(error) => error.exit_code(),
+            Self::Task(error) => error.exit_code(),
             Self::Select(error) => error.exit_code(),
             Self::Doctor(error) => error.exit_code(),
             Self::Completion(_) => completion::CompletionError::exit_code(),
@@ -129,6 +132,10 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             let request = app_request(cli, app, args)?;
             plan::run(&request, cli.json, runner)?;
             Ok(exit::SUCCESS)
+        }
+        Some(Command::Task { task: name, args }) => {
+            let request = task_request(cli, name, args)?;
+            task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
         }
         Some(Command::Doctor {
             clean_env,
@@ -183,8 +190,8 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             graph::run(&request, *format, cli.json, runner)?;
             Ok(exit::SUCCESS)
         }
-        Some(command @ (Command::Task | Command::Watch)) => Err(UnimplementedCommandError {
-            command: command.label(),
+        Some(Command::Watch) => Err(UnimplementedCommandError {
+            command: Command::Watch.label(),
         }
         .into()),
     }
@@ -242,6 +249,22 @@ fn app_request<'a>(
         flake_arg: target.flake_arg,
         nix_override: cli.nix.as_deref(),
         app: target.app,
+        args,
+        root: cli.root,
+        cwd: cli.cwd.as_deref(),
+        environment_policy: environment_policy_from_cli(cli)?,
+    })
+}
+
+fn task_request<'a>(
+    cli: &'a Cli,
+    task: &'a str,
+    args: &'a [String],
+) -> Result<task::TaskRequest<'a>, RunError> {
+    Ok(task::TaskRequest {
+        flake_arg: cli.flake.as_deref(),
+        nix_override: cli.nix.as_deref(),
+        task,
         args,
         root: cli.root,
         cwd: cli.cwd.as_deref(),

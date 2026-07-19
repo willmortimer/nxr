@@ -172,7 +172,13 @@ pub enum Command {
         target: Option<InspectSubcommand>,
     },
     /// Run a V2 task
-    Task,
+    Task {
+        /// Task name
+        task: String,
+        /// Arguments forwarded to the root task's app only (MVP)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Watch and rerun
     Watch,
     /// Show task graph
@@ -202,7 +208,7 @@ impl Command {
             Self::Complete { .. } => "__complete",
             Self::Manpage => "__manpage",
             Self::Inspect { .. } => "inspect",
-            Self::Task => "task",
+            Self::Task { .. } => "task",
             Self::Watch => "watch",
             Self::Graph { .. } => "graph",
             Self::External(_) => "external",
