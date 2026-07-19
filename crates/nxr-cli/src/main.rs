@@ -21,6 +21,7 @@ use crate::commands::{
     UnimplementedCommandError, complete, completion, doctor, list, manpage, plan, run, select,
 };
 use crate::error_format::format_error_message;
+use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
 use crate::output_options::OutputOptions;
 use crate::runner_output::RunnerOutput;
 
@@ -56,6 +57,8 @@ enum RunError {
     #[error("{0}")]
     Usage(String),
     #[error(transparent)]
+    FlakeAppRef(#[from] ParseFlakeAppRefError),
+    #[error(transparent)]
     Completion(#[from] completion::CompletionError),
     #[error(transparent)]
     Complete(#[from] complete::CompleteError),
@@ -76,7 +79,7 @@ impl RunError {
             Self::Completion(_) => completion::CompletionError::exit_code(),
             Self::Complete(_) => exit::SUCCESS,
             Self::Manpage(_) => manpage::ManpageError::exit_code(),
-            Self::MissingAppName | Self::Usage(_) => exit::USAGE,
+            Self::MissingAppName | Self::Usage(_) | Self::FlakeAppRef(_) => exit::USAGE,
             Self::Unimplemented(_) => UnimplementedCommandError::exit_code(),
         }
     }
@@ -125,10 +128,11 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             all,
             app,
         }) => {
+            let (flake_arg, app) = resolve_doctor_app(cli, app.as_deref())?;
             let request = doctor::DoctorRequest {
-                flake_arg: cli.flake.as_deref(),
+                flake_arg,
                 nix_override: cli.nix.as_deref(),
-                app: app.as_deref(),
+                app,
                 clean_env: *clean_env || cli.clean_env,
                 all: *all,
                 root: cli.root,
@@ -193,15 +197,56 @@ fn app_request<'a>(
     app: &'a str,
     args: &'a [String],
 ) -> Result<AppRequest<'a>, RunError> {
+    let target = resolve_app_target(cli, app)?;
     Ok(AppRequest {
-        flake_arg: cli.flake.as_deref(),
+        flake_arg: target.flake_arg,
         nix_override: cli.nix.as_deref(),
-        app,
+        app: target.app,
         args,
         root: cli.root,
         cwd: cli.cwd.as_deref(),
         environment_policy: environment_policy_from_cli(cli)?,
     })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ResolvedAppTarget<'a> {
+    flake_arg: Option<&'a str>,
+    app: &'a str,
+}
+
+fn resolve_app_target<'a>(
+    cli: &'a Cli,
+    app_token: &'a str,
+) -> Result<ResolvedAppTarget<'a>, RunError> {
+    if let Some(parsed) = parse_flake_app_ref(app_token)? {
+        if cli.flake.is_some() {
+            return Err(RunError::Usage(
+                "cannot use --flake with an inline flake#app reference".to_owned(),
+            ));
+        }
+        return Ok(ResolvedAppTarget {
+            flake_arg: Some(parsed.flake_ref),
+            app: parsed.app,
+        });
+    }
+
+    Ok(ResolvedAppTarget {
+        flake_arg: cli.flake.as_deref(),
+        app: app_token,
+    })
+}
+
+fn resolve_doctor_app<'a>(
+    cli: &'a Cli,
+    app: Option<&'a str>,
+) -> Result<(Option<&'a str>, Option<&'a str>), RunError> {
+    let Some(app_token) = app else {
+        return Ok((cli.flake.as_deref(), None));
+    };
+
+    let target = resolve_app_target(cli, app_token)?;
+    Ok((target.flake_arg, Some(target.app)))
 }
 
 fn environment_policy_from_cli(cli: &Cli) -> Result<EnvironmentPolicy, RunError> {

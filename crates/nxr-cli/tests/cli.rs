@@ -259,6 +259,37 @@ fn run_hello_prints_greeting() {
 }
 
 #[test]
+fn run_inline_flake_app_ref_succeeds() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .arg("fixtures/basic-apps#hello")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello from basic-apps"));
+}
+
+#[test]
+fn inline_flake_app_ref_conflicts_with_flake_flag() {
+    cargo_bin_cmd!("nxr")
+        .args([
+            "--flake",
+            "fixtures/basic-apps",
+            "fixtures/basic-apps#hello",
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "cannot use --flake with an inline flake#app reference",
+        ));
+}
+
+#[test]
 fn run_fail_propagates_exit_code() {
     let Some(()) = require_nix() else {
         return;

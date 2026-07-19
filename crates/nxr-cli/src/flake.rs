@@ -14,6 +14,39 @@ pub struct FlakeSelection {
     pub local_root: Option<Utf8PathBuf>,
 }
 
+/// Parsed inline `flake#app` reference.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FlakeAppRef<'a> {
+    pub flake_ref: &'a str,
+    pub app: &'a str,
+}
+
+/// Errors while parsing an inline `flake#app` reference.
+#[derive(Debug, thiserror::Error)]
+pub enum ParseFlakeAppRefError {
+    #[error("missing app name after '#' in flake reference")]
+    EmptyApp,
+}
+
+/// Split a token on the first `#`, matching `nix run` installable syntax.
+///
+/// Returns `Ok(None)` when the token contains no `#`.
+///
+/// # Errors
+///
+/// Returns [`ParseFlakeAppRefError`] when `#` is present but the app name is empty.
+pub fn parse_flake_app_ref(token: &str) -> Result<Option<FlakeAppRef<'_>>, ParseFlakeAppRefError> {
+    let Some((flake_ref, app)) = token.split_once('#') else {
+        return Ok(None);
+    };
+
+    if app.is_empty() {
+        return Err(ParseFlakeAppRefError::EmptyApp);
+    }
+
+    Ok(Some(FlakeAppRef { flake_ref, app }))
+}
+
 /// Errors while resolving which flake to use.
 #[derive(Debug, thiserror::Error)]
 pub enum FlakeResolveError {
@@ -110,7 +143,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        is_flake_uri, resolve_explicit_flake_ref, resolve_explicit_selection, resolve_flake,
+        ParseFlakeAppRefError, is_flake_uri, parse_flake_app_ref, resolve_explicit_flake_ref,
+        resolve_explicit_selection, resolve_flake,
     };
 
     fn utf8_path(temp: &TempDir) -> camino::Utf8PathBuf {
@@ -165,5 +199,47 @@ mod tests {
         let selection = resolve_explicit_selection("github:owner/repo", Utf8Path::new("/tmp"));
         assert!(selection.local_root.is_none());
         assert_eq!(selection.nix_ref, "github:owner/repo");
+    }
+
+    #[test]
+    fn parse_flake_app_ref_splits_on_first_hash() {
+        assert_eq!(
+            parse_flake_app_ref("github:owner/repo#test").expect("parse"),
+            Some(super::FlakeAppRef {
+                flake_ref: "github:owner/repo",
+                app: "test",
+            })
+        );
+        assert_eq!(
+            parse_flake_app_ref("./fixtures/basic-apps#hello").expect("parse"),
+            Some(super::FlakeAppRef {
+                flake_ref: "./fixtures/basic-apps",
+                app: "hello",
+            })
+        );
+        assert_eq!(
+            parse_flake_app_ref(".#hello").expect("parse"),
+            Some(super::FlakeAppRef {
+                flake_ref: ".",
+                app: "hello",
+            })
+        );
+    }
+
+    #[test]
+    fn parse_flake_app_ref_without_hash_returns_none() {
+        assert_eq!(parse_flake_app_ref("hello").expect("parse"), None);
+    }
+
+    #[test]
+    fn parse_flake_app_ref_rejects_empty_app() {
+        let error = parse_flake_app_ref("./fixtures/basic-apps#")
+            .expect_err("empty app")
+            .to_string();
+        assert!(matches!(
+            parse_flake_app_ref("./fixtures/basic-apps#"),
+            Err(ParseFlakeAppRefError::EmptyApp)
+        ));
+        assert!(error.contains("missing app name"));
     }
 }
