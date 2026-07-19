@@ -199,9 +199,9 @@ The helper output remains a standard app.
 
 Optional task metadata introduces:
 
-- dependencies;
+- dependencies (`dependsOn` DAG);
 - serial groups;
-- parallel groups;
+- parallel execution via `-j` (parallel group sugar deferred);
 - failure policy;
 - concurrency limits;
 - environment policy;
@@ -236,24 +236,24 @@ lint ──────┼──> package ──> deploy
 test ──────┘
 ```
 
-### 2.3 Parallel groups
+### 2.3 Parallel execution
 
-```nix
-tasks.dev = {
-  parallel = [ "api" "web" "worker" ];
-  failFast = true;
-};
-```
+V2.0 models parallelism with a `dependsOn` DAG and `nxr task -j N` (job limit on the ready queue). Tasks with no dependency edge between them may run concurrently when `-j` allows.
 
-Capabilities:
+The `parallel = [ … ]` sugar (grouped siblings with shared fail-fast and labels) is **deferred** past V2.0.
 
-- labeled output;
-- stable colors where supported;
+Capabilities (V2.0):
+
+- `dependsOn` DAG with deterministic scheduling;
+- `-j N` concurrency limit on ready tasks;
 - process-group cleanup;
-- fail-fast or keep-running;
-- maximum concurrency;
-- per-node restart policy;
+- fail-fast or keep-running failure policy;
 - summarized exit status.
+
+Deferred (post–V2.0):
+
+- `parallel = [ … ]` group sugar;
+- labeled/colored parallel group output.
 
 ### 2.4 Watch mode
 

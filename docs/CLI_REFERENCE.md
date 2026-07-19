@@ -61,6 +61,7 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr inspect task <name>` | Single task details |
 | `nxr task <name> [args…]` | Run a task’s serial `dependsOn` chain |
 | `nxr graph <name>` | Print task plan (text) |
+| `nxr graph <name> --format dot` | Graphviz DOT digraph (does not invoke Graphviz) |
 | `nxr graph <name> --format mermaid` | Mermaid flowchart |
 | `nxr watch <name> [--debounce <ms>] [--include <glob>]… [--exclude <glob>]… [--clear]` | Watch flake root; kill+rerun app or task |
 | `nxr run <app> --watch [--debounce <ms>]` | Alias into watch for a single app |
@@ -84,6 +85,7 @@ nxr --shell default test
 nxr doctor --clean-env test
 nxr inspect
 nxr task ci --dry-run
+nxr graph ci --format dot
 nxr graph ci --format mermaid
 nxr watch test --debounce 300
 nxr watch dev --include 'src/**' --exclude 'src/generated/**' --clear

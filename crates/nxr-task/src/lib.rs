@@ -1,7 +1,7 @@
 //! Task schema, graph planning, and scheduling for nxr.
 //!
 //! - [`schema`] — versioned V1 task document contract
-//! - [`graph`] — dependency DAG construction and text/Mermaid rendering
+//! - [`graph`] — dependency DAG construction and text/Mermaid/DOT rendering
 //! - [`planner`] — deterministic serial topological plans
 //! - [`plan_exec`] — versioned [`ExecutionPlan`] envelope
 //! - [`events`] — typed execution event bus (`Event` / [`EventSink`])
@@ -16,7 +16,7 @@ pub mod scheduler;
 pub mod schema;
 
 pub use events::{Event, EventSink, NullSink, RecordingSink, event_kind};
-pub use graph::{GraphError, TaskGraph, render_mermaid, render_text};
+pub use graph::{GraphError, TaskGraph, render_dot, render_mermaid, render_text};
 pub use plan_exec::{
     EXECUTION_PLAN_SCHEMA_VERSION, ExecutionPlan, FailurePolicy, PlanNode, build_execution_plan,
     build_serial_plan,

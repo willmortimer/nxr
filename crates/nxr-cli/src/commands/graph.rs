@@ -6,7 +6,7 @@ use clap::ValueEnum;
 use nxr_core::diagnostics::exit;
 use nxr_nix::TaskDiscoveryError;
 use nxr_task::{
-    GraphError as TaskGraphError, TaskGraph, plan_serial, render_mermaid, render_text,
+    GraphError as TaskGraphError, TaskGraph, plan_serial, render_dot, render_mermaid, render_text,
     resolve_task_name,
 };
 use serde::Serialize;
@@ -25,6 +25,8 @@ pub enum GraphFormat {
     Text,
     /// Mermaid `flowchart TD` diagram.
     Mermaid,
+    /// Graphviz DOT `digraph` (does not invoke Graphviz).
+    Dot,
 }
 
 impl GraphFormat {
@@ -32,6 +34,7 @@ impl GraphFormat {
         match self {
             Self::Text => "text",
             Self::Mermaid => "mermaid",
+            Self::Dot => "dot",
         }
     }
 }
@@ -157,6 +160,7 @@ fn write_human_graph(
     let rendered = match format {
         GraphFormat::Text => render_text(order),
         GraphFormat::Mermaid => render_mermaid(graph),
+        GraphFormat::Dot => render_dot(graph),
     };
     write!(writer, "{rendered}")?;
     Ok(())
@@ -218,6 +222,19 @@ mod tests {
             output,
             nxr_task::plan_text(&tasks, "test").unwrap().into_bytes()
         );
+    }
+
+    #[test]
+    fn human_dot_render_matches_render_dot() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert("fmt".to_owned(), task(&[]));
+        tasks.insert("test".to_owned(), task(&["fmt"]));
+
+        let order = nxr_task::plan_serial(&tasks, "test").expect("plan");
+        let graph = TaskGraph::subgraph(&tasks, "test").expect("graph");
+        let mut output = Vec::new();
+        write_human_graph(&mut output, GraphFormat::Dot, &order, &graph).expect("write");
+        assert_eq!(output, nxr_task::render_dot(&graph).into_bytes());
     }
 
     #[test]

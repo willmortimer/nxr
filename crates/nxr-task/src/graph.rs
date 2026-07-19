@@ -1,4 +1,4 @@
-//! Task DAG construction and stable text/Mermaid rendering.
+//! Task DAG construction and stable text/Mermaid/DOT rendering.
 //!
 //! Edges follow `dependsOn`: if task `A` lists `B`, then `B` must run before `A`.
 //! Renderers emit dependency-precedence edges (`dep --> dependent`) with
@@ -202,6 +202,36 @@ fn mermaid_node_id(id: &str) -> String {
     format!("\"{}\"", id.replace('"', "#quot;"))
 }
 
+/// Render a Graphviz DOT `digraph` for `graph` with stable node and edge order.
+///
+/// Edges are `dependency -> dependent` (run order along arrows). Does not invoke
+/// Graphviz; output is suitable for `dot -Tpng` or similar tools.
+#[must_use]
+pub fn render_dot(graph: &TaskGraph) -> String {
+    let mut out = String::from("digraph {\n");
+    out.push_str("  rankdir=TD;\n");
+    for id in graph.node_ids() {
+        out.push_str("  ");
+        out.push_str(&dot_node_id(id));
+        out.push_str(";\n");
+    }
+    for (dep, dependent) in graph.precedence_edges() {
+        out.push_str("  ");
+        out.push_str(&dot_node_id(&dep));
+        out.push_str(" -> ");
+        out.push_str(&dot_node_id(&dependent));
+        out.push_str(";\n");
+    }
+    out.push('}');
+    out.push('\n');
+    out
+}
+
+/// Quote DOT node ids so task names with special characters stay valid.
+fn dot_node_id(id: &str) -> String {
+    format!("\"{}\"", id.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +274,33 @@ mod tests {
         let order = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
         assert_eq!(render_text(&order), "a\nb\nc\n");
         assert_eq!(render_text(&[]), "");
+    }
+
+    #[test]
+    fn render_dot_stable_diamond() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert("a".to_owned(), task(&[]));
+        tasks.insert("b".to_owned(), task(&["a"]));
+        tasks.insert("c".to_owned(), task(&["a"]));
+        tasks.insert("d".to_owned(), task(&["b", "c"]));
+        let graph = TaskGraph::subgraph(&tasks, "d").expect("graph");
+        let rendered = render_dot(&graph);
+        assert_eq!(
+            rendered,
+            concat!(
+                "digraph {\n",
+                "  rankdir=TD;\n",
+                "  \"a\";\n",
+                "  \"b\";\n",
+                "  \"c\";\n",
+                "  \"d\";\n",
+                "  \"a\" -> \"b\";\n",
+                "  \"a\" -> \"c\";\n",
+                "  \"b\" -> \"d\";\n",
+                "  \"c\" -> \"d\";\n",
+                "}\n",
+            )
+        );
     }
 
     #[test]

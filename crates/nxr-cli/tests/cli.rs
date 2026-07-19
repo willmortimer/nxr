@@ -850,6 +850,33 @@ fn graph_ci_text_lists_ordered_tasks() {
 }
 
 #[test]
+fn graph_ci_dot_contains_digraph_edges() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/task-dag",
+            "graph",
+            "ci",
+            "--format",
+            "dot",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("digraph {"))
+        .stdout(predicate::str::contains("\"fmt\""))
+        .stdout(predicate::str::contains("\"test\""))
+        .stdout(predicate::str::contains("\"ci\""))
+        .stdout(predicate::str::contains("\"fmt\" -> \"test\""))
+        .stdout(predicate::str::contains("\"test\" -> \"ci\""));
+}
+
+#[test]
 fn graph_ci_mermaid_contains_node_ids() {
     let Some(()) = require_nix() else {
         return;
