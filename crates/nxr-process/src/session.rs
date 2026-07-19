@@ -44,6 +44,48 @@ impl ChildSession {
         Ok(exit_code_from_status(status))
     }
 
+    /// Send SIGTERM to this session's process group without waiting.
+    ///
+    /// # Errors
+    ///
+    /// Propagates kill errors from the OS. On non-Unix platforms, returns
+    /// [`io::ErrorKind::Unsupported`].
+    pub fn signal_terminate(&self) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            unix::terminate_group(self.pgid)
+        }
+
+        #[cfg(not(unix))]
+        {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "process group SIGTERM is not supported on this platform",
+            ))
+        }
+    }
+
+    /// Send SIGKILL to this session's process group without waiting.
+    ///
+    /// # Errors
+    ///
+    /// Propagates kill errors from the OS. On non-Unix platforms, returns
+    /// [`io::ErrorKind::Unsupported`].
+    pub fn signal_kill(&self) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            unix::kill_group(self.pgid)
+        }
+
+        #[cfg(not(unix))]
+        {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "process group SIGKILL is not supported on this platform",
+            ))
+        }
+    }
+
     /// Send SIGTERM to the process group, wait briefly, then SIGKILL if needed.
     ///
     /// # Errors
@@ -52,7 +94,7 @@ impl ChildSession {
     pub fn terminate(mut self) -> io::Result<Option<i32>> {
         #[cfg(unix)]
         {
-            unix::terminate_group(self.pgid)?;
+            self.signal_terminate()?;
             let deadline = Instant::now() + Duration::from_millis(500);
             loop {
                 if let Some(status) = self.child.try_wait()? {
@@ -63,7 +105,7 @@ impl ChildSession {
                 }
                 thread::sleep(Duration::from_millis(20));
             }
-            unix::kill_group(self.pgid)?;
+            self.signal_kill()?;
             let status = self.child.wait()?;
             Ok(Some(exit_code_from_status(status)))
         }

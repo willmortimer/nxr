@@ -84,6 +84,19 @@ impl InterruptFlags {
     pub fn is_pending(&self) -> bool {
         self.got_int.load(Ordering::SeqCst) || self.got_term.load(Ordering::SeqCst)
     }
+
+    /// Synthetically mark an interrupt pending (crate tests / cooperative cancel).
+    #[cfg(test)]
+    pub(crate) fn trigger_for_test(&self) {
+        self.got_int.store(true, Ordering::SeqCst);
+    }
+
+    /// Cloneable trigger for posting a synthetic interrupt from another thread.
+    #[cfg(test)]
+    pub(crate) fn trigger_handle(&self) -> impl Fn() + Send + Sync + 'static {
+        let got_int = Arc::clone(&self.got_int);
+        move || got_int.store(true, Ordering::SeqCst)
+    }
 }
 
 #[cfg(unix)]
