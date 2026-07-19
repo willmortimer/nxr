@@ -252,7 +252,7 @@ Share Nix values, but do not make the app enter the development shell.
 
 ## 14. Optional nxr helper API
 
-`nxr.lib.mkApp` is available from this flake:
+`nxr.lib.mkApp` (alias `mkScriptApp`) wraps `writeShellApplication` into a standard flake app:
 
 ```nix
 nxr.lib.mkApp {
@@ -266,19 +266,30 @@ nxr.lib.mkApp {
 }
 ```
 
-Generated output:
+`nxr.lib.mkPackageApp` wraps an existing package binary:
+
+```nix
+nxr.lib.mkPackageApp {
+  inherit pkgs;
+  package = pkgs.cargo;
+  bin = "cargo";
+  description = "Run Cargo from nixpkgs";
+}
+```
+
+Both helpers emit the same shape:
 
 ```nix
 {
   type = "app";
-  program = "/nix/store/.../bin/test";
-  meta.description = "Run the test suite";
+  program = "/nix/store/.../bin/<name>";
+  meta.description = "...";
 }
 ```
 
-The helper is transparent and easy to replace with native Nix.
+The helpers are transparent and easy to replace with native Nix.
 
-See [examples/mk-app/](../examples/mk-app/) for a runnable flake using `mkApp` and the flake-parts module.
+See [examples/mk-app/](../examples/mk-app/) for a runnable flake using `mkApp`, `mkPackageApp`, and the flake-parts module.
 
 ## 15. flake-parts module
 

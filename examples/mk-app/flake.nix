@@ -48,6 +48,22 @@
               echo "greet via lib.mkApp"
             '';
           };
+
+          apps.hello-pkg = nxr.lib.mkPackageApp {
+            inherit pkgs;
+            package = pkgs.hello;
+            bin = "hello";
+            description = "Run hello from a nixpkgs package";
+          };
+
+          apps.script-alias = nxr.lib.mkScriptApp {
+            inherit pkgs;
+            name = "example-script-alias";
+            description = "Same as mkApp via mkScriptApp alias";
+            text = ''
+              echo "greet via lib.mkScriptApp"
+            '';
+          };
         };
     };
 }

@@ -6,9 +6,11 @@ let
 
   metadata = import ./metadata.nix { inherit lib; };
   mkApp = import ./mk-app.nix;
+  mkPackageApp = import ./mk-package-app.nix;
 in
 {
-  inherit mkApp;
+  inherit mkApp mkPackageApp;
+  mkScriptApp = mkApp;
   inherit (metadata) mkAppMeta mkAppsMetadataEntry schemaVersion;
 
   /*

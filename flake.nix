@@ -10,9 +10,14 @@
     inputs@{ flake-parts, nixpkgs, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       flake = {
-        lib = {
-          mkApp = import ./nix/lib/mk-app.nix;
+        lib = let
           metadata = import ./nix/lib/metadata.nix { lib = nixpkgs.lib; };
+          mkApp = import ./nix/lib/mk-app.nix;
+          mkPackageApp = import ./nix/lib/mk-package-app.nix;
+        in {
+          inherit mkApp mkPackageApp;
+          mkScriptApp = mkApp;
+          inherit metadata;
         };
 
         flakeModules.default = import ./nix/modules/flake-parts.nix;
