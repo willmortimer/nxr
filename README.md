@@ -1,152 +1,116 @@
 # nxr
 
-Zero-configuration command interface for standard Nix flake apps.
+Ergonomic runner for **standard Nix flake apps**.
 
-Treat flake apps as the project's executable public interface — `nxr test` is the ergonomic form of `nix run .#test`. Optional task graphs orchestrate those apps in parallel with labeled output, watch/restart, and named-shell execution.
-
-<p align="center">
-  <img src="docs/demo/nxr.gif" alt="nxr demo: list apps, run hello, graph a task, dry-run ci" width="980" />
-</p>
+`nxr test` is the pleasant form of `nix run .#test`. Optional task graphs orchestrate those apps in parallel—with labeled output, watch/restart, and named-shell execution—without replacing flakes, apps, or `nix run`.
 
 <p align="center">
-  <em>Animated terminal (GIF) recorded with <a href="https://github.com/charmbracelet/vhs">VHS</a> — regenerate via <code>./docs/demo/record.sh</code></em>
+  <img src="docs/demo/nxr.gif" alt="nxr demo: list, run, inspect, graph, parallel tasks, shell, and watch" width="980" />
 </p>
+
+## Install
+
+Put `nxr` on `PATH` from this flake (or pin it as a flake input in your project):
+
+```bash
+nix profile install github:willmortimer/nxr#nxr
+# or: nix shell github:willmortimer/nxr#nxr
+```
+
+For flake-parts projects, enable session-local completion and PATH wiring:
+
+```nix
+perSystem.nxr.shellIntegration.enable = true;
+# optional: perSystem.nxr.shellIntegration.devShells = [ "default" "backend" ];
+```
+
+Details: [docs/DEV_ENV_INTEGRATION.md](docs/DEV_ENV_INTEGRATION.md).
 
 ## Quick start
 
+From any directory under a flake:
+
 ```bash
-nix develop          # optional: this repo's shell
-nxr list             # discover apps for the current flake
+nxr list             # discover apps (+ tasks when present)
 nxr test             # ≈ nix run .#test
-nxr fixtures/basic-apps#hello   # inline flake#app
+nxr select           # fuzzy picker
+nxr plan test --json # inspect the exact Nix invocation
 ```
 
-## Docs
+Inline flake + app (like `nix run`):
 
-| Doc | Topic |
+```bash
+nxr ./path/to/flake#hello
+nxr --flake ./path/to/flake hello
+```
+
+## Everyday commands
+
+| Command | What it does |
 |---|---|
-| **[docs/INDEX.md](docs/INDEX.md)** | Documentation map |
-| [docs/CONTRACT_SUMMARY.md](docs/CONTRACT_SUMMARY.md) | Locked product decisions |
-| [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) | Commands and globals |
-| [docs/APP_AUTHORING.md](docs/APP_AUTHORING.md) | `mkApp` / `mkScriptApp` / `mkPackageApp` |
-| [docs/TASKS.md](docs/TASKS.md) | `perSystem.nxr.tasks` → `nxr.<system>` |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | V1 → V3 delivery plan |
+| `nxr` / `nxr list` | List apps (and tasks) |
+| `nxr <app> [args…]` | Run a flake app (apps only — not tasks) |
+| `nxr run <app> [-- args…]` | Explicit run form |
+| `nxr task <name> [-j N]` | Run a task DAG (fail-fast; `--keep-going` opt-in) |
+| `nxr graph <name>` | Print the plan (`--format text\|mermaid\|dot`) |
+| `nxr watch <name>` | Kill + rerun on flake-root changes |
+| `nxr plan <name>` | App plan, or task `ExecutionPlan` if not an app |
+| `nxr inspect` / `doctor` | Overview and diagnostics |
+| `nxr completion zsh` | Shell completion script |
 
-## What works today
+Globals you’ll use often: `--flake`, `--shell <name>`, `--clean-env`, `--output live\|grouped\|failures`, `--events jsonl`.
 
-### Discover and run
+Full index: [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md).
 
-```bash
-nxr                              # list apps (+ tasks when present)
-nxr list --json
-nxr list --category ci           # filter tasks by category
-nxr hello                        # bare form ≈ nix run .#hello (apps only)
-nxr run hello -- --flag
-nxr plan hello --json            # app plan
-nxr plan ci --json               # task ExecutionPlan when name is not an app
-nxr select                       # interactive picker
-nxr fixtures/basic-apps#hello    # inline flake#app
-nxr --flake fixtures/basic-apps hello
-nxr --shell default hello        # via nix develop .#default -c …
-```
+### Tasks
 
-### Diagnostics and environment
+Declare orchestration with `nxr.flakeModules.default` (`perSystem.nxr.tasks`). Tasks coordinate apps; they do not replace them.
 
 ```bash
-nxr doctor
-nxr doctor --all
-nxr doctor --clean-env hello
-nxr --clean-env --keep-env HOME run hello
-nxr --log-format json list
+nxr task ci
+nxr task ci -j 4
+nxr task ci --keep-going
+nxr --output grouped task ci
+nxr graph ci --format mermaid
 ```
 
-### Completions
+Explicit commands (`task`, `graph`, `inspect task`, `watch`, task-side `plan`) resolve **aliases**. Bare `nxr <name>` stays **app-only**.
 
-```bash
-nxr completion zsh
-# In this repo, direnv materializes hooks under .direnv/ (see .envrc).
-```
-
-Flake consumers can opt into dev-shell integration with `perSystem.nxr.shellIntegration` (see [docs/DEV_ENV_INTEGRATION.md](docs/DEV_ENV_INTEGRATION.md)).
-
-### Tasks and graphs
-
-Declare tasks with `nxr.flakeModules.default` (`perSystem.nxr.tasks`). See [docs/TASKS.md](docs/TASKS.md).
-
-```bash
-nxr --flake fixtures/task-dag inspect
-nxr --flake fixtures/task-dag inspect task ci
-nxr --flake fixtures/task-dag task ci
-nxr --flake fixtures/task-dag task ci -j 4          # parallel ready-set
-nxr --flake fixtures/task-dag task ci --keep-going  # opt-in (fail-fast default)
-nxr --flake fixtures/task-dag task ci --dry-run
-nxr --flake fixtures/task-dag --output grouped task ci
-nxr --flake fixtures/task-dag --events jsonl task ci
-nxr --flake fixtures/task-dag graph ci
-nxr --flake fixtures/task-dag graph ci --format mermaid
-```
-
-Explicit commands (`task` / `graph` / `inspect task` / `watch` / task-side `plan`) resolve **aliases**. Bare `nxr <name>` stays **app-only**.
+Guide: [docs/TASKS.md](docs/TASKS.md).
 
 ### Watch
 
 ```bash
-nxr watch hello                              # watch flake root; kill+rerun
-nxr watch ci --debounce 500                  # task chain (task-first)
-nxr watch hello --include 'src/**' --exclude '**/*.md' --clear
-nxr run hello --watch
-nxr task ci --watch --debounce 500
+nxr watch test
+nxr watch ci --include 'src/**' --exclude '**/*.md' --clear
+nxr run test --watch
+nxr task ci --watch
 ```
 
 Built-in ignores: `.git`, `target`, `result*`, `/nix/store`. Ctrl-C stops the watcher and shuts down the current generation.
 
-### Nix authoring helpers
+### Author flake apps
 
-From `flake.lib` / `nxr.flakeModules.default`:
+Prefer self-contained apps so `nxr` / `nix run` work outside a dirty shell:
 
-- `mkApp` / `mkScriptApp` — shell-backed flake apps
-- `mkPackageApp` — wrap an existing package binary as an app
-- `perSystem.nxr.apps` / `perSystem.nxr.tasks` — declarative apps and task metadata (aliases, categories, `dependsOn`, …)
+- `mkApp` / `mkScriptApp` — shell-backed apps
+- `mkPackageApp` — wrap an existing package binary
 
-See [examples/mk-app](examples/mk-app/) and [docs/APP_AUTHORING.md](docs/APP_AUTHORING.md).
+See [docs/APP_AUTHORING.md](docs/APP_AUTHORING.md) and [examples/mk-app](examples/mk-app/).
 
-## Project apps
+Coming from `mise` / `just`? [docs/MIGRATE_FROM_MISE_JUST.md](docs/MIGRATE_FROM_MISE_JUST.md).
 
-Same operations CI runs:
+## Documentation
 
-```bash
-nix build .#nxr          # package the CLI
-nix run .#fmt            # rustfmt (add -- --check in CI)
-nix run .#lint           # clippy -D warnings
-nix run .#test           # cargo nextest
-nix run .#deny           # cargo-deny
-```
-
-## How we test
-
-1. **Repo quality apps** — `fmt` / `lint` / `test` / `deny` (and `.github/workflows/ci.yml`).
-2. **Fixture flakes** under [`fixtures/`](fixtures/README.md) — `hello`, `echo-args`, `fail`, `pwd`, metadata, nested dirs, `task-dag`, `parallel-group`, `named-dev-shells`.
-
-```bash
-nix run ./fixtures/basic-apps#hello
-cargo run -p nxr-cli -- --flake fixtures/basic-apps list
-cargo run -p nxr-cli -- --flake fixtures/task-dag task ci -j 2 --dry-run
-cargo run -p nxr-cli -- --flake fixtures/task-dag graph ci --format mermaid
-```
-
-## Demo GIF
-
-The README animation is a **GIF** (not asciinema). It is produced from a checked-in [VHS](https://github.com/charmbracelet/vhs) script so it stays reproducible:
-
-```bash
-./docs/demo/record.sh    # needs: vhs, ffmpeg, ttyd, nix
-```
-
-| File | Role |
+| Doc | For |
 |---|---|
-| [docs/demo/nxr.tape](docs/demo/nxr.tape) | Recording script |
-| [docs/demo/nxr.gif](docs/demo/nxr.gif) | Output embedded above |
-| [docs/demo/record.sh](docs/demo/record.sh) | Build `nxr` + run VHS |
+| [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) | Commands and flags |
+| [docs/APP_AUTHORING.md](docs/APP_AUTHORING.md) | Writing robust flake apps |
+| [docs/TASKS.md](docs/TASKS.md) | Task graphs and aliases |
+| [docs/DEV_ENV_INTEGRATION.md](docs/DEV_ENV_INTEGRATION.md) | Dev shells, direnv, shellIntegration |
+| [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | Platforms and schema freeze |
+| [docs/INDEX.md](docs/INDEX.md) | Full documentation map |
+| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | Working on this repository |
 
 ## License
 
@@ -154,6 +118,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**V2.0.0 ready** (no git tag yet) — V1 app runner plus orchestration V2: parallel `nxr task -j` / `--keep-going`, labeled `--output` + `--events jsonl`, multi-child supervisor, `--shell`, watch globs/`--clear`/`run|task --watch`, task aliases/categories/`plan` fallback, flake-parts shell integration, `graph --format dot`, and frozen `task-v1` / `execution-plan-v1` / `events-v1`.
-
-V2.x bridge landed: published `events-v1` schema, extension-point notes in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md), and an in-process large-DAG schedule smoke budget. A Ratatui “lazygit-style” dashboard is **V3.5 / Phase 35** in [docs/ROADMAP.md](docs/ROADMAP.md) — see that doc before adding a TUI crate. Full history: [CHANGELOG.md](CHANGELOG.md).
+**2.0.0** — flake app runner plus optional orchestration (parallel tasks, watch, shell integration, frozen `task-v1` / `execution-plan-v1` / `events-v1`). History: [CHANGELOG.md](CHANGELOG.md).

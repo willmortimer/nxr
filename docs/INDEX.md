@@ -6,7 +6,9 @@ Product and architecture contract for `nxr`. Prefer these docs over inventing st
 
 | Doc | Purpose |
 |---|---|
-| [README.md](README.md) | Product overview and design principles |
+| [../README.md](../README.md) | Consumer-facing overview (install, commands, authoring) |
+| [README.md](README.md) | Longer product narrative and design principles |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Developing and testing **this** repository |
 | [CONTRACT_SUMMARY.md](CONTRACT_SUMMARY.md) | Locked decisions that must not drift |
 | [TECH_STACK_AND_REPO_SHAPE.md](TECH_STACK_AND_REPO_SHAPE.md) | Languages, crates, and repository layout |
 | [ROADMAP.md](ROADMAP.md) | V1–V3.5 delivery plan |
