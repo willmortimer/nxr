@@ -401,6 +401,7 @@ dependencies = [
  "nxr-core",
  "nxr-nix",
  "nxr-process",
+ "nxr-task",
  "nxr-workspace",
  "predicates",
  "serde",
