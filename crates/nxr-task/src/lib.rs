@@ -5,7 +5,7 @@
 //! - [`planner`] — deterministic serial topological plans
 //! - [`plan_exec`] — versioned [`ExecutionPlan`] envelope
 //! - [`events`] — typed execution event bus (`Event` / [`EventSink`])
-//! - [`scheduler`] — scaffold for later execution
+//! - [`scheduler`] — ready-queue scheduler with job limit ([`Scheduler`])
 
 pub mod events;
 pub mod graph;
@@ -21,6 +21,7 @@ pub use plan_exec::{
     build_serial_plan,
 };
 pub use planner::{PlanError, plan_mermaid, plan_serial, plan_text};
+pub use scheduler::{NodeState, ScheduleOutcome, Scheduler, SchedulerError};
 pub use schema::{
     SCHEMA_VERSION, SchemaError, TaskDefinition, TaskDocument, validate_schema_version,
 };
