@@ -9,6 +9,7 @@ pub mod manpage;
 pub mod plan;
 pub mod run;
 pub mod select;
+pub mod task;
 
 use nxr_core::diagnostics::exit;
 

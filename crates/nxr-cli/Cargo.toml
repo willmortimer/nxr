@@ -20,6 +20,7 @@ nxr-core = { path = "../nxr-core" }
 nxr-completion = { path = "../nxr-completion" }
 nxr-nix = { path = "../nxr-nix" }
 nxr-process = { path = "../nxr-process" }
+nxr-task = { path = "../nxr-task" }
 nxr-workspace = { path = "../nxr-workspace" }
 serde = { workspace = true }
 serde_json = { workspace = true }
