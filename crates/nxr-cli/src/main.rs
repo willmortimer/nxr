@@ -18,7 +18,8 @@ use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
 use crate::cli::{Cli, Command};
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
-    UnimplementedCommandError, complete, completion, doctor, list, manpage, plan, run, select,
+    UnimplementedCommandError, complete, completion, doctor, graph, list, manpage, plan, run,
+    select,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -65,6 +66,8 @@ enum RunError {
     #[error(transparent)]
     Manpage(#[from] manpage::ManpageError),
     #[error(transparent)]
+    Graph(#[from] graph::GraphError),
+    #[error(transparent)]
     Unimplemented(#[from] UnimplementedCommandError),
 }
 
@@ -79,6 +82,7 @@ impl RunError {
             Self::Completion(_) => completion::CompletionError::exit_code(),
             Self::Complete(_) => exit::SUCCESS,
             Self::Manpage(_) => manpage::ManpageError::exit_code(),
+            Self::Graph(error) => error.exit_code(),
             Self::MissingAppName | Self::Usage(_) | Self::FlakeAppRef(_) => exit::USAGE,
             Self::Unimplemented(_) => UnimplementedCommandError::exit_code(),
         }
@@ -166,7 +170,16 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             manpage::run()?;
             Ok(exit::SUCCESS)
         }
-        Some(command @ (Command::Inspect | Command::Task | Command::Watch | Command::Graph)) => {
+        Some(Command::Graph { task, format }) => {
+            let request = graph::GraphRequest {
+                flake_arg: cli.flake.as_deref(),
+                nix_override: cli.nix.as_deref(),
+                task: task.as_str(),
+            };
+            graph::run(&request, *format, cli.json, runner)?;
+            Ok(exit::SUCCESS)
+        }
+        Some(command @ (Command::Inspect | Command::Task | Command::Watch)) => {
             Err(UnimplementedCommandError {
                 command: command.label(),
             }

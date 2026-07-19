@@ -4,6 +4,7 @@ pub mod common;
 pub mod complete;
 pub mod completion;
 pub mod doctor;
+pub mod graph;
 pub mod list;
 pub mod manpage;
 pub mod plan;

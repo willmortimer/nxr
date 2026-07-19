@@ -766,3 +766,98 @@ fn doctor_clean_env_reports_policy_without_executing_app() {
         .stdout(predicate::str::contains("info: plan.available:"))
         .stdout(predicate::str::contains("#fail"));
 }
+
+#[test]
+fn graph_ci_text_lists_ordered_tasks() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "graph", "ci"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fmt\ntest\nci\n"));
+}
+
+#[test]
+fn graph_ci_mermaid_contains_node_ids() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/task-dag",
+            "graph",
+            "ci",
+            "--format",
+            "mermaid",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("flowchart TD"))
+        .stdout(predicate::str::contains("\"fmt\""))
+        .stdout(predicate::str::contains("\"test\""))
+        .stdout(predicate::str::contains("\"ci\""));
+}
+
+#[test]
+fn graph_unknown_task_exits_not_found() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "graph", "missing-task"])
+        .assert()
+        .failure()
+        .code(6)
+        .stderr(predicate::str::contains("unknown task root"));
+}
+
+#[test]
+fn graph_json_envelope_includes_order_and_edges() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "--json", "graph", "ci"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse graph json");
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["task"], "ci");
+    assert_eq!(value["format"], "text");
+    assert_eq!(
+        value["order"].as_array().expect("order"),
+        &[
+            serde_json::json!("fmt"),
+            serde_json::json!("test"),
+            serde_json::json!("ci"),
+        ]
+    );
+    let edges = value["edges"].as_array().expect("edges");
+    assert!(
+        edges
+            .iter()
+            .any(|edge| edge == &serde_json::json!(["fmt", "test"]))
+    );
+    assert!(
+        edges
+            .iter()
+            .any(|edge| edge == &serde_json::json!(["test", "ci"]))
+    );
+}

@@ -4,6 +4,7 @@ use clap::{ArgAction, Parser, Subcommand};
 
 use nxr_completion::{CompleteTarget, Shell};
 
+use crate::commands::graph::GraphFormat;
 use crate::output_options::{ColorWhen, LogFormat};
 
 /// Nix-native flake app runner.
@@ -157,7 +158,13 @@ pub enum Command {
     /// Watch and rerun
     Watch,
     /// Show task graph
-    Graph,
+    Graph {
+        /// Task name
+        task: String,
+        /// Output format
+        #[arg(long = "format", value_enum, default_value = "text")]
+        format: GraphFormat,
+    },
     /// Bare `nxr <app> [args…]` form (reserved names win first)
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -179,7 +186,7 @@ impl Command {
             Self::Inspect => "inspect",
             Self::Task => "task",
             Self::Watch => "watch",
-            Self::Graph => "graph",
+            Self::Graph { .. } => "graph",
             Self::External(_) => "external",
         }
     }

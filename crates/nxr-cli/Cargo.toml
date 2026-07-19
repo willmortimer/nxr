@@ -19,6 +19,7 @@ dialoguer = { workspace = true }
 nxr-core = { path = "../nxr-core" }
 nxr-completion = { path = "../nxr-completion" }
 nxr-nix = { path = "../nxr-nix" }
+nxr-task = { path = "../nxr-task" }
 nxr-process = { path = "../nxr-process" }
 nxr-workspace = { path = "../nxr-workspace" }
 serde = { workspace = true }
