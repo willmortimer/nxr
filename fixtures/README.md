@@ -10,7 +10,7 @@ These are small Nix flakes used to exercise `nxr` discovery and execution
 | [nested-directory](nested-directory/) | Flake with a deep subdirectory for CWD / discovery tests |
 | [broken-flake](broken-flake/) | Intentionally invalid flake for diagnostics |
 | [named-dev-shells](named-dev-shells/) | Placeholder for named `devShells` (later) |
-| [task-dag](task-dag/) | Placeholder for V2 task graphs |
+| [task-dag](task-dag/) | Small task DAG (`fmt` → `test` → `ci`) via `nxr.<system>` |
 | [parallel-group](parallel-group/) | Placeholder for V2 parallel groups |
 | [watch-project](watch-project/) | Placeholder for V2 watch mode |
 
@@ -23,6 +23,8 @@ nix run ./fixtures/basic-apps#fail ; echo exit:$?
 nix run ./fixtures/basic-apps#pwd
 (cd fixtures/nested-directory/deep/down/here && nix run ../..#pwd)
 nix flake show ./fixtures/app-metadata
+nix eval --json ./fixtures/task-dag#nxr.aarch64-darwin
+nix eval --json ./fixtures/task-dag#nxr.x86_64-linux
 ```
 
 ## Try them with nxr

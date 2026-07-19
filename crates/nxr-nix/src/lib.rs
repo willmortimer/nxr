@@ -6,16 +6,20 @@ pub mod command;
 pub mod discovery;
 pub mod resolve;
 pub mod suggest;
+pub mod tasks;
 
 use camino::Utf8PathBuf;
 use nxr_core::sanitize::sanitize_terminal_text;
 
 pub use adapter::NixAdapter;
 pub use capabilities::{NixFailureKind, detect_system, locate_nix, run_nix};
-pub use command::{NIX_EXECUTABLE_ENV, current_system_args, flake_show_args, nix_run_args};
+pub use command::{
+    NIX_EXECUTABLE_ENV, current_system_args, flake_eval_json_args, flake_show_args, nix_run_args,
+};
 pub use discovery::{discover_apps, parse_apps_from_flake_show};
 pub use resolve::{AppNotFoundError, resolve_app_by_name};
 pub use suggest::{DEFAULT_SUGGESTION_LIMIT, rank_app_suggestions};
+pub use tasks::{TaskDiscoveryError, discover_tasks, parse_task_document, tasks_attr_path};
 
 /// Errors from the Nix adapter boundary.
 #[derive(Debug)]

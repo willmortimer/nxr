@@ -440,6 +440,7 @@ version = "1.0.0"
 dependencies = [
  "camino",
  "nxr-core",
+ "nxr-task",
  "serde_json",
  "thiserror",
  "which",

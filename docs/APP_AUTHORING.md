@@ -324,3 +324,6 @@ devShells.<system>.default
 with `nxr` and shell integration.
 
 No custom runner is required to execute the emitted app.
+
+For optional task orchestration metadata (`perSystem.nxr.tasks` → evaluable
+`nxr.<system>`), see [TASKS.md](TASKS.md).

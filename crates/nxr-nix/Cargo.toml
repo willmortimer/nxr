@@ -10,6 +10,7 @@ description = "Nix CLI adapter for nxr"
 [dependencies]
 camino = { workspace = true }
 nxr-core = { path = "../nxr-core" }
+nxr-task = { path = "../nxr-task" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 which = { workspace = true }

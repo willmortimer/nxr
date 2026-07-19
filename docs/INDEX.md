@@ -25,6 +25,7 @@ Product and architecture contract for `nxr`. Prefer these docs over inventing st
 | [TELEMETRY.md](TELEMETRY.md) | Telemetry decision (V1 default: none) |
 | [SECURITY_REVIEW_V1.md](SECURITY_REVIEW_V1.md) | V1.0 security review vs ARCHITECTURE §8 |
 | [APP_AUTHORING.md](APP_AUTHORING.md) | Conventions for robust flake apps |
+| [TASKS.md](TASKS.md) | Declaring tasks and the `nxr.<system>` discovery attr |
 | [MIGRATE_FROM_MISE_JUST.md](MIGRATE_FROM_MISE_JUST.md) | How-to: move from mise/just/aliases to flake apps |
 | [DEV_ENV_INTEGRATION.md](DEV_ENV_INTEGRATION.md) | Dev shells, direnv, DevPod, containers |
 | [ECOSYSTEM_SYNTHESIS.md](ECOSYSTEM_SYNTHESIS.md) | Adjacent-tool inheritance and boundaries |

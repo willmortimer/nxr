@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "tasks": {
+    "ci": {
+      "app": "ci",
+      "dependsOn": ["test"],
+      "description": "CI gate",
+      "category": "validation",
+      "hidden": false
+    },
+    "fmt": {
+      "app": "fmt",
+      "dependsOn": [],
+      "description": "Format sources",
+      "hidden": false
+    },
+    "test": {
+      "app": "test",
+      "dependsOn": ["fmt"],
+      "description": "Run tests",
+      "hidden": false
+    }
+  }
+}

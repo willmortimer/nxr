@@ -26,6 +26,18 @@ pub fn flake_show_args(flake_ref: &str) -> Vec<String> {
     ]
 }
 
+/// Arguments for `nix eval --json <flake_ref>#<attr_path>`.
+///
+/// Used for versioned metadata such as `nxr.<system>` (task documents).
+#[must_use]
+pub fn flake_eval_json_args(flake_ref: &str, attr_path: &str) -> Vec<String> {
+    vec![
+        "eval".to_owned(),
+        "--json".to_owned(),
+        format!("{flake_ref}#{attr_path}"),
+    ]
+}
+
 /// Arguments for `nix run <flake_ref>#<app_name> [-- <forwarded_args…>]`.
 ///
 /// Inserts exactly one `--` before forwarded args when any are present.
@@ -47,7 +59,7 @@ pub fn nix_run_args(
 
 #[cfg(test)]
 mod tests {
-    use super::{current_system_args, flake_show_args, nix_run_args};
+    use super::{current_system_args, flake_eval_json_args, flake_show_args, nix_run_args};
 
     #[test]
     fn current_system_argv_matches_nix_contract() {
@@ -81,6 +93,26 @@ mod tests {
                 "show".to_owned(),
                 "--json".to_owned(),
                 "./fixtures/basic-apps".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn flake_eval_json_argv_includes_json_flag_and_installable() {
+        assert_eq!(
+            flake_eval_json_args(".", "nxr.aarch64-darwin"),
+            vec![
+                "eval".to_owned(),
+                "--json".to_owned(),
+                ".#nxr.aarch64-darwin".to_owned(),
+            ]
+        );
+        assert_eq!(
+            flake_eval_json_args("./fixtures/task-dag", "nxr.x86_64-linux"),
+            vec![
+                "eval".to_owned(),
+                "--json".to_owned(),
+                "./fixtures/task-dag#nxr.x86_64-linux".to_owned(),
             ]
         );
     }
