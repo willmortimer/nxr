@@ -6,6 +6,7 @@ use nxr_completion::{CompleteTarget, Shell};
 
 use crate::commands::graph::GraphFormat;
 use crate::output_options::{ColorWhen, LogFormat};
+use crate::output_task::{EventsFormat, TaskOutputMode};
 
 /// Nix-native flake app runner.
 #[derive(Debug, Parser)]
@@ -98,6 +99,14 @@ pub struct Cli {
         default_value = "human"
     )]
     pub log_format: LogFormat,
+
+    /// Multiplexed task stdout/stderr mode (parallel runs; default: unlabeled)
+    #[arg(long = "output", global = true, value_enum, value_name = "MODE")]
+    pub output: Option<TaskOutputMode>,
+
+    /// Emit machine-readable task execution events
+    #[arg(long = "events", global = true, value_enum, value_name = "FORMAT")]
+    pub events: Option<EventsFormat>,
 
     #[command(subcommand)]
     pub command: Option<Command>,
