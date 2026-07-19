@@ -1264,3 +1264,26 @@ fn watch_help_mentions_debounce() {
         .stdout(predicate::str::contains("--debounce"))
         .stdout(predicate::str::contains("App or task name"));
 }
+
+#[test]
+fn help_mentions_task_output_flags() {
+    cargo_bin_cmd!("nxr")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--output"))
+        .stdout(predicate::str::contains("live"))
+        .stdout(predicate::str::contains("grouped"))
+        .stdout(predicate::str::contains("failures"))
+        .stdout(predicate::str::contains("--events"))
+        .stdout(predicate::str::contains("jsonl"));
+}
+
+#[test]
+fn task_output_flags_parse_before_subcommand() {
+    cargo_bin_cmd!("nxr")
+        .args(["--output", "live", "--events", "jsonl", "task", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Task name"));
+}

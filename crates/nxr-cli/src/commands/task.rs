@@ -10,6 +10,7 @@ use crate::commands::common::{
 };
 use crate::commands::run::{self, RunError};
 use crate::flake::{FlakeResolveError, resolve_flake};
+use crate::output_task::{EventsFormat, TaskOutputMode};
 use crate::runner_output::RunnerOutput;
 
 /// Inputs for serial task execution.
@@ -24,6 +25,12 @@ pub struct TaskRequest<'a> {
     pub cwd: Option<&'a str>,
     pub shell: Option<&'a str>,
     pub environment_policy: EnvironmentPolicy,
+    /// Parsed from global `--output`; execution wiring deferred to parallel runs.
+    #[allow(dead_code)]
+    pub output_mode: Option<TaskOutputMode>,
+    /// Parsed from global `--events`; execution wiring deferred to parallel runs.
+    #[allow(dead_code)]
+    pub events_format: Option<EventsFormat>,
 }
 
 /// Errors while planning or running a task.

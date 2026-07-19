@@ -6,6 +6,7 @@ mod error_format;
 mod flake;
 mod output;
 mod output_options;
+mod output_task;
 mod runner_output;
 
 use std::collections::BTreeMap;
@@ -275,6 +276,8 @@ fn task_request<'a>(
         cwd: cli.cwd.as_deref(),
         shell: cli.dev_shell.as_deref(),
         environment_policy: environment_policy_from_cli(cli)?,
+        output_mode: cli.output,
+        events_format: cli.events,
     })
 }
 
