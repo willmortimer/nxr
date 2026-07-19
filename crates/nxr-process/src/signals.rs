@@ -1,6 +1,8 @@
 //! Signal forwarding and exit-status mapping.
 
 use std::process::ExitStatus;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use nxr_core::diagnostics::exit;
 
@@ -24,6 +26,74 @@ pub fn exit_code_from_status(status: ExitStatus) -> i32 {
     }
 
     exit::CHILD_FAILED
+}
+
+/// Flags set by SIGINT/SIGTERM handlers for cooperative shutdown.
+#[derive(Debug)]
+pub struct InterruptFlags {
+    got_int: Arc<AtomicBool>,
+    got_term: Arc<AtomicBool>,
+    #[cfg(unix)]
+    registrations: Vec<signal_hook::SigId>,
+}
+
+impl InterruptFlags {
+    /// Install SIGINT/SIGTERM handlers that set interrupt flags.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when handlers cannot be registered.
+    pub fn install() -> std::io::Result<Self> {
+        #[cfg(unix)]
+        {
+            use signal_hook::consts::signal::{SIGINT, SIGTERM};
+            use signal_hook::flag;
+
+            let got_int = Arc::new(AtomicBool::new(false));
+            let got_term = Arc::new(AtomicBool::new(false));
+            let int_id =
+                flag::register(SIGINT, Arc::clone(&got_int)).map_err(std::io::Error::other)?;
+            let term_id =
+                flag::register(SIGTERM, Arc::clone(&got_term)).map_err(std::io::Error::other)?;
+            Ok(Self {
+                got_int,
+                got_term,
+                registrations: vec![int_id, term_id],
+            })
+        }
+
+        #[cfg(not(unix))]
+        {
+            Ok(Self {
+                got_int: Arc::new(AtomicBool::new(false)),
+                got_term: Arc::new(AtomicBool::new(false)),
+            })
+        }
+    }
+
+    /// Whether SIGINT or SIGTERM has been received since the last check.
+    #[must_use]
+    pub fn take_pending(&self) -> bool {
+        let int = self.got_int.swap(false, Ordering::SeqCst);
+        let term = self.got_term.swap(false, Ordering::SeqCst);
+        int || term
+    }
+
+    /// Whether an interrupt is currently flagged (does not clear).
+    #[must_use]
+    pub fn is_pending(&self) -> bool {
+        self.got_int.load(Ordering::SeqCst) || self.got_term.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for InterruptFlags {
+    fn drop(&mut self) {
+        use signal_hook::low_level;
+        for id in self.registrations.drain(..) {
+            let _ = low_level::unregister(id);
+        }
+    }
 }
 
 #[cfg(unix)]
