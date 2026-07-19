@@ -1163,3 +1163,37 @@ fn task_without_name_is_usage_error() {
         .failure()
         .code(2);
 }
+
+#[test]
+fn watch_without_name_is_usage_error() {
+    cargo_bin_cmd!("nxr")
+        .args(["watch"])
+        .assert()
+        .failure()
+        .code(2);
+}
+
+#[test]
+fn watch_unknown_name_exits_not_found() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "watch", "missing-app"])
+        .assert()
+        .failure()
+        .code(6);
+}
+
+#[test]
+fn watch_help_mentions_debounce() {
+    cargo_bin_cmd!("nxr")
+        .args(["watch", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--debounce"))
+        .stdout(predicate::str::contains("App or task name"));
+}

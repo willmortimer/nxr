@@ -179,8 +179,17 @@ pub enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Watch and rerun
-    Watch,
+    /// Watch and rerun on filesystem changes
+    Watch {
+        /// App or task name (task wins when both exist)
+        name: String,
+        /// Debounce window in milliseconds
+        #[arg(long = "debounce", default_value_t = crate::commands::watch::DEFAULT_DEBOUNCE_MS)]
+        debounce: u64,
+        /// Arguments forwarded to the app (or root task app)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Show task graph
     Graph {
         /// Task name
@@ -192,26 +201,4 @@ pub enum Command {
     /// Bare `nxr <app> [args…]` form (reserved names win first)
     #[command(external_subcommand)]
     External(Vec<String>),
-}
-
-impl Command {
-    /// Stable command label for unimplemented-command errors.
-    #[must_use]
-    pub const fn label(&self) -> &'static str {
-        match self {
-            Self::List => "list",
-            Self::Run { .. } => "run",
-            Self::Plan { .. } => "plan",
-            Self::Select => "select",
-            Self::Doctor { .. } => "doctor",
-            Self::Completion { .. } => "completion",
-            Self::Complete { .. } => "__complete",
-            Self::Manpage => "__manpage",
-            Self::Inspect { .. } => "inspect",
-            Self::Task { .. } => "task",
-            Self::Watch => "watch",
-            Self::Graph { .. } => "graph",
-            Self::External(_) => "external",
-        }
-    }
 }

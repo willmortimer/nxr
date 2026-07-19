@@ -18,8 +18,7 @@ use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
 use crate::cli::{Cli, Command, InspectSubcommand};
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
-    UnimplementedCommandError, complete, completion, doctor, graph, inspect, list, manpage, plan,
-    run, select, task,
+    complete, completion, doctor, graph, inspect, list, manpage, plan, run, select, task, watch,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -72,7 +71,7 @@ enum RunError {
     #[error(transparent)]
     Inspect(#[from] inspect::InspectError),
     #[error(transparent)]
-    Unimplemented(#[from] UnimplementedCommandError),
+    Watch(#[from] watch::WatchCommandError),
 }
 
 impl RunError {
@@ -89,8 +88,8 @@ impl RunError {
             Self::Manpage(_) => manpage::ManpageError::exit_code(),
             Self::Graph(error) => error.exit_code(),
             Self::Inspect(error) => error.exit_code(),
+            Self::Watch(error) => error.exit_code(),
             Self::MissingAppName | Self::Usage(_) | Self::FlakeAppRef(_) => exit::USAGE,
-            Self::Unimplemented(_) => UnimplementedCommandError::exit_code(),
         }
     }
 }
@@ -181,6 +180,15 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             Ok(exit::SUCCESS)
         }
         Some(Command::Inspect { target }) => run_inspect(cli, target.as_ref(), runner),
+        Some(Command::Watch {
+            name,
+            debounce,
+            args,
+        }) => {
+            let request = watch_request(cli, name, args, *debounce)?;
+            watch::run(&request, runner)?;
+            Ok(exit::SUCCESS)
+        }
         Some(Command::Graph { task, format }) => {
             let request = graph::GraphRequest {
                 flake_arg: cli.flake.as_deref(),
@@ -190,10 +198,6 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             graph::run(&request, *format, cli.json, runner)?;
             Ok(exit::SUCCESS)
         }
-        Some(Command::Watch) => Err(UnimplementedCommandError {
-            command: Command::Watch.label(),
-        }
-        .into()),
     }
 }
 
@@ -269,6 +273,24 @@ fn task_request<'a>(
         root: cli.root,
         cwd: cli.cwd.as_deref(),
         environment_policy: environment_policy_from_cli(cli)?,
+    })
+}
+
+fn watch_request<'a>(
+    cli: &'a Cli,
+    name: &'a str,
+    args: &'a [String],
+    debounce_ms: u64,
+) -> Result<watch::WatchRequest<'a>, RunError> {
+    Ok(watch::WatchRequest {
+        flake_arg: cli.flake.as_deref(),
+        nix_override: cli.nix.as_deref(),
+        name,
+        args,
+        root: cli.root,
+        cwd: cli.cwd.as_deref(),
+        environment_policy: environment_policy_from_cli(cli)?,
+        debounce: std::time::Duration::from_millis(debounce_ms),
     })
 }
 
