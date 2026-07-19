@@ -9,6 +9,7 @@ description = "Filesystem watch and restart orchestration for nxr"
 
 [dependencies]
 camino = { workspace = true }
+globset = { workspace = true }
 notify = { workspace = true }
 nxr-core = { path = "../nxr-core" }
 thiserror = { workspace = true }

@@ -1,14 +1,16 @@
 //! `nxr watch` — flake-root filesystem watch with kill+rerun generations.
 
-use std::io;
+use std::io::{self, Write};
 use std::time::Duration;
 
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
 use nxr_nix::{AppNotFoundError, NixError, TaskDiscoveryError, resolve_app_by_name};
-use nxr_process::{ChildSession, InterruptFlags, spawn_in};
+use nxr_process::{InterruptFlags, Supervisor, spawn_in};
 use nxr_task::{PlanError, TaskDocument, plan_serial};
-use nxr_watch::{Generation, WatchConfig, WatchError, WatchPoll, WatchSession};
+use nxr_watch::{
+    Generation, PathFilterError, PathFilters, WatchConfig, WatchError, WatchPoll, WatchSession,
+};
 
 use crate::commands::common::{
     AppRequest, PrepareError, PreparedPlan, build_adapter, current_invocation_directory,
@@ -20,6 +22,41 @@ use crate::runner_output::RunnerOutput;
 
 /// Default debounce when the CLI omits `--debounce`.
 pub const DEFAULT_DEBOUNCE_MS: u64 = 300;
+
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+
+/// Watch-specific CLI options shared by `watch`, `run --watch`, and `task --watch`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WatchOptions {
+    pub debounce: Duration,
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+    pub clear: bool,
+}
+
+impl Default for WatchOptions {
+    fn default() -> Self {
+        Self {
+            debounce: Duration::from_millis(DEFAULT_DEBOUNCE_MS),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            clear: false,
+        }
+    }
+}
+
+impl WatchOptions {
+    /// Build options from `nxr watch` CLI flags.
+    #[must_use]
+    pub fn from_cli(debounce_ms: u64, include: &[String], exclude: &[String], clear: bool) -> Self {
+        Self {
+            debounce: Duration::from_millis(debounce_ms),
+            include: include.to_vec(),
+            exclude: exclude.to_vec(),
+            clear,
+        }
+    }
+}
 
 /// Inputs for watch mode.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -33,7 +70,7 @@ pub struct WatchRequest<'a> {
     pub cwd: Option<&'a str>,
     pub shell: Option<&'a str>,
     pub environment_policy: EnvironmentPolicy,
-    pub debounce: Duration,
+    pub options: WatchOptions,
 }
 
 /// Errors while watching and re-running a target.
@@ -53,6 +90,8 @@ pub enum WatchCommandError {
     NotFound(#[from] AppNotFoundError),
     #[error(transparent)]
     Watch(#[from] WatchError),
+    #[error(transparent)]
+    Filter(#[from] PathFilterError),
     #[error("nxr watch requires a local flake path (got a remote reference)")]
     RemoteFlake,
     #[error("failed to supervise watch generation: {0}")]
@@ -71,7 +110,7 @@ impl WatchCommandError {
             Self::Discovery(error) => error.exit_code(),
             Self::Plan(error) => plan_exit_code(error),
             Self::NotFound(error) => error.exit_code(),
-            Self::Watch(_) | Self::RemoteFlake => exit::DISCOVERY,
+            Self::Watch(_) | Self::Filter(_) | Self::RemoteFlake => exit::DISCOVERY,
             Self::Supervision(_) | Self::Io(_) => exit::PROCESS_SUPERVISION,
         }
     }
@@ -129,9 +168,11 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
         }
     };
 
+    let filters = PathFilters::new(&request.options.include, &request.options.exclude)?;
     let mut session = WatchSession::start(&WatchConfig {
         root: watch_root.clone(),
-        debounce: request.debounce,
+        debounce: request.options.debounce,
+        filters,
     })?;
     let interrupts = InterruptFlags::install().map_err(WatchCommandError::Supervision)?;
     let mut generation = Generation::new();
@@ -140,12 +181,16 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
         .info(format!(
             "watching {} for changes (debounce {}ms); Ctrl-C to stop",
             watch_root,
-            request.debounce.as_millis()
+            request.options.debounce.as_millis()
         ))
         .map_err(WatchCommandError::Io)?;
 
     loop {
         let generation_id = generation.bump();
+        if request.options.clear && generation_id > 1 {
+            clear_terminal().map_err(WatchCommandError::Io)?;
+        }
+
         runner
             .verbose(format!("watch generation {generation_id}"))
             .map_err(WatchCommandError::Io)?;
@@ -188,8 +233,8 @@ fn run_generation(
                 environment_policy: request.environment_policy.clone(),
             };
             let prepared = prepare_app_plan(&app_request)?;
-            let child = spawn_prepared(&prepared)?;
-            wait_session(child, session, interrupts)
+            let supervisor = spawn_prepared(&prepared)?;
+            wait_supervisor(supervisor, session, interrupts)
         }
         WatchTarget::Task { document, root } => {
             let order = plan_serial(&document.tasks, root)?;
@@ -226,8 +271,8 @@ fn run_generation(
                     environment_policy: request.environment_policy.clone(),
                 };
                 let prepared = prepare_app_plan(&app_request)?;
-                let child = spawn_prepared(&prepared)?;
-                match wait_session(child, session, interrupts)? {
+                let supervisor = spawn_prepared(&prepared)?;
+                match wait_supervisor(supervisor, session, interrupts)? {
                     GenerationOutcome::Idle => {}
                     other => return Ok(other),
                 }
@@ -237,39 +282,56 @@ fn run_generation(
     }
 }
 
-fn spawn_prepared(prepared: &PreparedPlan) -> Result<ChildSession, WatchCommandError> {
-    spawn_in(
+fn spawn_prepared(prepared: &PreparedPlan) -> Result<Supervisor, WatchCommandError> {
+    let child = spawn_in(
         prepared.nix.as_std_path(),
         &prepared.plan.command.arguments,
         Some(prepared.execution_directory.as_std_path()),
         &prepared.plan.environment_policy,
     )
-    .map_err(WatchCommandError::Supervision)
+    .map_err(WatchCommandError::Supervision)?;
+    let mut supervisor = Supervisor::new();
+    supervisor.add("watch", child);
+    Ok(supervisor)
 }
 
-fn wait_session(
-    mut child: ChildSession,
+fn wait_supervisor(
+    mut supervisor: Supervisor,
     session: &mut WatchSession,
     interrupts: &InterruptFlags,
 ) -> Result<GenerationOutcome, WatchCommandError> {
     loop {
         if interrupts.take_pending() {
-            let _ = child.terminate().map_err(WatchCommandError::Supervision)?;
+            let _ = supervisor
+                .shutdown_all(SHUTDOWN_GRACE)
+                .map_err(WatchCommandError::Supervision)?;
             return Ok(GenerationOutcome::Stopped);
         }
 
         match session.poll_restart(Duration::from_millis(50))? {
             WatchPoll::Restart => {
-                let _ = child.terminate().map_err(WatchCommandError::Supervision)?;
+                let _ = supervisor
+                    .shutdown_all(SHUTDOWN_GRACE)
+                    .map_err(WatchCommandError::Supervision)?;
                 return Ok(GenerationOutcome::Restart);
             }
             WatchPoll::Timeout => {}
         }
 
-        if let Some(_code) = child.try_wait().map_err(WatchCommandError::Supervision)? {
+        if supervisor
+            .try_wait_any()
+            .map_err(WatchCommandError::Supervision)?
+            .is_some()
+        {
             return Ok(GenerationOutcome::Idle);
         }
     }
+}
+
+fn clear_terminal() -> io::Result<()> {
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(b"\x1b[2J\x1b[H")?;
+    stdout.flush()
 }
 
 /// Resolve name as task-first for unit tests of the preference rule.
@@ -301,5 +363,13 @@ mod tests {
     #[test]
     fn default_debounce_ms_is_300() {
         assert_eq!(DEFAULT_DEBOUNCE_MS, 300);
+    }
+
+    #[test]
+    fn watch_options_default_matches_debounce_ms() {
+        assert_eq!(
+            WatchOptions::default().debounce,
+            Duration::from_millis(DEFAULT_DEBOUNCE_MS)
+        );
     }
 }

@@ -1,34 +1,37 @@
 //! Filesystem watch sessions with debounce for nxr generations.
 
-use std::path::Path;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8PathBuf;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use thiserror::Error;
 
+use crate::filter::{PathFilters, should_ignore_path};
 use crate::restart::Debouncer;
 
 /// Default debounce window for coalescing filesystem events.
 pub const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// Configuration for a watch session over a flake root.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct WatchConfig {
     /// Directory tree to watch (typically the flake root).
     pub root: Utf8PathBuf,
     /// Coalesce window before a restart is requested.
     pub debounce: Duration,
+    /// Optional include/exclude globs on top of built-in ignores.
+    pub filters: PathFilters,
 }
 
 impl WatchConfig {
-    /// Watch `root` with the default debounce window.
+    /// Watch `root` with the default debounce window and built-in ignores only.
     #[must_use]
     pub fn new(root: impl Into<Utf8PathBuf>) -> Self {
         Self {
             root: root.into(),
             debounce: DEFAULT_DEBOUNCE,
+            filters: PathFilters::none(),
         }
     }
 }
@@ -71,6 +74,7 @@ impl WatchSession {
     pub fn start(config: &WatchConfig) -> Result<Self, WatchError> {
         let (tx, rx) = mpsc::channel();
         let root = config.root.clone();
+        let filters = config.filters.clone();
         let mut watcher =
             notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
                 let Ok(event) = result else {
@@ -82,7 +86,7 @@ impl WatchSession {
                 if event
                     .paths
                     .iter()
-                    .any(|path| should_ignore_path(&root, path))
+                    .any(|path| should_ignore_path(&root, path, &filters))
                 {
                     return;
                 }
@@ -155,48 +159,13 @@ fn is_interesting_event(kind: EventKind) -> bool {
     )
 }
 
-/// Whether `path` should be ignored relative to the watch root.
-#[must_use]
-pub fn should_ignore_path(root: &Utf8Path, path: &Path) -> bool {
-    let Some(path) = Utf8Path::from_path(path) else {
-        return true;
-    };
-
-    // Never watch Nix store paths.
-    if path.starts_with("/nix/store") {
-        return true;
-    }
-
-    let relative = path.strip_prefix(root).unwrap_or(path);
-    relative.components().any(|component| {
-        let name = component.as_str();
-        name == ".git" || name == "target" || name == "result" || name.starts_with("result-")
-    })
-}
-
-/// Test helper: expose ignore logic with owned paths.
-#[cfg(test)]
-pub(crate) fn ignore_check(root: &str, path: &str) -> bool {
-    should_ignore_path(Utf8Path::new(root), Path::new(path))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filter::PathFilters;
     use std::fs;
     use std::thread;
     use tempfile::tempdir;
-
-    #[test]
-    fn ignores_git_target_and_result() {
-        let root = "/proj";
-        assert!(ignore_check(root, "/proj/.git/HEAD"));
-        assert!(ignore_check(root, "/proj/target/debug/nxr"));
-        assert!(ignore_check(root, "/proj/result"));
-        assert!(ignore_check(root, "/proj/result-1"));
-        assert!(ignore_check(root, "/nix/store/abc/bin/hello"));
-        assert!(!ignore_check(root, "/proj/src/main.rs"));
-    }
 
     #[test]
     fn debounce_coalesces_rapid_marks() {
@@ -217,6 +186,7 @@ mod tests {
         let mut session = WatchSession::start(&WatchConfig {
             root: root.clone(),
             debounce: Duration::from_millis(50),
+            filters: PathFilters::none(),
         })
         .expect("start watch");
 

@@ -140,6 +140,12 @@ pub enum Command {
     Run {
         /// App name
         app: String,
+        /// Watch flake root and rerun on changes
+        #[arg(long = "watch")]
+        watch: bool,
+        /// Debounce window in milliseconds (`--watch` only)
+        #[arg(long = "debounce", requires = "watch")]
+        debounce: Option<u64>,
         /// Arguments forwarded to the app (one leading `--` is stripped)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -192,6 +198,12 @@ pub enum Command {
         /// Continue independent work after a failure (default: fail-fast)
         #[arg(long = "keep-going")]
         keep_going: bool,
+        /// Watch flake root and rerun on changes
+        #[arg(long = "watch")]
+        watch: bool,
+        /// Debounce window in milliseconds (`--watch` only)
+        #[arg(long = "debounce", requires = "watch")]
+        debounce: Option<u64>,
         /// Task name
         task: String,
         /// Arguments forwarded to the root task's app only (MVP)
@@ -205,6 +217,15 @@ pub enum Command {
         /// Debounce window in milliseconds
         #[arg(long = "debounce", default_value_t = crate::commands::watch::DEFAULT_DEBOUNCE_MS)]
         debounce: u64,
+        /// Only restart when a changed path matches this glob (repeatable)
+        #[arg(long = "include", value_name = "GLOB")]
+        include: Vec<String>,
+        /// Ignore changes under this glob (repeatable; built-in ignores still apply)
+        #[arg(long = "exclude", value_name = "GLOB")]
+        exclude: Vec<String>,
+        /// Clear the terminal before each new generation
+        #[arg(long = "clear")]
+        clear: bool,
         /// Arguments forwarded to the app (or root task app)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,

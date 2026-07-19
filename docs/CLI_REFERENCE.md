@@ -60,9 +60,13 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr task <name> [args…]` | Run a task’s serial `dependsOn` chain |
 | `nxr graph <name>` | Print task plan (text) |
 | `nxr graph <name> --format mermaid` | Mermaid flowchart |
-| `nxr watch <name> [--debounce <ms>]` | Watch flake root; kill+rerun app or task |
+| `nxr watch <name> [--debounce <ms>] [--include <glob>]… [--exclude <glob>]… [--clear]` | Watch flake root; kill+rerun app or task |
+| `nxr run <app> --watch [--debounce <ms>]` | Alias into watch for a single app |
+| `nxr task <name> --watch [--debounce <ms>]` | Alias into watch for a task (serial chain) |
 
 When `nxr watch` / name resolution finds both a task and an app with the same name, the **task** wins.
+
+`--include` restricts restarts to paths matching at least one glob; `--exclude` adds ignores on top of built-in skips (`.git`, `target`, `result*`, `/nix/store`). With no `--include`, any non-ignored path under the flake root can trigger a restart.
 
 ## Examples
 
@@ -79,6 +83,9 @@ nxr inspect
 nxr task ci --dry-run
 nxr graph ci --format mermaid
 nxr watch test --debounce 300
+nxr watch dev --include 'src/**' --exclude 'src/generated/**' --clear
+nxr run test --watch
+nxr task dev --watch --debounce 500
 nxr completion zsh > ~/.zfunc/_nxr
 
 # Packaging / maintainers: generate man page

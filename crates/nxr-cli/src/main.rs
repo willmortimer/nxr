@@ -120,14 +120,12 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             Ok(exit::SUCCESS)
         }
         Some(Command::Select) => run_with_selected_app(cli, &[], runner),
-        Some(Command::Run { app, args }) => {
-            if cli.select {
-                run_with_selected_app(cli, args, runner)
-            } else {
-                let request = app_request(cli, app, args)?;
-                run::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
-            }
-        }
+        Some(Command::Run {
+            app,
+            watch,
+            debounce,
+            args,
+        }) => dispatch_run_command(cli, app, *watch, *debounce, args, runner),
         Some(Command::Plan { app, args }) => {
             let request = app_request(cli, app, args)?;
             plan::run(&request, cli.json, runner)?;
@@ -136,38 +134,30 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
         Some(Command::Task {
             jobs,
             keep_going,
+            watch,
+            debounce,
             task: name,
             args,
         }) => {
-            let request = task_request(cli, name, args, *jobs, *keep_going)?;
-            task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+            if *watch {
+                execute_watch(
+                    cli,
+                    name,
+                    args,
+                    watch_options_from_debounce(*debounce),
+                    runner,
+                )
+            } else {
+                let request = task_request(cli, name, args, *jobs, *keep_going)?;
+                task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+            }
         }
         Some(Command::Doctor {
             clean_env,
             all,
             app,
-        }) => {
-            let (flake_arg, app) = resolve_doctor_app(cli, app.as_deref())?;
-            let request = doctor::DoctorRequest {
-                flake_arg,
-                nix_override: cli.nix.as_deref(),
-                app,
-                clean_env: *clean_env || cli.clean_env,
-                all: *all,
-                root: cli.root,
-                cwd: cli.cwd.as_deref(),
-            };
-            doctor::run(request, cli.json, runner).map_err(RunError::from)
-        }
-        Some(Command::External(tokens)) => {
-            let (app, forwarded) = split_external(tokens)?;
-            if cli.select {
-                run_with_selected_app(cli, forwarded, runner)
-            } else {
-                let request = app_request(cli, app, forwarded)?;
-                run::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
-            }
-        }
+        }) => dispatch_doctor(cli, *clean_env, *all, app.as_deref(), runner),
+        Some(Command::External(tokens)) => dispatch_external(cli, tokens, runner),
         Some(Command::Completion { shell }) => {
             completion::run(*shell)?;
             Ok(exit::SUCCESS)
@@ -189,12 +179,17 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
         Some(Command::Watch {
             name,
             debounce,
+            include,
+            exclude,
+            clear,
             args,
-        }) => {
-            let request = watch_request(cli, name, args, *debounce)?;
-            watch::run(&request, runner)?;
-            Ok(exit::SUCCESS)
-        }
+        }) => execute_watch(
+            cli,
+            name,
+            args,
+            watch::WatchOptions::from_cli(*debounce, include, exclude, *clear),
+            runner,
+        ),
         Some(Command::Graph { task, format }) => {
             let request = graph::GraphRequest {
                 flake_arg: cli.flake.as_deref(),
@@ -290,11 +285,85 @@ fn task_request<'a>(
     })
 }
 
+fn dispatch_doctor(
+    cli: &Cli,
+    clean_env: bool,
+    all: bool,
+    app: Option<&str>,
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    let (flake_arg, app) = resolve_doctor_app(cli, app)?;
+    let request = doctor::DoctorRequest {
+        flake_arg,
+        nix_override: cli.nix.as_deref(),
+        app,
+        clean_env: clean_env || cli.clean_env,
+        all,
+        root: cli.root,
+        cwd: cli.cwd.as_deref(),
+    };
+    doctor::run(request, cli.json, runner).map_err(RunError::from)
+}
+
+fn dispatch_external(cli: &Cli, tokens: &[String], runner: RunnerOutput) -> Result<i32, RunError> {
+    let (app, forwarded) = split_external(tokens)?;
+    if cli.select {
+        run_with_selected_app(cli, forwarded, runner)
+    } else {
+        let request = app_request(cli, app, forwarded)?;
+        run::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+    }
+}
+
+fn dispatch_run_command(
+    cli: &Cli,
+    app: &str,
+    watch: bool,
+    debounce: Option<u64>,
+    args: &[String],
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    if watch {
+        return execute_watch(
+            cli,
+            app,
+            args,
+            watch_options_from_debounce(debounce),
+            runner,
+        );
+    }
+    if cli.select {
+        return run_with_selected_app(cli, args, runner);
+    }
+    let request = app_request(cli, app, args)?;
+    run::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+}
+
+fn execute_watch(
+    cli: &Cli,
+    name: &str,
+    args: &[String],
+    options: watch::WatchOptions,
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    let request = watch_request(cli, name, args, options)?;
+    watch::run(&request, runner)?;
+    Ok(exit::SUCCESS)
+}
+
+fn watch_options_from_debounce(debounce: Option<u64>) -> watch::WatchOptions {
+    let mut options = watch::WatchOptions::default();
+    if let Some(ms) = debounce {
+        options.debounce = std::time::Duration::from_millis(ms);
+    }
+    options
+}
+
 fn watch_request<'a>(
     cli: &'a Cli,
     name: &'a str,
     args: &'a [String],
-    debounce_ms: u64,
+    options: watch::WatchOptions,
 ) -> Result<watch::WatchRequest<'a>, RunError> {
     Ok(watch::WatchRequest {
         flake_arg: cli.flake.as_deref(),
@@ -305,7 +374,7 @@ fn watch_request<'a>(
         cwd: cli.cwd.as_deref(),
         shell: cli.dev_shell.as_deref(),
         environment_policy: environment_policy_from_cli(cli)?,
-        debounce: std::time::Duration::from_millis(debounce_ms),
+        options,
     })
 }
 

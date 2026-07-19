@@ -1262,7 +1262,28 @@ fn watch_help_mentions_debounce() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--debounce"))
+        .stdout(predicate::str::contains("--include"))
+        .stdout(predicate::str::contains("--exclude"))
+        .stdout(predicate::str::contains("--clear"))
         .stdout(predicate::str::contains("App or task name"));
+}
+
+#[test]
+fn run_help_mentions_watch() {
+    cargo_bin_cmd!("nxr")
+        .args(["run", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--watch"));
+}
+
+#[test]
+fn task_help_mentions_watch() {
+    cargo_bin_cmd!("nxr")
+        .args(["task", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--watch"));
 }
 
 #[test]
