@@ -36,7 +36,7 @@ for the V2.0 release line:
 |---|---|---|
 | Task document | [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json) | **Frozen** — `schema_version: 1` on flake output `nxr.<system>` |
 | Execution plan | [`schemas/execution-plan-v1.schema.json`](../schemas/execution-plan-v1.schema.json) | **Frozen** — internal envelope for `nxr plan` task fallback and scheduling |
-| Execution events | *(pending `schemas/events-v1.schema.json`)* | **Frozen intent** — the Rust [`Event`](../crates/nxr-task/src/events.rs) enum is the source of truth until the JSON schema lands (Phase 16 / X1) |
+| Execution events | [`schemas/events-v1.schema.json`](../schemas/events-v1.schema.json) | **Frozen** — matches the Rust [`Event`](../crates/nxr-task/src/events.rs) enum (`type`-tagged JSON) |
 
 Policy for V2.x:
 
@@ -50,6 +50,27 @@ Policy for V2.x:
 
 See [TASKS.md](TASKS.md) for author-facing task fields and V2 argument/stdin
 freeze.
+
+## Extension points (V2.x bridge)
+
+V3 may grow adapters and negotiated Nix capabilities without creating a second
+operation authority:
+
+- **Metadata adapters** — optional readers for adjacent project metadata (for
+  example devenv or mission-control) may suggest or project task graphs, but
+  flake apps (`apps.<system>.<name>`) remain the only canonical leaf
+  operations.
+- **Capability-negotiated Nix** — the Nix adapter detects available CLI
+  features at runtime rather than hard-coding a floor; missing optional
+  capabilities degrade gracefully (see [ARCHITECTURE.md](ARCHITECTURE.md) §4.3
+  and §9).
+- **Event / schema surfaces** — versioned JSON schemas (`task-v1`,
+  `execution-plan-v1`, `events-v1`) are the stable machine-readable contracts;
+  consumers must ignore additive optional fields within a major.
+
+Adapters must not replace flake apps, introduce a second toolchain resolver, or
+make standard flake outputs subordinate to an opaque runner database. Direct
+`nix run` remains the escape hatch.
 
 ## Reporting gaps
 

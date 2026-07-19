@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/events-v1.schema.json",
+  "title": "nxr execution event",
+  "description": "FROZEN (V2.0): single execution-bus event matching the Rust `Event` enum in nxr-task (internally tagged on `type`, snake_case). Additive optional fields may appear in minor releases; breaking changes require a new major schema file.",
+  "oneOf": [
+    { "$ref": "#/$defs/plan_created" },
+    { "$ref": "#/$defs/node_queued" },
+    { "$ref": "#/$defs/node_started" },
+    { "$ref": "#/$defs/stdout_chunk" },
+    { "$ref": "#/$defs/stderr_chunk" },
+    { "$ref": "#/$defs/node_exited" },
+    { "$ref": "#/$defs/run_completed" },
+    { "$ref": "#/$defs/diagnostic" }
+  ],
+  "$defs": {
+    "plan_created": {
+      "type": "object",
+      "required": ["type", "root", "node_count"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "plan_created"
+        },
+        "root": {
+          "type": "string",
+          "description": "Root task id the plan was built for."
+        },
+        "node_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of nodes in the plan."
+        }
+      }
+    },
+    "node_queued": {
+      "type": "object",
+      "required": ["type", "node"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "node_queued"
+        },
+        "node": {
+          "type": "string",
+          "description": "Task id."
+        }
+      }
+    },
+    "node_started": {
+      "type": "object",
+      "required": ["type", "node"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "node_started"
+        },
+        "node": {
+          "type": "string",
+          "description": "Task id."
+        }
+      }
+    },
+    "stdout_chunk": {
+      "type": "object",
+      "required": ["type", "node", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "stdout_chunk"
+        },
+        "node": {
+          "type": "string",
+          "description": "Task id."
+        },
+        "text": {
+          "type": "string",
+          "description": "UTF-8 text (lossy conversion is the emitter's responsibility)."
+        }
+      }
+    },
+    "stderr_chunk": {
+      "type": "object",
+      "required": ["type", "node", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "stderr_chunk"
+        },
+        "node": {
+          "type": "string",
+          "description": "Task id."
+        },
+        "text": {
+          "type": "string",
+          "description": "UTF-8 text (lossy conversion is the emitter's responsibility)."
+        }
+      }
+    },
+    "node_exited": {
+      "type": "object",
+      "required": ["type", "node", "code"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "node_exited"
+        },
+        "node": {
+          "type": "string",
+          "description": "Task id."
+        },
+        "code": {
+          "type": ["integer", "null"],
+          "description": "Process exit code (`null` when terminated by signal / unavailable)."
+        }
+      }
+    },
+    "run_completed": {
+      "type": "object",
+      "required": ["type", "success"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "run_completed"
+        },
+        "success": {
+          "type": "boolean",
+          "description": "Whether every required node succeeded under the active failure policy."
+        }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "required": ["type", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "diagnostic"
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable message (already sanitized for terminals by the emitter)."
+        }
+      }
+    }
+  }
+}

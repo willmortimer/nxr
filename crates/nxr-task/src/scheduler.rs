@@ -409,6 +409,8 @@ mod tests {
 
     #[test]
     fn large_linear_dag_schedules_successfully() {
+        // In-process smoke (no Nix): plan + schedule a mid-size DAG.
+        // Keep this faster than the timed CI-budget sibling below.
         const NODE_COUNT: usize = 300;
         let mut tasks = BTreeMap::new();
         tasks.insert("n0".to_owned(), task(&[]));
@@ -435,6 +437,87 @@ mod tests {
         }
         assert!(sched.outcome().success);
         assert_eq!(sched.outcome().failed.len(), 0);
+    }
+
+    #[test]
+    fn large_dag_schedule_within_ci_budget() {
+        use std::time::{Duration, Instant};
+
+        // Synthetic wide+deep DAG (800 nodes) scheduled in-process with no Nix.
+        // Upper bound is intentionally generous for slow CI runners.
+        const NODE_COUNT: usize = 800;
+        const MAX_ELAPSED: Duration = Duration::from_secs(5);
+
+        let started = Instant::now();
+
+        let mut tasks = BTreeMap::new();
+        // Layer 0: 16 independent roots.
+        for index in 0..16 {
+            tasks.insert(format!("L0_{index:03}"), task(&[]));
+        }
+        // Subsequent layers: each node depends on two parents in the prior layer.
+        let mut layer_size = 16usize;
+        let mut total = 16usize;
+        let mut layer = 0usize;
+        while total < NODE_COUNT {
+            layer += 1;
+            let remaining = NODE_COUNT - total;
+            let this_layer = remaining.min(layer_size * 2).max(1);
+            for index in 0..this_layer {
+                let left = format!("L{}_{:03}", layer - 1, index % layer_size);
+                let right = format!(
+                    "L{}_{:03}",
+                    layer - 1,
+                    (index + layer_size / 2) % layer_size
+                );
+                let id = format!("L{layer}_{index:03}");
+                // Prefer two parents when distinct; otherwise a single edge.
+                if left == right {
+                    tasks.insert(id, task(&[left.as_str()]));
+                } else {
+                    tasks.insert(id, task(&[left.as_str(), right.as_str()]));
+                }
+            }
+            total += this_layer;
+            layer_size = this_layer;
+        }
+        assert_eq!(tasks.len(), NODE_COUNT);
+
+        // Reachability from a single sink that depends on the last layer.
+        let last_layer = layer;
+        let mut sink_deps: Vec<String> = (0..layer_size)
+            .map(|index| format!("L{last_layer}_{index:03}"))
+            .collect();
+        sink_deps.sort();
+        let sink_dep_refs: Vec<&str> = sink_deps.iter().map(String::as_str).collect();
+        tasks.insert("sink".to_owned(), task(&sink_dep_refs));
+
+        let plan = build_serial_plan(&tasks, "sink").expect("plan");
+        assert_eq!(plan.nodes.len(), NODE_COUNT + 1);
+
+        let mut sched = Scheduler::new(&plan, 32).expect("sched");
+        let mut pending = sched.schedule_ready();
+        while !sched.is_finished() {
+            while let Some(id) = pending.pop() {
+                pending.extend(sched.complete(&id, 0).expect("complete"));
+            }
+            pending.extend(sched.schedule_ready());
+            assert!(
+                !pending.is_empty() || sched.is_finished(),
+                "scheduler stalled with no ready or running work"
+            );
+        }
+
+        let elapsed = started.elapsed();
+        assert!(
+            sched.outcome().success,
+            "large DAG schedule failed: {:?}",
+            sched.outcome()
+        );
+        assert!(
+            elapsed < MAX_ELAPSED,
+            "scheduling {NODE_COUNT}-node DAG took {elapsed:?} (budget {MAX_ELAPSED:?})"
+        );
     }
 
     #[test]

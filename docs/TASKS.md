@@ -142,7 +142,7 @@ execution-event vocabulary are **frozen** for the V2.0 release:
 |---|---|---|
 | Task document | [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json) | Emitted at `nxr.<system>`; unsupported majors rejected |
 | Execution plan | [`schemas/execution-plan-v1.schema.json`](../schemas/execution-plan-v1.schema.json) | Built for `nxr plan <task>` and the task scheduler |
-| Events | Rust `Event` in `nxr-task` | JSON schema file deferred to Phase 16; enum is authoritative until then |
+| Events | [`schemas/events-v1.schema.json`](../schemas/events-v1.schema.json) | Matches Rust `Event` in `nxr-task` (`type`-tagged JSON) |
 
 Additive optional fields may appear within major version 1. Breaking changes
 require a new major `schema_version`. See [COMPATIBILITY.md](COMPATIBILITY.md).

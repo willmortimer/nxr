@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- V2.x bridge (Phase 16 slim): [`schemas/events-v1.schema.json`](schemas/events-v1.schema.json) aligned with Rust `Event`, extension-point notes in [COMPATIBILITY.md](docs/COMPATIBILITY.md), and a timed large-DAG scheduler CI budget test.
+
 ## [2.0.0] - 2026-07-19
 
 V2.0 orchestration release (Phases 7–15): parallel task DAG, supervisor, watch v2, shell integration, and schema freeze.
@@ -20,7 +24,7 @@ V2.0 orchestration release (Phases 7–15): parallel task DAG, supervisor, watch
 - Flake-parts `shellIntegration` module: `nxr` + session hooks under `share/nxr/shell/`.
 - `nxr graph --format dot` for stable Graphviz output.
 - Soak/stress tests: watcher debounce burst coalescing, supervisor multi-child TERM→KILL, large synthetic DAG scheduler smoke.
-- **Schema freeze (V2.0):** `task-v1`, `execution-plan-v1`, and events vocabulary documented in [COMPATIBILITY.md](docs/COMPATIBILITY.md); Rust `Event` enum authoritative until `events-v1` JSON schema (Phase 16).
+- **Schema freeze (V2.0):** `task-v1`, `execution-plan-v1`, and events vocabulary documented in [COMPATIBILITY.md](docs/COMPATIBILITY.md); `events-v1` JSON schema published in the V2.x bridge (see Unreleased).
 
 ### Changed
 

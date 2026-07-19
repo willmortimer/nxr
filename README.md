@@ -154,6 +154,6 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**V2.0.0 ready** (no git tag yet) — V1 app runner plus orchestration V2: parallel `nxr task -j` / `--keep-going`, labeled `--output` + `--events jsonl`, multi-child supervisor, `--shell`, watch globs/`--clear`/`run|task --watch`, task aliases/categories/`plan` fallback, flake-parts shell integration, `graph --format dot`, and frozen `task-v1` / `execution-plan-v1` / events vocabulary.
+**V2.0.0 ready** (no git tag yet) — V1 app runner plus orchestration V2: parallel `nxr task -j` / `--keep-going`, labeled `--output` + `--events jsonl`, multi-child supervisor, `--shell`, watch globs/`--clear`/`run|task --watch`, task aliases/categories/`plan` fallback, flake-parts shell integration, `graph --format dot`, and frozen `task-v1` / `execution-plan-v1` / `events-v1`.
 
-Ahead on the roadmap: Phase 16 slim bridge (`events-v1` JSON schema, large-graph perf). A Ratatui “lazygit-style” dashboard is **V3.5 / Phase 35** in [docs/ROADMAP.md](docs/ROADMAP.md) — see that doc before adding a TUI crate. Full history: [CHANGELOG.md](CHANGELOG.md).
+V2.x bridge landed: published `events-v1` schema, extension-point notes in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md), and an in-process large-DAG schedule smoke budget. A Ratatui “lazygit-style” dashboard is **V3.5 / Phase 35** in [docs/ROADMAP.md](docs/ROADMAP.md) — see that doc before adding a TUI crate. Full history: [CHANGELOG.md](CHANGELOG.md).

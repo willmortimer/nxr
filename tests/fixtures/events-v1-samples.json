@@ -1,0 +1,43 @@
+[
+  {
+    "type": "plan_created",
+    "root": "ci",
+    "node_count": 4
+  },
+  {
+    "type": "node_queued",
+    "node": "fmt"
+  },
+  {
+    "type": "node_started",
+    "node": "fmt"
+  },
+  {
+    "type": "stdout_chunk",
+    "node": "fmt",
+    "text": "ok\n"
+  },
+  {
+    "type": "stderr_chunk",
+    "node": "fmt",
+    "text": "warn"
+  },
+  {
+    "type": "node_exited",
+    "node": "fmt",
+    "code": 0
+  },
+  {
+    "type": "node_exited",
+    "node": "lint",
+    "code": null
+  },
+  {
+    "type": "run_completed",
+    "success": true
+  },
+  {
+    "type": "diagnostic",
+    "message": "cycle avoided"
+  }
+]
