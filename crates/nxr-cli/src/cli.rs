@@ -49,6 +49,10 @@ pub struct Cli {
     #[arg(long = "refresh", global = true)]
     pub refresh: bool,
 
+    /// Execute through a named `devShell` (`nix develop <flake>#<name> -c <nix> run …`)
+    #[arg(long = "shell", global = true, value_name = "NAME")]
+    pub dev_shell: Option<String>,
+
     /// Run with reduced inherited environment
     #[arg(long = "clean-env", global = true)]
     pub clean_env: bool,

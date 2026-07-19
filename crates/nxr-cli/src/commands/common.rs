@@ -7,7 +7,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use nxr_core::diagnostics::exit;
 use nxr_core::{App, EnvironmentPolicy, Plan, PlanCommand, PlanKind};
 use nxr_nix::{
-    AppNotFoundError, NixAdapter, NixError, detect_system, nix_run_args, resolve_app_by_name,
+    AppNotFoundError, NixAdapter, NixError, detect_system, nix_develop_wrap_run_args, nix_run_args,
+    resolve_app_by_name,
 };
 
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
@@ -21,6 +22,7 @@ pub struct AppRequest<'a> {
     pub args: &'a [String],
     pub root: bool,
     pub cwd: Option<&'a str>,
+    pub shell: Option<&'a str>,
     pub environment_policy: EnvironmentPolicy,
 }
 
@@ -118,13 +120,13 @@ pub fn prepare_app_plan(request: &AppRequest<'_>) -> Result<PreparedPlan, Prepar
     let app = resolve_app_by_name(&apps, request.app)?;
     let forwarded = strip_one_separator(request.args);
     let plan = build_plan(
+        request,
         &flake,
         &adapter,
         app,
         &invocation_cwd,
         &execution_directory,
         &forwarded,
-        request.environment_policy.clone(),
     );
 
     Ok(PreparedPlan {
@@ -188,14 +190,22 @@ fn resolve_execution_directory(
 }
 
 fn build_plan(
+    request: &AppRequest<'_>,
     flake: &FlakeSelection,
     adapter: &NixAdapter,
     app: &App,
     invocation_directory: &Utf8Path,
     execution_directory: &Utf8Path,
     forwarded: &[String],
-    environment_policy: EnvironmentPolicy,
 ) -> Plan {
+    let run_argv = nix_run_args(&flake.nix_ref, &app.name, forwarded);
+    let command_arguments = match request.shell {
+        Some(shell_name) => {
+            nix_develop_wrap_run_args(adapter.nix.as_str(), &flake.nix_ref, shell_name, &run_argv)
+        }
+        None => run_argv,
+    };
+
     Plan {
         schema_version: Plan::SCHEMA_VERSION,
         kind: PlanKind::App,
@@ -205,10 +215,11 @@ fn build_plan(
         attr_path: app.attr_path.clone(),
         invocation_directory: invocation_directory.as_str().to_owned(),
         execution_directory: execution_directory.as_str().to_owned(),
-        environment_policy,
+        shell: request.shell.map(str::to_owned),
+        environment_policy: request.environment_policy.clone(),
         command: PlanCommand {
             program: adapter.nix.as_str().to_owned(),
-            arguments: nix_run_args(&flake.nix_ref, &app.name, forwarded),
+            arguments: command_arguments,
         },
         forwarded_arguments: forwarded.to_vec(),
     }
@@ -218,7 +229,9 @@ fn build_plan(
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{PrepareError, build_plan, resolve_execution_directory, strip_one_separator};
+    use super::{
+        AppRequest, PrepareError, build_plan, resolve_execution_directory, strip_one_separator,
+    };
     use crate::flake::FlakeSelection;
     use nxr_core::App;
     use nxr_nix::NixAdapter;
@@ -279,14 +292,24 @@ mod tests {
             metadata: BTreeMap::new(),
         };
         let forwarded = strip_one_separator(&["--".to_owned(), "one".to_owned()]);
+        let request = AppRequest {
+            flake_arg: None,
+            nix_override: None,
+            app: "hello",
+            args: &["--".to_owned(), "one".to_owned()],
+            root: false,
+            cwd: None,
+            shell: None,
+            environment_policy: nxr_core::EnvironmentPolicy::Inherit,
+        };
         let plan = build_plan(
+            &request,
             &flake,
             &adapter,
             &app,
             camino::Utf8Path::new("/work"),
             camino::Utf8Path::new("/work"),
             &forwarded,
-            nxr_core::EnvironmentPolicy::Inherit,
         );
 
         assert_eq!(plan.schema_version, 1);
@@ -302,5 +325,59 @@ mod tests {
             ]
         );
         assert_eq!(plan.forwarded_arguments, vec!["one".to_owned()]);
+    }
+
+    #[test]
+    fn build_plan_with_shell_wraps_nix_run_in_develop() {
+        let flake = FlakeSelection {
+            display: "fixtures/named-dev-shells".to_owned(),
+            nix_ref: "/abs/fixtures/named-dev-shells".to_owned(),
+            local_root: Some(camino::Utf8PathBuf::from("/abs/fixtures/named-dev-shells")),
+        };
+        let adapter = NixAdapter::with_nix_and_system(
+            camino::Utf8PathBuf::from("/nix/bin/nix"),
+            "aarch64-darwin".to_owned(),
+        );
+        let app = App {
+            name: "shell-marker".to_owned(),
+            attr_path: "apps.aarch64-darwin.shell-marker".to_owned(),
+            flake_ref: flake.nix_ref.clone(),
+            system: "aarch64-darwin".to_owned(),
+            description: None,
+            is_default: false,
+            metadata: BTreeMap::new(),
+        };
+        let request = AppRequest {
+            flake_arg: None,
+            nix_override: None,
+            app: "shell-marker",
+            args: &[],
+            root: false,
+            cwd: None,
+            shell: Some("default"),
+            environment_policy: nxr_core::EnvironmentPolicy::Inherit,
+        };
+        let plan = build_plan(
+            &request,
+            &flake,
+            &adapter,
+            &app,
+            camino::Utf8Path::new("/work"),
+            camino::Utf8Path::new("/work"),
+            &[],
+        );
+
+        assert_eq!(plan.shell.as_deref(), Some("default"));
+        assert_eq!(
+            plan.command.arguments,
+            vec![
+                "develop".to_owned(),
+                "/abs/fixtures/named-dev-shells#default".to_owned(),
+                "-c".to_owned(),
+                "/nix/bin/nix".to_owned(),
+                "run".to_owned(),
+                "/abs/fixtures/named-dev-shells#shell-marker".to_owned(),
+            ]
+        );
     }
 }

@@ -9,7 +9,7 @@ These are small Nix flakes used to exercise `nxr` discovery and execution
 | [app-metadata](app-metadata/) | Apps with `meta.description` for listing UX |
 | [nested-directory](nested-directory/) | Flake with a deep subdirectory for CWD / discovery tests |
 | [broken-flake](broken-flake/) | Intentionally invalid flake for diagnostics |
-| [named-dev-shells](named-dev-shells/) | Placeholder for named `devShells` (later) |
+| [named-dev-shells](named-dev-shells/) | `devShells.default` + `shell-marker` app for `--shell` |
 | [task-dag](task-dag/) | Small task DAG (`fmt` → `test` → `ci`) via `nxr.<system>` |
 | [parallel-group](parallel-group/) | Placeholder for V2 parallel groups |
 | [watch-project](watch-project/) | Placeholder for V2 watch mode |
@@ -40,6 +40,8 @@ cargo run -p nxr-cli -- --flake fixtures/basic-apps run hello
 cargo run -p nxr-cli -- --flake fixtures/basic-apps plan hello --json
 cargo run -p nxr-cli -- --flake fixtures/basic-apps echo-args -- alpha beta
 cargo run -p nxr-cli -- --flake fixtures/basic-apps --dry-run fail
+cargo run -p nxr-cli -- --flake fixtures/named-dev-shells --shell default shell-marker
+cargo run -p nxr-cli -- --flake fixtures/named-dev-shells plan shell-marker --json
 (cd fixtures/nested-directory/deep/down/here && cargo run -p nxr-cli -- list)
 (cd fixtures/nested-directory/deep/down/here && cargo run -p nxr-cli -- pwd)
 (cd fixtures/nested-directory/deep/down/here && cargo run -p nxr-cli -- --root pwd)

@@ -57,9 +57,36 @@ pub fn nix_run_args(
     args
 }
 
+/// Wrap a `nix run …` argv vector for execution inside a dev shell.
+///
+/// Equivalent to:
+/// `nix develop <flake_ref>#<shell_name> -c <nix_program> <nix_run_argv…>`
+///
+/// `<nix_run_argv…>` is the same vector passed to the outer `nix` invocation
+/// (for example `run <flake_ref>#<app> [-- <forwarded…>]`).
+#[must_use]
+pub fn nix_develop_wrap_run_args(
+    nix_program: &str,
+    flake_ref: &str,
+    shell_name: &str,
+    nix_run_argv: &[String],
+) -> Vec<String> {
+    let mut args = vec![
+        "develop".to_owned(),
+        format!("{flake_ref}#{shell_name}"),
+        "-c".to_owned(),
+        nix_program.to_owned(),
+    ];
+    args.extend_from_slice(nix_run_argv);
+    args
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{current_system_args, flake_eval_json_args, flake_show_args, nix_run_args};
+    use super::{
+        current_system_args, flake_eval_json_args, flake_show_args, nix_develop_wrap_run_args,
+        nix_run_args,
+    };
 
     #[test]
     fn current_system_argv_matches_nix_contract() {
@@ -139,6 +166,29 @@ mod tests {
                 "--".to_owned(),
                 "one".to_owned(),
                 "two".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn nix_develop_wrap_argv_prefixes_develop_and_forwards_run_argv() {
+        let run_argv = nix_run_args("./fixtures/basic-apps", "hello", &["one".to_owned()]);
+        assert_eq!(
+            nix_develop_wrap_run_args(
+                "/nix/bin/nix",
+                "./fixtures/basic-apps",
+                "default",
+                &run_argv
+            ),
+            vec![
+                "develop".to_owned(),
+                "./fixtures/basic-apps#default".to_owned(),
+                "-c".to_owned(),
+                "/nix/bin/nix".to_owned(),
+                "run".to_owned(),
+                "./fixtures/basic-apps#hello".to_owned(),
+                "--".to_owned(),
+                "one".to_owned(),
             ]
         );
     }

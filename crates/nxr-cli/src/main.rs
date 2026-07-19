@@ -256,6 +256,7 @@ fn app_request<'a>(
         args,
         root: cli.root,
         cwd: cli.cwd.as_deref(),
+        shell: cli.dev_shell.as_deref(),
         environment_policy: environment_policy_from_cli(cli)?,
     })
 }
@@ -272,6 +273,7 @@ fn task_request<'a>(
         args,
         root: cli.root,
         cwd: cli.cwd.as_deref(),
+        shell: cli.dev_shell.as_deref(),
         environment_policy: environment_policy_from_cli(cli)?,
     })
 }
@@ -289,6 +291,7 @@ fn watch_request<'a>(
         args,
         root: cli.root,
         cwd: cli.cwd.as_deref(),
+        shell: cli.dev_shell.as_deref(),
         environment_policy: environment_policy_from_cli(cli)?,
         debounce: std::time::Duration::from_millis(debounce_ms),
     })

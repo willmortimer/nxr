@@ -74,6 +74,9 @@ fn write_human_plan(writer: &mut impl Write, plan: &Plan) -> io::Result<()> {
         write!(writer, " {argument}")?;
     }
     writeln!(writer)?;
+    if let Some(shell) = &plan.shell {
+        writeln!(writer, "shell: {shell}")?;
+    }
     writeln!(writer, "execution_directory: {}", plan.execution_directory)?;
     Ok(())
 }
@@ -94,6 +97,7 @@ mod tests {
             attr_path: "apps.aarch64-darwin.hello".to_owned(),
             invocation_directory: "/project".to_owned(),
             execution_directory: "/project".to_owned(),
+            shell: None,
             environment_policy: EnvironmentPolicy::Inherit,
             command: PlanCommand {
                 program: "/nix/bin/nix".to_owned(),

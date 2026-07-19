@@ -300,6 +300,7 @@ fn collect_clean_env_findings(request: DoctorRequest<'_>, findings: &mut Vec<Dia
         args: &[],
         root: request.root,
         cwd: request.cwd,
+        shell: None,
         environment_policy: EnvironmentPolicy::Inherit,
     };
 

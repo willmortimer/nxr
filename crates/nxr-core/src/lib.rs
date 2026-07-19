@@ -106,6 +106,7 @@ mod tests {
             attr_path: "apps.aarch64-darwin.test".to_owned(),
             invocation_directory: invocation.to_owned(),
             execution_directory: invocation.to_owned(),
+            shell: None,
             environment_policy: EnvironmentPolicy::Inherit,
             command: PlanCommand {
                 program: "nix".to_owned(),
@@ -154,6 +155,7 @@ mod tests {
             attr_path: "apps.x86_64-linux.lint".to_owned(),
             invocation_directory: "/work".to_owned(),
             execution_directory: "/work".to_owned(),
+            shell: None,
             environment_policy: EnvironmentPolicy::Inherit,
             command: PlanCommand {
                 program: "nix".to_owned(),

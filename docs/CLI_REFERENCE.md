@@ -18,6 +18,7 @@ nxr <command> --help
     --nix <PATH>           Override Nix executable
 -s, --select               Open interactive app selector
     --refresh              Ignore nxr discovery cache
+    --shell <NAME>         Execute through named dev shell
     --clean-env            Run with reduced inherited environment
     --keep-env <NAME>      Preserve variable in clean mode (repeatable)
     --set-env <KEY=VALUE>  Set or replace a variable (repeatable)
@@ -72,6 +73,7 @@ nxr test -- --help
 nxr fixtures/basic-apps#hello
 nxr --flake ../other test
 nxr plan test --json
+nxr --shell default test
 nxr doctor --clean-env test
 nxr inspect
 nxr task ci --dry-run

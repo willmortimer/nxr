@@ -22,6 +22,7 @@ pub struct TaskRequest<'a> {
     pub args: &'a [String],
     pub root: bool,
     pub cwd: Option<&'a str>,
+    pub shell: Option<&'a str>,
     pub environment_policy: EnvironmentPolicy,
 }
 
@@ -118,6 +119,7 @@ pub fn execute(
             args: forwarded,
             root: request.root,
             cwd: request.cwd,
+            shell: request.shell,
             environment_policy: request.environment_policy.clone(),
         };
 

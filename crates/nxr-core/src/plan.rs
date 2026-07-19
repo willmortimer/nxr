@@ -29,6 +29,9 @@ pub struct Plan {
     pub attr_path: String,
     pub invocation_directory: String,
     pub execution_directory: String,
+    /// Selected `devShell` name when `--shell` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
     pub environment_policy: EnvironmentPolicy,
     pub command: PlanCommand,
     pub forwarded_arguments: Vec<String>,

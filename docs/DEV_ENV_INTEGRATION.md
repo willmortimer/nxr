@@ -279,7 +279,7 @@ nxr plan --clean-env test --json   # environment_policy is a clean object
 
 ### shell
 
-Execute through a selected development shell.
+Execute through a selected development shell via `nix develop <flake>#<name> -c <nix> run …`.
 
 ```bash
 nxr --shell backend test

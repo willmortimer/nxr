@@ -350,6 +350,73 @@ fn plan_hello_json_matches_schema_shape() {
 }
 
 #[test]
+fn shell_flag_runs_app_inside_named_dev_shell() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/named-dev-shells",
+            "--shell",
+            "default",
+            "shell-marker",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("inside-default-shell"));
+}
+
+#[test]
+fn plan_with_shell_json_includes_shell_and_develop_argv() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/named-dev-shells",
+            "--shell",
+            "default",
+            "plan",
+            "shell-marker",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse plan json");
+
+    assert_eq!(value["shell"], "default");
+    let arguments = value["command"]["arguments"]
+        .as_array()
+        .expect("command.arguments");
+    assert_eq!(arguments[0], "develop");
+    assert!(
+        arguments[1]
+            .as_str()
+            .expect("installable")
+            .ends_with("#default")
+    );
+    assert_eq!(arguments[2], "-c");
+    assert!(arguments[3].as_str().expect("nix path").contains("nix"));
+    assert_eq!(arguments[4], "run");
+    assert!(
+        arguments[5]
+            .as_str()
+            .expect("run installable")
+            .ends_with("#shell-marker")
+    );
+}
+
+#[test]
 fn dry_run_prints_plan_without_executing() {
     let Some(()) = require_nix() else {
         return;
