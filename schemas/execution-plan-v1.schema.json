@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/execution-plan-v1.schema.json",
+  "title": "nxr execution plan",
+  "description": "Machine-readable internal execution-plan envelope (schema version 1).",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "root",
+    "failure_policy",
+    "nodes",
+    "serial_order"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "root": {
+      "type": "string",
+      "description": "Root task id the plan was built for."
+    },
+    "failure_policy": {
+      "type": "string",
+      "enum": ["fail_fast", "keep_going"],
+      "description": "Scheduler reaction when a node fails."
+    },
+    "nodes": {
+      "type": "array",
+      "description": "Reachable subgraph nodes in lexicographic id order.",
+      "items": {
+        "$ref": "#/$defs/plan_node"
+      }
+    },
+    "serial_order": {
+      "type": "array",
+      "description": "Deterministic serial execution order (dependencies before dependents).",
+      "items": {
+        "type": "string"
+      }
+    },
+    "waves": {
+      "type": "array",
+      "description": "Optional parallel-ready waves; serial plans use one task id per wave.",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "plan_node": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

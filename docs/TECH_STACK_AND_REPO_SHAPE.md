@@ -169,6 +169,7 @@ nxr/
 ├── schemas/
 │   ├── list-v1.schema.json
 │   ├── plan-v1.schema.json
+│   ├── execution-plan-v1.schema.json
 │   ├── events-v1.schema.json
 │   └── task-v1.schema.json
 ├── fixtures/
