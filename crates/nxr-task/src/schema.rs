@@ -79,6 +79,9 @@ pub struct TaskDefinition {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
 }
 
 impl TaskDefinition {
@@ -92,6 +95,7 @@ impl TaskDefinition {
             working_directory: None,
             hidden: false,
             category: None,
+            aliases: Vec::new(),
         }
     }
 }
@@ -130,6 +134,7 @@ mod tests {
                 working_directory: Some("flake-root".to_owned()),
                 hidden: false,
                 category: Some("validation".to_owned()),
+                aliases: vec!["gate".to_owned()],
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -138,6 +143,39 @@ mod tests {
         let decoded: TaskDocument = serde_json::from_value(encoded).expect("deserialize");
         assert_eq!(decoded, doc);
         decoded.validate().expect("schema version 1 is supported");
+    }
+
+    #[test]
+    fn aliases_default_to_empty() {
+        let value = json!({
+            "schema_version": 1,
+            "tasks": {
+                "test": {
+                    "app": "test"
+                }
+            }
+        });
+        let doc: TaskDocument = serde_json::from_value(value).expect("deserialize");
+        let task = doc.tasks.get("test").expect("task present");
+        assert!(task.aliases.is_empty());
+    }
+
+    #[test]
+    fn round_trip_aliases() {
+        let value = json!({
+            "schema_version": 1,
+            "tasks": {
+                "ci": {
+                    "app": "ci",
+                    "aliases": ["check", "gate"]
+                }
+            }
+        });
+        let doc: TaskDocument = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(
+            doc.tasks["ci"].aliases,
+            vec!["check".to_owned(), "gate".to_owned()]
+        );
     }
 
     #[test]
@@ -221,6 +259,7 @@ mod tests {
                 working_directory: Some("invocation".to_owned()),
                 hidden: true,
                 category: None,
+                aliases: Vec::new(),
             },
         );
         let value = serde_json::to_value(TaskDocument::new(tasks)).expect("serialize");

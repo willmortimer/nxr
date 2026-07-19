@@ -44,17 +44,19 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | Command | Purpose |
 |---|---|
 | `nxr` | List apps (same as `nxr list`) |
-| `nxr list` | List apps for the current system |
+| `nxr list` | List apps (and tasks when present) for the current system |
+| `nxr list --category <name>` | Filter listed tasks by category |
 | `nxr <app> [args…]` | Run a flake app |
 | `nxr <flake>#<app> [args…]` | Inline flake + app (like `nix run`) |
 | `nxr run <app> [-- args…]` | Explicit run form |
-| `nxr plan <app> [-- args…]` | Show execution plan |
+| `nxr plan <app\|task> [-- args…]` | Show app or task execution plan (apps win when both exist) |
 | `nxr select` | Interactive fuzzy app picker |
 | `nxr doctor [app]` | Diagnose environment and flake setup |
 | `nxr doctor --all` | Extra non-destructive findings (descriptions, naming) |
 | `nxr doctor --clean-env [app]` | Clean-environment validation |
 | `nxr completion <shell>` | Emit Bash, Zsh, or Fish completion |
 | `nxr inspect` | Overview of apps (+ tasks when present) |
+| `nxr inspect --category <name>` | Overview with tasks filtered by category |
 | `nxr inspect app <name>` | Single app details |
 | `nxr inspect task <name>` | Single task details |
 | `nxr task <name> [args…]` | Run a task’s serial `dependsOn` chain |
@@ -77,6 +79,7 @@ nxr test -- --help
 nxr fixtures/basic-apps#hello
 nxr --flake ../other test
 nxr plan test --json
+nxr plan ci --json
 nxr --shell default test
 nxr doctor --clean-env test
 nxr inspect

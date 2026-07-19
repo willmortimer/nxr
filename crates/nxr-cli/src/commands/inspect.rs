@@ -9,7 +9,7 @@ use nxr_core::diagnostics::exit;
 use nxr_core::sanitize::sanitize_terminal_text;
 use nxr_core::{App, AppList, ListApp};
 use nxr_nix::{AppNotFoundError, NixError, TaskDiscoveryError, resolve_app_by_name};
-use nxr_task::{TaskDefinition, TaskDocument};
+use nxr_task::{TaskDefinition, TaskDocument, listable_tasks, resolve_task};
 use serde::Serialize;
 
 use crate::commands::common::{PrepareError, build_adapter, current_invocation_directory};
@@ -33,6 +33,8 @@ pub struct InspectRequest<'a> {
     pub flake_arg: Option<&'a str>,
     pub nix_override: Option<&'a str>,
     pub target: InspectTarget,
+    /// When set, overview listings include only tasks in this category.
+    pub category: Option<&'a str>,
 }
 
 /// Errors while running the inspect command.
@@ -139,7 +141,15 @@ pub fn run(
             let apps = discover_apps(&flake, &adapter, refresh)?;
             let task_doc = adapter.discover_tasks(&flake.nix_ref)?;
             let mut stdout = io::stdout().lock();
-            write_overview(&mut stdout, &flake, &adapter.system, &apps, &task_doc, json)?;
+            write_overview(
+                &mut stdout,
+                &flake,
+                &adapter.system,
+                &apps,
+                &task_doc,
+                request.category,
+                json,
+            )?;
         }
         InspectTarget::App { name } => {
             let apps = discover_apps(&flake, &adapter, refresh)?;
@@ -149,9 +159,9 @@ pub fn run(
         }
         InspectTarget::Task { name } => {
             let task_doc = adapter.discover_tasks(&flake.nix_ref)?;
-            let task = resolve_task_by_name(&task_doc, &name)?;
+            let (canonical, task) = resolve_task(&task_doc, &name).map_err(map_resolve_error)?;
             let mut stdout = io::stdout().lock();
-            write_task(&mut stdout, &flake, &adapter.system, &name, task, json)?;
+            write_task(&mut stdout, &flake, &adapter.system, canonical, task, json)?;
         }
     }
 
@@ -175,60 +185,11 @@ fn discover_apps(
     })
 }
 
-fn visible_tasks(doc: &TaskDocument) -> BTreeMap<String, TaskDefinition> {
-    doc.tasks
-        .iter()
-        .filter(|(_, task)| !task.hidden)
-        .map(|(name, task)| (name.clone(), task.clone()))
-        .collect()
-}
-
-fn resolve_task_by_name<'tasks>(
-    doc: &'tasks TaskDocument,
-    name: &str,
-) -> Result<&'tasks TaskDefinition, TaskNotFoundError> {
-    doc.tasks.get(name).ok_or_else(|| {
-        let suggestions = rank_task_suggestions(name, doc.tasks.keys().map(String::as_str));
-        TaskNotFoundError {
-            name: name.to_owned(),
-            suggestions,
-        }
-    })
-}
-
-fn rank_task_suggestions<'a>(query: &str, names: impl Iterator<Item = &'a str>) -> Vec<String> {
-    if query.is_empty() {
-        return Vec::new();
+fn map_resolve_error(error: nxr_task::ResolveTaskError) -> TaskNotFoundError {
+    TaskNotFoundError {
+        name: error.name,
+        suggestions: error.suggestions,
     }
-
-    let query_lower = query.to_ascii_lowercase();
-    let mut scored: Vec<(u32, String)> = names
-        .filter_map(|name| {
-            let name_lower = name.to_ascii_lowercase();
-            let score = if name_lower.starts_with(&query_lower) {
-                0
-            } else if name_lower.contains(&query_lower) {
-                1
-            } else {
-                return None;
-            };
-            Some((score, name.to_owned()))
-        })
-        .collect();
-
-    scored.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
-    scored.sort_by_key(|(score, _)| *score);
-
-    let mut suggestions = Vec::new();
-    for (_, name) in scored {
-        if suggestions.len() >= 5 {
-            break;
-        }
-        if !suggestions.contains(&name) {
-            suggestions.push(name);
-        }
-    }
-    suggestions
 }
 
 #[derive(Serialize)]
@@ -269,9 +230,10 @@ fn write_overview(
     system: &str,
     apps: &[App],
     task_doc: &TaskDocument,
+    category: Option<&str>,
     json: bool,
 ) -> Result<(), InspectRenderError> {
-    let tasks = visible_tasks(task_doc);
+    let tasks = listable_tasks(task_doc, category);
     if json {
         let envelope = InspectOverviewJson {
             schema_version: OVERVIEW_SCHEMA_VERSION,
@@ -436,9 +398,10 @@ mod tests {
     use nxr_core::App;
     use nxr_task::TaskDefinition;
 
-    use super::{rank_task_suggestions, resolve_task_by_name, visible_tasks, write_overview};
+    use nxr_task::{TaskDocument, listable_tasks, resolve_task};
+
+    use super::write_overview;
     use crate::flake::FlakeSelection;
-    use nxr_task::TaskDocument;
 
     fn sample_apps() -> Vec<App> {
         vec![
@@ -475,6 +438,7 @@ mod tests {
                 working_directory: None,
                 hidden: false,
                 category: Some("validation".to_owned()),
+                aliases: Vec::new(),
             },
         );
         tasks.insert(
@@ -486,15 +450,16 @@ mod tests {
                 working_directory: None,
                 hidden: true,
                 category: None,
+                aliases: Vec::new(),
             },
         );
         TaskDocument::new(tasks)
     }
 
     #[test]
-    fn visible_tasks_omit_hidden() {
+    fn listable_tasks_omit_hidden() {
         let doc = sample_task_doc();
-        let visible = visible_tasks(&doc);
+        let visible = listable_tasks(&doc, None);
         assert_eq!(visible.len(), 2);
         assert!(visible.contains_key("fmt"));
         assert!(visible.contains_key("ci"));
@@ -502,18 +467,26 @@ mod tests {
     }
 
     #[test]
-    fn resolve_task_by_name_finds_hidden_task() {
+    fn resolve_task_finds_hidden_task() {
         let doc = sample_task_doc();
-        let task = resolve_task_by_name(&doc, "hidden-task").expect("hidden task");
+        let (_, task) = resolve_task(&doc, "hidden-task").expect("hidden task");
         assert!(task.hidden);
     }
 
     #[test]
-    fn resolve_task_by_name_suggests_prefix_match() {
+    fn resolve_task_suggests_prefix_match() {
         let doc = sample_task_doc();
-        let error = resolve_task_by_name(&doc, "c").expect_err("ambiguous prefix");
+        let error = nxr_task::resolve_task_name(&doc, "c").expect_err("ambiguous prefix");
         assert_eq!(error.name, "c");
         assert!(error.suggestions.contains(&"ci".to_owned()));
+    }
+
+    #[test]
+    fn listable_tasks_filter_by_category() {
+        let doc = sample_task_doc();
+        let validation = listable_tasks(&doc, Some("validation"));
+        assert_eq!(validation.len(), 1);
+        assert!(validation.contains_key("ci"));
     }
 
     #[test]
@@ -530,6 +503,7 @@ mod tests {
             "aarch64-darwin",
             &sample_apps(),
             &sample_task_doc(),
+            None,
             true,
         )
         .expect("write overview json");
@@ -556,6 +530,7 @@ mod tests {
             "aarch64-darwin",
             &sample_apps(),
             &sample_task_doc(),
+            None,
             false,
         )
         .expect("write overview");
@@ -566,11 +541,5 @@ mod tests {
         assert!(rendered.contains("Tasks (schema version 1):"));
         assert!(rendered.contains("ci"));
         assert!(!rendered.contains("hidden-task"));
-    }
-
-    #[test]
-    fn rank_task_suggestions_prefers_prefix_matches() {
-        let suggestions = rank_task_suggestions("f", ["fmt", "ci", "test"].into_iter());
-        assert_eq!(suggestions.first().map(String::as_str), Some("fmt"));
     }
 }

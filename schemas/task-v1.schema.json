@@ -56,6 +56,15 @@
         "category": {
           "type": "string",
           "description": "Optional logical category for grouping in listings."
+        },
+        "aliases": {
+          "type": "array",
+          "description": "Optional alternate names resolved by explicit task commands (not bare nxr <name>).",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     }

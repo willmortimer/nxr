@@ -64,6 +64,7 @@
               dependsOn = [ "test" ];
               app = "ci";
               category = "validation";
+              aliases = [ "check" ];
             };
           };
         };

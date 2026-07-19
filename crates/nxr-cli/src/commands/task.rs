@@ -11,7 +11,7 @@ use nxr_nix::{NixError, TaskDiscoveryError};
 use nxr_process::{InterruptFlags, Supervisor};
 use nxr_task::{
     Event, EventSink, ExecutionPlan, FailurePolicy, PlanError, Scheduler, SchedulerError,
-    TaskDocument, build_execution_plan,
+    TaskDocument, build_execution_plan, resolve_task_name,
 };
 
 use crate::commands::common::{
@@ -143,6 +143,9 @@ pub fn execute(
         FailurePolicy::FailFast
     };
 
+    let canonical = resolve_task_name(&document, request.task)
+        .map_err(|error| TaskError::Plan(PlanError::UnknownRoot { root: error.name }))?;
+
     let pipe_stdio =
         request.jobs > 1 || request.output_mode.is_some() || request.events_format.is_some();
 
@@ -154,13 +157,12 @@ pub fn execute(
         None
     });
 
-    let plan = build_execution_plan(&document.tasks, request.task, failure_policy, None)?;
+    let plan = build_execution_plan(&document.tasks, canonical, failure_policy, None)?;
 
     let waves = parallel_ready_waves(&plan);
     runner
         .verbose(format!(
-            "task plan for {} (jobs={}, {}): {}",
-            request.task,
+            "task plan for {canonical} (jobs={}, {}): {}",
             request.jobs,
             failure_policy.as_str(),
             format_wave_summary(&waves)

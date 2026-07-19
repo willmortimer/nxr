@@ -7,7 +7,7 @@ use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
 use nxr_nix::{AppNotFoundError, NixError, TaskDiscoveryError, resolve_app_by_name};
 use nxr_process::{InterruptFlags, Supervisor, spawn_in};
-use nxr_task::{PlanError, TaskDocument, plan_serial};
+use nxr_task::{PlanError, TaskDocument, plan_serial, resolve_task_name};
 use nxr_watch::{
     Generation, PathFilterError, PathFilters, WatchConfig, WatchError, WatchPoll, WatchSession,
 };
@@ -154,12 +154,10 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
     let adapter = build_adapter(request.nix_override)?;
     let document = adapter.discover_tasks(&flake.nix_ref)?;
 
-    let target = if document.tasks.contains_key(request.name) {
-        let _order = plan_serial(&document.tasks, request.name)?;
-        WatchTarget::Task {
-            document,
-            root: request.name.to_owned(),
-        }
+    let target = if let Ok(canonical) = resolve_task_name(&document, request.name) {
+        let _order = plan_serial(&document.tasks, canonical)?;
+        let root = canonical.to_owned();
+        WatchTarget::Task { document, root }
     } else {
         let apps = adapter.discover_apps(&flake.nix_ref)?;
         let app = resolve_app_by_name(&apps, request.name)?;

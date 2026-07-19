@@ -49,6 +49,16 @@ let
         default = null;
         description = "Optional logical category for grouping in listings.";
       };
+
+      aliases = lib.mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = ''
+          Optional alternate names resolved by explicit task commands (`nxr task`,
+          `nxr graph`, `nxr inspect task`, `nxr watch`, and `nxr plan` when the
+          name is not an app). Bare `nxr <name>` remains app-only.
+        '';
+      };
     };
   };
 in

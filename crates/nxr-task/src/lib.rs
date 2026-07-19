@@ -11,6 +11,7 @@ pub mod events;
 pub mod graph;
 pub mod plan_exec;
 pub mod planner;
+pub mod resolve;
 pub mod scheduler;
 pub mod schema;
 
@@ -21,6 +22,7 @@ pub use plan_exec::{
     build_serial_plan,
 };
 pub use planner::{PlanError, plan_mermaid, plan_serial, plan_text};
+pub use resolve::{ResolveTaskError, listable_tasks, resolve_task, resolve_task_name};
 pub use scheduler::{NodeState, ScheduleOutcome, Scheduler, SchedulerError};
 pub use schema::{
     SCHEMA_VERSION, SchemaError, TaskDefinition, TaskDocument, validate_schema_version,

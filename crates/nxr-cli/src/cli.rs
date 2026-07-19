@@ -135,7 +135,11 @@ pub enum InspectSubcommand {
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 pub enum Command {
     /// List available flake apps
-    List,
+    List {
+        /// Include only tasks in this category (when tasks are listed)
+        #[arg(long = "category", value_name = "NAME")]
+        category: Option<String>,
+    },
     /// Run a flake app
     Run {
         /// App name
@@ -152,7 +156,7 @@ pub enum Command {
     },
     /// Show execution plan
     Plan {
-        /// App name
+        /// App or task name (apps win when both exist)
         app: String,
         /// Arguments included in the plan (pass after `--`)
         #[arg(last = true)]
@@ -187,6 +191,9 @@ pub enum Command {
     Manpage,
     /// Inspect flake metadata
     Inspect {
+        /// Include only tasks in this category (overview only)
+        #[arg(long = "category", value_name = "NAME")]
+        category: Option<String>,
         #[command(subcommand)]
         target: Option<InspectSubcommand>,
     },
