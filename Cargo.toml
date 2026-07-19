@@ -35,6 +35,7 @@ thiserror = "2"
 which = "7"
 directories = "6"
 fs2 = "0.4"
+notify = "6.1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
