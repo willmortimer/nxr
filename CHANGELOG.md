@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `nxr watch <name>` — watch the local flake root, debounce (default 300ms), kill+rerun generations for apps or serial tasks (task-first when names collide).
+- Killable supervised child sessions in `nxr-process` for watch generations.
+- `notify`-backed filesystem watch session in `nxr-watch`.
+
+### Changed
+
+- README and [CLI_REFERENCE.md](docs/CLI_REFERENCE.md) document current commands (inspect/task/graph/watch, inline `flake#app`, authoring helpers).
+- README includes a VHS-generated terminal GIF (`docs/demo/nxr.gif`); regenerate with `./docs/demo/record.sh`.
+
 ## [1.0.0] - 2026-07-18
 
 V1.0 standard flake app runner (Phases 0–6 complete).
