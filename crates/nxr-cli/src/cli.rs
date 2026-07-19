@@ -103,6 +103,21 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
+/// `nxr inspect` sub-targets.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum InspectSubcommand {
+    /// Inspect a single app
+    App {
+        /// App name
+        name: String,
+    },
+    /// Inspect a single task
+    Task {
+        /// Task name
+        name: String,
+    },
+}
+
 /// Top-level commands. Bare `nxr` defaults to listing apps.
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 pub enum Command {
@@ -152,7 +167,10 @@ pub enum Command {
     #[command(name = "__manpage", hide = true)]
     Manpage,
     /// Inspect flake metadata
-    Inspect,
+    Inspect {
+        #[command(subcommand)]
+        target: Option<InspectSubcommand>,
+    },
     /// Run a V2 task
     Task,
     /// Watch and rerun
@@ -183,7 +201,7 @@ impl Command {
             Self::Completion { .. } => "completion",
             Self::Complete { .. } => "__complete",
             Self::Manpage => "__manpage",
-            Self::Inspect => "inspect",
+            Self::Inspect { .. } => "inspect",
             Self::Task => "task",
             Self::Watch => "watch",
             Self::Graph { .. } => "graph",

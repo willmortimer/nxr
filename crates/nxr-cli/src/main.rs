@@ -15,11 +15,11 @@ use clap::Parser;
 use nxr_core::diagnostics::exit;
 use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
 
-use crate::cli::{Cli, Command};
+use crate::cli::{Cli, Command, InspectSubcommand};
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
-    UnimplementedCommandError, complete, completion, doctor, graph, list, manpage, plan, run,
-    select,
+    UnimplementedCommandError, complete, completion, doctor, graph, inspect, list, manpage, plan,
+    run, select,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -68,6 +68,8 @@ enum RunError {
     #[error(transparent)]
     Graph(#[from] graph::GraphError),
     #[error(transparent)]
+    Inspect(#[from] inspect::InspectError),
+    #[error(transparent)]
     Unimplemented(#[from] UnimplementedCommandError),
 }
 
@@ -83,6 +85,7 @@ impl RunError {
             Self::Complete(_) => exit::SUCCESS,
             Self::Manpage(_) => manpage::ManpageError::exit_code(),
             Self::Graph(error) => error.exit_code(),
+            Self::Inspect(error) => error.exit_code(),
             Self::MissingAppName | Self::Usage(_) | Self::FlakeAppRef(_) => exit::USAGE,
             Self::Unimplemented(_) => UnimplementedCommandError::exit_code(),
         }
@@ -170,6 +173,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             manpage::run()?;
             Ok(exit::SUCCESS)
         }
+        Some(Command::Inspect { target }) => run_inspect(cli, target.as_ref(), runner),
         Some(Command::Graph { task, format }) => {
             let request = graph::GraphRequest {
                 flake_arg: cli.flake.as_deref(),
@@ -179,13 +183,36 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             graph::run(&request, *format, cli.json, runner)?;
             Ok(exit::SUCCESS)
         }
-        Some(command @ (Command::Inspect | Command::Task | Command::Watch)) => {
-            Err(UnimplementedCommandError {
-                command: command.label(),
-            }
-            .into())
+        Some(command @ (Command::Task | Command::Watch)) => Err(UnimplementedCommandError {
+            command: command.label(),
         }
+        .into()),
     }
+}
+
+fn run_inspect(
+    cli: &Cli,
+    target: Option<&InspectSubcommand>,
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    let inspect_target = match target {
+        None => inspect::InspectTarget::Overview,
+        Some(InspectSubcommand::App { name }) => inspect::InspectTarget::App { name: name.clone() },
+        Some(InspectSubcommand::Task { name }) => {
+            inspect::InspectTarget::Task { name: name.clone() }
+        }
+    };
+    inspect::run(
+        inspect::InspectRequest {
+            flake_arg: cli.flake.as_deref(),
+            nix_override: cli.nix.as_deref(),
+            target: inspect_target,
+        },
+        cli.json,
+        cli.refresh,
+        runner,
+    )?;
+    Ok(exit::SUCCESS)
 }
 
 fn run_with_selected_app(

@@ -861,3 +861,242 @@ fn graph_json_envelope_includes_order_and_edges() {
             .any(|edge| edge == &serde_json::json!(["test", "ci"]))
     );
 }
+
+#[test]
+fn inspect_overview_basic_apps_lists_apps() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "inspect"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Flake:"))
+        .stdout(predicate::str::contains("Apps:"))
+        .stdout(predicate::str::contains("hello"));
+}
+
+#[test]
+fn inspect_overview_task_dag_includes_tasks_and_schema_version() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let list = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "list"])
+        .output()
+        .expect("spawn nxr list");
+    if !list.status.success() {
+        eprintln!("skipping inspect overview task-dag test: app discovery failed on this host");
+        return;
+    }
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "inspect"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Tasks (schema version 1):"))
+        .stdout(predicate::str::contains("fmt"))
+        .stdout(predicate::str::contains("ci"));
+}
+
+#[test]
+fn inspect_app_basic_apps_happy_path() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "inspect", "app", "hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("App: hello"))
+        .stdout(predicate::str::contains("Attr:"));
+}
+
+#[test]
+fn inspect_task_task_dag_happy_path() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "inspect", "task", "ci"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Task: ci"))
+        .stdout(predicate::str::contains("Depends on: test"));
+}
+
+#[test]
+fn inspect_unknown_app_exits_not_found() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/basic-apps",
+            "inspect",
+            "app",
+            "missing-app",
+        ])
+        .assert()
+        .failure()
+        .code(6)
+        .stderr(predicate::str::contains("app not found"));
+}
+
+#[test]
+fn inspect_unknown_task_exits_not_found() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/task-dag",
+            "inspect",
+            "task",
+            "missing-task",
+        ])
+        .assert()
+        .failure()
+        .code(6)
+        .stderr(predicate::str::contains("task not found"));
+}
+
+#[test]
+fn inspect_overview_json_parses() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "--json", "inspect"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse inspect json");
+
+    assert_eq!(value["schema_version"], 1);
+    assert!(value["apps"].is_array());
+    assert!(value.get("task_schema_version").is_none());
+    assert!(
+        value
+            .get("tasks")
+            .and_then(|tasks| tasks.as_object())
+            .is_none_or(serde_json::Map::is_empty)
+    );
+}
+
+#[test]
+fn inspect_overview_task_dag_json_includes_tasks() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let list = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "list"])
+        .output()
+        .expect("spawn nxr list");
+    if !list.status.success() {
+        eprintln!(
+            "skipping inspect overview task-dag json test: app discovery failed on this host"
+        );
+        return;
+    }
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "--json", "inspect"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse inspect json");
+
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["task_schema_version"], 1);
+    assert!(value["apps"].is_array());
+    assert!(value["tasks"]["ci"]["dependsOn"].is_array());
+}
+
+#[test]
+fn inspect_app_json_parses() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/basic-apps",
+            "inspect",
+            "app",
+            "hello",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse inspect app json");
+
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["kind"], "app");
+    assert_eq!(value["app"]["name"], "hello");
+}
+
+#[test]
+fn inspect_task_json_parses() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/task-dag",
+            "inspect",
+            "task",
+            "ci",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse inspect task json");
+
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["kind"], "task");
+    assert_eq!(value["name"], "ci");
+    assert_eq!(value["app"], "ci");
+    assert_eq!(value["dependsOn"], serde_json::json!(["test"]));
+}
