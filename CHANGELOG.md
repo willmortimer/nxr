@@ -7,17 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-07-19
+
+V2.0 orchestration release (Phases 7–15): parallel task DAG, supervisor, watch v2, shell integration, and schema freeze.
+
 ### Added
 
 - Orchestration V2 core: `ExecutionPlan` + typed events, multi-child `Supervisor`, parallel `nxr task -j` / `--keep-going` (fail-fast default), `--output live|grouped|failures`, `--events jsonl`, global `--shell`.
 - Watch v2: `--include` / `--exclude` globs, `--clear`, `nxr run|task --watch` aliases, Supervisor-backed generation shutdown.
 - Task UX: optional `aliases`, shared `resolve_task_name`, `nxr plan` app-first then task `ExecutionPlan`, `list`/`inspect --category`, hidden-task filtering.
 - Fixtures: `fixtures/parallel-group/`, `fixtures/named-dev-shells/`.
+- Flake-parts `shellIntegration` module: `nxr` + session hooks under `share/nxr/shell/`.
+- `nxr graph --format dot` for stable Graphviz output.
+- Soak/stress tests: watcher debounce burst coalescing, supervisor multi-child TERM→KILL, large synthetic DAG scheduler smoke.
+- **Schema freeze (V2.0):** `task-v1`, `execution-plan-v1`, and events vocabulary documented in [COMPATIBILITY.md](docs/COMPATIBILITY.md); Rust `Event` enum authoritative until `events-v1` JSON schema (Phase 16).
 
 ### Changed
 
-- README documents parallel tasks, shell, watch v2, and V2.0 / TUI status relative to [ROADMAP.md](docs/ROADMAP.md).
-- [CLI_REFERENCE.md](docs/CLI_REFERENCE.md) and [TASKS.md](docs/TASKS.md) cover the new flags and schema fields.
+- README documents parallel tasks, shell, watch v2, and V2.0 status relative to [ROADMAP.md](docs/ROADMAP.md).
+- [CLI_REFERENCE.md](docs/CLI_REFERENCE.md) and [TASKS.md](docs/TASKS.md) cover the new flags, schema fields, argument/stdin freeze, and V2 migration notes.
+- Workspace and Nix package version **2.0.0**.
 
 ## [1.0.0] - 2026-07-18
 
@@ -90,5 +99,6 @@ First taggable V1 prerelease: a standard Nix flake app runner through Phase 5 of
 - [Compatibility matrix](docs/COMPATIBILITY.md), [CLI reference](docs/CLI_REFERENCE.md), and [telemetry decision](docs/TELEMETRY.md) (default: none).
 - Tag-triggered [release workflow](.github/workflows/release.yml) (quality gate only; no publish secrets).
 
+[2.0.0]: https://github.com/willmortimer/nxr/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/willmortimer/nxr/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/willmortimer/nxr/compare/v0.0.0...v0.1.0

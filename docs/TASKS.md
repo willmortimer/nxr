@@ -133,6 +133,20 @@ plan envelope). Richer per-node forwarding is deferred; there is no interactive
 Parallel and labeled/events paths must not inherit caller stdin into multiple
 children — ownership is deterministic (closed).
 
+## Schema freeze (V2.0)
+
+The task document (`schema_version: 1`), execution-plan envelope, and
+execution-event vocabulary are **frozen** for the V2.0 release:
+
+| Artifact | Location | Notes |
+|---|---|---|
+| Task document | [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json) | Emitted at `nxr.<system>`; unsupported majors rejected |
+| Execution plan | [`schemas/execution-plan-v1.schema.json`](../schemas/execution-plan-v1.schema.json) | Built for `nxr plan <task>` and the task scheduler |
+| Events | Rust `Event` in `nxr-task` | JSON schema file deferred to Phase 16; enum is authoritative until then |
+
+Additive optional fields may appear within major version 1. Breaking changes
+require a new major `schema_version`. See [COMPATIBILITY.md](COMPATIBILITY.md).
+
 ## Related
 
 - Schema: [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json)

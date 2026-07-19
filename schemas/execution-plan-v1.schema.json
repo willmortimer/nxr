@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://nxr.dev/schemas/execution-plan-v1.schema.json",
   "title": "nxr execution plan",
-  "description": "Machine-readable internal execution-plan envelope (schema version 1).",
+  "description": "FROZEN (V2.0): machine-readable execution-plan envelope (schema version 1). Additive optional fields may appear in minor releases; breaking changes require a new major schema_version.",
   "type": "object",
   "required": [
     "schema_version",

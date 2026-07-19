@@ -168,6 +168,29 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn debounce_burst_coalesces_to_single_ready() {
+        let window = Duration::from_millis(50);
+        let mut debouncer = Debouncer::new(window);
+        for _ in 0..200 {
+            debouncer.mark_dirty();
+            thread::sleep(Duration::from_micros(100));
+        }
+        assert!(
+            !debouncer.take_ready(),
+            "burst should not be ready mid-window"
+        );
+        thread::sleep(window + Duration::from_millis(20));
+        assert!(
+            debouncer.take_ready(),
+            "expected one ready after quiet window"
+        );
+        assert!(
+            !debouncer.take_ready(),
+            "burst must coalesce to a single restart signal"
+        );
+    }
+
+    #[test]
     fn debounce_coalesces_rapid_marks() {
         let mut debouncer = Debouncer::new(Duration::from_millis(50));
         debouncer.mark_dirty();

@@ -76,6 +76,45 @@ nxr plan test --json # inspect the exact nix run argv
 nxr completion zsh   # optional shell integration
 ```
 
+## V2 task graphs (optional)
+
+When a recipe graph is more than a single command, declare **tasks** in the
+flake instead of a second manifest (`justfile`, `mise.toml` tasks, etc.):
+
+```nix
+imports = [ nxr.flakeModules.default ];
+
+perSystem = { ... }: {
+  nxr.tasks = {
+    fmt = { app = "fmt"; };
+    test = { app = "test"; dependsOn = [ "fmt" ]; };
+    ci = { app = "ci"; dependsOn = [ "test" ]; aliases = [ "check" ]; };
+  };
+};
+```
+
+Then:
+
+```bash
+nxr task ci              # serial default (-j 1)
+nxr task ci -j 4         # parallel ready-set scheduling
+nxr graph ci --format dot
+nxr plan ci --json       # execution plan envelope
+```
+
+**Migration tips:**
+
+| Before | After |
+|---|---|
+| `just ci` (recipe calling other recipes) | `nxr.tasks.ci` with `dependsOn` |
+| `just --list` | `nxr list` (apps + tasks) |
+| Recipe-only args on the final step | Trailing args after task name (`nxr task ci -- --flag`) — **root task only** (V2 freeze) |
+| Parallel `just` jobs | `nxr task <name> -j N` over the DAG (no `parallel = []` sugar) |
+
+Leaf apps stay the source of truth; tasks only coordinate them. See
+[TASKS.md](TASKS.md) and [COMPATIBILITY.md](COMPATIBILITY.md) for schema
+freeze and stdin/argument policy.
+
 ## What not to migrate into nxr
 
 - Package management / runtime installs

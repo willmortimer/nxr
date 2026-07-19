@@ -393,6 +393,40 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn shutdown_all_term_to_kill_many_children() {
+        let mut supervisor = Supervisor::new();
+        let env = EnvironmentPolicy::Inherit;
+        let sleep = unix_util("sleep");
+        let child_count = 8usize;
+        let mut pgids = Vec::with_capacity(child_count);
+
+        for index in 0..child_count {
+            let id = format!("sleep-{index}");
+            let pgid = supervisor
+                .spawn(&id, &sleep, &["30"], None, &env)
+                .expect("spawn sleep");
+            pgids.push(pgid);
+        }
+        assert_eq!(supervisor.len(), child_count);
+
+        let codes = supervisor
+            .shutdown_all(Duration::from_secs(3))
+            .expect("shutdown_all");
+        assert_eq!(codes.len(), child_count);
+        assert!(supervisor.is_empty());
+        for (_id, code) in codes {
+            assert!(
+                code == 128 + 15 || code == 128 + 9,
+                "unexpected exit code {code}"
+            );
+        }
+        for pgid in pgids {
+            assert!(!group_alive(pgid), "group {pgid} still alive");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn shutdown_all_stops_two_sleeps() {
         let mut supervisor = Supervisor::new();
         let env = EnvironmentPolicy::Inherit;

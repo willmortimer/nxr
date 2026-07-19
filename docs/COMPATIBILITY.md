@@ -27,6 +27,30 @@ nix run .#<app> -- [args...]
 
 Projects remain operable without `nxr` installed. See [CONTRACT_SUMMARY.md](CONTRACT_SUMMARY.md).
 
+## Machine-readable schemas (V2.0 freeze)
+
+Orchestration metadata and plan envelopes are **frozen at schema version 1**
+for the V2.0 release line:
+
+| Schema | File | Stability |
+|---|---|---|
+| Task document | [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json) | **Frozen** — `schema_version: 1` on flake output `nxr.<system>` |
+| Execution plan | [`schemas/execution-plan-v1.schema.json`](../schemas/execution-plan-v1.schema.json) | **Frozen** — internal envelope for `nxr plan` task fallback and scheduling |
+| Execution events | *(pending `schemas/events-v1.schema.json`)* | **Frozen intent** — the Rust [`Event`](../crates/nxr-task/src/events.rs) enum is the source of truth until the JSON schema lands (Phase 16 / X1) |
+
+Policy for V2.x:
+
+- **Additive** optional fields on existing envelopes are allowed when older
+  consumers can ignore them (for example `argument_forwarding` on execution
+  plans).
+- **Breaking** shape or semantics changes require a new major `schema_version`
+  and a new schema file; unsupported majors are rejected at load time.
+- The `plan-v1` and `list-v1` CLI output schemas follow the same additive-only
+  rule within major version 1.
+
+See [TASKS.md](TASKS.md) for author-facing task fields and V2 argument/stdin
+freeze.
+
 ## Reporting gaps
 
 Open an issue with:

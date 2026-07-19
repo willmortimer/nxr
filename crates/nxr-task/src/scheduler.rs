@@ -408,6 +408,36 @@ mod tests {
     }
 
     #[test]
+    fn large_linear_dag_schedules_successfully() {
+        const NODE_COUNT: usize = 300;
+        let mut tasks = BTreeMap::new();
+        tasks.insert("n0".to_owned(), task(&[]));
+        for index in 1..NODE_COUNT {
+            let prev = format!("n{}", index - 1);
+            let id = format!("n{index}");
+            tasks.insert(id, task(&[prev.as_str()]));
+        }
+        let root = format!("n{}", NODE_COUNT - 1);
+        let plan = build_serial_plan(&tasks, &root).expect("plan");
+        assert_eq!(plan.nodes.len(), NODE_COUNT);
+
+        let mut sched = Scheduler::new(&plan, 4).expect("sched");
+        let mut pending = sched.schedule_ready();
+        while !sched.is_finished() {
+            while let Some(id) = pending.pop() {
+                pending.extend(sched.complete(&id, 0).expect("complete"));
+            }
+            pending.extend(sched.schedule_ready());
+            assert!(
+                !pending.is_empty() || sched.is_finished(),
+                "scheduler stalled with no ready or running work"
+            );
+        }
+        assert!(sched.outcome().success);
+        assert_eq!(sched.outcome().failed.len(), 0);
+    }
+
+    #[test]
     fn rejects_zero_jobs() {
         let plan = build_serial_plan(&diamond(), "d").expect("plan");
         let err = Scheduler::new(&plan, 0).expect_err("jobs");
