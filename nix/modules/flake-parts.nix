@@ -40,6 +40,7 @@ in
     imports = [
       ./apps.nix
       ./tasks.nix
+      ./shell-integration.nix
     ];
   };
 

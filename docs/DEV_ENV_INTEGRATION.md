@@ -103,34 +103,60 @@ direnv-loaded shell
 
 ## 4. Automatic completion through the dev shell
 
-V2 should provide a Nix integration package containing shell snippets:
+The `nxr` flake-parts module can install session-local shell integration into
+selected dev shells. Snippets ship with the `nxr` package:
 
 ```text
 share/nxr/shell/nxr.bash
 share/nxr/shell/nxr.zsh
 share/nxr/shell/nxr.fish
+share/nxr/shell/integrate.{bash,zsh,fish}
+share/nxr/shell/direnv-zsh-hook.zsh
 ```
 
-A flake-parts module can add a shell hook:
+Enable integration in your flake:
 
 ```nix
-nxr.shellIntegration = {
-  enable = true;
-  shells = [ "bash" "zsh" "fish" ];
+imports = [ nxr.flakeModules.default ];
+
+perSystem = { system, ... }: {
+  packages.nxr = nxr.packages.${system}.nxr;
+
+  nxr.shellIntegration = {
+    enable = true;
+    devShells = [ "default" "backend" ];
+    # package = nxr.packages.${system}.nxr;  # optional when packages.nxr exists
+  };
 };
 ```
 
-Conceptual generated hook:
+When `enable` is true, each listed `devShell` receives:
+
+- the `nxr` package on `PATH`;
+- `NXR_SHELL_INTEGRATION=1` so nested `nix develop` does not double-source hooks;
+- `NXR_DEV_SHELL`, `NXR_COMPLETION_DIR`, `XDG_DATA_DIRS`, and `FPATH` exports for
+  completion discovery;
+- an interactive Bash/Zsh hook that loads package completions (Fish inherits
+  vendor completions via `XDG_DATA_DIRS`).
+
+No global dotfiles are written. Prompt indicators are not enabled by default.
+
+Conceptual generated hook (Bash/Zsh):
 
 ```sh
-if [ -n "${ZSH_VERSION:-}" ]; then
-  source "${nxr}/share/nxr/shell/nxr.zsh"
-elif [ -n "${BASH_VERSION:-}" ]; then
-  source "${nxr}/share/nxr/shell/nxr.bash"
+if [ -z "${NXR_SHELL_INTEGRATION:-}" ]; then
+  export NXR_SHELL_INTEGRATION=1
+  export NXR_DEV_SHELL=default
+  export NXR_PACKAGE="${nxr}"
+  export NXR_COMPLETION_DIR="${nxr}/share"
+  export XDG_DATA_DIRS="${nxr}/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+  export FPATH="${nxr}/share/zsh/site-functions${FPATH:+:$FPATH}"
+  # interactive: source integrate.bash / integrate.zsh from share/nxr/shell/
 fi
 ```
 
-Fish integration may rely on its native environment-loading mechanism or a generated hook compatible with the selected direnv integration.
+Fish integration relies on vendor completions under `share/fish/vendor_completions.d/`
+plus the optional `integrate.fish` / `nxr.fish` snippets when sourced manually.
 
 Requirements:
 

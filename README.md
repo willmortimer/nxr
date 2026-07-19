@@ -67,6 +67,8 @@ nxr completion zsh
 # In this repo, direnv materializes hooks under .direnv/ (see .envrc).
 ```
 
+Flake consumers can opt into dev-shell integration with `perSystem.nxr.shellIntegration` (see [docs/DEV_ENV_INTEGRATION.md](docs/DEV_ENV_INTEGRATION.md)).
+
 ### Tasks and graphs
 
 Declare tasks with `nxr.flakeModules.default` (`perSystem.nxr.tasks`). See [docs/TASKS.md](docs/TASKS.md).
