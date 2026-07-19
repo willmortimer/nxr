@@ -3,13 +3,23 @@
 use std::ffi::OsStr;
 use std::io;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use nxr_core::EnvironmentPolicy;
 
 use crate::signals::exit_code_from_status;
+
+/// How a supervised spawn should wire the child's standard streams.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SpawnStdio {
+    /// Inherit the caller's stdin/stdout/stderr (interactive / serial default).
+    #[default]
+    Inherit,
+    /// Inherit stdin; pipe stdout and stderr for labeled capture.
+    PipeStdoutStderr,
+}
 
 /// A spawned child in its own process group that can be polled or terminated.
 #[derive(Debug)]
@@ -23,6 +33,16 @@ impl ChildSession {
     #[must_use]
     pub const fn pgid(&self) -> u32 {
         self.pgid
+    }
+
+    /// Take ownership of the child's stdout pipe, if it was spawned with pipes.
+    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
+        self.child.stdout.take()
+    }
+
+    /// Take ownership of the child's stderr pipe, if it was spawned with pipes.
+    pub fn take_stderr(&mut self) -> Option<ChildStderr> {
+        self.child.stderr.take()
     }
 
     /// Non-blocking wait. Returns [`None`] while the child is still running.
@@ -123,6 +143,8 @@ impl ChildSession {
 
 /// Spawn `program` with argv in a new process group (does not wait).
 ///
+/// Uses [`SpawnStdio::Inherit`] for all streams.
+///
 /// # Errors
 ///
 /// Returns an error if the child cannot be spawned. On Windows, returns
@@ -137,14 +159,34 @@ where
     P: AsRef<OsStr>,
     A: AsRef<OsStr>,
 {
+    spawn_in_with(program, args, cwd, environment, SpawnStdio::Inherit)
+}
+
+/// Spawn `program` with argv in a new process group and the given stdio mode.
+///
+/// # Errors
+///
+/// Returns an error if the child cannot be spawned. On Windows, returns
+/// [`io::ErrorKind::Unsupported`].
+pub fn spawn_in_with<P, A>(
+    program: P,
+    args: &[A],
+    cwd: Option<&Path>,
+    environment: &EnvironmentPolicy,
+    stdio: SpawnStdio,
+) -> io::Result<ChildSession>
+where
+    P: AsRef<OsStr>,
+    A: AsRef<OsStr>,
+{
     #[cfg(unix)]
     {
-        unix::spawn(program.as_ref(), args, cwd, environment)
+        unix::spawn(program.as_ref(), args, cwd, environment, stdio)
     }
 
     #[cfg(windows)]
     {
-        let _ = (program, args, cwd, environment);
+        let _ = (program, args, cwd, environment, stdio);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Windows supervised spawn is not implemented yet",
@@ -153,7 +195,7 @@ where
 
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = (program, args, cwd, environment);
+        let _ = (program, args, cwd, environment, stdio);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "supervised spawn is not supported on this platform",
@@ -163,7 +205,7 @@ where
 
 #[cfg(unix)]
 mod unix {
-    use super::{ChildSession, Command, EnvironmentPolicy, OsStr, Path, Stdio, io};
+    use super::{ChildSession, Command, EnvironmentPolicy, OsStr, Path, SpawnStdio, Stdio, io};
     use nix::sys::signal::{Signal, killpg};
     use nix::unistd::Pid;
     use std::os::unix::process::CommandExt;
@@ -173,13 +215,19 @@ mod unix {
         args: &[A],
         cwd: Option<&Path>,
         environment: &EnvironmentPolicy,
+        stdio: SpawnStdio,
     ) -> io::Result<ChildSession> {
+        let (stdout, stderr) = match stdio {
+            SpawnStdio::Inherit => (Stdio::inherit(), Stdio::inherit()),
+            SpawnStdio::PipeStdoutStderr => (Stdio::piped(), Stdio::piped()),
+        };
+
         let mut command = Command::new(program);
         command
             .args(args)
             .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
+            .stdout(stdout)
+            .stderr(stderr)
             .process_group(0);
 
         if let Some(dir) = cwd {

@@ -186,6 +186,12 @@ pub enum Command {
     },
     /// Run a V2 task
     Task {
+        /// Maximum parallel task nodes
+        #[arg(short = 'j', long = "jobs", default_value_t = 1, value_name = "N")]
+        jobs: usize,
+        /// Continue independent work after a failure (default: fail-fast)
+        #[arg(long = "keep-going")]
+        keep_going: bool,
         /// Task name
         task: String,
         /// Arguments forwarded to the root task's app only (MVP)

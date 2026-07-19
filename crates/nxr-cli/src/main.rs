@@ -133,8 +133,13 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             plan::run(&request, cli.json, runner)?;
             Ok(exit::SUCCESS)
         }
-        Some(Command::Task { task: name, args }) => {
-            let request = task_request(cli, name, args)?;
+        Some(Command::Task {
+            jobs,
+            keep_going,
+            task: name,
+            args,
+        }) => {
+            let request = task_request(cli, name, args, *jobs, *keep_going)?;
             task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
         }
         Some(Command::Doctor {
@@ -266,6 +271,8 @@ fn task_request<'a>(
     cli: &'a Cli,
     task: &'a str,
     args: &'a [String],
+    jobs: usize,
+    keep_going: bool,
 ) -> Result<task::TaskRequest<'a>, RunError> {
     Ok(task::TaskRequest {
         flake_arg: cli.flake.as_deref(),
@@ -276,6 +283,8 @@ fn task_request<'a>(
         cwd: cli.cwd.as_deref(),
         shell: cli.dev_shell.as_deref(),
         environment_policy: environment_policy_from_cli(cli)?,
+        jobs,
+        keep_going,
         output_mode: cli.output,
         events_format: cli.events,
     })

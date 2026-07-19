@@ -1287,3 +1287,184 @@ fn task_output_flags_parse_before_subcommand() {
         .success()
         .stdout(predicate::str::contains("Task name"));
 }
+
+#[test]
+fn task_help_mentions_jobs_and_keep_going() {
+    cargo_bin_cmd!("nxr")
+        .args(["task", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--jobs"))
+        .stdout(predicate::str::contains("-j"))
+        .stdout(predicate::str::contains("--keep-going"));
+}
+
+#[test]
+fn task_parallel_dry_run_prints_waves() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/parallel-group",
+            "--dry-run",
+            "task",
+            "join",
+            "-j",
+            "2",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("# parallel schedule"),
+        "expected parallel schedule header:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("left") && stdout.contains("right"),
+        "expected sibling nodes in dry-run:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("#a") && stdout.contains("#join"),
+        "expected app plans in dry-run:\n{stdout}"
+    );
+}
+
+#[test]
+fn task_parallel_join_runs_siblings_concurrently() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/parallel-group",
+            "--events",
+            "jsonl",
+            "task",
+            "join",
+            "-j",
+            "2",
+        ])
+        .assert()
+        .success();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8 stderr");
+    let events: Vec<serde_json::Value> = stderr
+        .lines()
+        .filter(|line| line.starts_with('{'))
+        .map(|line| serde_json::from_str(line).expect("jsonl event"))
+        .collect();
+
+    let left_start = events
+        .iter()
+        .position(|e| e["type"] == "node_started" && e["node"] == "left");
+    let right_start = events
+        .iter()
+        .position(|e| e["type"] == "node_started" && e["node"] == "right");
+    let left_exit = events
+        .iter()
+        .position(|e| e["type"] == "node_exited" && e["node"] == "left");
+    let right_exit = events
+        .iter()
+        .position(|e| e["type"] == "node_exited" && e["node"] == "right");
+
+    let left_start = left_start.expect("left started");
+    let right_start = right_start.expect("right started");
+    let left_exit = left_exit.expect("left exited");
+    let right_exit = right_exit.expect("right exited");
+
+    // Both siblings must start before either exits (true concurrency under -j 2).
+    assert!(
+        left_start < left_exit
+            && right_start < right_exit
+            && left_start < right_exit
+            && right_start < left_exit,
+        "expected overlapping left/right under -j 2:\n{stderr}"
+    );
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("left-start") && stdout.contains("right-start") && stdout.contains("join"),
+        "expected diamond output:\n{stdout}"
+    );
+}
+
+#[test]
+fn task_fail_fast_cancels_independent_work() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/parallel-group",
+            "task",
+            "gate",
+            "-j",
+            "1",
+        ])
+        .assert()
+        .failure()
+        .code(1);
+}
+
+#[test]
+fn task_keep_going_runs_unrelated_after_failure() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/parallel-group",
+            "--events",
+            "jsonl",
+            "task",
+            "gate",
+            "-j",
+            "2",
+            "--keep-going",
+        ])
+        .assert()
+        .failure()
+        .code(1);
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8 stderr");
+    let started: Vec<String> = stderr
+        .lines()
+        .filter_map(|line| {
+            let value: serde_json::Value = serde_json::from_str(line).ok()?;
+            if value["type"] == "node_started" {
+                value["node"].as_str().map(str::to_owned)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert!(
+        started.iter().any(|n| n == "ok")
+            && started.iter().any(|n| n == "unrelated")
+            && started.iter().any(|n| n == "boom"),
+        "keep-going should start independent siblings:\n{stderr}"
+    );
+    assert!(
+        !started.iter().any(|n| n == "gate"),
+        "gate depends on boom and must not start:\n{stderr}"
+    );
+}

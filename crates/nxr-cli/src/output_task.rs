@@ -1,9 +1,6 @@
 //! Task execution output renderers implementing [`EventSink`].
 //!
-//! Wired from global `--output` and `--events`; execution plumbing is deferred to
-//! parallel task scheduling (T1).
-
-#![allow(dead_code)] // Public API wired in T1 parallel execution.
+//! Wired from global `--output` and `--events` for parallel and labeled runs.
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -191,16 +188,19 @@ impl EventSink for TaskOutputRenderer<'_> {
     }
 }
 
+#[cfg(test)]
 struct JsonlEventsWriter<'a> {
     writer: &'a mut dyn Write,
 }
 
+#[cfg(test)]
 impl<'a> JsonlEventsWriter<'a> {
     fn new(writer: &'a mut dyn Write) -> Self {
         Self { writer }
     }
 }
 
+#[cfg(test)]
 impl EventSink for JsonlEventsWriter<'_> {
     fn emit(&mut self, event: Event) {
         write_jsonl_event(self.writer, EventsFormat::Jsonl, &event);

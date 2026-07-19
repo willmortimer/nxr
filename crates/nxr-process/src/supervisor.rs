@@ -26,13 +26,20 @@ use std::time::{Duration, Instant};
 
 use nxr_core::EnvironmentPolicy;
 
-use crate::session::{ChildSession, spawn_in};
+use crate::session::{ChildSession, SpawnStdio, spawn_in_with};
 use crate::signals::InterruptFlags;
+
+/// One supervised child with a caller-facing identity (task node id, etc.).
+#[derive(Debug)]
+struct TrackedChild {
+    id: String,
+    session: ChildSession,
+}
 
 /// Coordinates multiple supervised children and coordinated group shutdown.
 #[derive(Debug, Default)]
 pub struct Supervisor {
-    children: Vec<ChildSession>,
+    children: Vec<TrackedChild>,
     /// Set after the first interrupt has begun graceful shutdown.
     interrupt_armed: bool,
 }
@@ -59,15 +66,26 @@ impl Supervisor {
     /// Process group ids of currently tracked children.
     #[must_use]
     pub fn pgids(&self) -> Vec<u32> {
-        self.children.iter().map(ChildSession::pgid).collect()
+        self.children
+            .iter()
+            .map(|child| child.session.pgid())
+            .collect()
     }
 
-    /// Take ownership of an already-spawned session.
-    pub fn add(&mut self, session: ChildSession) {
-        self.children.push(session);
+    /// Ids of currently tracked children (lexicographic insertion order).
+    pub fn ids(&self) -> impl Iterator<Item = &str> {
+        self.children.iter().map(|child| child.id.as_str())
     }
 
-    /// Spawn via [`spawn_in`] and track the resulting session.
+    /// Take ownership of an already-spawned session under `id`.
+    pub fn add(&mut self, id: impl Into<String>, session: ChildSession) {
+        self.children.push(TrackedChild {
+            id: id.into(),
+            session,
+        });
+    }
+
+    /// Spawn via [`spawn_in_with`] with inherited stdio and track under `id`.
     ///
     /// # Errors
     ///
@@ -75,6 +93,7 @@ impl Supervisor {
     /// [`io::ErrorKind::Unsupported`].
     pub fn spawn<P, A>(
         &mut self,
+        id: impl Into<String>,
         program: P,
         args: &[A],
         cwd: Option<&Path>,
@@ -84,42 +103,103 @@ impl Supervisor {
         P: AsRef<OsStr>,
         A: AsRef<OsStr>,
     {
-        let session = spawn_in(program, args, cwd, environment)?;
+        self.spawn_with(id, program, args, cwd, environment, SpawnStdio::Inherit)
+    }
+
+    /// Spawn with explicit stdio mode and track under `id`.
+    ///
+    /// When `stdio` is [`SpawnStdio::PipeStdoutStderr`], call
+    /// [`ChildSession::take_stdout`] / [`take_stderr`] on the session before
+    /// adding it if you need the pipes — prefer [`Self::spawn_piped`] which
+    /// returns them.
+    ///
+    /// # Errors
+    ///
+    /// Propagates spawn errors.
+    pub fn spawn_with<P, A>(
+        &mut self,
+        id: impl Into<String>,
+        program: P,
+        args: &[A],
+        cwd: Option<&Path>,
+        environment: &EnvironmentPolicy,
+        stdio: SpawnStdio,
+    ) -> io::Result<u32>
+    where
+        P: AsRef<OsStr>,
+        A: AsRef<OsStr>,
+    {
+        let session = spawn_in_with(program, args, cwd, environment, stdio)?;
         let pgid = session.pgid();
-        self.add(session);
+        self.add(id, session);
         Ok(pgid)
+    }
+
+    /// Spawn with piped stdout/stderr, return the pipes, and track under `id`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates spawn errors.
+    pub fn spawn_piped<P, A>(
+        &mut self,
+        id: impl Into<String>,
+        program: P,
+        args: &[A],
+        cwd: Option<&Path>,
+        environment: &EnvironmentPolicy,
+    ) -> io::Result<(u32, std::process::ChildStdout, std::process::ChildStderr)>
+    where
+        P: AsRef<OsStr>,
+        A: AsRef<OsStr>,
+    {
+        let mut session = spawn_in_with(
+            program,
+            args,
+            cwd,
+            environment,
+            SpawnStdio::PipeStdoutStderr,
+        )?;
+        let stdout = session
+            .take_stdout()
+            .ok_or_else(|| io::Error::other("spawned child missing stdout pipe"))?;
+        let stderr = session
+            .take_stderr()
+            .ok_or_else(|| io::Error::other("spawned child missing stderr pipe"))?;
+        let pgid = session.pgid();
+        self.add(id, session);
+        Ok((pgid, stdout, stderr))
     }
 
     /// Non-blocking poll: reap the first child that has exited.
     ///
-    /// Returns that child's exit code (shell convention for signals) and
-    /// removes it from the supervisor.
+    /// Returns that child's id and exit code (shell convention for signals)
+    /// and removes it from the supervisor.
     ///
     /// # Errors
     ///
     /// Propagates wait errors from the OS.
-    pub fn try_wait_any(&mut self) -> io::Result<Option<i32>> {
+    pub fn try_wait_any(&mut self) -> io::Result<Option<(String, i32)>> {
         for index in 0..self.children.len() {
-            if let Some(code) = self.children[index].try_wait()? {
-                self.children.swap_remove(index);
-                return Ok(Some(code));
+            if let Some(code) = self.children[index].session.try_wait()? {
+                let TrackedChild { id, .. } = self.children.swap_remove(index);
+                return Ok(Some((id, code)));
             }
         }
         Ok(None)
     }
 
-    /// Poll every child once; reap and collect exit codes for those that exited.
+    /// Poll every child once; reap and collect `(id, code)` for those that exited.
     ///
     /// # Errors
     ///
     /// Propagates wait errors from the OS.
-    pub fn try_wait_all(&mut self) -> io::Result<Vec<i32>> {
+    pub fn try_wait_all(&mut self) -> io::Result<Vec<(String, i32)>> {
         let mut codes = Vec::new();
         let mut index = 0;
         while index < self.children.len() {
-            if let Some(code) = self.children[index].try_wait()? {
-                self.children.swap_remove(index);
-                codes.push(code);
+            if let Some(code) = self.children[index].session.try_wait()? {
+                let TrackedChild { id, .. } = self.children.swap_remove(index);
+                codes.push((id, code));
             } else {
                 index += 1;
             }
@@ -129,14 +209,14 @@ impl Supervisor {
 
     /// Graceful shutdown: SIGTERM all groups, wait up to `grace`, then SIGKILL.
     ///
-    /// Reaps every child and returns their exit codes (order is not significant).
-    /// Clears the interrupt-armed state.
+    /// Reaps every child and returns their `(id, exit code)` pairs (order is
+    /// not significant). Clears the interrupt-armed state.
     ///
     /// # Errors
     ///
     /// Propagates signal or wait errors. On non-Unix platforms with live
     /// children, returns [`io::ErrorKind::Unsupported`].
-    pub fn shutdown_all(&mut self, grace: Duration) -> io::Result<Vec<i32>> {
+    pub fn shutdown_all(&mut self, grace: Duration) -> io::Result<Vec<(String, i32)>> {
         let codes = self.shutdown_all_inner(grace, None)?;
         self.interrupt_armed = false;
         Ok(codes)
@@ -150,7 +230,7 @@ impl Supervisor {
     ///
     /// Propagates signal or wait errors. On non-Unix platforms with live
     /// children, returns [`io::ErrorKind::Unsupported`].
-    pub fn kill_all(&mut self) -> io::Result<Vec<i32>> {
+    pub fn kill_all(&mut self) -> io::Result<Vec<(String, i32)>> {
         let codes = self.kill_remaining()?;
         self.interrupt_armed = false;
         Ok(codes)
@@ -175,7 +255,7 @@ impl Supervisor {
         &mut self,
         flags: &InterruptFlags,
         grace: Duration,
-    ) -> io::Result<Option<Vec<i32>>> {
+    ) -> io::Result<Option<Vec<(String, i32)>>> {
         if self.interrupt_armed {
             if !flags.take_pending() {
                 return Ok(None);
@@ -197,7 +277,7 @@ impl Supervisor {
         &mut self,
         grace: Duration,
         flags: Option<&InterruptFlags>,
-    ) -> io::Result<Vec<i32>> {
+    ) -> io::Result<Vec<(String, i32)>> {
         if self.children.is_empty() {
             return Ok(Vec::new());
         }
@@ -214,7 +294,7 @@ impl Supervisor {
         #[cfg(unix)]
         {
             for child in &self.children {
-                child.signal_terminate()?;
+                child.session.signal_terminate()?;
             }
 
             let deadline = Instant::now() + grace;
@@ -243,7 +323,7 @@ impl Supervisor {
         }
     }
 
-    fn kill_remaining(&mut self) -> io::Result<Vec<i32>> {
+    fn kill_remaining(&mut self) -> io::Result<Vec<(String, i32)>> {
         if self.children.is_empty() {
             return Ok(Vec::new());
         }
@@ -259,14 +339,14 @@ impl Supervisor {
         #[cfg(unix)]
         {
             for child in &self.children {
-                child.signal_kill()?;
+                child.session.signal_kill()?;
             }
 
             let mut codes = Vec::with_capacity(self.children.len());
             // Take ownership so we can `wait` each session to completion.
             let sessions = std::mem::take(&mut self.children);
-            for session in sessions {
-                codes.push(session.wait()?);
+            for TrackedChild { id, session } in sessions {
+                codes.push((id, session.wait()?));
             }
             Ok(codes)
         }
@@ -316,10 +396,10 @@ mod tests {
         let sleep = unix_util("sleep");
 
         let pgid_a = supervisor
-            .spawn(&sleep, &["30"], None, &env)
+            .spawn("a", &sleep, &["30"], None, &env)
             .expect("spawn sleep a");
         let pgid_b = supervisor
-            .spawn(&sleep, &["30"], None, &env)
+            .spawn("b", &sleep, &["30"], None, &env)
             .expect("spawn sleep b");
         assert_eq!(supervisor.len(), 2);
 
@@ -328,7 +408,7 @@ mod tests {
             .expect("shutdown_all");
         assert_eq!(codes.len(), 2);
         assert!(supervisor.is_empty());
-        for code in codes {
+        for (_id, code) in codes {
             assert!(
                 code == 128 + 15 || code == 128 + 9,
                 "unexpected exit code {code}"
@@ -344,21 +424,21 @@ mod tests {
         let mut supervisor = Supervisor::new();
         let env = EnvironmentPolicy::Inherit;
         supervisor
-            .spawn(unix_util("true"), &[] as &[&str], None, &env)
+            .spawn("true", unix_util("true"), &[] as &[&str], None, &env)
             .expect("spawn true");
         supervisor
-            .spawn(unix_util("sleep"), &["30"], None, &env)
+            .spawn("sleep", unix_util("sleep"), &["30"], None, &env)
             .expect("spawn sleep");
 
         let mut finished = None;
         for _ in 0..50 {
-            if let Some(code) = supervisor.try_wait_any().expect("try_wait_any") {
-                finished = Some(code);
+            if let Some((id, code)) = supervisor.try_wait_any().expect("try_wait_any") {
+                finished = Some((id, code));
                 break;
             }
             thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(finished, Some(0));
+        assert_eq!(finished, Some(("true".to_owned(), 0)));
         assert_eq!(supervisor.len(), 1);
 
         let _ = supervisor.shutdown_all(Duration::from_millis(500));
@@ -377,10 +457,10 @@ mod tests {
         // that kills inner `sleep` does not exit the supervised process.
         let ignore_term = ["-c", "trap '' TERM; while true; do sleep 60; done"];
         let pgid_a = supervisor
-            .spawn(&bash, &ignore_term, None, &env)
+            .spawn("a", &bash, &ignore_term, None, &env)
             .expect("spawn a");
         let pgid_b = supervisor
-            .spawn(&bash, &ignore_term, None, &env)
+            .spawn("b", &bash, &ignore_term, None, &env)
             .expect("spawn b");
         // Allow shells to install the TERM trap before the first SIGTERM.
         thread::sleep(Duration::from_millis(100));
@@ -403,7 +483,7 @@ mod tests {
             "escalation should not wait out the full grace window"
         );
         assert_eq!(codes.len(), 2);
-        for code in codes {
+        for (_id, code) in codes {
             assert_eq!(code, 128 + 9, "expected SIGKILL exit, got {code}");
         }
         assert!(supervisor.is_empty());
@@ -420,12 +500,12 @@ mod tests {
         let ignore_term = ["-c", "trap '' TERM; while true; do sleep 60; done"];
 
         let pgid = supervisor
-            .spawn(&bash, &ignore_term, None, &env)
+            .spawn("stubborn", &bash, &ignore_term, None, &env)
             .expect("spawn");
         thread::sleep(Duration::from_millis(100));
 
         let codes = supervisor.kill_all().expect("kill_all");
-        assert_eq!(codes, vec![128 + 9]);
+        assert_eq!(codes, vec![("stubborn".to_owned(), 128 + 9)]);
         assert!(!group_alive(pgid));
     }
 }
