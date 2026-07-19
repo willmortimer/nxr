@@ -170,7 +170,7 @@ nxr/
 │   ├── list-v1.schema.json
 │   ├── plan-v1.schema.json
 │   ├── events-v1.schema.json
-│   └── task-schema-v1.schema.json
+│   └── task-v1.schema.json
 ├── fixtures/
 │   ├── basic-apps/
 │   ├── app-metadata/

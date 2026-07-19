@@ -459,6 +459,9 @@ name = "nxr-task"
 version = "1.0.0"
 dependencies = [
  "nxr-core",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/task-v1.schema.json",
+  "title": "nxr task document",
+  "description": "Versioned task orchestration metadata (schema version 1). Tasks coordinate flake apps; they do not replace them.",
+  "type": "object",
+  "required": ["schema_version"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Major schema version. Unsupported majors must be rejected."
+    },
+    "tasks": {
+      "type": "object",
+      "description": "Map of task name to task definition.",
+      "additionalProperties": {
+        "$ref": "#/$defs/task"
+      }
+    }
+  },
+  "$defs": {
+    "task": {
+      "type": "object",
+      "required": ["app"],
+      "additionalProperties": true,
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Optional short description for listings and completion."
+        },
+        "dependsOn": {
+          "type": "array",
+          "description": "Task names that must complete before this task runs. Defaults to [].",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "app": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Flake app leaf name (apps.<system>.<name>) this task runs."
+        },
+        "workingDirectory": {
+          "type": "string",
+          "description": "Optional working-directory policy or path (for example flake-root or invocation)."
+        },
+        "hidden": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the task is omitted from default listings."
+        },
+        "category": {
+          "type": "string",
+          "description": "Optional logical category for grouping in listings."
+        }
+      }
+    }
+  }
+}
