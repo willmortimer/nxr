@@ -9,14 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `nxr watch <name>` — watch the local flake root, debounce (default 300ms), kill+rerun generations for apps or serial tasks (task-first when names collide).
-- Killable supervised child sessions in `nxr-process` for watch generations.
-- `notify`-backed filesystem watch session in `nxr-watch`.
+- Orchestration V2 core: `ExecutionPlan` + typed events, multi-child `Supervisor`, parallel `nxr task -j` / `--keep-going` (fail-fast default), `--output live|grouped|failures`, `--events jsonl`, global `--shell`.
+- Watch v2: `--include` / `--exclude` globs, `--clear`, `nxr run|task --watch` aliases, Supervisor-backed generation shutdown.
+- Task UX: optional `aliases`, shared `resolve_task_name`, `nxr plan` app-first then task `ExecutionPlan`, `list`/`inspect --category`, hidden-task filtering.
+- Fixtures: `fixtures/parallel-group/`, `fixtures/named-dev-shells/`.
 
 ### Changed
 
-- README and [CLI_REFERENCE.md](docs/CLI_REFERENCE.md) document current commands (inspect/task/graph/watch, inline `flake#app`, authoring helpers).
-- README includes a VHS-generated terminal GIF (`docs/demo/nxr.gif`); regenerate with `./docs/demo/record.sh`.
+- README documents parallel tasks, shell, watch v2, and V2.0 / TUI status relative to [ROADMAP.md](docs/ROADMAP.md).
+- [CLI_REFERENCE.md](docs/CLI_REFERENCE.md) and [TASKS.md](docs/TASKS.md) cover the new flags and schema fields.
 
 ## [1.0.0] - 2026-07-18
 
