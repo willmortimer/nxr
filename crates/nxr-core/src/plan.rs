@@ -2,18 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::env_policy::EnvironmentPolicy;
+
 /// Plan target kind (V1: flake apps only).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanKind {
     App,
-}
-
-/// How the child process inherits environment variables.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EnvironmentPolicy {
-    Inherit,
 }
 
 /// Executable invocation recorded in a plan.

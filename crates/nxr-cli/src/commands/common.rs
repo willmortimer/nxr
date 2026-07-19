@@ -13,7 +13,7 @@ use nxr_nix::{
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
 
 /// Inputs shared by `run`, bare-app, and `plan` preparation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppRequest<'a> {
     pub flake_arg: Option<&'a str>,
     pub nix_override: Option<&'a str>,
@@ -21,6 +21,7 @@ pub struct AppRequest<'a> {
     pub args: &'a [String],
     pub root: bool,
     pub cwd: Option<&'a str>,
+    pub environment_policy: EnvironmentPolicy,
 }
 
 /// Inputs for flake discovery without a resolved app target.
@@ -107,7 +108,7 @@ pub fn discover_apps(request: DiscoverRequest<'_>) -> Result<DiscoveredApps, Pre
 ///
 /// Returns [`PrepareError`] when directories, flake selection, discovery, or
 /// app resolution fail.
-pub fn prepare_app_plan(request: AppRequest<'_>) -> Result<PreparedPlan, PrepareError> {
+pub fn prepare_app_plan(request: &AppRequest<'_>) -> Result<PreparedPlan, PrepareError> {
     let invocation_cwd = current_invocation_directory()?;
     let flake = resolve_flake(request.flake_arg, &invocation_cwd)?;
     let execution_directory =
@@ -123,6 +124,7 @@ pub fn prepare_app_plan(request: AppRequest<'_>) -> Result<PreparedPlan, Prepare
         &invocation_cwd,
         &execution_directory,
         &forwarded,
+        request.environment_policy.clone(),
     );
 
     Ok(PreparedPlan {
@@ -192,6 +194,7 @@ fn build_plan(
     invocation_directory: &Utf8Path,
     execution_directory: &Utf8Path,
     forwarded: &[String],
+    environment_policy: EnvironmentPolicy,
 ) -> Plan {
     Plan {
         schema_version: Plan::SCHEMA_VERSION,
@@ -202,7 +205,7 @@ fn build_plan(
         attr_path: app.attr_path.clone(),
         invocation_directory: invocation_directory.as_str().to_owned(),
         execution_directory: execution_directory.as_str().to_owned(),
-        environment_policy: EnvironmentPolicy::Inherit,
+        environment_policy,
         command: PlanCommand {
             program: adapter.nix.as_str().to_owned(),
             arguments: nix_run_args(&flake.nix_ref, &app.name, forwarded),
@@ -283,6 +286,7 @@ mod tests {
             camino::Utf8Path::new("/work"),
             camino::Utf8Path::new("/work"),
             &forwarded,
+            nxr_core::EnvironmentPolicy::Inherit,
         );
 
         assert_eq!(plan.schema_version, 1);

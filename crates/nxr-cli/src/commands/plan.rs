@@ -43,7 +43,7 @@ pub enum PlanRenderError {
 /// # Errors
 ///
 /// Returns [`PlanError`] when planning or rendering fails.
-pub fn run(request: AppRequest<'_>, json: bool, runner: RunnerOutput) -> Result<(), PlanError> {
+pub fn run(request: &AppRequest<'_>, json: bool, runner: RunnerOutput) -> Result<(), PlanError> {
     let prepared = prepare_app_plan(request)?;
     runner
         .info(format!("planning app {}", prepared.plan.target))

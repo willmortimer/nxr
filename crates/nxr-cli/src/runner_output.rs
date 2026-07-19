@@ -3,8 +3,9 @@
 use std::io::{self, Write};
 
 use nxr_core::sanitize::sanitize_terminal_text;
+use serde_json::json;
 
-use crate::output_options::OutputOptions;
+use crate::output_options::{LogFormat, OutputOptions};
 
 /// Emit runner-originated diagnostics to stderr according to output options.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,15 +55,26 @@ impl RunnerOutput {
     fn write_stderr(self, level: &str, message: &str) -> io::Result<()> {
         let sanitized = sanitize_terminal_text(message);
         let mut stderr = io::stderr().lock();
-        if self.options.color_enabled() {
-            let prefix = match level {
-                "error" => "\u{1b}[31merror\u{1b}[0m",
-                "verbose" => "\u{1b}[2mverbose\u{1b}[0m",
-                _ => "info",
-            };
-            writeln!(stderr, "{prefix}: {sanitized}")
-        } else {
-            writeln!(stderr, "{level}: {sanitized}")
+        match self.options.effective_log_format() {
+            LogFormat::Json => {
+                let line = json!({
+                    "level": level,
+                    "message": sanitized,
+                });
+                writeln!(stderr, "{line}")
+            }
+            LogFormat::Plain | LogFormat::Human => {
+                if self.options.color_enabled() {
+                    let prefix = match level {
+                        "error" => "\u{1b}[31merror\u{1b}[0m",
+                        "verbose" => "\u{1b}[2mverbose\u{1b}[0m",
+                        _ => "info",
+                    };
+                    writeln!(stderr, "{prefix}: {sanitized}")
+                } else {
+                    writeln!(stderr, "{level}: {sanitized}")
+                }
+            }
         }
     }
 }
@@ -70,21 +82,42 @@ impl RunnerOutput {
 #[cfg(test)]
 mod tests {
     use super::RunnerOutput;
-    use crate::output_options::{ColorWhen, OutputOptions};
+    use crate::output_options::{ColorWhen, LogFormat, OutputOptions};
 
     #[test]
     fn quiet_suppresses_info_but_not_error() {
-        let quiet = RunnerOutput::new(OutputOptions::new(1, 0, false, true, ColorWhen::Never));
+        let quiet = RunnerOutput::new(OutputOptions::new(
+            1,
+            0,
+            false,
+            true,
+            ColorWhen::Never,
+            LogFormat::Human,
+        ));
         assert!(quiet.info("listing apps").is_ok());
         assert!(quiet.error("something failed").is_ok());
     }
 
     #[test]
     fn verbose_requires_flag() {
-        let normal = RunnerOutput::new(OutputOptions::new(0, 0, false, true, ColorWhen::Never));
+        let normal = RunnerOutput::new(OutputOptions::new(
+            0,
+            0,
+            false,
+            true,
+            ColorWhen::Never,
+            LogFormat::Human,
+        ));
         assert!(normal.verbose("discovering apps").is_ok());
 
-        let verbose = RunnerOutput::new(OutputOptions::new(0, 1, false, true, ColorWhen::Never));
+        let verbose = RunnerOutput::new(OutputOptions::new(
+            0,
+            1,
+            false,
+            true,
+            ColorWhen::Never,
+            LogFormat::Human,
+        ));
         assert!(verbose.verbose("discovering apps").is_ok());
     }
 }

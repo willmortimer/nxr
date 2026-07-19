@@ -2,13 +2,15 @@
 
 pub mod config;
 pub mod diagnostics;
+pub mod env_policy;
 pub mod model;
 pub mod plan;
 pub mod sanitize;
 
 pub use diagnostics::{Diagnostic, DiagnosticLevel};
+pub use env_policy::{CLEAN_ENV_ALLOWLIST, EnvironmentPolicy, parse_env_name, parse_set_env};
 pub use model::{App, AppList, FlakeRef, ListApp};
-pub use plan::{EnvironmentPolicy, Plan, PlanCommand, PlanKind};
+pub use plan::{Plan, PlanCommand, PlanKind};
 pub use sanitize::sanitize_terminal_text;
 
 #[cfg(test)]
@@ -16,8 +18,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::diagnostics::exit;
+    use super::env_policy::EnvironmentPolicy;
     use super::model::{App, AppList, ListApp};
-    use super::plan::{EnvironmentPolicy, Plan, PlanCommand, PlanKind};
+    use super::plan::{Plan, PlanCommand, PlanKind};
     use serde_json::json;
 
     #[test]

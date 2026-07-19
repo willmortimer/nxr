@@ -13,6 +13,15 @@ pub enum ColorWhen {
     Never,
 }
 
+/// Format for runner diagnostics written to stderr.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum LogFormat {
+    #[default]
+    Human,
+    Plain,
+    Json,
+}
+
 /// Parsed global output flags from the CLI.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OutputOptions {
@@ -21,6 +30,7 @@ pub struct OutputOptions {
     pub plain: bool,
     pub no_color: bool,
     pub color: ColorWhen,
+    pub log_format: LogFormat,
 }
 
 impl OutputOptions {
@@ -31,6 +41,7 @@ impl OutputOptions {
         plain: bool,
         no_color: bool,
         color: ColorWhen,
+        log_format: LogFormat,
     ) -> Self {
         Self {
             quiet,
@@ -38,6 +49,7 @@ impl OutputOptions {
             plain,
             no_color,
             color,
+            log_format,
         }
     }
 
@@ -53,7 +65,10 @@ impl OutputOptions {
 
     #[must_use]
     pub fn color_enabled(self) -> bool {
-        if self.plain || self.no_color {
+        if self.plain
+            || self.no_color
+            || matches!(self.log_format, LogFormat::Json | LogFormat::Plain)
+        {
             return false;
         }
 
@@ -68,24 +83,39 @@ impl OutputOptions {
     pub const fn show_runner_info(self) -> bool {
         !self.is_quiet()
     }
+
+    #[must_use]
+    pub const fn effective_log_format(self) -> LogFormat {
+        if self.plain && matches!(self.log_format, LogFormat::Human) {
+            LogFormat::Plain
+        } else {
+            self.log_format
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ColorWhen, OutputOptions};
+    use super::{ColorWhen, LogFormat, OutputOptions};
 
     #[test]
     fn quiet_hides_runner_info() {
-        let options = OutputOptions::new(1, 0, false, true, ColorWhen::Never);
+        let options = OutputOptions::new(1, 0, false, true, ColorWhen::Never, LogFormat::Human);
         assert!(!options.show_runner_info());
     }
 
     #[test]
     fn plain_and_no_color_disable_color() {
-        let plain = OutputOptions::new(0, 0, true, false, ColorWhen::Always);
+        let plain = OutputOptions::new(0, 0, true, false, ColorWhen::Always, LogFormat::Human);
         assert!(!plain.color_enabled());
 
-        let no_color = OutputOptions::new(0, 0, false, true, ColorWhen::Always);
+        let no_color = OutputOptions::new(0, 0, false, true, ColorWhen::Always, LogFormat::Human);
         assert!(!no_color.color_enabled());
+    }
+
+    #[test]
+    fn json_log_format_disables_color() {
+        let options = OutputOptions::new(0, 0, false, false, ColorWhen::Always, LogFormat::Json);
+        assert!(!options.color_enabled());
     }
 }

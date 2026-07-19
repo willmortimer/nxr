@@ -617,7 +617,12 @@ fn global_output_flags_are_documented_in_help() {
         .stdout(predicate::str::contains("--verbose"))
         .stdout(predicate::str::contains("--plain"))
         .stdout(predicate::str::contains("--no-color"))
-        .stdout(predicate::str::contains("--color"));
+        .stdout(predicate::str::contains("--color"))
+        .stdout(predicate::str::contains("--log-format"))
+        .stdout(predicate::str::contains("--clean-env"))
+        .stdout(predicate::str::contains("--keep-env"))
+        .stdout(predicate::str::contains("--set-env"))
+        .stdout(predicate::str::contains("--unset-env"));
 }
 
 #[test]
@@ -626,7 +631,8 @@ fn doctor_help_documents_clean_env_flag() {
         .args(["doctor", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("--clean-env"));
+        .stdout(predicate::str::contains("--clean-env"))
+        .stdout(predicate::str::contains("--all"));
 }
 
 #[test]

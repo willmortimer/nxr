@@ -10,22 +10,31 @@ nxr <command> --help
 ## Global options
 
 ```text
--f, --flake <REF>     Select flake reference
--C, --cwd <PATH>      Set child working directory
-    --root            Run child from flake root
-    --dry-run         Print plan without execution
-    --json            Emit JSON for data-returning commands
-    --nix <PATH>      Override Nix executable
--s, --select          Open interactive app selector
-    --refresh         Ignore nxr discovery cache
--q, --quiet           Suppress non-error nxr messages
--v, --verbose         Increase runner diagnostics
-    --plain           Disable decorative terminal output
-    --no-color        Disable runner color
-    --color <WHEN>    auto|always|never
--h, --help            Show help
--V, --version         Show version
+-f, --flake <REF>          Select flake reference
+-C, --cwd <PATH>           Set child working directory
+    --root                 Run child from flake root
+    --dry-run              Print plan without execution
+    --json                 Emit JSON for data-returning commands
+    --nix <PATH>           Override Nix executable
+-s, --select               Open interactive app selector
+    --refresh              Ignore nxr discovery cache
+    --clean-env            Run with reduced inherited environment
+    --keep-env <NAME>      Preserve variable in clean mode (repeatable)
+    --set-env <KEY=VALUE>  Set or replace a variable (repeatable)
+    --unset-env <NAME>     Remove a variable (repeatable)
+-q, --quiet                Suppress non-error nxr messages
+-v, --verbose              Increase runner diagnostics
+    --plain                Disable decorative terminal output
+    --log-format <FORMAT>  human|plain|json (runner stderr diagnostics)
+    --no-color             Disable runner color
+    --color <WHEN>         auto|always|never
+-h, --help                 Show help
+-V, --version              Show version
 ```
+
+`--keep-env` / `--set-env` / `--unset-env` require `--clean-env`. Clean mode starts from the allowlist in `nxr_core::CLEAN_ENV_ALLOWLIST` (documented in [DEV_ENV_INTEGRATION.md](DEV_ENV_INTEGRATION.md) §10); `PATH` is not allowlisted so shell pollution is visible.
+
+Not in this release (deferred): `--offline`, inline `flake#app` (use `--flake` + app name).
 
 ## Commands (V1)
 
@@ -38,11 +47,11 @@ nxr <command> --help
 | `nxr plan <app> [-- args…]` | Show execution plan |
 | `nxr select` | Interactive fuzzy app picker |
 | `nxr doctor [app]` | Diagnose environment and flake setup |
+| `nxr doctor --all` | Extra non-destructive findings (descriptions, naming) |
 | `nxr doctor --clean-env [app]` | Clean-environment validation |
 | `nxr completion <shell>` | Emit Bash, Zsh, or Fish completion |
 
-Reserved for V2 (present but not implemented): `inspect`, `task`, `watch`, `graph`.
-
+Reserved stubs (orchestration landing in V1 next): `inspect`, `task`, `watch`, `graph`.
 ## Examples
 
 ```bash

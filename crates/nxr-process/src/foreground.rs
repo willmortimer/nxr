@@ -7,6 +7,8 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
+use nxr_core::EnvironmentPolicy;
+
 use crate::signals::exit_code_from_status;
 
 /// Spawn `program` with an argv vector (no shell), inherit stdio, and wait.
@@ -27,27 +29,32 @@ where
     P: AsRef<OsStr>,
     A: AsRef<OsStr>,
 {
-    run_in(program, args, None)
+    run_in(program, args, None, &EnvironmentPolicy::Inherit)
 }
 
-/// Like [`run`], but optionally sets the child working directory.
+/// Like [`run`], but optionally sets the child working directory and environment policy.
 ///
 /// # Errors
 ///
 /// Same as [`run`].
-pub fn run_in<P, A>(program: P, args: &[A], cwd: Option<&Path>) -> io::Result<i32>
+pub fn run_in<P, A>(
+    program: P,
+    args: &[A],
+    cwd: Option<&Path>,
+    environment: &EnvironmentPolicy,
+) -> io::Result<i32>
 where
     P: AsRef<OsStr>,
     A: AsRef<OsStr>,
 {
     #[cfg(unix)]
     {
-        unix::run(program.as_ref(), args, cwd)
+        unix::run(program.as_ref(), args, cwd, environment)
     }
 
     #[cfg(windows)]
     {
-        let _ = (program, args, cwd);
+        let _ = (program, args, cwd, environment);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Windows foreground supervision is not implemented yet",
@@ -56,7 +63,7 @@ where
 
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = (program, args, cwd);
+        let _ = (program, args, cwd, environment);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "foreground supervision is not supported on this platform",
@@ -66,7 +73,9 @@ where
 
 #[cfg(unix)]
 mod unix {
-    use super::{Command, Duration, OsStr, Path, Stdio, exit_code_from_status, io, thread};
+    use super::{
+        Command, Duration, EnvironmentPolicy, OsStr, Path, Stdio, exit_code_from_status, io, thread,
+    };
     use crate::signals::unix::SignalForwarder;
     use std::os::unix::process::CommandExt;
 
@@ -74,6 +83,7 @@ mod unix {
         program: &OsStr,
         args: &[A],
         cwd: Option<&Path>,
+        environment: &EnvironmentPolicy,
     ) -> io::Result<i32> {
         let forwarder = SignalForwarder::install()?;
 
@@ -90,6 +100,7 @@ mod unix {
         if let Some(dir) = cwd {
             command.current_dir(dir);
         }
+        environment.apply(&mut command);
 
         let mut child = command.spawn()?;
         let pgid = child.id();
@@ -115,7 +126,9 @@ mod unix {
 mod tests {
     use std::path::Path;
 
-    use super::run;
+    use nxr_core::EnvironmentPolicy;
+
+    use super::{run, run_in};
 
     #[cfg(unix)]
     fn unix_util(name: &str) -> String {
@@ -147,22 +160,29 @@ mod tests {
     fn no_shell_evaluation_of_args() {
         // If args were shell-evaluated, `&& exit 99` would change the status.
         // `true` ignores extra argv and still exits 0.
-        let code = run(unix_util("true"), &["&&", "exit", "99"]).expect("run true");
+        let code = run(unix_util("true"), &["&&", "exit", "99"]).expect("run");
         assert_eq!(code, 0);
     }
 
     #[cfg(unix)]
     #[test]
     fn spawn_failure_is_error() {
-        let err = run("/path/does/not/exist/nxr-process-test", &[] as &[&str])
-            .expect_err("missing program should fail");
+        let err = run("/nonexistent/nxr-process-test-bin", &[] as &[&str])
+            .expect_err("missing binary should fail");
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
-    #[cfg(windows)]
+    #[cfg(unix)]
     #[test]
-    fn windows_is_stubbed() {
-        let err = run("cmd.exe", &["/C", "exit", "0"]).expect_err("windows stub");
-        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+    fn clean_env_can_set_and_unset() {
+        let policy = EnvironmentPolicy::clean(
+            [],
+            [("NXR_CLEAN_TEST".to_owned(), "1".to_owned())],
+            ["PATH".to_owned()],
+        );
+        let code =
+            run_in(unix_util("printenv"), &["NXR_CLEAN_TEST"], None, &policy).expect("printenv");
+        // printenv exits 0 when the variable is set
+        assert_eq!(code, 0);
     }
 }

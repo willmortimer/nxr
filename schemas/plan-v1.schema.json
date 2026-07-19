@@ -52,8 +52,36 @@
       "description": "Absolute path where the child process will run."
     },
     "environment_policy": {
-      "type": "string",
-      "enum": ["inherit"]
+      "description": "Child environment policy. Either the string \"inherit\" or a clean-env object.",
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "inherit"
+        },
+        {
+          "type": "object",
+          "required": ["mode", "keep", "set", "unset"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "clean"
+            },
+            "keep": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "set": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "unset": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        }
+      ]
     },
     "command": {
       "$ref": "#/$defs/plan_command"

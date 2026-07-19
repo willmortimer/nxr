@@ -268,11 +268,14 @@ Default behavior. Use caller environment.
 
 ### clean
 
-Start with a documented allowlist and explicit additions.
+Start with the documented allowlist (`CLEAN_ENV_ALLOWLIST` in `nxr-core`: `HOME`, `USER`, `LOGNAME`, `TMPDIR` / `TMP` / `TEMP`, `TERM`, `COLORTERM`, `LANG` / `LC_*`, display/socket vars, XDG dirs, Nix/SSL CA vars). **`PATH` is not allowlisted.**
 
 ```bash
-nxr --clean-env --keep-env HOME test
+nxr --clean-env --keep-env HOME --set-env CI=1 test
+nxr plan --clean-env test --json   # environment_policy is a clean object
 ```
+
+`--keep-env`, `--set-env`, and `--unset-env` require `--clean-env`.
 
 ### shell
 

@@ -4,7 +4,7 @@ use clap::{ArgAction, Parser, Subcommand};
 
 use nxr_completion::{CompleteTarget, Shell};
 
-use crate::output_options::ColorWhen;
+use crate::output_options::{ColorWhen, LogFormat};
 
 /// Nix-native flake app runner.
 #[derive(Debug, Parser)]
@@ -48,6 +48,22 @@ pub struct Cli {
     #[arg(long = "refresh", global = true)]
     pub refresh: bool,
 
+    /// Run with reduced inherited environment
+    #[arg(long = "clean-env", global = true)]
+    pub clean_env: bool,
+
+    /// Preserve variable in clean mode (repeatable)
+    #[arg(long = "keep-env", global = true, value_name = "NAME")]
+    pub keep_env: Vec<String>,
+
+    /// Set or replace a variable (`KEY=VALUE`, repeatable)
+    #[arg(long = "set-env", global = true, value_name = "KEY=VALUE")]
+    pub set_env: Vec<String>,
+
+    /// Remove a variable (repeatable)
+    #[arg(long = "unset-env", global = true, value_name = "NAME")]
+    pub unset_env: Vec<String>,
+
     /// Suppress non-error nxr messages
     #[arg(short = 'q', long = "quiet", global = true, action = ArgAction::Count)]
     pub quiet: u8,
@@ -72,6 +88,15 @@ pub struct Cli {
         default_value = "auto"
     )]
     pub color: ColorWhen,
+
+    /// Format for runner diagnostics on stderr
+    #[arg(
+        long = "log-format",
+        global = true,
+        value_name = "FORMAT",
+        default_value = "human"
+    )]
+    pub log_format: LogFormat,
 
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -105,6 +130,9 @@ pub enum Command {
         /// Run clean-environment diagnostics (may dry-run plan only)
         #[arg(long = "clean-env")]
         clean_env: bool,
+        /// Emit extra non-destructive findings (descriptions, naming)
+        #[arg(long = "all")]
+        all: bool,
         /// Optional app name to validate
         app: Option<String>,
     },

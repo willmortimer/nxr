@@ -8,10 +8,12 @@ mod output;
 mod output_options;
 mod runner_output;
 
+use std::collections::BTreeMap;
 use std::process;
 
 use clap::Parser;
 use nxr_core::diagnostics::exit;
+use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
 
 use crate::cli::{Cli, Command};
 use crate::commands::common::{AppRequest, DiscoverRequest};
@@ -51,6 +53,8 @@ enum RunError {
     Doctor(#[from] doctor::DoctorError),
     #[error("missing app name")]
     MissingAppName,
+    #[error("{0}")]
+    Usage(String),
     #[error(transparent)]
     Completion(#[from] completion::CompletionError),
     #[error(transparent)]
@@ -72,14 +76,21 @@ impl RunError {
             Self::Completion(_) => completion::CompletionError::exit_code(),
             Self::Complete(_) => exit::SUCCESS,
             Self::Manpage(_) => manpage::ManpageError::exit_code(),
-            Self::MissingAppName => exit::USAGE,
+            Self::MissingAppName | Self::Usage(_) => exit::USAGE,
             Self::Unimplemented(_) => UnimplementedCommandError::exit_code(),
         }
     }
 }
 
 fn output_options_from_cli(cli: &Cli) -> OutputOptions {
-    OutputOptions::new(cli.quiet, cli.verbose, cli.plain, cli.no_color, cli.color)
+    OutputOptions::new(
+        cli.quiet,
+        cli.verbose,
+        cli.plain,
+        cli.no_color,
+        cli.color,
+        cli.log_format,
+    )
 }
 
 fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
@@ -100,21 +111,26 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             if cli.select {
                 run_with_selected_app(cli, args, runner)
             } else {
-                let request = app_request(cli, app, args);
-                run::execute(request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+                let request = app_request(cli, app, args)?;
+                run::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
             }
         }
         Some(Command::Plan { app, args }) => {
-            let request = app_request(cli, app, args);
-            plan::run(request, cli.json, runner)?;
+            let request = app_request(cli, app, args)?;
+            plan::run(&request, cli.json, runner)?;
             Ok(exit::SUCCESS)
         }
-        Some(Command::Doctor { clean_env, app }) => {
+        Some(Command::Doctor {
+            clean_env,
+            all,
+            app,
+        }) => {
             let request = doctor::DoctorRequest {
                 flake_arg: cli.flake.as_deref(),
                 nix_override: cli.nix.as_deref(),
                 app: app.as_deref(),
-                clean_env: *clean_env,
+                clean_env: *clean_env || cli.clean_env,
+                all: *all,
                 root: cli.root,
                 cwd: cli.cwd.as_deref(),
             };
@@ -125,8 +141,8 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             if cli.select {
                 run_with_selected_app(cli, forwarded, runner)
             } else {
-                let request = app_request(cli, app, forwarded);
-                run::execute(request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+                let request = app_request(cli, app, forwarded)?;
+                run::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
             }
         }
         Some(Command::Completion { shell }) => {
@@ -161,8 +177,8 @@ fn run_with_selected_app(
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
     let app = select::pick_app_name(discover_request(cli))?;
-    let request = app_request(cli, &app, args);
-    run::execute(request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+    let request = app_request(cli, &app, args)?;
+    run::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
 }
 
 fn discover_request(cli: &Cli) -> DiscoverRequest<'_> {
@@ -172,15 +188,51 @@ fn discover_request(cli: &Cli) -> DiscoverRequest<'_> {
     }
 }
 
-fn app_request<'a>(cli: &'a Cli, app: &'a str, args: &'a [String]) -> AppRequest<'a> {
-    AppRequest {
+fn app_request<'a>(
+    cli: &'a Cli,
+    app: &'a str,
+    args: &'a [String],
+) -> Result<AppRequest<'a>, RunError> {
+    Ok(AppRequest {
         flake_arg: cli.flake.as_deref(),
         nix_override: cli.nix.as_deref(),
         app,
         args,
         root: cli.root,
         cwd: cli.cwd.as_deref(),
+        environment_policy: environment_policy_from_cli(cli)?,
+    })
+}
+
+fn environment_policy_from_cli(cli: &Cli) -> Result<EnvironmentPolicy, RunError> {
+    let has_overrides =
+        !cli.keep_env.is_empty() || !cli.set_env.is_empty() || !cli.unset_env.is_empty();
+    if has_overrides && !cli.clean_env {
+        return Err(RunError::Usage(
+            "--keep-env, --set-env, and --unset-env require --clean-env".to_owned(),
+        ));
     }
+    if !cli.clean_env {
+        return Ok(EnvironmentPolicy::Inherit);
+    }
+
+    let mut keep = Vec::with_capacity(cli.keep_env.len());
+    for name in &cli.keep_env {
+        keep.push(parse_env_name(name).map_err(RunError::Usage)?);
+    }
+
+    let mut set = BTreeMap::new();
+    for raw in &cli.set_env {
+        let (key, value) = parse_set_env(raw).map_err(RunError::Usage)?;
+        set.insert(key, value);
+    }
+
+    let mut unset = Vec::with_capacity(cli.unset_env.len());
+    for name in &cli.unset_env {
+        unset.push(parse_env_name(name).map_err(RunError::Usage)?);
+    }
+
+    Ok(EnvironmentPolicy::Clean { keep, set, unset })
 }
 
 fn split_external(tokens: &[String]) -> Result<(&str, &[String]), RunError> {

@@ -2,6 +2,7 @@
 
 use std::io::{self, Write};
 
+use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::{Diagnostic, DiagnosticLevel, exit};
 use nxr_core::sanitize::sanitize_terminal_text;
 use nxr_nix::{NixAdapter, NixError, resolve_app_by_name};
@@ -62,6 +63,7 @@ pub struct DoctorRequest<'a> {
     pub nix_override: Option<&'a str>,
     pub app: Option<&'a str>,
     pub clean_env: bool,
+    pub all: bool,
     pub root: bool,
     pub cwd: Option<&'a str>,
 }
@@ -194,6 +196,10 @@ fn collect_flake_findings(
                 );
             }
 
+            if request.all {
+                collect_app_quality_findings(&apps, findings);
+            }
+
             if let Some(app_name) = request.app {
                 match resolve_app_by_name(&apps, app_name) {
                     Ok(app) => {
@@ -224,6 +230,43 @@ fn collect_flake_findings(
             );
         }
     }
+}
+
+fn collect_app_quality_findings(apps: &[nxr_core::App], findings: &mut Vec<Diagnostic>) {
+    for app in apps {
+        match app.description.as_deref() {
+            None | Some("") => {
+                push_finding(
+                    findings,
+                    DiagnosticLevel::Warning,
+                    "app.description_missing",
+                    format!("app `{}` has no description", app.name),
+                );
+            }
+            Some(_) => {}
+        }
+
+        if !is_recommended_app_name(&app.name) {
+            push_finding(
+                findings,
+                DiagnosticLevel::Warning,
+                "app.naming",
+                format!(
+                    "app `{}` does not follow recommended naming \
+                     (lowercase alphanumeric with single `-` separators)",
+                    app.name
+                ),
+            );
+        }
+    }
+}
+
+fn is_recommended_app_name(name: &str) -> bool {
+    if name.is_empty() || name.starts_with('-') || name.ends_with('-') || name.contains("--") {
+        return false;
+    }
+    name.chars()
+        .all(|ch| matches!(ch, 'a'..='z' | '0'..='9' | '-'))
 }
 
 fn collect_clean_env_findings(request: DoctorRequest<'_>, findings: &mut Vec<Diagnostic>) {
@@ -257,9 +300,10 @@ fn collect_clean_env_findings(request: DoctorRequest<'_>, findings: &mut Vec<Dia
         args: &[],
         root: request.root,
         cwd: request.cwd,
+        environment_policy: EnvironmentPolicy::Inherit,
     };
 
-    match prepare_app_plan(app_request) {
+    match prepare_app_plan(&app_request) {
         Ok(prepared) => {
             let command = prepared.plan.command.arguments.join(" ");
             push_finding(

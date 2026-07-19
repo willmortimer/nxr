@@ -39,7 +39,7 @@ impl RunError {
 ///
 /// On success, returns the child exit code (or `0` for dry-run).
 pub fn execute(
-    request: AppRequest<'_>,
+    request: &AppRequest<'_>,
     dry_run: bool,
     json: bool,
     runner: RunnerOutput,
@@ -69,6 +69,7 @@ pub fn execute(
         prepared.nix.as_std_path(),
         &prepared.plan.command.arguments,
         Some(prepared.execution_directory.as_std_path()),
+        &prepared.plan.environment_policy,
     )
     .map_err(RunError::Supervision)?;
 

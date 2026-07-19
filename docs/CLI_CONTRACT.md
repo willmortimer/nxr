@@ -82,7 +82,7 @@ Rules:
 
 ## 4. Global options
 
-Proposed stable V1 options:
+Stable V1 options:
 
 ```text
 -f, --flake <REF>          Select flake reference
@@ -102,13 +102,18 @@ Proposed stable V1 options:
     --no-color             Disable runner color
     --color <WHEN>         auto|always|never
     --nix <PATH>           Override Nix executable
-    --offline              Forward supported offline behavior
     --refresh              Ignore nxr discovery cache
 -h, --help                 Show help
 -V, --version              Show version
 ```
 
-V2 options:
+Deferred (not stable yet):
+
+```text
+    --offline              Forward supported offline behavior to Nix
+```
+
+V2 / upcoming orchestration options:
 
 ```text
     --shell <NAME>         Execute through named dev shell
@@ -120,7 +125,6 @@ V2 options:
     --watch                Watch and rerun/restart
     --debounce <DURATION>  Watch debounce
 ```
-
 ## 5. Argument forwarding
 
 ### 5.1 Direct form
@@ -292,11 +296,17 @@ Default doctor is static and non-destructive.
 
 It may evaluate and resolve apps but does not execute them.
 
-Execution checks require explicit flags:
+Execution checks that run apps require an explicit future flag (not shipped):
 
 ```bash
-nxr doctor --execute-safe
+nxr doctor --execute-safe   # deferred
+```
+
+Clean-environment validation never executes apps; with a named app it may emit a dry-run plan only:
+
+```bash
 nxr doctor --clean-env test
+nxr doctor --all
 ```
 
 Apps may declare themselves unsafe for automatic execution.
