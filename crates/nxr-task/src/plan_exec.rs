@@ -38,6 +38,28 @@ impl FailurePolicy {
     }
 }
 
+/// How trailing CLI args are forwarded onto node apps (V2 freeze).
+///
+/// Unknown JSON values are rejected by serde; older plans without the field
+/// deserialize to [`Self::Root`] via `#[serde(default)]`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArgumentForwarding {
+    /// Trailing args go only to the root task's app; dependency nodes get `[]`.
+    #[default]
+    Root,
+}
+
+impl ArgumentForwarding {
+    /// Exhaustive label for diagnostics / tests.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ArgumentForwarding::Root => "root",
+        }
+    }
+}
+
 /// One node in an [`ExecutionPlan`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PlanNode {
@@ -59,6 +81,9 @@ pub struct ExecutionPlan {
     pub root: String,
     /// Failure handling policy for a future scheduler.
     pub failure_policy: FailurePolicy,
+    /// Trailing CLI argument forwarding policy (V2 freeze: root only).
+    #[serde(default)]
+    pub argument_forwarding: ArgumentForwarding,
     /// Nodes in the reachable subgraph (lexicographic id order).
     pub nodes: Vec<PlanNode>,
     /// Deterministic serial execution order (dependencies before dependents).
@@ -116,6 +141,7 @@ pub fn build_execution_plan(
         schema_version: ExecutionPlan::SCHEMA_VERSION,
         root: root.to_owned(),
         failure_policy,
+        argument_forwarding: ArgumentForwarding::Root,
         nodes,
         serial_order,
         waves,
@@ -232,10 +258,25 @@ mod tests {
         let encoded = serde_json::to_value(&plan).expect("serialize");
         assert_eq!(encoded["schema_version"], 1);
         assert_eq!(encoded["failure_policy"], "keep_going");
+        assert_eq!(encoded["argument_forwarding"], "root");
         assert!(encoded["nodes"][3].get("dependsOn").is_some());
 
         let decoded: ExecutionPlan = serde_json::from_value(encoded).expect("deserialize");
         assert_eq!(decoded, plan);
+    }
+
+    #[test]
+    fn argument_forwarding_defaults_to_root_when_absent() {
+        let json = serde_json::json!({
+            "schema_version": 1,
+            "root": "d",
+            "failure_policy": "fail_fast",
+            "nodes": [],
+            "serial_order": []
+        });
+        let plan: ExecutionPlan = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(plan.argument_forwarding, ArgumentForwarding::Root);
+        assert_eq!(plan.argument_forwarding.as_str(), "root");
     }
 
     #[test]

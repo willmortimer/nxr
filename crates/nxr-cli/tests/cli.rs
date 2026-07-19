@@ -1274,6 +1274,7 @@ fn plan_task_ci_emits_execution_plan_json() {
         serde_json::from_str(&stdout).expect("parse execution plan json");
     assert_eq!(value["schema_version"], 1);
     assert_eq!(value["root"], "ci");
+    assert_eq!(value["argument_forwarding"], "root");
     assert_eq!(
         value["serial_order"],
         serde_json::json!(["fmt", "test", "ci"])
@@ -1389,12 +1390,120 @@ fn task_ci_dry_run_prints_plans_in_serial_order() {
         .success();
 
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("# argument_forwarding=root stdin=inherit"),
+        "expected frozen policy header:\n{stdout}"
+    );
     let fmt_pos = stdout.find("#fmt").expect("fmt plan");
     let test_pos = stdout.find("#test").expect("test plan");
     let ci_pos = stdout.find("#ci").expect("ci plan");
     assert!(
         fmt_pos < test_pos && test_pos < ci_pos,
         "expected fmt → test → ci order in dry-run output:\n{stdout}"
+    );
+}
+
+#[test]
+fn task_dry_run_forwards_args_only_to_root() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/task-dag",
+            "--dry-run",
+            "--json",
+            "task",
+            "check",
+            "--",
+            "--from-cli",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("# argument_forwarding=root stdin=inherit"),
+        "expected policy header:\n{stdout}"
+    );
+
+    // Alias `check` → canonical root `ci`; only that node should see forwarded args.
+    let mut plans = Vec::new();
+    let mut rest = stdout.as_str();
+    while let Some(start) = rest.find('{') {
+        let slice = &rest[start..];
+        let mut depth = 0_i32;
+        let mut end = None;
+        for (idx, ch) in slice.char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(idx + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let end = end.expect("balanced json object");
+        let value: serde_json::Value =
+            serde_json::from_str(&slice[..end]).expect("parse dry-run plan json");
+        plans.push(value);
+        rest = &slice[end..];
+    }
+
+    assert_eq!(plans.len(), 3, "expected fmt/test/ci plans:\n{stdout}");
+    for plan in &plans[..2] {
+        assert_eq!(
+            plan["forwarded_arguments"],
+            serde_json::json!([]),
+            "deps must not receive trailing args: {plan}"
+        );
+    }
+    assert_eq!(
+        plans[2]["target"], "ci",
+        "root plan should be canonical ci: {}",
+        plans[2]
+    );
+    assert_eq!(
+        plans[2]["forwarded_arguments"],
+        serde_json::json!(["--from-cli"]),
+        "root should receive trailing args: {}",
+        plans[2]
+    );
+}
+
+#[test]
+fn task_parallel_dry_run_reports_null_stdin() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/parallel-group",
+            "--dry-run",
+            "task",
+            "join",
+            "-j",
+            "2",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("# argument_forwarding=root stdin=null"),
+        "parallel dry-run must close stdin:\n{stdout}"
     );
 }
 

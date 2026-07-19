@@ -36,7 +36,8 @@ pub struct TaskRequest<'a> {
     pub flake_arg: Option<&'a str>,
     pub nix_override: Option<&'a str>,
     pub task: &'a str,
-    /// Forwarded only to the root task's app (MVP); dependency nodes get none.
+    /// Forwarded only to the root task's app ([`nxr_task::ArgumentForwarding::Root`]);
+    /// dependency nodes always get none.
     pub args: &'a [String],
     pub root: bool,
     pub cwd: Option<&'a str>,
@@ -107,12 +108,17 @@ pub const fn plan_exit_code(error: &PlanError) -> i32 {
 
 /// Discover tasks, build an execution plan, and run nodes under the scheduler.
 ///
-/// Trailing `args` are forwarded only to the root task's app. Dependency nodes
-/// receive an empty argument list (MVP; richer forwarding is deferred).
+/// # Argument forwarding (V2 freeze)
 ///
-/// When `jobs == 1` and neither `--output` nor `--events` is set, children
-/// inherit stdio for interactivity. Otherwise stdout/stderr are piped and
-/// routed through the task event sink.
+/// Trailing `args` are forwarded only to the **root** task's app
+/// ([`ArgumentForwarding::Root`]). Dependency nodes always receive `[]`.
+///
+/// # Stdin policy
+///
+/// - **Inherit:** `jobs == 1` and neither `--output` nor `--events` is set
+///   (serial interactive / transparent path).
+/// - **Null/closed:** otherwise (`jobs > 1`, `--output`, or `--events`) for
+///   every supervised child so parallel/multiplex runs never share caller stdin.
 ///
 /// # Errors
 ///
@@ -146,8 +152,7 @@ pub fn execute(
     let canonical = resolve_task_name(&document, request.task)
         .map_err(|error| TaskError::Plan(PlanError::UnknownRoot { root: error.name }))?;
 
-    let pipe_stdio =
-        request.jobs > 1 || request.output_mode.is_some() || request.events_format.is_some();
+    let pipe_stdio = !task_inherits_stdin(request.jobs, request.output_mode, request.events_format);
 
     // Parallel runs without an explicit --output still need a labeled renderer so
     // piped child stdout is not discarded by NullSink.
@@ -160,11 +165,14 @@ pub fn execute(
     let plan = build_execution_plan(&document.tasks, canonical, failure_policy, None)?;
 
     let waves = parallel_ready_waves(&plan);
+    let stdin_label = if pipe_stdio { "null" } else { "inherit" };
     runner
         .verbose(format!(
-            "task plan for {canonical} (jobs={}, {}): {}",
+            "task plan for {canonical} (jobs={}, {}, args={}, stdin={}): {}",
             request.jobs,
             failure_policy.as_str(),
+            plan.argument_forwarding.as_str(),
+            stdin_label,
             format_wave_summary(&waves)
         ))
         .map_err(TaskError::Io)?;
@@ -194,6 +202,19 @@ pub fn execute(
     }
 }
 
+/// Serial interactive path inherits caller stdin; parallel/multiplex closes it.
+///
+/// Inherit when `jobs == 1` and neither `--output` nor `--events` is set.
+/// Otherwise every supervised child gets null/closed stdin.
+#[must_use]
+pub fn task_inherits_stdin(
+    jobs: usize,
+    output_mode: Option<TaskOutputMode>,
+    events_format: Option<EventsFormat>,
+) -> bool {
+    jobs == 1 && output_mode.is_none() && events_format.is_none()
+}
+
 fn dry_run_execute(
     request: &TaskRequest<'_>,
     document: &TaskDocument,
@@ -203,6 +224,19 @@ fn dry_run_execute(
     runner: RunnerOutput,
 ) -> Result<i32, TaskError> {
     let mut stdout = io::stdout().lock();
+    let stdin_label =
+        if task_inherits_stdin(request.jobs, request.output_mode, request.events_format) {
+            "inherit"
+        } else {
+            "null"
+        };
+    writeln!(
+        stdout,
+        "# argument_forwarding={} stdin={}",
+        plan.argument_forwarding.as_str(),
+        stdin_label
+    )
+    .map_err(TaskError::Io)?;
     if request.jobs > 1 {
         writeln!(
             stdout,
@@ -224,7 +258,7 @@ fn dry_run_execute(
     }
 
     for task_id in &plan.serial_order {
-        let prepared = prepare_node(request, document, task_id)?;
+        let prepared = prepare_node(request, document, &plan.root, task_id)?;
         runner
             .verbose(format!(
                 "dry-run task {task_id} via app {}",
@@ -276,6 +310,7 @@ fn run_plan(
             spawn_node(
                 request,
                 document,
+                &plan.root,
                 &node_id,
                 pipe_stdio,
                 &mut supervisor,
@@ -343,6 +378,7 @@ fn run_plan(
 fn spawn_node(
     request: &TaskRequest<'_>,
     document: &TaskDocument,
+    root_task_id: &str,
     node_id: &str,
     pipe_stdio: bool,
     supervisor: &mut Supervisor,
@@ -350,7 +386,7 @@ fn spawn_node(
     sink: &mut dyn EventSink,
     runner: RunnerOutput,
 ) -> Result<(), TaskError> {
-    let prepared = prepare_node(request, document, node_id)?;
+    let prepared = prepare_node(request, document, root_task_id, node_id)?;
     runner
         .verbose(format!(
             "running task {node_id} via app {}",
@@ -368,6 +404,7 @@ fn spawn_node(
     let env = &prepared.plan.environment_policy;
 
     if pipe_stdio {
+        // PipeStdoutStderr closes stdin (parallel/multiplex ownership policy).
         let (_pgid, stdout, stderr) = supervisor
             .spawn_piped(node_id.to_owned(), program, args, cwd, env)
             .map_err(TaskError::Supervision)?;
@@ -395,13 +432,15 @@ fn spawn_node(
 fn prepare_node(
     request: &TaskRequest<'_>,
     document: &TaskDocument,
+    root_task_id: &str,
     task_id: &str,
 ) -> Result<PreparedPlan, TaskError> {
     let definition = document
         .tasks
         .get(task_id)
         .expect("scheduler only starts ids present in the plan");
-    let forwarded = if task_id == request.task {
+    // Compare against canonical root id (alias invocations still forward to root).
+    let forwarded = if task_id == root_task_id {
         request.args
     } else {
         &[]
@@ -547,7 +586,8 @@ fn format_wave_summary(waves: &[Vec<String>]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_wave_summary, parallel_ready_waves, plan_exit_code};
+    use super::{format_wave_summary, parallel_ready_waves, plan_exit_code, task_inherits_stdin};
+    use crate::output_task::{EventsFormat, TaskOutputMode};
     use nxr_core::diagnostics::exit;
     use nxr_task::{FailurePolicy, PlanError, TaskDefinition, build_execution_plan};
     use std::collections::BTreeMap;
@@ -602,5 +642,25 @@ mod tests {
             ]
         );
         assert_eq!(format_wave_summary(&waves), "a -> [b || c] -> d");
+    }
+
+    #[test]
+    fn serial_interactive_inherits_stdin() {
+        assert!(task_inherits_stdin(1, None, None));
+    }
+
+    #[test]
+    fn parallel_jobs_closes_stdin() {
+        assert!(!task_inherits_stdin(2, None, None));
+    }
+
+    #[test]
+    fn output_mode_closes_stdin() {
+        assert!(!task_inherits_stdin(1, Some(TaskOutputMode::Live), None));
+    }
+
+    #[test]
+    fn events_format_closes_stdin() {
+        assert!(!task_inherits_stdin(1, None, Some(EventsFormat::Jsonl)));
     }
 }

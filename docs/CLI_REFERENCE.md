@@ -59,7 +59,7 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr inspect --category <name>` | Overview with tasks filtered by category |
 | `nxr inspect app <name>` | Single app details |
 | `nxr inspect task <name>` | Single task details |
-| `nxr task <name> [args…]` | Run a task’s serial `dependsOn` chain |
+| `nxr task <name> [args…]` | Run a task DAG; trailing args go to the **root** task app only |
 | `nxr graph <name>` | Print task plan (text) |
 | `nxr graph <name> --format dot` | Graphviz DOT digraph (does not invoke Graphviz) |
 | `nxr graph <name> --format mermaid` | Mermaid flowchart |
@@ -102,4 +102,4 @@ cargo run -p xtask -- man nxr.1
 # docs/DEV_ENV_INTEGRATION.md.
 ```
 
-Argument forwarding: one leading `--` is stripped; arguments are never shell-evaluated. See [CLI_CONTRACT.md](CLI_CONTRACT.md) §5.
+Argument forwarding: one leading `--` is stripped; arguments are never shell-evaluated. See [CLI_CONTRACT.md](CLI_CONTRACT.md) §5. For `nxr task`, trailing args go to the root task app only; see [TASKS.md](TASKS.md).

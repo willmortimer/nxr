@@ -374,7 +374,10 @@ The runner owns the group:
 - all children receive termination;
 - a second Ctrl-C escalates;
 - no background child is intentionally left running;
-- final exit status follows documented group policy.
+- final exit status follows documented group policy;
+- caller stdin is closed for every supervised child (no shared ownership).
+
+Serial interactive task runs (`-j 1` without `--output` / `--events`) still inherit stdin.
 
 ### Watch task
 

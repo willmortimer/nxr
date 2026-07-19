@@ -17,7 +17,10 @@ pub enum SpawnStdio {
     /// Inherit the caller's stdin/stdout/stderr (interactive / serial default).
     #[default]
     Inherit,
-    /// Inherit stdin; pipe stdout and stderr for labeled capture.
+    /// Null/closed stdin; pipe stdout and stderr for labeled/multiplex capture.
+    ///
+    /// Parallel (`-j > 1`) and `--output` / `--events` task runs use this so
+    /// multiple children never share caller stdin ownership.
     PipeStdoutStderr,
 }
 
@@ -217,17 +220,17 @@ mod unix {
         environment: &EnvironmentPolicy,
         stdio: SpawnStdio,
     ) -> io::Result<ChildSession> {
-        let (stdout, stderr) = match stdio {
-            SpawnStdio::Inherit => (Stdio::inherit(), Stdio::inherit()),
-            SpawnStdio::PipeStdoutStderr => (Stdio::piped(), Stdio::piped()),
+        let (child_stdin, child_stdout, child_stderr) = match stdio {
+            SpawnStdio::Inherit => (Stdio::inherit(), Stdio::inherit(), Stdio::inherit()),
+            SpawnStdio::PipeStdoutStderr => (Stdio::null(), Stdio::piped(), Stdio::piped()),
         };
 
         let mut command = Command::new(program);
         command
             .args(args)
-            .stdin(Stdio::inherit())
-            .stdout(stdout)
-            .stderr(stderr)
+            .stdin(child_stdin)
+            .stdout(child_stdout)
+            .stderr(child_stderr)
             .process_group(0);
 
         if let Some(dir) = cwd {
@@ -269,7 +272,7 @@ mod tests {
 
     use nxr_core::EnvironmentPolicy;
 
-    use super::{ChildSession, spawn_in};
+    use super::{ChildSession, SpawnStdio, spawn_in, spawn_in_with};
 
     #[cfg(unix)]
     fn unix_util(name: &str) -> String {
@@ -301,6 +304,33 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(code, Some(0));
+    }
+
+    /// Piped/multiplex mode must not inherit caller stdin (would hang on `read`).
+    #[cfg(unix)]
+    #[test]
+    fn pipe_stdout_stderr_uses_null_stdin() {
+        let bash = unix_util("bash");
+        // Null stdin: not a TTY, and a blocking read returns EOF immediately.
+        let script =
+            "if [ -t 0 ]; then exit 10; fi; if IFS= read -r _; then exit 11; else exit 0; fi";
+        let mut session = spawn_in_with(
+            &bash,
+            &["-c", script],
+            None,
+            &EnvironmentPolicy::Inherit,
+            SpawnStdio::PipeStdoutStderr,
+        )
+        .expect("spawn bash stdin probe");
+        let mut code = None;
+        for _ in 0..100 {
+            if let Some(c) = session.try_wait().expect("try_wait") {
+                code = Some(c);
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(code, Some(0), "child should see closed stdin, not hang");
     }
 
     #[cfg(unix)]

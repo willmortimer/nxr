@@ -150,6 +150,11 @@ fn write_human_plan(writer: &mut impl Write, plan: &Plan) -> io::Result<()> {
 fn write_human_execution_plan(writer: &mut impl Write, plan: &ExecutionPlan) -> io::Result<()> {
     writeln!(writer, "root: {}", plan.root)?;
     writeln!(writer, "failure_policy: {}", plan.failure_policy.as_str())?;
+    writeln!(
+        writer,
+        "argument_forwarding: {}",
+        plan.argument_forwarding.as_str()
+    )?;
     writeln!(writer, "serial_order: {}", plan.serial_order.join(" -> "))?;
     writeln!(writer, "nodes: {}", plan.nodes.len())?;
     Ok(())
@@ -214,6 +219,7 @@ mod tests {
         write_execution_plan(&mut output, &plan, false).expect("write execution plan");
         let rendered = String::from_utf8(output).expect("utf-8");
         assert!(rendered.contains("root: b\n"));
+        assert!(rendered.contains("argument_forwarding: root\n"));
         assert!(rendered.contains("serial_order: a -> b\n"));
         assert_eq!(plan.failure_policy, FailurePolicy::FailFast);
     }

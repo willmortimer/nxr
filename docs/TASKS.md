@@ -109,6 +109,30 @@ Replace the system string with `builtins.currentSystem` as needed.
 | Unsupported `schema_version` major | Typed schema error |
 | Other Nix evaluation failures | Mapped like other Nix adapter errors |
 
+## Argument forwarding (V2 freeze)
+
+Trailing CLI arguments after the task name are forwarded to the **root task’s
+app only**. Every dependency node receives an empty argument list.
+
+```bash
+nxr task ci -- --flag
+# fmt → test → ci; only the `ci` app sees `--flag`
+```
+
+This is the frozen V2 policy (`argument_forwarding: "root"` on the execution
+plan envelope). Richer per-node forwarding is deferred; there is no interactive
+`--stdin <task>` picker.
+
+## Stdin ownership
+
+| Mode | Stdin |
+|---|---|
+| Serial interactive (`-j 1`, no `--output` / `--events`) | Inherited by the running child |
+| Parallel (`-j > 1`) or multiplex (`--output` / `--events`) | Null/closed for **all** supervised children |
+
+Parallel and labeled/events paths must not inherit caller stdin into multiple
+children — ownership is deterministic (closed).
+
 ## Related
 
 - Schema: [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json)

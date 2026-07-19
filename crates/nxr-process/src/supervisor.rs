@@ -135,7 +135,10 @@ impl Supervisor {
         Ok(pgid)
     }
 
-    /// Spawn with piped stdout/stderr, return the pipes, and track under `id`.
+    /// Spawn with piped stdout/stderr and null stdin, return the pipes, and
+    /// track under `id`.
+    ///
+    /// Stdin is closed so parallel/multiplex children never share caller stdin.
     ///
     /// # Errors
     ///

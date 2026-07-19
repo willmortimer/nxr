@@ -349,17 +349,12 @@ nxr graph ci
 nxr watch dev
 ```
 
-A task receives trailing arguments only if its metadata defines forwarding behavior.
+Trailing arguments after the task name are forwarded to the **root task app only**
+(`argument_forwarding: root`). Dependency nodes always receive an empty argument
+list. Richer per-node forwarding is deferred.
 
-Forwarding options:
-
-```text
-none
-all-to-entrypoint
-named-node
-```
-
-Ambiguous argument forwarding to a multi-node graph is an error.
+Stdin: serial interactive runs (`-j 1` without `--output` / `--events`) inherit
+caller stdin; parallel or multiplex runs close stdin for every supervised child.
 
 ## 13. Backward compatibility
 
