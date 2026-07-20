@@ -7,6 +7,7 @@ use nxr_completion::{CompleteTarget, Shell};
 use crate::commands::graph::GraphFormat;
 use crate::output_options::{ColorWhen, LogFormat};
 use crate::output_task::{EventsFormat, TaskOutputMode};
+use crate::shell_mode::ShellMode;
 
 /// Nix-native flake app runner.
 #[derive(Debug, Parser)]
@@ -69,6 +70,16 @@ pub struct Cli {
     /// Execute through a named `devShell` (`nix develop <flake>#<name> -c <nix> run …`)
     #[arg(long = "shell", global = true, value_name = "NAME")]
     pub dev_shell: Option<String>,
+
+    /// When to wrap in `--shell` (`smart` skips when `NXR_DEV_SHELL` matches)
+    #[arg(
+        long = "shell-mode",
+        global = true,
+        value_enum,
+        default_value_t = ShellMode::Smart,
+        value_name = "MODE"
+    )]
+    pub shell_mode: ShellMode,
 
     /// Run with reduced inherited environment
     #[arg(long = "clean-env", global = true)]

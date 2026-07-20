@@ -314,6 +314,15 @@ Execute through a selected development shell via `nix develop <flake>#<name> -c 
 nxr --shell backend test
 ```
 
+`--shell-mode` controls wrapping (default `smart`):
+
+- `smart` — skip `nix develop` when `NXR_DEV_SHELL` matches `--shell`;
+- `always` — always wrap when `--shell` is set;
+- `never` — never wrap (`--shell` is ignored).
+
+Plans include `shell` (requested) and `active_shell` (from `NXR_DEV_SHELL`) when set.
+Human plan output notes `shell_wrap: skipped` when smart mode avoids re-entry.
+
 ### explicit
 
 V2 task metadata specifies exact variables:
@@ -341,12 +350,12 @@ may create redundant environment layers.
 `nxr` should:
 
 - avoid entering a shell unless requested;
-- detect when the selected dev shell is already active where feasible;
-- offer `--shell always` for forced re-entry;
-- offer `--shell auto` for best-effort detection;
-- document that exact shell identity detection is imperfect without an integration marker.
+- detect when the selected dev shell is already active via `NXR_DEV_SHELL`;
+- offer `--shell-mode always` for forced re-entry;
+- offer `--shell-mode never` to disable wrapping;
+- default `--shell-mode smart` to skip wrap when the marker matches `--shell`.
 
-The shell module can set:
+The shell module sets:
 
 ```text
 NXR_DEV_SHELL=<name>

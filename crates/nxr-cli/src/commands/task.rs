@@ -40,6 +40,7 @@ pub struct TaskRequest<'a> {
     pub root: bool,
     pub cwd: Option<&'a str>,
     pub shell: Option<&'a str>,
+    pub shell_mode: crate::shell_mode::ShellMode,
     pub environment_policy: EnvironmentPolicy,
     /// Maximum concurrent running nodes (`-j` / `--jobs`; default 1).
     pub jobs: usize,
@@ -198,6 +199,7 @@ pub fn execute(
         request.root,
         request.cwd,
         request.shell,
+        request.shell_mode,
         &request.environment_policy,
         request.nix_flags,
     )?;

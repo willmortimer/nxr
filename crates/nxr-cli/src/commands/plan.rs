@@ -143,6 +143,14 @@ fn write_human_plan(writer: &mut impl Write, plan: &Plan) -> io::Result<()> {
     if let Some(shell) = &plan.shell {
         writeln!(writer, "shell: {shell}")?;
     }
+    if let Some(active) = &plan.active_shell {
+        writeln!(writer, "active_shell: {active}")?;
+        if plan.shell.as_deref() == Some(active.as_str())
+            && plan.command.arguments.first().map(String::as_str) != Some("develop")
+        {
+            writeln!(writer, "shell_wrap: skipped")?;
+        }
+    }
     writeln!(writer, "execution_directory: {}", plan.execution_directory)?;
     Ok(())
 }
@@ -178,6 +186,7 @@ mod tests {
             invocation_directory: "/project".to_owned(),
             execution_directory: "/project".to_owned(),
             shell: None,
+            active_shell: None,
             environment_policy: EnvironmentPolicy::Inherit,
             command: PlanCommand {
                 program: "/nix/bin/nix".to_owned(),

@@ -417,6 +417,105 @@ fn plan_with_shell_json_includes_shell_and_develop_argv() {
 }
 
 #[test]
+fn shell_mode_smart_skips_develop_when_active_shell_matches() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_DEV_SHELL", "default")
+        .args([
+            "--flake",
+            "fixtures/named-dev-shells",
+            "--shell",
+            "default",
+            "plan",
+            "shell-marker",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse plan json");
+
+    assert_eq!(value["shell"], "default");
+    assert_eq!(value["active_shell"], "default");
+    let arguments = value["command"]["arguments"]
+        .as_array()
+        .expect("command.arguments");
+    assert_eq!(arguments[0], "run");
+    assert!(
+        arguments[1]
+            .as_str()
+            .expect("run installable")
+            .ends_with("#shell-marker")
+    );
+}
+
+#[test]
+fn shell_mode_always_wraps_even_when_active_shell_matches() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_DEV_SHELL", "default")
+        .args([
+            "--flake",
+            "fixtures/named-dev-shells",
+            "--shell",
+            "default",
+            "--shell-mode",
+            "always",
+            "plan",
+            "shell-marker",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse plan json");
+
+    assert_eq!(value["command"]["arguments"][0], "develop");
+}
+
+#[test]
+fn shell_mode_never_ignores_shell_flag() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/named-dev-shells",
+            "--shell",
+            "default",
+            "--shell-mode",
+            "never",
+            "plan",
+            "shell-marker",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse plan json");
+
+    assert_eq!(value["shell"], "default");
+    assert_eq!(value["command"]["arguments"][0], "run");
+}
+
+#[test]
 fn dry_run_prints_plan_without_executing() {
     let Some(()) = require_nix() else {
         return;
