@@ -1612,6 +1612,7 @@ fn help_mentions_task_output_flags() {
         .stdout(predicate::str::contains("live"))
         .stdout(predicate::str::contains("grouped"))
         .stdout(predicate::str::contains("failures"))
+        .stdout(predicate::str::contains("raw"))
         .stdout(predicate::str::contains("--events"))
         .stdout(predicate::str::contains("jsonl"));
 }

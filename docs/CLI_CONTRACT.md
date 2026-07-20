@@ -215,15 +215,32 @@ Signal termination should follow platform conventions.
 
 ### Event mode
 
-JSON Lines schema:
+JSON Lines events follow [`schemas/events-v1.schema.json`](../schemas/events-v1.schema.json)
+(`type`-tagged `Event` objects, one per line). Stdout/stderr chunks carry a
+`text` field plus optional `encoding`:
 
-```json
-{"schema_version":1,"event":"node_started","node":"test","timestamp":"..."}
-{"schema_version":1,"event":"stdout","node":"test","data":"..."}
-{"schema_version":1,"event":"node_exited","node":"test","exit_code":0}
+- absent or `utf8` — `text` is a UTF-8 string;
+- `base64` — `text` is standard base64 of raw bytes (binary-safe round-trip).
+
+Pipe readers never apply `from_utf8_lossy` at chunk boundaries; human multiplex
+modes decode UTF-8 incrementally so multi-byte characters split across reads
+are not corrupted.
+
+### Output modes
+
+```text
+--output live       Prefix each line with [node] as chunks arrive
+--output grouped    Buffer per node; flush on exit
+--output failures   Buffer per node; emit only on nonzero exit
+--output raw        Single-job foreground child inherits stdio (no pipe mux)
 ```
 
-Binary output handling must be documented. Raw mode should bypass line-oriented event conversion.
+`--output raw` requires `-j 1` and cannot be combined with `--events`. It
+bypasses line-oriented event conversion so binary and interactive child I/O
+pass through unchanged. Multiplexed modes (`live` / `grouped` / `failures`)
+close caller stdin for supervised children.
+
+`--output summary` is reserved / not implemented in V2.0.
 
 ## 8. App listing contract
 
@@ -353,8 +370,9 @@ Trailing arguments after the task name are forwarded to the **root task app only
 (`argument_forwarding: root`). Dependency nodes always receive an empty argument
 list. Richer per-node forwarding is deferred.
 
-Stdin: serial interactive runs (`-j 1` without `--output` / `--events`) inherit
-caller stdin; parallel or multiplex runs close stdin for every supervised child.
+Stdin: serial interactive runs and `--output raw` (`-j 1`, no `--events`) inherit
+caller stdin; parallel or multiplex (`live` / `grouped` / `failures` / `--events`)
+runs close stdin for every supervised child.
 
 ## 13. Backward compatibility
 

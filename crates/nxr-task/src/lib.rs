@@ -15,7 +15,9 @@ pub mod resolve;
 pub mod scheduler;
 pub mod schema;
 
-pub use events::{Event, EventSink, NullSink, RecordingSink, event_kind};
+pub use events::{
+    ChunkEncoding, Event, EventSink, NullSink, OutputPayload, RecordingSink, event_kind,
+};
 pub use graph::{GraphError, TaskGraph, render_dot, render_mermaid, render_text};
 pub use plan_exec::{
     ArgumentForwarding, EXECUTION_PLAN_SCHEMA_VERSION, ExecutionPlan, FailurePolicy, PlanNode,
