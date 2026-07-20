@@ -1877,9 +1877,9 @@ fn task_ci_uses_o1_discovery_not_per_node_flake_show() {
     let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
     let flake_shows = counter.count("flake-show");
     let runs = counter.count("run");
-    assert_eq!(
-        flake_shows, 1,
-        "task run must discover apps once (not per node); log={log}"
+    assert!(
+        flake_shows <= 1,
+        "task run must discover apps at most once (warm cache may skip flake show); log={log}"
     );
     assert_eq!(
         runs, 3,

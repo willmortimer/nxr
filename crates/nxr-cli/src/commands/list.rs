@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
-use nxr_completion::cache::{DiscoveryCacheOptions, DiscoveryContext, discover_with_cache};
+use nxr_completion::cache::{
+    DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_workspace_with_cache,
+};
 use nxr_core::sanitize::sanitize_terminal_text;
 use nxr_core::{App, AppList};
 use nxr_nix::{NixError, TaskDiscoveryError};
@@ -64,8 +66,11 @@ pub fn run(
         .info(format!("discovering apps for {}", flake.display))
         .map_err(ListError::Io)?;
     let adapter = build_adapter(nix_override)?;
-    let apps = discover_apps(&flake, &adapter, refresh)?;
-    let task_doc = adapter.discover_tasks(&flake.nix_ref)?;
+    let workspace = discover_workspace(&flake, &adapter, refresh)?;
+    let apps = workspace.apps;
+    let task_doc = workspace
+        .tasks
+        .expect("list always discovers tasks with apps");
     let tasks = listable_tasks(&task_doc, category);
     runner
         .verbose(format!(
@@ -107,11 +112,11 @@ pub fn run(
     Ok(())
 }
 
-fn discover_apps(
+fn discover_workspace(
     flake: &FlakeSelection,
     adapter: &nxr_nix::NixAdapter,
     refresh: bool,
-) -> Result<Vec<App>, NixError> {
+) -> Result<WorkspaceDiscovery, ListError> {
     let context = DiscoveryContext {
         flake_ref: flake.nix_ref.clone(),
         local_root: flake.local_root.clone(),
@@ -119,9 +124,22 @@ fn discover_apps(
     };
     let flake_ref = flake.nix_ref.clone();
 
-    discover_with_cache(&context, DiscoveryCacheOptions { refresh }, || {
-        adapter.discover_apps(&flake_ref)
-    })
+    discover_workspace_with_cache(
+        &context,
+        DiscoveryCacheOptions::with_tasks(refresh),
+        || {
+            let apps = adapter
+                .discover_apps(&flake_ref)
+                .map_err(ListError::Nix)?;
+            let tasks = adapter
+                .discover_tasks(&flake_ref)
+                .map_err(ListError::Tasks)?;
+            Ok(WorkspaceDiscovery {
+                apps,
+                tasks: Some(tasks),
+            })
+        },
+    )
 }
 
 #[derive(Serialize)]

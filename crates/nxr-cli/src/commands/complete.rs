@@ -68,7 +68,10 @@ fn discover_apps(
 
     Some(discover_app_candidates(
         &context,
-        DiscoveryCacheOptions { refresh },
+        DiscoveryCacheOptions {
+            refresh,
+            require_tasks: false,
+        },
         move || adapter.discover_apps(&flake_ref),
     ))
 }

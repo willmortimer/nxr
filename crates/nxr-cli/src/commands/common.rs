@@ -7,6 +7,9 @@ use std::path::Path;
 use camino::{Utf8Path, Utf8PathBuf};
 use nxr_core::diagnostics::exit;
 use nxr_core::{App, EnvironmentPolicy, Plan, PlanCommand, PlanKind};
+use nxr_completion::cache::{
+    DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_workspace_with_cache,
+};
 use nxr_nix::{
     AppNotFoundError, NixAdapter, NixError, nix_develop_wrap_run_args, nix_run_args,
     resolve_app_by_name,
@@ -202,22 +205,42 @@ impl WorkspaceSnapshot {
         let invocation_directory = current_invocation_directory()?;
         let flake = resolve_flake(flake_arg, &invocation_directory)?;
         let nix = build_adapter(nix_override)?;
-        let apps_list = nix.discover_apps(&flake.nix_ref)?;
-        let apps = apps_list
+        let context = DiscoveryContext {
+            flake_ref: flake.nix_ref.clone(),
+            local_root: flake.local_root.clone(),
+            system: nix.system.clone(),
+        };
+        let flake_ref = flake.nix_ref.clone();
+        let discovery = discover_workspace_with_cache(
+            &context,
+            DiscoveryCacheOptions {
+                refresh: false,
+                require_tasks: load_tasks,
+            },
+            || {
+                let apps = nix.discover_apps(&flake_ref).map_err(PrepareError::Nix)?;
+                let tasks = if load_tasks {
+                    Some(
+                        nix.discover_tasks(&flake_ref)
+                            .map_err(PrepareError::TaskDiscovery)?,
+                    )
+                } else {
+                    None
+                };
+                Ok::<WorkspaceDiscovery, PrepareError>(WorkspaceDiscovery { apps, tasks })
+            },
+        )?;
+        let apps = discovery
+            .apps
             .into_iter()
             .map(|app| (app.name.clone(), app))
             .collect();
-        let tasks = if load_tasks {
-            Some(nix.discover_tasks(&flake.nix_ref)?)
-        } else {
-            None
-        };
 
         Ok(Self {
             flake,
             nix,
             apps,
-            tasks,
+            tasks: discovery.tasks,
             invocation_directory,
         })
     }
