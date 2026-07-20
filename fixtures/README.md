@@ -16,6 +16,7 @@ These are small Nix flakes used to exercise `nxr` discovery and execution
 | [task-working-directory](task-working-directory/) | Per-task `workingDirectory` tokens and relative paths |
 | [parallel-group](parallel-group/) | Diamond DAG (`a` → `left`||`right` → `join`) for `-j` |
 | [watch-project](watch-project/) | Placeholder for V2 watch mode |
+| [ecosystem-graph-cargo](ecosystem-graph-cargo/) | Read-only Cargo workspace graph snapshot (adapter boundary example; not executed) |
 
 ## Try them (without nxr yet)
 

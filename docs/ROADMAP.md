@@ -36,7 +36,7 @@ The active plan is one minor release that hardens and extends what already ships
 - Large DAG plan and summary UX (grouped/failures modes, graph formats, deterministic ordering).
 - Working-directory and environment-policy conventions for nested package layouts.
 - Documentation for multi-package flake layout and task naming.
-- Read-only metadata adapters where they do not create a second source of truth (exploratory; no new authoritative schema).
+- Read-only metadata adapters where they do not create a second source of truth (exploratory; no new authoritative schema). Boundary: [ADAPTERS.md](ADAPTERS.md).
 
 **Exit criteria**
 

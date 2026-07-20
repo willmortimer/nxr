@@ -33,6 +33,7 @@ Product and architecture contract for `nxr`. Prefer these docs over inventing st
 | [MIGRATE_FROM_MISE_JUST.md](MIGRATE_FROM_MISE_JUST.md) | How-to: move from mise/just/aliases to flake apps |
 | [DEV_ENV_INTEGRATION.md](DEV_ENV_INTEGRATION.md) | Dev shells, direnv, DevPod, containers |
 | [ECOSYSTEM_SYNTHESIS.md](ECOSYSTEM_SYNTHESIS.md) | Adjacent-tool inheritance and boundaries |
+| [ADAPTERS.md](ADAPTERS.md) | Read-only ecosystem graph adapter boundary (non-authority) |
 
 ## Architecture decisions
 

@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/ecosystem-graph-v0.schema.json",
+  "title": "Ecosystem graph snapshot (v0, exploratory)",
+  "description": "Read-only adapter output. Describes project relationships and optional app name hints. Does not define executable operations; flake apps remain canonical.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "adapter_id",
+    "workspace_root",
+    "nodes",
+    "edges"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 0,
+      "description": "Exploratory major version for adapter snapshots."
+    },
+    "adapter_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable adapter identifier (for example cargo-workspace)."
+    },
+    "workspace_root": {
+      "type": "string",
+      "description": "Opaque workspace root path the adapter read."
+    },
+    "nodes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "edges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/edge" }
+    }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable node id, usually repo-relative."
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string"
+        },
+        "suggested_apps": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Optional flake app name hints; not resolved or executed by adapters."
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "kind", "confidence"],
+      "properties": {
+        "from": { "type": "string", "minLength": 1 },
+        "to": { "type": "string", "minLength": 1 },
+        "kind": {
+          "type": "string",
+          "enum": ["depends_on", "member_of", "generated_from"]
+        },
+        "confidence": {
+          "type": "string",
+          "enum": ["explicit", "inferred", "low"]
+        }
+      }
+    }
+  }
+}

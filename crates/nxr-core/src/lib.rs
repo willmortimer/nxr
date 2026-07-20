@@ -2,12 +2,17 @@
 
 pub mod config;
 pub mod diagnostics;
+pub mod ecosystem;
 pub mod env_policy;
 pub mod model;
 pub mod plan;
 pub mod sanitize;
 
 pub use diagnostics::{Diagnostic, DiagnosticLevel};
+pub use ecosystem::{
+    AdapterError, ECOSYSTEM_GRAPH_SCHEMA_VERSION, EcosystemGraph, EcosystemGraphAdapter,
+    EdgeConfidence, EdgeKind, GraphEdge, GraphNode, StaticJsonAdapter,
+};
 pub use env_policy::{CLEAN_ENV_ALLOWLIST, EnvironmentPolicy, parse_env_name, parse_set_env};
 pub use model::{App, AppList, FlakeOutput, FlakeRef, ListApp, OutputList};
 pub use plan::{Plan, PlanCommand, PlanKind};
