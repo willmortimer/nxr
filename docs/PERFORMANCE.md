@@ -7,7 +7,7 @@ Baselines for the runner. App **execution** time is dominated by `nix run` and t
 | Path | Expected Nix invocations | Notes |
 |---|---|---|
 | Bare `nxr <app>` / `nxr run <app>` | **1×** `nix run`; **0×** `flake show` | Fast path; optional `flake show` only after failure for suggestions |
-| Adapter init | **1×** `nix eval` (`currentSystem`) | Shared via `WorkspaceSnapshot` / `NixAdapter` |
+| Adapter init | **1×** `nix eval` (`currentSystem`) + capability probes (`--version`, config/help) | Shared via `WorkspaceSnapshot` / `NixAdapter`; not repeated per task node |
 | `nxr task` with **N** nodes | **N×** `nix run` + **O(1)** discovery | One `flake show` (apps) + one task `eval`; **not** N× `flake show` |
 | `nxr list --refresh` | Dominated by `nix flake show` | Catalog commands still discover |
 

@@ -8,7 +8,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use nxr_core::diagnostics::exit;
 use nxr_core::{App, EnvironmentPolicy, Plan, PlanCommand, PlanKind};
 use nxr_nix::{
-    AppNotFoundError, NixAdapter, NixError, detect_system, nix_develop_wrap_run_args, nix_run_args,
+    AppNotFoundError, NixAdapter, NixError, nix_develop_wrap_run_args, nix_run_args,
     resolve_app_by_name,
 };
 use nxr_task::TaskDocument;
@@ -342,8 +342,7 @@ pub fn build_adapter(nix_override: Option<&str>) -> Result<NixAdapter, NixError>
             if !nix.is_file() {
                 return Err(NixError::NixNotFound { path: nix });
             }
-            let system = detect_system(&nix)?;
-            Ok(NixAdapter::with_nix_and_system(nix, system))
+            NixAdapter::from_nix(nix)
         }
         None => NixAdapter::new(),
     }

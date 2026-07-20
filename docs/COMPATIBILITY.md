@@ -15,7 +15,45 @@ Other Unix targets may build from source but are not part of the V1 compatibilit
 
 `nxr` delegates execution to the Nix CLI. A working `nix` on `PATH` is required.
 
-Minimum supported Nix versions are determined through capability detection rather than a hard-coded floor. See [ARCHITECTURE.md](ARCHITECTURE.md) §9 and ADR-0018 in [adr/README.md](adr/README.md).
+### Tested support floor
+
+| Requirement | Floor |
+|---|---|
+| Nix CLI | **2.18+** (exercised in development and CI) |
+| Experimental features | `nix-command` and `flakes` must be enabled |
+
+Capability negotiation still runs on older Nix releases (roughly 2.4+): `nxr`
+detects version and feature flags once per adapter construction and chooses a
+compatible argv rather than hard-coding a single global flag set. Missing
+optional capabilities (for example `--offline`, `--no-write-lock-file`,
+`--accept-flake-config`, `--log-format json`) are omitted; flakes being
+disabled is a hard capability error.
+
+Inspect negotiated capabilities with:
+
+```bash
+nxr doctor --json
+```
+
+The JSON envelope includes a `capabilities` object:
+
+```json
+{
+  "schema_version": 1,
+  "capabilities": {
+    "version": "2.34.7",
+    "flakes_enabled": true,
+    "supports_json_log_format": true,
+    "supports_no_write_lock_file": true,
+    "supports_offline": true,
+    "supports_accept_flake_config": true
+  },
+  "findings": []
+}
+```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) §9 and ADR-0018 in [adr/README.md](adr/README.md).
+CI may exercise additional Nix versions (see roadmap item for multi-Nix CI).
 
 ## Escape hatch
 

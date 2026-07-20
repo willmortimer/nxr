@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::{Diagnostic, DiagnosticLevel, exit};
 use nxr_core::sanitize::sanitize_terminal_text;
-use nxr_nix::{NixAdapter, NixError, resolve_app_by_name};
+use nxr_nix::{NixAdapter, NixCapabilities, NixError, resolve_app_by_name};
 use serde::Serialize;
 
 use crate::commands::common::{
@@ -53,6 +53,8 @@ impl DoctorError {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DoctorReport {
     pub schema_version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<NixCapabilities>,
     pub findings: Vec<Diagnostic>,
 }
 
@@ -82,7 +84,7 @@ pub fn run(
     runner: RunnerOutput,
 ) -> Result<i32, DoctorError> {
     let mut findings = Vec::new();
-    collect_findings(request, &mut findings);
+    let capabilities = collect_findings(request, &mut findings);
     let exit_code = exit_code_for_findings(&findings);
 
     runner
@@ -91,6 +93,7 @@ pub fn run(
 
     let report = DoctorReport {
         schema_version: SCHEMA_VERSION,
+        capabilities,
         findings,
     };
     let mut stdout = io::stdout().lock();
@@ -103,7 +106,10 @@ pub fn run(
     Ok(exit_code)
 }
 
-fn collect_findings(request: DoctorRequest<'_>, findings: &mut Vec<Diagnostic>) {
+fn collect_findings(
+    request: DoctorRequest<'_>,
+    findings: &mut Vec<Diagnostic>,
+) -> Option<NixCapabilities> {
     let adapter = match build_adapter(request.nix_override) {
         Ok(adapter) => {
             push_finding(
@@ -125,18 +131,54 @@ fn collect_findings(request: DoctorRequest<'_>, findings: &mut Vec<Diagnostic>) 
         }
     };
 
-    if let Some(adapter) = adapter {
+    let capabilities = adapter.as_ref().map(|adapter| adapter.capabilities.clone());
+
+    if let Some(adapter) = adapter.as_ref() {
         push_finding(
             findings,
             DiagnosticLevel::Info,
             "system.detected",
             format!("system detected: {}", adapter.system),
         );
-        collect_flake_findings(request, &adapter, findings);
+        push_capability_findings(adapter, findings);
+        if adapter.capabilities.flakes_enabled {
+            collect_flake_findings(request, adapter, findings);
+        }
     }
 
     if request.clean_env {
         collect_clean_env_findings(request, findings);
+    }
+
+    capabilities
+}
+
+fn push_capability_findings(adapter: &NixAdapter, findings: &mut Vec<Diagnostic>) {
+    let caps = &adapter.capabilities;
+    push_finding(
+        findings,
+        DiagnosticLevel::Info,
+        "nix.version",
+        format!("nix version {}", caps.version),
+    );
+
+    if caps.flakes_enabled {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "nix.flakes_enabled",
+            "flakes enabled".to_owned(),
+        );
+    } else {
+        push_finding(
+            findings,
+            DiagnosticLevel::Error,
+            "nix.flakes_disabled",
+            NixError::FlakesDisabled {
+                version: caps.version,
+            }
+            .user_message(),
+        );
     }
 }
 
@@ -463,6 +505,7 @@ mod tests {
     fn human_report_prints_level_code_and_message() {
         let report = DoctorReport {
             schema_version: 1,
+            capabilities: None,
             findings: vec![Diagnostic {
                 level: DiagnosticLevel::Info,
                 code: "flake.discovered".to_owned(),
@@ -476,9 +519,12 @@ mod tests {
     }
 
     #[test]
-    fn json_report_includes_schema_version_and_findings() {
+    fn json_report_includes_schema_version_findings_and_capabilities() {
         let report = DoctorReport {
             schema_version: 1,
+            capabilities: Some(nxr_nix::NixCapabilities::all_supported_for_tests(
+                nxr_nix::NixVersion::new(2, 18, 1),
+            )),
             findings: vec![Diagnostic {
                 level: DiagnosticLevel::Warning,
                 code: "path.polluted".to_owned(),
@@ -491,5 +537,11 @@ mod tests {
         assert_eq!(value["schema_version"], 1);
         assert_eq!(value["findings"][0]["level"], "warning");
         assert_eq!(value["findings"][0]["code"], "path.polluted");
+        assert_eq!(value["capabilities"]["version"], "2.18.1");
+        assert_eq!(value["capabilities"]["flakes_enabled"], true);
+        assert_eq!(value["capabilities"]["supports_offline"], true);
+        assert_eq!(value["capabilities"]["supports_json_log_format"], true);
+        assert_eq!(value["capabilities"]["supports_no_write_lock_file"], true);
+        assert_eq!(value["capabilities"]["supports_accept_flake_config"], true);
     }
 }

@@ -20,7 +20,21 @@ use crate::{NixError, ParseAppsError};
 /// Returns [`NixError`] when `nix flake show` fails or its JSON cannot be parsed.
 pub fn discover_apps(nix: &Utf8Path, system: &str, flake_ref: &str) -> Result<Vec<App>, NixError> {
     let args = command::flake_show_args(flake_ref);
-    let stdout = run_nix(nix, &args, NixFailureKind::Evaluation)?;
+    discover_apps_with_args(nix, system, flake_ref, &args)
+}
+
+/// Discover apps using a pre-built (capability-aware) argv.
+///
+/// # Errors
+///
+/// Returns [`NixError`] when `nix` fails or its JSON cannot be parsed.
+pub fn discover_apps_with_args(
+    nix: &Utf8Path,
+    system: &str,
+    flake_ref: &str,
+    args: &[String],
+) -> Result<Vec<App>, NixError> {
+    let stdout = run_nix(nix, args, NixFailureKind::Evaluation)?;
     let show: JsonValue =
         serde_json::from_slice(&stdout).map_err(|source| NixError::InvalidJson { source })?;
     parse_apps_from_flake_show(&show, flake_ref, system).map_err(NixError::ParseApps)

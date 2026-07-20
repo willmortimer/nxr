@@ -801,6 +801,13 @@ fn doctor_json_reports_findings_envelope() {
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse doctor json");
     assert_eq!(value["schema_version"], 1);
     assert!(value["findings"].is_array());
+    assert!(value["capabilities"].is_object());
+    assert!(value["capabilities"]["version"].is_string());
+    assert!(value["capabilities"]["flakes_enabled"].is_boolean());
+    assert!(value["capabilities"]["supports_json_log_format"].is_boolean());
+    assert!(value["capabilities"]["supports_no_write_lock_file"].is_boolean());
+    assert!(value["capabilities"]["supports_offline"].is_boolean());
+    assert!(value["capabilities"]["supports_accept_flake_config"].is_boolean());
     let codes: Vec<&str> = value["findings"]
         .as_array()
         .expect("findings")
@@ -808,6 +815,7 @@ fn doctor_json_reports_findings_envelope() {
         .map(|finding| finding["code"].as_str().expect("code"))
         .collect();
     assert!(codes.contains(&"nix.found"));
+    assert!(codes.contains(&"nix.version"));
     assert!(codes.contains(&"apps.listed"));
 }
 
