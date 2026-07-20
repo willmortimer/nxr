@@ -1,7 +1,8 @@
 # Entry flake-parts module for nxr consumers.
 #
-# Imports per-system apps and tasks modules, then emits versioned task metadata
-# at flake output `nxr.<system>` (TaskDocument: schema_version + tasks).
+# Imports per-system apps, tasks, and shellIntegration modules, then emits
+# versioned task metadata at flake output `nxr.<system>` (TaskDocument:
+# schema_version + tasks).
 {
   lib,
   config,

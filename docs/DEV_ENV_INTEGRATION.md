@@ -117,18 +117,21 @@ share/nxr/shell/direnv-zsh-hook.zsh
 Enable integration in your flake:
 
 ```nix
-imports = [ nxr.flakeModules.default ];
+imports = [ inputs.nxr.flakeModules.default ];
 
-perSystem = { system, ... }: {
-  packages.nxr = nxr.packages.${system}.nxr;
-
+perSystem = {
   nxr.shellIntegration = {
     enable = true;
     devShells = [ "default" "backend" ];
-    # package = nxr.packages.${system}.nxr;  # optional when packages.nxr exists
+    # package = inputs.nxr.packages.${system}.nxr;  # optional override
   };
 };
 ```
+
+The module resolves the nxr package automatically: explicit
+`nxr.shellIntegration.package`, then `packages.nxr`, then
+`inputs.nxr.packages.<system>.nxr` from the nxr flake input. Consumers do not
+need to duplicate `packages.nxr` wiring unless they want a local override.
 
 When `enable` is true, each listed `devShell` receives:
 

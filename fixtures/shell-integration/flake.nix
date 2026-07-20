@@ -1,5 +1,5 @@
 {
-  description = "nxr fixture: shellIntegration devShell wiring";
+  description = "nxr fixture: shellIntegration without duplicate package wiring";
 
   inputs = {
     nxr.url = "path:../..";
@@ -21,18 +21,9 @@
       ];
 
       perSystem =
-        { system, pkgs, ... }:
-        let
-          nxrPkg = nxr.packages.${system}.nxr;
-        in
+        { pkgs, ... }:
         {
-          packages.nxr = nxrPkg;
-
-          nxr.shellIntegration = {
-            enable = true;
-            devShells = [ "default" ];
-            package = nxrPkg;
-          };
+          nxr.shellIntegration.enable = true;
 
           devShells.default = pkgs.mkShell {
             env.NXR_FIXTURE_SHELL_MARKER = "shell-integration";

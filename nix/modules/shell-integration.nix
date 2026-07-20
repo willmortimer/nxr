@@ -6,6 +6,7 @@
 {
   lib,
   config,
+  inputs',
   ...
 }:
 let
@@ -13,17 +14,28 @@ let
 
   cfg = config.nxr.shellIntegration;
 
+  nxrInputPackage =
+    if inputs' ? nxr && inputs'.nxr ? packages && inputs'.nxr.packages ? nxr then
+      inputs'.nxr.packages.nxr
+    else
+      null;
+
   resolvePackage =
     if cfg.package != null then
       cfg.package
     else if config ? packages && config.packages ? nxr then
       config.packages.nxr
     else
-      null;
+      nxrInputPackage;
 
   nxrPkg =
     if cfg.enable && resolvePackage == null then
-      throw "nxr.shellIntegration.enable requires packages.nxr or nxr.shellIntegration.package"
+      throw ''
+        nxr.shellIntegration.enable requires one of:
+          - nxr.shellIntegration.package
+          - packages.nxr
+          - inputs.nxr.packages.<system>.nxr from the nxr flake input
+      ''
     else
       resolvePackage;
 
@@ -69,7 +81,7 @@ in
 
     devShells = lib.mkOption {
       type = types.listOf types.str;
-      default = lib.mkDefault [ "default" ];
+      default = [ "default" ];
       description = ''
         Names of `devShells` to augment when `enable` is true.
       '';
@@ -79,8 +91,9 @@ in
       type = types.nullOr types.package;
       default = null;
       description = ''
-        nxr package installed into integrated dev shells. Defaults to
-        `packages.nxr` when that attribute exists.
+        nxr package installed into integrated dev shells. When null, defaults
+        to `packages.nxr` when present, otherwise `inputs.nxr.packages.<system>.nxr`
+        from the nxr flake input.
       '';
     };
   };
