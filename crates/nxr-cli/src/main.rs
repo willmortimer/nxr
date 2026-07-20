@@ -4,6 +4,7 @@ mod cli;
 mod commands;
 mod error_format;
 mod flake;
+mod nix_flags;
 mod output;
 mod output_options;
 mod output_task;
@@ -16,13 +17,15 @@ use clap::Parser;
 use nxr_core::diagnostics::exit;
 use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
 
-use crate::cli::{Cli, Command, InspectSubcommand};
+use crate::cli::{CacheSubcommand, Cli, Command, InspectSubcommand};
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
-    complete, completion, doctor, graph, inspect, list, manpage, plan, run, select, task, watch,
+    cache, complete, completion, doctor, graph, inspect, list, manpage, plan, run, select, task,
+    watch,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
+use crate::nix_flags::nix_flags_from_cli;
 use crate::output_options::OutputOptions;
 use crate::runner_output::RunnerOutput;
 
@@ -73,6 +76,8 @@ enum RunError {
     Inspect(#[from] inspect::InspectError),
     #[error(transparent)]
     Watch(#[from] watch::WatchCommandError),
+    #[error(transparent)]
+    Cache(#[from] cache::CacheError),
 }
 
 impl RunError {
@@ -90,6 +95,7 @@ impl RunError {
             Self::Graph(error) => error.exit_code(),
             Self::Inspect(error) => error.exit_code(),
             Self::Watch(error) => error.exit_code(),
+            Self::Cache(error) => error.exit_code(),
             Self::MissingAppName | Self::Usage(_) | Self::FlakeAppRef(_) => exit::USAGE,
         }
     }
@@ -107,19 +113,20 @@ fn output_options_from_cli(cli: &Cli) -> OutputOptions {
 }
 
 fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
+    let nix_flags = nix_flags_from_cli(cli).map_err(RunError::Usage)?;
     match &cli.command {
-        None if cli.select => run_with_selected_app(cli, &[], runner),
-        None => run_list(cli, None, runner),
-        Some(Command::List { category }) => run_list(cli, category.as_deref(), runner),
-        Some(Command::Select) => run_with_selected_app(cli, &[], runner),
+        None if cli.select => run_with_selected_app(cli, &nix_flags, &[], runner),
+        None => run_list(cli, &nix_flags, None, runner),
+        Some(Command::List { category }) => run_list(cli, &nix_flags, category.as_deref(), runner),
+        Some(Command::Select) => run_with_selected_app(cli, &nix_flags, &[], runner),
         Some(Command::Run {
             app,
             watch,
             debounce,
             args,
-        }) => dispatch_run_command(cli, app, *watch, *debounce, args, runner),
+        }) => dispatch_run_command(cli, &nix_flags, app, *watch, *debounce, args, runner),
         Some(Command::Plan { app, args }) => {
-            let request = app_request(cli, app, args)?;
+            let request = app_request(cli, &nix_flags, app, args)?;
             plan::run(&request, cli.json, runner)?;
             Ok(exit::SUCCESS)
         }
@@ -134,13 +141,14 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             if *watch {
                 execute_watch(
                     cli,
+                    &nix_flags,
                     name,
                     args,
                     watch_options_from_debounce(*debounce),
                     runner,
                 )
             } else {
-                let request = task_request(cli, name, args, *jobs, *keep_going)?;
+                let request = task_request(cli, &nix_flags, name, args, *jobs, *keep_going)?;
                 task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
             }
         }
@@ -149,7 +157,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             all,
             app,
         }) => dispatch_doctor(cli, *clean_env, *all, app.as_deref(), runner),
-        Some(Command::External(tokens)) => dispatch_external(cli, tokens, runner),
+        Some(Command::External(tokens)) => dispatch_external(cli, &nix_flags, tokens, runner),
         Some(Command::Completion { shell }) => {
             completion::run(*shell)?;
             Ok(exit::SUCCESS)
@@ -159,7 +167,8 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 *target,
                 cli.flake.as_deref(),
                 cli.nix.as_deref(),
-                cli.refresh,
+                cli.refresh_discovery,
+                &nix_flags,
             )?;
             Ok(exit::SUCCESS)
         }
@@ -168,7 +177,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             Ok(exit::SUCCESS)
         }
         Some(Command::Inspect { category, target }) => {
-            run_inspect(cli, category.as_deref(), target.as_ref(), runner)
+            run_inspect(cli, &nix_flags, category.as_deref(), target.as_ref(), runner)
         }
         Some(Command::Watch {
             name,
@@ -179,6 +188,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             args,
         }) => execute_watch(
             cli,
+            &nix_flags,
             name,
             args,
             watch::WatchOptions::from_cli(*debounce, include, exclude, *clear),
@@ -189,19 +199,36 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 flake_arg: cli.flake.as_deref(),
                 nix_override: cli.nix.as_deref(),
                 task: task.as_str(),
+                nix_flags: &nix_flags,
             };
             graph::run(&request, *format, cli.json, runner)?;
             Ok(exit::SUCCESS)
         }
+        Some(Command::Cache { action }) => match action {
+            CacheSubcommand::Clear => {
+                cache::clear(cli.json, runner)?;
+                Ok(exit::SUCCESS)
+            }
+            CacheSubcommand::Status => {
+                cache::status(cli.json, runner)?;
+                Ok(exit::SUCCESS)
+            }
+        },
     }
 }
 
-fn run_list(cli: &Cli, category: Option<&str>, runner: RunnerOutput) -> Result<i32, RunError> {
+fn run_list(
+    cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
+    category: Option<&str>,
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
     list::run(
         cli.flake.as_deref(),
         cli.nix.as_deref(),
         cli.json,
-        cli.refresh,
+        cli.refresh_discovery,
+        nix_flags,
         category,
         runner,
     )?;
@@ -210,6 +237,7 @@ fn run_list(cli: &Cli, category: Option<&str>, runner: RunnerOutput) -> Result<i
 
 fn run_inspect(
     cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
     category: Option<&str>,
     target: Option<&InspectSubcommand>,
     runner: RunnerOutput,
@@ -229,7 +257,8 @@ fn run_inspect(
             category,
         },
         cli.json,
-        cli.refresh,
+        cli.refresh_discovery,
+        nix_flags,
         runner,
     )?;
     Ok(exit::SUCCESS)
@@ -237,23 +266,29 @@ fn run_inspect(
 
 fn run_with_selected_app(
     cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
     args: &[String],
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
-    let app = select::pick_app_name(discover_request(cli))?;
-    let request = app_request(cli, &app, args)?;
+    let app = select::pick_app_name(discover_request(cli, nix_flags))?;
+    let request = app_request(cli, nix_flags, &app, args)?;
     run::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
 }
 
-fn discover_request(cli: &Cli) -> DiscoverRequest<'_> {
+fn discover_request<'a>(
+    cli: &'a Cli,
+    nix_flags: &'a nxr_nix::OptionalNixFlags,
+) -> DiscoverRequest<'a> {
     DiscoverRequest {
         flake_arg: cli.flake.as_deref(),
         nix_override: cli.nix.as_deref(),
+        nix_flags,
     }
 }
 
 fn app_request<'a>(
     cli: &'a Cli,
+    nix_flags: &'a nxr_nix::OptionalNixFlags,
     app: &'a str,
     args: &'a [String],
 ) -> Result<AppRequest<'a>, RunError> {
@@ -267,11 +302,13 @@ fn app_request<'a>(
         cwd: cli.cwd.as_deref(),
         shell: cli.dev_shell.as_deref(),
         environment_policy: environment_policy_from_cli(cli)?,
+        nix_flags,
     })
 }
 
 fn task_request<'a>(
     cli: &'a Cli,
+    nix_flags: &'a nxr_nix::OptionalNixFlags,
     task: &'a str,
     args: &'a [String],
     jobs: usize,
@@ -290,6 +327,7 @@ fn task_request<'a>(
         keep_going,
         output_mode: cli.output,
         events_format: cli.events,
+        nix_flags,
     })
 }
 
@@ -313,18 +351,24 @@ fn dispatch_doctor(
     doctor::run(request, cli.json, runner).map_err(RunError::from)
 }
 
-fn dispatch_external(cli: &Cli, tokens: &[String], runner: RunnerOutput) -> Result<i32, RunError> {
+fn dispatch_external(
+    cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
+    tokens: &[String],
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
     let (app, forwarded) = split_external(tokens)?;
     if cli.select {
-        run_with_selected_app(cli, forwarded, runner)
+        run_with_selected_app(cli, nix_flags, forwarded, runner)
     } else {
-        let request = app_request(cli, app, forwarded)?;
+        let request = app_request(cli, nix_flags, app, forwarded)?;
         run::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
     }
 }
 
 fn dispatch_run_command(
     cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
     app: &str,
     watch: bool,
     debounce: Option<u64>,
@@ -334,6 +378,7 @@ fn dispatch_run_command(
     if watch {
         return execute_watch(
             cli,
+            nix_flags,
             app,
             args,
             watch_options_from_debounce(debounce),
@@ -341,20 +386,21 @@ fn dispatch_run_command(
         );
     }
     if cli.select {
-        return run_with_selected_app(cli, args, runner);
+        return run_with_selected_app(cli, nix_flags, args, runner);
     }
-    let request = app_request(cli, app, args)?;
+    let request = app_request(cli, nix_flags, app, args)?;
     run::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
 }
 
 fn execute_watch(
     cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
     name: &str,
     args: &[String],
     options: watch::WatchOptions,
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
-    let request = watch_request(cli, name, args, options)?;
+    let request = watch_request(cli, nix_flags, name, args, options)?;
     watch::run(&request, runner)?;
     Ok(exit::SUCCESS)
 }
@@ -369,6 +415,7 @@ fn watch_options_from_debounce(debounce: Option<u64>) -> watch::WatchOptions {
 
 fn watch_request<'a>(
     cli: &'a Cli,
+    nix_flags: &'a nxr_nix::OptionalNixFlags,
     name: &'a str,
     args: &'a [String],
     options: watch::WatchOptions,
@@ -383,6 +430,7 @@ fn watch_request<'a>(
         shell: cli.dev_shell.as_deref(),
         environment_policy: environment_policy_from_cli(cli)?,
         options,
+        nix_flags,
     })
 }
 

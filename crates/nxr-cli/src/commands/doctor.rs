@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::{Diagnostic, DiagnosticLevel, exit};
 use nxr_core::sanitize::sanitize_terminal_text;
-use nxr_nix::{NixAdapter, NixCapabilities, NixError, resolve_app_by_name};
+use nxr_nix::{NixAdapter, NixCapabilities, NixError, OptionalNixFlags, resolve_app_by_name};
 use serde::Serialize;
 
 use crate::commands::common::{
@@ -220,7 +220,7 @@ fn collect_flake_findings(
         format!("flake discovered: {}", flake.display),
     );
 
-    match adapter.discover_apps(&flake.nix_ref) {
+    match adapter.discover_apps(&flake.nix_ref, &OptionalNixFlags::default()) {
         Ok(apps) => {
             if apps.is_empty() {
                 push_finding(
@@ -335,6 +335,7 @@ fn collect_clean_env_findings(request: DoctorRequest<'_>, findings: &mut Vec<Dia
         return;
     };
 
+    let nix_flags = OptionalNixFlags::default();
     let app_request = AppRequest {
         flake_arg: request.flake_arg,
         nix_override: request.nix_override,
@@ -344,6 +345,7 @@ fn collect_clean_env_findings(request: DoctorRequest<'_>, findings: &mut Vec<Dia
         cwd: request.cwd,
         shell: None,
         environment_policy: EnvironmentPolicy::Inherit,
+        nix_flags: &nix_flags,
     };
 
     match prepare_app_plan(&app_request) {

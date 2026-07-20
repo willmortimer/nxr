@@ -11,7 +11,7 @@ use nxr_completion::cache::{
 use nxr_core::diagnostics::exit;
 use nxr_core::sanitize::sanitize_terminal_text;
 use nxr_core::{App, AppList, ListApp};
-use nxr_nix::{AppNotFoundError, NixError, TaskDiscoveryError, resolve_app_by_name};
+use nxr_nix::{AppNotFoundError, NixError, OptionalNixFlags, TaskDiscoveryError, resolve_app_by_name};
 use nxr_task::{TaskDefinition, TaskDocument, listable_tasks, resolve_task};
 use serde::Serialize;
 
@@ -129,7 +129,8 @@ const DETAIL_SCHEMA_VERSION: u32 = 1;
 pub fn run(
     request: InspectRequest<'_>,
     json: bool,
-    refresh: bool,
+    refresh_discovery: bool,
+    nix_flags: &OptionalNixFlags,
     runner: RunnerOutput,
 ) -> Result<(), InspectError> {
     let invocation_cwd = current_invocation_directory()?;
@@ -141,7 +142,7 @@ pub fn run(
 
     match request.target {
         InspectTarget::Overview => {
-            let workspace = discover_workspace(&flake, &adapter, refresh)?;
+            let workspace = discover_workspace(&flake, &adapter, refresh_discovery, nix_flags)?;
             let apps = workspace.apps;
             let task_doc = workspace
                 .tasks
@@ -158,13 +159,13 @@ pub fn run(
             )?;
         }
         InspectTarget::App { name } => {
-            let apps = discover_apps(&flake, &adapter, refresh)?;
+            let apps = discover_apps(&flake, &adapter, refresh_discovery, nix_flags)?;
             let app = resolve_app_by_name(&apps, &name)?;
             let mut stdout = io::stdout().lock();
             write_app(&mut stdout, &flake, &adapter.system, app, json)?;
         }
         InspectTarget::Task { name } => {
-            let task_doc = discover_tasks(&flake, &adapter, refresh)?;
+            let task_doc = discover_tasks(&flake, &adapter, refresh_discovery, nix_flags)?;
             let (canonical, task) = resolve_task(&task_doc, &name).map_err(map_resolve_error)?;
             let mut stdout = io::stdout().lock();
             write_task(&mut stdout, &flake, &adapter.system, canonical, task, json)?;
@@ -177,7 +178,8 @@ pub fn run(
 fn discover_apps(
     flake: &FlakeSelection,
     adapter: &nxr_nix::NixAdapter,
-    refresh: bool,
+    refresh_discovery: bool,
+    nix_flags: &OptionalNixFlags,
 ) -> Result<Vec<App>, NixError> {
     let context = DiscoveryContext {
         flake_ref: flake.nix_ref.clone(),
@@ -189,17 +191,18 @@ fn discover_apps(
     discover_with_cache(
         &context,
         DiscoveryCacheOptions {
-            refresh,
+            refresh: refresh_discovery,
             require_tasks: false,
         },
-        || adapter.discover_apps(&flake_ref),
+        || adapter.discover_apps(&flake_ref, nix_flags),
     )
 }
 
 fn discover_workspace(
     flake: &FlakeSelection,
     adapter: &nxr_nix::NixAdapter,
-    refresh: bool,
+    refresh_discovery: bool,
+    nix_flags: &OptionalNixFlags,
 ) -> Result<WorkspaceDiscovery, InspectError> {
     let context = DiscoveryContext {
         flake_ref: flake.nix_ref.clone(),
@@ -210,13 +213,13 @@ fn discover_workspace(
 
     discover_workspace_with_cache(
         &context,
-        DiscoveryCacheOptions::with_tasks(refresh),
+        DiscoveryCacheOptions::with_tasks(refresh_discovery),
         || {
             let apps = adapter
-                .discover_apps(&flake_ref)
+                .discover_apps(&flake_ref, nix_flags)
                 .map_err(InspectError::Nix)?;
             let tasks = adapter
-                .discover_tasks(&flake_ref)
+                .discover_tasks(&flake_ref, nix_flags)
                 .map_err(InspectError::Tasks)?;
             Ok(WorkspaceDiscovery {
                 apps,
@@ -229,9 +232,10 @@ fn discover_workspace(
 fn discover_tasks(
     flake: &FlakeSelection,
     adapter: &nxr_nix::NixAdapter,
-    refresh: bool,
+    refresh_discovery: bool,
+    nix_flags: &OptionalNixFlags,
 ) -> Result<TaskDocument, InspectError> {
-    let workspace = discover_workspace(flake, adapter, refresh)?;
+    let workspace = discover_workspace(flake, adapter, refresh_discovery, nix_flags)?;
     Ok(workspace
         .tasks
         .expect("task inspect discovers tasks with apps"))

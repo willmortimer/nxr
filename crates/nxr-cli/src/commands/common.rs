@@ -11,7 +11,7 @@ use nxr_completion::cache::{
     DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_workspace_with_cache,
 };
 use nxr_nix::{
-    AppNotFoundError, NixAdapter, NixError, nix_develop_wrap_run_args, nix_run_args,
+    AppNotFoundError, NixAdapter, NixError, OptionalNixFlags, nix_develop_wrap_run_args, nix_run_args,
     resolve_app_by_name,
 };
 use nxr_task::{
@@ -31,6 +31,7 @@ pub struct AppRequest<'a> {
     pub cwd: Option<&'a str>,
     pub shell: Option<&'a str>,
     pub environment_policy: EnvironmentPolicy,
+    pub nix_flags: &'a OptionalNixFlags,
 }
 
 /// Inputs for flake discovery without a resolved app target.
@@ -38,6 +39,7 @@ pub struct AppRequest<'a> {
 pub struct DiscoverRequest<'a> {
     pub flake_arg: Option<&'a str>,
     pub nix_override: Option<&'a str>,
+    pub nix_flags: &'a OptionalNixFlags,
 }
 
 /// Discovered apps for a selected flake.
@@ -137,7 +139,12 @@ pub fn strip_one_separator(args: &[String]) -> Vec<String> {
 ///
 /// Returns [`PrepareError`] when directories, flake selection, or discovery fail.
 pub fn discover_apps(request: DiscoverRequest<'_>) -> Result<DiscoveredApps, PrepareError> {
-    let snapshot = WorkspaceSnapshot::load(request.flake_arg, request.nix_override, false)?;
+    let snapshot = WorkspaceSnapshot::load(
+        request.flake_arg,
+        request.nix_override,
+        false,
+        request.nix_flags,
+    )?;
     Ok(DiscoveredApps {
         apps: snapshot.apps.into_values().collect(),
     })
@@ -154,7 +161,12 @@ pub fn discover_apps(request: DiscoverRequest<'_>) -> Result<DiscoveredApps, Pre
 /// Returns [`PrepareError`] when directories, flake selection, discovery, or
 /// app resolution fail.
 pub fn prepare_app_plan(request: &AppRequest<'_>) -> Result<PreparedPlan, PrepareError> {
-    let snapshot = WorkspaceSnapshot::load(request.flake_arg, request.nix_override, false)?;
+    let snapshot = WorkspaceSnapshot::load(
+        request.flake_arg,
+        request.nix_override,
+        false,
+        request.nix_flags,
+    )?;
     snapshot.prepare_discovered_app(request)
 }
 
@@ -201,6 +213,7 @@ impl WorkspaceSnapshot {
         flake_arg: Option<&str>,
         nix_override: Option<&str>,
         load_tasks: bool,
+        nix_flags: &OptionalNixFlags,
     ) -> Result<Self, PrepareError> {
         let invocation_directory = current_invocation_directory()?;
         let flake = resolve_flake(flake_arg, &invocation_directory)?;
@@ -218,10 +231,12 @@ impl WorkspaceSnapshot {
                 require_tasks: load_tasks,
             },
             || {
-                let apps = nix.discover_apps(&flake_ref).map_err(PrepareError::Nix)?;
+                let apps = nix
+                    .discover_apps(&flake_ref, nix_flags)
+                    .map_err(PrepareError::Nix)?;
                 let tasks = if load_tasks {
                     Some(
-                        nix.discover_tasks(&flake_ref)
+                        nix.discover_tasks(&flake_ref, nix_flags)
                             .map_err(PrepareError::TaskDiscovery)?,
                     )
                 } else {
@@ -309,6 +324,7 @@ impl WorkspaceSnapshot {
         cwd: Option<&str>,
         shell: Option<&str>,
         environment_policy: &EnvironmentPolicy,
+        nix_flags: &OptionalNixFlags,
     ) -> Result<BTreeMap<String, PreparedTaskNode>, PrepareError> {
         document.validate().map_err(PrepareError::TaskSchema)?;
         let apps: Vec<App> = self.apps.values().cloned().collect();
@@ -340,6 +356,7 @@ impl WorkspaceSnapshot {
                 cwd,
                 shell,
                 environment_policy: environment_policy.clone(),
+                nix_flags,
             };
             let plan = build_plan(
                 &app_request,
@@ -420,7 +437,12 @@ pub fn synthetic_app(name: &str, flake_ref: &str, system: &str) -> App {
 pub fn suggest_missing_app_after_run(
     request: &AppRequest<'_>,
 ) -> Result<Option<AppNotFoundError>, PrepareError> {
-    let snapshot = WorkspaceSnapshot::load(request.flake_arg, request.nix_override, false)?;
+    let snapshot = WorkspaceSnapshot::load(
+        request.flake_arg,
+        request.nix_override,
+        false,
+        request.nix_flags,
+    )?;
     let apps: Vec<App> = snapshot.apps.values().cloned().collect();
     match resolve_app_by_name(&apps, request.app) {
         Ok(_) => Ok(None),
@@ -502,12 +524,13 @@ fn build_plan(
     forwarded: &[String],
 ) -> Plan {
     let run_argv = nix_run_args(&flake.nix_ref, &app.name, forwarded);
-    let command_arguments = match request.shell {
+    let base_arguments = match request.shell {
         Some(shell_name) => {
             nix_develop_wrap_run_args(adapter.nix.as_str(), &flake.nix_ref, shell_name, &run_argv)
         }
         None => run_argv,
     };
+    let command_arguments = adapter.compatible_argv(base_arguments, request.nix_flags);
 
     Plan {
         schema_version: Plan::SCHEMA_VERSION,
@@ -539,6 +562,7 @@ mod tests {
     use crate::flake::FlakeSelection;
     use nxr_core::App;
     use nxr_nix::NixAdapter;
+    use nxr_nix::OptionalNixFlags;
     use nxr_task::{WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION};
 
     #[test]
@@ -606,6 +630,7 @@ mod tests {
             metadata: BTreeMap::new(),
         };
         let forwarded = strip_one_separator(&["--".to_owned(), "one".to_owned()]);
+        let nix_flags = OptionalNixFlags::default();
         let request = AppRequest {
             flake_arg: None,
             nix_override: None,
@@ -615,6 +640,7 @@ mod tests {
             cwd: None,
             shell: None,
             environment_policy: nxr_core::EnvironmentPolicy::Inherit,
+            nix_flags: &nix_flags,
         };
         let plan = build_plan(
             &request,
@@ -753,6 +779,7 @@ mod tests {
             is_default: false,
             metadata: BTreeMap::new(),
         };
+        let nix_flags = OptionalNixFlags::default();
         let request = AppRequest {
             flake_arg: None,
             nix_override: None,
@@ -762,6 +789,7 @@ mod tests {
             cwd: None,
             shell: Some("default"),
             environment_policy: nxr_core::EnvironmentPolicy::Inherit,
+            nix_flags: &nix_flags,
         };
         let plan = build_plan(
             &request,

@@ -5,6 +5,8 @@ use std::io::{self, Write};
 use nxr_completion::cache::{DiscoveryCacheOptions, DiscoveryContext};
 use nxr_completion::{CompleteTarget, discover_app_candidates, write_app_candidates};
 
+use nxr_nix::OptionalNixFlags;
+
 use crate::commands::common::{build_adapter, current_invocation_directory};
 use crate::flake::resolve_flake;
 
@@ -27,19 +29,23 @@ pub fn run(
     target: CompleteTarget,
     flake_arg: Option<&str>,
     nix_override: Option<&str>,
-    refresh: bool,
+    refresh_discovery: bool,
+    nix_flags: &OptionalNixFlags,
 ) -> Result<(), CompleteError> {
     match target {
-        CompleteTarget::Apps => write_app_completions(flake_arg, nix_override, refresh),
+        CompleteTarget::Apps => {
+            write_app_completions(flake_arg, nix_override, refresh_discovery, nix_flags)
+        }
     }
 }
 
 fn write_app_completions(
     flake_arg: Option<&str>,
     nix_override: Option<&str>,
-    refresh: bool,
+    refresh_discovery: bool,
+    nix_flags: &OptionalNixFlags,
 ) -> Result<(), CompleteError> {
-    let Some(apps) = discover_apps(flake_arg, nix_override, refresh) else {
+    let Some(apps) = discover_apps(flake_arg, nix_override, refresh_discovery, nix_flags) else {
         flush_empty()?;
         return Ok(());
     };
@@ -53,7 +59,8 @@ fn write_app_completions(
 fn discover_apps(
     flake_arg: Option<&str>,
     nix_override: Option<&str>,
-    refresh: bool,
+    refresh_discovery: bool,
+    nix_flags: &OptionalNixFlags,
 ) -> Option<Vec<nxr_core::App>> {
     let invocation_cwd = current_invocation_directory().ok()?;
     let flake = resolve_flake(flake_arg, &invocation_cwd).ok()?;
@@ -65,14 +72,15 @@ fn discover_apps(
         system: adapter.system.clone(),
     };
     let flake_ref = flake.nix_ref.clone();
+    let nix_flags = nix_flags.clone();
 
     Some(discover_app_candidates(
         &context,
         DiscoveryCacheOptions {
-            refresh,
+            refresh: refresh_discovery,
             require_tasks: false,
         },
-        move || adapter.discover_apps(&flake_ref),
+        move || adapter.discover_apps(&flake_ref, &nix_flags),
     ))
 }
 

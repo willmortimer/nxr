@@ -8,7 +8,7 @@ use nxr_completion::cache::{
 };
 use nxr_core::sanitize::sanitize_terminal_text;
 use nxr_core::{App, AppList};
-use nxr_nix::{NixError, TaskDiscoveryError};
+use nxr_nix::{NixError, OptionalNixFlags, TaskDiscoveryError};
 use nxr_task::{TaskDefinition, TaskDocument, listable_tasks};
 use serde::Serialize;
 
@@ -56,7 +56,8 @@ pub fn run(
     flake_arg: Option<&str>,
     nix_override: Option<&str>,
     json: bool,
-    refresh: bool,
+    refresh_discovery: bool,
+    nix_flags: &OptionalNixFlags,
     category: Option<&str>,
     runner: RunnerOutput,
 ) -> Result<(), ListError> {
@@ -66,7 +67,7 @@ pub fn run(
         .info(format!("discovering apps for {}", flake.display))
         .map_err(ListError::Io)?;
     let adapter = build_adapter(nix_override)?;
-    let workspace = discover_workspace(&flake, &adapter, refresh)?;
+    let workspace = discover_workspace(&flake, &adapter, refresh_discovery, nix_flags)?;
     let apps = workspace.apps;
     let task_doc = workspace
         .tasks
@@ -115,7 +116,8 @@ pub fn run(
 fn discover_workspace(
     flake: &FlakeSelection,
     adapter: &nxr_nix::NixAdapter,
-    refresh: bool,
+    refresh_discovery: bool,
+    nix_flags: &OptionalNixFlags,
 ) -> Result<WorkspaceDiscovery, ListError> {
     let context = DiscoveryContext {
         flake_ref: flake.nix_ref.clone(),
@@ -126,13 +128,13 @@ fn discover_workspace(
 
     discover_workspace_with_cache(
         &context,
-        DiscoveryCacheOptions::with_tasks(refresh),
+        DiscoveryCacheOptions::with_tasks(refresh_discovery),
         || {
             let apps = adapter
-                .discover_apps(&flake_ref)
+                .discover_apps(&flake_ref, nix_flags)
                 .map_err(ListError::Nix)?;
             let tasks = adapter
-                .discover_tasks(&flake_ref)
+                .discover_tasks(&flake_ref, nix_flags)
                 .map_err(ListError::Tasks)?;
             Ok(WorkspaceDiscovery {
                 apps,

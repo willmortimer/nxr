@@ -82,13 +82,17 @@ pub struct NixCapabilities {
 }
 
 /// Optional Nix global flags a caller may request; unsupported ones are dropped.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 #[allow(clippy::struct_excessive_bools)] // mirrors NixCapabilities optional flag surface
 pub struct OptionalNixFlags {
     pub offline: bool,
     pub no_write_lock_file: bool,
     pub accept_flake_config: bool,
     pub json_log_format: bool,
+    /// `--option KEY VALUE` pairs from `--nix-option KEY=VAL`.
+    pub nix_options: Vec<(String, String)>,
+    /// Raw argv fragments from repeatable `--nix-arg` (passed through when set).
+    pub extra_argv: Vec<String>,
 }
 
 impl NixCapabilities {
@@ -107,7 +111,7 @@ impl NixCapabilities {
 
     /// Global flags that are both requested and supported (true Nix globals).
     #[must_use]
-    pub fn select_compatible_globals(&self, requested: OptionalNixFlags) -> Vec<String> {
+    pub fn select_compatible_globals(&self, requested: &OptionalNixFlags) -> Vec<String> {
         let mut flags = Vec::new();
         if requested.json_log_format && self.supports_json_log_format {
             flags.push("--log-format".to_owned());
@@ -119,6 +123,12 @@ impl NixCapabilities {
         if requested.accept_flake_config && self.supports_accept_flake_config {
             flags.push("--accept-flake-config".to_owned());
         }
+        for (key, value) in &requested.nix_options {
+            flags.push("--option".to_owned());
+            flags.push(key.clone());
+            flags.push(value.clone());
+        }
+        flags.extend(requested.extra_argv.iter().cloned());
         flags
     }
 
@@ -128,7 +138,7 @@ impl NixCapabilities {
     pub fn apply_optional_flags(
         &self,
         base_args: Vec<String>,
-        requested: OptionalNixFlags,
+        requested: &OptionalNixFlags,
     ) -> Vec<String> {
         let mut out = self.select_compatible_globals(requested);
         let mut rest = base_args;
@@ -484,13 +494,37 @@ mod tests {
             supports_offline: true,
             supports_accept_flake_config: false,
         };
-        let flags = caps.select_compatible_globals(OptionalNixFlags {
+        let flags = caps.select_compatible_globals(&OptionalNixFlags {
             offline: true,
             no_write_lock_file: true,
             accept_flake_config: true,
             json_log_format: true,
+            nix_options: Vec::new(),
+            extra_argv: Vec::new(),
         });
         assert_eq!(flags, vec!["--offline".to_owned()]);
+    }
+
+    #[test]
+    fn select_compatible_globals_includes_nix_options_and_extra_argv() {
+        let caps = NixCapabilities::all_supported_for_tests(TESTED_NIX_SUPPORT_FLOOR);
+        let flags = caps.select_compatible_globals(&OptionalNixFlags {
+            offline: false,
+            no_write_lock_file: false,
+            accept_flake_config: false,
+            json_log_format: false,
+            nix_options: vec![("warn-dirty".to_owned(), "false".to_owned())],
+            extra_argv: vec!["--refresh".to_owned()],
+        });
+        assert_eq!(
+            flags,
+            vec![
+                "--option".to_owned(),
+                "warn-dirty".to_owned(),
+                "false".to_owned(),
+                "--refresh".to_owned(),
+            ]
+        );
     }
 
     #[test]
@@ -503,11 +537,13 @@ mod tests {
                 "--json".to_owned(),
                 ".".to_owned(),
             ],
-            OptionalNixFlags {
+            &OptionalNixFlags {
                 offline: true,
                 no_write_lock_file: true,
                 accept_flake_config: false,
                 json_log_format: false,
+                nix_options: Vec::new(),
+                extra_argv: Vec::new(),
             },
         );
         assert_eq!(
@@ -528,11 +564,13 @@ mod tests {
         let caps = NixCapabilities::all_supported_for_tests(TESTED_NIX_SUPPORT_FLOOR);
         let args = caps.apply_optional_flags(
             vec!["run".to_owned(), ".#hello".to_owned()],
-            OptionalNixFlags {
+            &OptionalNixFlags {
                 offline: true,
                 no_write_lock_file: false,
                 accept_flake_config: false,
                 json_log_format: false,
+                nix_options: Vec::new(),
+                extra_argv: Vec::new(),
             },
         );
         assert_eq!(
