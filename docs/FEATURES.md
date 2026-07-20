@@ -417,7 +417,7 @@ The command reports normalized configuration after defaults and capability resol
 
 ## 3. Possible post-V2 extensions
 
-These are explicitly not committed roadmap items:
+These are explicitly not committed roadmap items. Preserved V3 design prose lives in [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md).
 
 - readiness probes for long-running services;
 - task matrices;
@@ -428,6 +428,10 @@ These are explicitly not committed roadmap items:
 - Nix check/app linkage metadata;
 - reproducible ephemeral service environments;
 - CI workflow generation;
-- policy plugins.
+- policy plugins;
+- first-class projects and affected analysis;
+- action contracts, artifact caches, and result replay;
+- provider-independent CI plans and test intelligence;
+- optional local daemon and remote worker fabric.
 
 Each should require evidence that it belongs in `nxr` rather than another layer.
