@@ -869,10 +869,11 @@ mod tests {
         tasks.insert("b".to_owned(), b);
         let plan = build_execution_plan(&tasks, "b", FailurePolicy::FailFast, None).expect("plan");
         let nix_flags = nxr_nix::OptionalNixFlags::default();
+        let task_names = vec!["b".to_owned()];
         let request = super::TaskRequest {
             flake_arg: None,
             nix_override: None,
-            task: "b",
+            tasks: &task_names,
             args: &[],
             root: false,
             cwd: None,
