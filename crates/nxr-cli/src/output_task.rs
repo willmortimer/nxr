@@ -128,8 +128,7 @@ impl EventSink for TaskEventSink<'_> {
                 stderr,
                 state,
             } => {
-                let mut renderer =
-                    TaskOutputRenderer::from_state(*mode, stdout, stderr, state);
+                let mut renderer = TaskOutputRenderer::from_state(*mode, stdout, stderr, state);
                 renderer.emit(event);
             }
             TaskEventSinkInner::EventsOnly { format, writer } => {
@@ -143,8 +142,7 @@ impl EventSink for TaskEventSink<'_> {
                 state,
             } => {
                 {
-                    let mut renderer =
-                        TaskOutputRenderer::from_state(*mode, stdout, stderr, state);
+                    let mut renderer = TaskOutputRenderer::from_state(*mode, stdout, stderr, state);
                     renderer.emit(event.clone());
                 }
                 write_jsonl_event(stderr, *format, &event);

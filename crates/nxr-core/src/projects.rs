@@ -283,8 +283,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        NXR_CATEGORY_KEY, ProjectDefinition, ProjectMemberKind, ProjectsDocument, UnknownProjectMember,
-        app_category, listable_apps, load_projects_document, set_app_category,
+        NXR_CATEGORY_KEY, ProjectDefinition, ProjectMemberKind, ProjectsDocument,
+        UnknownProjectMember, app_category, listable_apps, load_projects_document,
+        set_app_category,
     };
     use crate::App;
 

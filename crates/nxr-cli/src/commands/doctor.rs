@@ -6,7 +6,7 @@ use nxr_completion::cache::{DiscoveryContext, discovery_cache_entry, discovery_c
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::{Diagnostic, DiagnosticLevel, exit};
 use nxr_core::sanitize::sanitize_terminal_text;
-use nxr_core::{load_projects_document, ProjectMemberKind};
+use nxr_core::{ProjectMemberKind, load_projects_document};
 use nxr_nix::{NixAdapter, NixCapabilities, NixError, OptionalNixFlags, resolve_app_by_name};
 use serde::Serialize;
 
@@ -314,8 +314,7 @@ fn collect_projects_member_findings(
     };
 
     let known_apps = apps.iter().map(|app| app.name.clone()).collect();
-    let known_tasks = match adapter.discover_tasks(&flake.nix_ref, &OptionalNixFlags::default())
-    {
+    let known_tasks = match adapter.discover_tasks(&flake.nix_ref, &OptionalNixFlags::default()) {
         Ok(task_doc) => task_doc.tasks.keys().cloned().collect(),
         Err(_) => std::collections::BTreeSet::new(),
     };
