@@ -57,7 +57,19 @@ The JSON envelope includes a `capabilities` object:
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) §9 and ADR-0018 in [adr/README.md](adr/README.md).
-CI may exercise additional Nix versions (see roadmap item for multi-Nix CI).
+
+### CI Nix matrix
+
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) exercises two Nix versions on
+`ubuntu-latest` and `macos-latest`:
+
+| Matrix label | Install source |
+|---|---|
+| `latest` | Default Determinate Nix from `nix-installer-action` |
+| `2.18` | Upstream Nix **2.18.9** via `nix-package-url` (support floor) |
+
+Fixture smoke tests run the packaged `nix build .#nxr` binary, not `nix run` on the
+project flake apps.
 
 ## Escape hatch
 
