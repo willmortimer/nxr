@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 use std::io::{self, Write};
 
 use nxr_affected::{
-    AffectedAnalysis, AffectedError, GitDiffError, NodeStatus, analyze, build_graph,
-    git_all_changes, git_diff_name_only, git_working_tree_changes,
+    AffectedAnalysis, GitDiffError, NodeStatus, analyze, build_graph, git_all_changes,
+    git_diff_name_only, git_working_tree_changes,
 };
 use nxr_completion::cache::{
     DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_workspace_with_cache,
@@ -29,8 +29,6 @@ pub enum AffectedCommandError {
     #[error(transparent)]
     Tasks(#[from] TaskDiscoveryError),
     #[error(transparent)]
-    Analysis(#[from] AffectedError),
-    #[error(transparent)]
     Git(#[from] GitDiffError),
     #[error(transparent)]
     Io(#[from] io::Error),
@@ -46,7 +44,7 @@ impl AffectedCommandError {
             Self::Flake(error) => error.exit_code(),
             Self::Nix(error) => error.exit_code(),
             Self::Tasks(error) => error.exit_code(),
-            Self::Analysis(_) | Self::Git(_) | Self::Usage(_) => nxr_core::diagnostics::exit::USAGE,
+            Self::Git(_) | Self::Usage(_) => nxr_core::diagnostics::exit::USAGE,
             Self::Io(_) => nxr_core::diagnostics::exit::EVALUATION,
         }
     }
@@ -107,6 +105,17 @@ pub fn run(
 
     changed_paths = dedupe_paths(changed_paths);
 
+    let has_path_source = !paths.is_empty()
+        || sources.base.is_some()
+        || sources.working_tree
+        || sources.all_changes.is_some();
+    if !has_path_source {
+        return Err(AffectedCommandError::Usage(
+            "no path source specified; pass paths as arguments or use --base / --working-tree / --all-changes"
+                .to_owned(),
+        ));
+    }
+
     runner
         .info(format!(
             "analyzing {} changed path(s) for {} (strict={strict})",
@@ -126,7 +135,7 @@ pub fn run(
         &flake.display,
         &adapter.system,
         strict,
-    )?;
+    );
 
     if json {
         write_json(&mut io::stdout().lock(), &analysis)?;
@@ -247,7 +256,7 @@ fn write_human(writer: &mut impl Write, analysis: &AffectedAnalysis) -> io::Resu
     } else {
         writeln!(
             writer,
-            "Non-strict policy: apps/tasks lists omit unknown; see nodes for full classification."
+            "Non-strict policy: apps/tasks lists omit unknown; nodes includes the full classification."
         )?;
     }
 

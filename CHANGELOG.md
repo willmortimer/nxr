@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-07-20
+
+Hardening patch: transparent TTY stderr, colder completion cache honesty, and
+affected edge-case correctness. No new features.
+
+### Fixed
+
+- Foreground / named build-check-shell: inherit stderr on a TTY (no capture);
+  non-TTY paths tee with a bounded ~128 KiB rolling tail for suggestions.
+- Cold completion evaluates apps together with the lightweight `nxr` document
+  (`require_tasks`) so `discoveryInputs` enter the first cache entry.
+- `nxr affected` with a valid empty path source succeeds (empty lists) instead
+  of a usage error; missing path source remains a usage error.
+- Git path collection uses `--name-status -z --find-renames` and includes both
+  sides of rename/copy records.
+- Affected `nodes` includes every classified graph node (including unaffected).
+- Release matrix asserts tag version equals package version and checks archive
+  layout on every platform build.
+
+### Changed
+
+- Workspace and Nix package version **2.3.2**.
+
 ## [2.3.1] - 2026-07-20
 
 Trust-and-latency patch: one-process bare apps, sounder discovery cache, strict
@@ -230,6 +253,7 @@ First taggable V1 prerelease: a standard Nix flake app runner through Phase 5 of
 - [Compatibility matrix](docs/COMPATIBILITY.md), [CLI reference](docs/CLI_REFERENCE.md), and [telemetry decision](docs/TELEMETRY.md) (default: none).
 - Tag-triggered [release workflow](.github/workflows/release.yml) (quality gate only; no publish secrets).
 
+[2.3.2]: https://github.com/willmortimer/nxr/compare/v2.3.1...v2.3.2
 [2.3.1]: https://github.com/willmortimer/nxr/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/willmortimer/nxr/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/willmortimer/nxr/compare/v2.1.0...v2.2.0

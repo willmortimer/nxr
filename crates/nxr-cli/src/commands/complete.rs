@@ -2,7 +2,7 @@
 
 use std::io::{self, Write};
 
-use nxr_completion::cache::{DiscoveryCacheOptions, DiscoveryContext};
+use nxr_completion::cache::{DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery};
 use nxr_completion::{CompleteTarget, discover_app_candidates, write_app_candidates};
 
 use nxr_nix::OptionalNixFlags;
@@ -77,13 +77,26 @@ fn discover_apps(
     let flake_ref = flake.nix_ref.clone();
     let nix_flags = nix_flags.clone();
 
+    // Require tasks so apps-only cache entries are misses and cold population
+    // records discoveryInputs from the lightweight nxr document.
     Some(discover_app_candidates(
         &context,
         DiscoveryCacheOptions {
             refresh: refresh_discovery,
-            require_tasks: false,
+            require_tasks: true,
         },
-        move || adapter.discover_apps(&flake_ref, &nix_flags),
+        move || {
+            let apps = adapter
+                .discover_apps(&flake_ref, &nix_flags)
+                .map_err(|error| error.to_string())?;
+            let tasks = adapter
+                .discover_tasks(&flake_ref, &nix_flags)
+                .map_err(|error| error.to_string())?;
+            Ok::<WorkspaceDiscovery, String>(WorkspaceDiscovery {
+                apps,
+                tasks: Some(tasks),
+            })
+        },
     ))
 }
 

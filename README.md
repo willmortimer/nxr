@@ -183,5 +183,5 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**2.3.1** — trust and latency: one-process bare apps, cache v3, strict Nix flags,
-safer `affected`, Nix-equipped release archives. History: [CHANGELOG.md](CHANGELOG.md).
+**2.3.2** — edge-case hardening: TTY-safe stderr, completion cache honesty,
+safer `affected`, release layout/version checks. History: [CHANGELOG.md](CHANGELOG.md).

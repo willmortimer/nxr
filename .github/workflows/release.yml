@@ -64,10 +64,18 @@ jobs:
           set -euo pipefail
           version="${{ steps.version.outputs.value }}"
           system="${{ matrix.system }}"
+          pkg_version="$(nix eval --raw ".#packages.${system}.nxr.version")"
+          if [[ "$version" != "$pkg_version" ]]; then
+            echo "tag/package version mismatch: archive=$version package=$pkg_version" >&2
+            exit 1
+          fi
           staging="nxr-${version}-${system}"
           mkdir -p "$staging"
           cp -a result/bin "$staging/"
           cp -a result/share "$staging/"
+          test -x "$staging/bin/nxr"
+          test -d "$staging/share/man"
+          test -d "$staging/share/nxr/shell"
           archive="${staging}.tar.gz"
           tar -czf "$archive" "$staging"
 

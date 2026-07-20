@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://nxr.dev/schemas/affected-v2.schema.json",
   "title": "nxr affected output",
-  "description": "Machine-readable output for `nxr affected --json` (schema version 2). Informational path ownership with a strict CI policy: apps/tasks include affected and unknown; only unaffected is omitted.",
+  "description": "Machine-readable output for `nxr affected --json` (schema version 2). Informational path ownership with a strict CI policy: apps/tasks include affected and unknown; only unaffected is omitted from those lists. The nodes array includes every classified graph node.",
   "type": "object",
   "required": [
     "schema_version",
@@ -58,7 +58,7 @@
       "items": {
         "$ref": "#/$defs/affected_node"
       },
-      "description": "Classified nodes with status affected or unknown (unaffected omitted)."
+      "description": "Every classified graph node (affected, unaffected, and unknown) for CI auditability."
     }
   },
   "$defs": {

@@ -59,10 +59,11 @@ test -x ./nxr-<version>-<system>/bin/nxr
 ls ./nxr-<version>-<system>/share/nxr/shell/
 ```
 
-The release workflow extract-and-smoke job verifies archive layout, `cmp`s the
-uploaded `bin/nxr` against a fresh `nix build` of the tagged flake (same
-content-addressed output), then runs `--version`, completion generation, and
-fixture app/task invocations through that store-backed binary.
+The release workflow extract-and-smoke job verifies archive layout, asserts the
+tag/package version match on every matrix build, `cmp`s the uploaded `bin/nxr`
+against a fresh `nix build` of the tagged flake (same content-addressed output),
+then runs `--version`, completion generation, and fixture app/task invocations
+through that store-backed binary.
 
 ## Signing gap
 

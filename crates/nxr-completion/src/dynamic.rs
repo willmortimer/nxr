@@ -8,7 +8,9 @@ use std::time::Duration;
 use clap::ValueEnum;
 use nxr_core::App;
 
-use crate::cache::{DiscoveryCacheOptions, DiscoveryContext, cached_apps, discover_with_cache};
+use crate::cache::{
+    DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_workspace_with_cache,
+};
 
 /// Maximum time to wait for a cold discovery during interactive completion.
 ///
@@ -26,48 +28,33 @@ pub enum CompleteTarget {
 
 /// Discover app candidates for shell completion.
 ///
-/// Uses the discovery cache when possible. On a cache miss, discovery runs in a
-/// background thread and is abandoned after [`DISCOVERY_TIMEOUT`], returning an
-/// empty list so shells never block on slow Nix evaluation.
+/// Uses the discovery cache when possible. Cold misses should evaluate apps
+/// together with the lightweight `nxr` task document so `discoveryInputs` enter
+/// the first cache entry (`require_tasks: true` from the CLI completion path).
+/// On a cache miss, discovery runs in a background thread and is abandoned after
+/// [`DISCOVERY_TIMEOUT`], returning an empty list so shells never block on slow
+/// Nix evaluation.
 pub fn discover_app_candidates<F, E>(
     context: &DiscoveryContext,
     options: DiscoveryCacheOptions,
     discover: F,
 ) -> Vec<App>
 where
-    F: FnOnce() -> Result<Vec<App>, E> + Send + 'static,
+    F: FnOnce() -> Result<WorkspaceDiscovery, E> + Send + 'static,
     E: Send + 'static,
 {
-    if options.refresh {
-        return discover_with_timeout(context, options, discover);
-    }
-
-    if let Some(apps) = cached_apps(context) {
-        return apps;
-    }
-
-    discover_with_timeout(context, options, discover)
-}
-
-fn discover_with_timeout<F, E>(
-    context: &DiscoveryContext,
-    options: DiscoveryCacheOptions,
-    discover: F,
-) -> Vec<App>
-where
-    F: FnOnce() -> Result<Vec<App>, E> + Send + 'static,
-    E: Send + 'static,
-{
+    // Cache hits return quickly inside discover_workspace_with_cache; cold
+    // evaluation is abandoned after DISCOVERY_TIMEOUT.
     let context = context.clone();
     let (sender, receiver) = mpsc::channel();
 
     thread::spawn(move || {
-        let result = discover_with_cache(&context, options, discover);
+        let result = discover_workspace_with_cache(&context, options, discover);
         let _ = sender.send(result);
     });
 
     match receiver.recv_timeout(DISCOVERY_TIMEOUT) {
-        Ok(Ok(apps)) => apps,
+        Ok(Ok(workspace)) => workspace.apps,
         _ => Vec::new(),
     }
 }
@@ -97,7 +84,7 @@ mod tests {
     use clap::ValueEnum;
 
     use super::{CompleteTarget, DISCOVERY_TIMEOUT, discover_app_candidates, write_app_candidates};
-    use crate::cache::{DiscoveryCacheOptions, DiscoveryContext};
+    use crate::cache::{DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery};
     use nxr_core::App;
 
     #[test]
@@ -118,7 +105,7 @@ mod tests {
                 attr_path: "apps.aarch64-darwin.lint".to_owned(),
                 flake_ref: ".".to_owned(),
                 system: "aarch64-darwin".to_owned(),
-                description: Some("Run the linter".to_owned()),
+                description: Some("Run static analysis".to_owned()),
                 is_default: false,
                 metadata: BTreeMap::new(),
             },
@@ -133,21 +120,23 @@ mod tests {
             },
         ];
 
-        let mut buffer = Cursor::new(Vec::new());
-        write_app_candidates(&apps, &mut buffer).expect("write candidates");
-        let output = String::from_utf8(buffer.into_inner()).expect("utf-8 output");
-        assert_eq!(output, "lint\tRun the linter\ntest\n");
+        let mut cursor = Cursor::new(Vec::new());
+        write_app_candidates(&apps, &mut cursor).expect("write");
+        let output = String::from_utf8(cursor.into_inner()).expect("utf8");
+        assert!(output.contains("lint\tRun static analysis\n"));
+        assert!(output.contains("test\n"));
     }
 
     #[test]
     fn discover_app_candidates_returns_empty_on_slow_discover() {
         let context = DiscoveryContext::new("github:owner/repo", None, "aarch64-darwin");
-
         let apps = discover_app_candidates(&context, DiscoveryCacheOptions::normal(), || {
             thread::sleep(DISCOVERY_TIMEOUT + Duration::from_millis(200));
-            Ok::<_, std::convert::Infallible>(Vec::new())
+            Ok::<WorkspaceDiscovery, ()>(WorkspaceDiscovery {
+                apps: Vec::new(),
+                tasks: None,
+            })
         });
-
         assert!(apps.is_empty());
     }
 }

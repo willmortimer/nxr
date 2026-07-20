@@ -3,22 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::Serialize;
-use thiserror::Error;
 
 use crate::graph::{AffectedGraph, NodeKind};
 use crate::paths::{
     PathRootError, is_global_invalidation_path, path_matches_roots, validate_path_roots,
 };
-
-/// Errors during affected analysis.
-#[derive(Debug, Error)]
-pub enum AffectedError {
-    /// No changed paths were supplied.
-    #[error(
-        "no changed paths supplied; pass paths as arguments or use --base / --working-tree / --all-changes"
-    )]
-    NoChangedPaths,
-}
 
 /// Classification of a graph node relative to the changed paths.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -100,22 +89,20 @@ impl AffectedAnalysis {
 ///
 /// When `strict` is true (default for CI JSON), `apps` / `tasks` include both
 /// [`NodeStatus::Affected`] and [`NodeStatus::Unknown`]. Only
-/// [`NodeStatus::Unaffected`] is omitted.
+/// [`NodeStatus::Unaffected`] is omitted from those lists.
 ///
-/// # Errors
-///
-/// Returns [`AffectedError`] when `changed_paths` is empty.
+/// An empty `changed_paths` slice is valid and yields a successful analysis
+/// (typically path-rooted nodes [`NodeStatus::Unaffected`], empty-root nodes
+/// [`NodeStatus::Unknown`]). Callers that require at least one path *source*
+/// should enforce that before invoking analysis.
+#[must_use]
 pub fn analyze(
     graph: &AffectedGraph,
     changed_paths: &[String],
     flake: &str,
     system: &str,
     strict: bool,
-) -> Result<AffectedAnalysis, AffectedError> {
-    if changed_paths.is_empty() {
-        return Err(AffectedError::NoChangedPaths);
-    }
-
+) -> AffectedAnalysis {
     let mut status: BTreeMap<String, NodeStatus> = BTreeMap::new();
     let mut reasons: BTreeMap<String, Vec<AffectedReason>> = BTreeMap::new();
 
@@ -138,7 +125,7 @@ pub fn analyze(
 
     let (apps, tasks, nodes) = collect_results(graph, &status, &mut reasons, strict);
 
-    Ok(AffectedAnalysis {
+    AffectedAnalysis {
         schema_version: AffectedAnalysis::SCHEMA_VERSION,
         flake: flake.to_owned(),
         system: system.to_owned(),
@@ -147,7 +134,7 @@ pub fn analyze(
         apps,
         tasks,
         nodes,
-    })
+    }
 }
 
 fn mark_global_affected(
@@ -284,14 +271,12 @@ fn collect_results(
             }
         }
 
-        if node_status != NodeStatus::Unaffected {
-            nodes.push(AffectedNode {
-                kind: kind_label(node.kind).to_owned(),
-                name: node.name.clone(),
-                status: node_status,
-                reasons: node_reasons,
-            });
-        }
+        nodes.push(AffectedNode {
+            kind: kind_label(node.kind).to_owned(),
+            name: node.name.clone(),
+            status: node_status,
+            reasons: node_reasons,
+        });
     }
 
     apps.sort();
@@ -530,8 +515,7 @@ mod tests {
             "./fixtures/affected-deps",
             "aarch64-darwin",
             true,
-        )
-        .expect("analysis");
+        );
 
         assert!(result.tasks.contains(&"shared-lib".to_owned()));
         assert!(result.tasks.contains(&"api-test".to_owned()));
@@ -553,8 +537,7 @@ mod tests {
             "./fixtures/affected-deps",
             "aarch64-darwin",
             false,
-        )
-        .expect("analysis");
+        );
 
         assert!(result.apps.is_empty());
         assert!(result.tasks.contains(&"shared-lib".to_owned()));
@@ -568,6 +551,34 @@ mod tests {
     }
 
     #[test]
+    fn empty_changed_paths_succeeds_with_classification() {
+        let (apps, task_doc) = shared_dep_fixture();
+        let graph = build_graph(&apps, &task_doc);
+        let result = analyze(
+            &graph,
+            &[],
+            "./fixtures/affected-deps",
+            "aarch64-darwin",
+            true,
+        );
+
+        assert!(result.changed_paths.is_empty());
+        assert_eq!(result.nodes.len(), graph.nodes.len());
+        let unknown = result
+            .nodes
+            .iter()
+            .filter(|node| node.status == NodeStatus::Unknown)
+            .count();
+        let unaffected = result
+            .nodes
+            .iter()
+            .filter(|node| node.status == NodeStatus::Unaffected)
+            .count();
+        assert!(unknown > 0);
+        assert!(unaffected > 0);
+    }
+
+    #[test]
     fn empty_path_roots_classify_as_unknown() {
         let (apps, task_doc) = shared_dep_fixture();
         let graph = build_graph(&apps, &task_doc);
@@ -577,8 +588,7 @@ mod tests {
             "./fixtures/affected-deps",
             "aarch64-darwin",
             true,
-        )
-        .expect("analysis");
+        );
 
         let ci_app = result
             .nodes
@@ -599,8 +609,7 @@ mod tests {
             "./fixtures/affected-deps",
             "aarch64-darwin",
             true,
-        )
-        .expect("analysis");
+        );
 
         assert_eq!(result.nodes.len(), 8);
         assert!(
@@ -621,8 +630,7 @@ mod tests {
             "./fixtures/affected-deps",
             "aarch64-darwin",
             false,
-        )
-        .expect("analysis");
+        );
 
         assert_eq!(result.tasks, vec!["ci".to_owned(), "web-test".to_owned()]);
         assert!(!result.tasks.contains(&"api-test".to_owned()));
@@ -639,8 +647,7 @@ mod tests {
             "./fixtures/affected-deps",
             "aarch64-darwin",
             false,
-        )
-        .expect("analysis");
+        );
 
         let ci = result
             .nodes
@@ -678,8 +685,7 @@ mod tests {
             "./fixtures/affected-deps",
             "aarch64-darwin",
             true,
-        )
-        .expect("analysis");
+        );
 
         assert_eq!(result.apps, vec!["broken".to_owned()]);
         let node = &result.nodes[0];

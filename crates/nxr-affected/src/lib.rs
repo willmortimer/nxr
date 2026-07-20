@@ -11,9 +11,7 @@ mod git;
 mod graph;
 mod paths;
 
-pub use analyze::{
-    AffectedAnalysis, AffectedError, AffectedNode, AffectedReason, NodeStatus, analyze,
-};
+pub use analyze::{AffectedAnalysis, AffectedNode, AffectedReason, NodeStatus, analyze};
 pub use git::{GitDiffError, git_all_changes, git_diff_name_only, git_working_tree_changes};
 pub use graph::{AffectedGraph, build_graph};
 pub use paths::{

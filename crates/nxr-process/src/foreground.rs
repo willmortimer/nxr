@@ -7,9 +7,16 @@
 //! here. Signal forwarding (`SIGINT` / `SIGTERM`) and process-group shutdown
 //! are exercised instead; interactive resize behavior is manual / future harness
 //! work (see `docs/ARCHITECTURE.md`).
+//!
+//! ## Stderr capture policy
+//!
+//! When the runner's stderr is a terminal, the child inherits stderr so Nix and
+//! apps keep TTY-aware rendering. Captured stderr is empty in that mode, so
+//! missing-installable suggestions are skipped. When stderr is not a terminal
+//! (pipes, CI), stderr is tee'd with a bounded rolling tail for diagnostics.
 
 use std::ffi::OsStr;
-use std::io;
+use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -18,6 +25,9 @@ use std::time::Duration;
 use nxr_core::EnvironmentPolicy;
 
 use crate::signals::exit_code_from_status;
+
+/// Rolling stderr tail retained for missing-installable detection (non-TTY only).
+pub const STDERR_TAIL_CAPACITY: usize = 128 * 1024;
 
 /// Spawn `program` with an argv vector (no shell), inherit stdio, and wait.
 ///
@@ -58,7 +68,11 @@ where
     Ok(run_in_with_stderr(program, args, cwd, environment)?.0)
 }
 
-/// Like [`run_in`], but also returns captured stderr (tee'd to the inherited stderr).
+/// Like [`run_in`], but may return a bounded stderr tail for diagnostics.
+///
+/// When stderr is a TTY, the child inherits stderr and the returned string is
+/// empty. Otherwise stderr is tee'd to the inherited stream and a rolling tail
+/// of at most [`STDERR_TAIL_CAPACITY`] bytes is retained.
 ///
 /// # Errors
 ///
@@ -97,10 +111,32 @@ where
     }
 }
 
+/// Append `chunk` to `captured`, keeping only the last `capacity` bytes.
+pub fn append_rolling_tail(captured: &mut Vec<u8>, chunk: &[u8], capacity: usize) {
+    if capacity == 0 {
+        captured.clear();
+        return;
+    }
+    if chunk.len() >= capacity {
+        captured.clear();
+        captured.extend_from_slice(&chunk[chunk.len() - capacity..]);
+        return;
+    }
+    let overflow = captured
+        .len()
+        .saturating_add(chunk.len())
+        .saturating_sub(capacity);
+    if overflow > 0 {
+        captured.drain(..overflow);
+    }
+    captured.extend_from_slice(chunk);
+}
+
 #[cfg(unix)]
 mod unix {
     use super::{
-        Command, Duration, EnvironmentPolicy, OsStr, Path, Stdio, exit_code_from_status, io, thread,
+        Command, Duration, EnvironmentPolicy, IsTerminal, OsStr, Path, STDERR_TAIL_CAPACITY, Stdio,
+        append_rolling_tail, exit_code_from_status, io, thread,
     };
     use crate::signals::unix::SignalForwarder;
     use std::os::unix::process::CommandExt;
@@ -124,13 +160,18 @@ mod unix {
         use std::io::{Read, Write};
 
         let forwarder = SignalForwarder::install()?;
+        let capture_stderr = !io::stderr().is_terminal();
 
         let mut command = Command::new(program);
         command
             .args(args)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
-            .stderr(Stdio::piped())
+            .stderr(if capture_stderr {
+                Stdio::piped()
+            } else {
+                Stdio::inherit()
+            })
             .process_group(0);
 
         if let Some(dir) = cwd {
@@ -140,24 +181,29 @@ mod unix {
 
         let mut child = command.spawn()?;
         let pgid = child.id();
-        let mut stderr_pipe = child.stderr.take().expect("piped stderr");
-        let tee = thread::spawn(move || {
-            let mut captured = Vec::new();
-            let mut buf = [0_u8; 8192];
-            let mut real_stderr = io::stderr();
-            loop {
-                match stderr_pipe.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        let chunk = &buf[..n];
-                        captured.extend_from_slice(chunk);
-                        let _ = real_stderr.write_all(chunk);
+
+        let tee = if capture_stderr {
+            let mut stderr_pipe = child.stderr.take().expect("piped stderr");
+            Some(thread::spawn(move || {
+                let mut captured = Vec::new();
+                let mut buf = [0_u8; 8192];
+                let mut real_stderr = io::stderr();
+                loop {
+                    match stderr_pipe.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let chunk = &buf[..n];
+                            append_rolling_tail(&mut captured, chunk, STDERR_TAIL_CAPACITY);
+                            let _ = real_stderr.write_all(chunk);
+                        }
                     }
                 }
-            }
-            let _ = real_stderr.flush();
-            String::from_utf8_lossy(&captured).into_owned()
-        });
+                let _ = real_stderr.flush();
+                String::from_utf8_lossy(&captured).into_owned()
+            }))
+        } else {
+            None
+        };
 
         let status = loop {
             forwarder.poll_and_forward(pgid);
@@ -169,7 +215,9 @@ mod unix {
             }
         };
 
-        let stderr = tee.join().unwrap_or_default();
+        let stderr = tee
+            .map(|handle| handle.join().unwrap_or_default())
+            .unwrap_or_default();
         Ok((exit_code_from_status(status), stderr))
     }
 }
@@ -182,7 +230,18 @@ mod tests {
 
     use nxr_core::EnvironmentPolicy;
 
-    use super::{run, run_in};
+    use super::{append_rolling_tail, run, run_in};
+
+    #[test]
+    fn rolling_tail_keeps_only_capacity() {
+        let mut captured = Vec::new();
+        append_rolling_tail(&mut captured, b"abcdefghij", 4);
+        assert_eq!(&captured, b"ghij");
+        append_rolling_tail(&mut captured, b"KL", 4);
+        assert_eq!(&captured, b"ijKL");
+        append_rolling_tail(&mut captured, b"XXXXXXXXXXXX", 4);
+        assert_eq!(&captured, b"XXXX");
+    }
 
     #[cfg(unix)]
     fn unix_util(name: &str) -> String {
