@@ -393,6 +393,8 @@ Use:
 - reproducible Nix builds;
 - shell completion assets included in packages.
 
+Tag-triggered CI, artifact layout, checksum verification, and the current signing gap are documented in [RELEASE.md](RELEASE.md).
+
 ## 11. Performance targets
 
 V1 warm-path goals:
