@@ -259,14 +259,28 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 Ok(exit::SUCCESS)
             }
         },
-        Some(Command::Affected { base, paths }) => {
+        Some(Command::Affected {
+            base,
+            working_tree,
+            all_changes,
+            strict: _,
+            no_strict,
+            paths,
+        }) => {
+            // Default is strict (include unknown). Only `--no-strict` opts out.
+            let strict_policy = !*no_strict;
             affected::run(
                 cli.flake.as_deref(),
                 cli.nix.as_deref(),
                 cli.json,
                 cli.refresh_discovery,
                 &nix_flags,
-                base.as_deref(),
+                &affected::AffectedPathSources {
+                    base: base.clone(),
+                    working_tree: *working_tree,
+                    all_changes: all_changes.clone(),
+                },
+                strict_policy,
                 paths,
                 runner,
             )?;

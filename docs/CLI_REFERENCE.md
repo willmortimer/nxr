@@ -70,7 +70,7 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr completion <shell>` | Emit Bash, Zsh, or Fish completion |
 | `nxr cache clear` | Remove all discovery cache entries |
 | `nxr cache status` | Show discovery cache path and size |
-| `nxr affected [--base <ref>] [PATH…]` | Report apps and tasks likely affected by changed paths (`--json` for CI) |
+| `nxr affected [--base <ref>] [--working-tree] [--all-changes <ref>] [--strict\|--no-strict] [PATH…]` | Report apps/tasks by changed paths (`--json` for CI; schema `affected-v2`; strict includes `unknown`) |
 | `nxr inspect` | Overview of apps (+ tasks when present) |
 | `nxr inspect --category <name>` | Overview with apps/tasks filtered by category |
 | `nxr inspect --namespace <name>` | Overview filtered by project namespace |
@@ -117,6 +117,9 @@ nxr watch dev --include 'src/**' --exclude 'src/generated/**' --clear
 nxr run test --watch
 nxr task dev --watch --debounce 500
 nxr completion zsh > ~/.zfunc/_nxr
+nxr affected --json --base origin/main
+nxr affected --json --working-tree --no-strict
+nxr affected --all-changes origin/main shared/lib.txt
 
 # Packaging / maintainers: generate man page
 cargo run -p xtask -- man nxr.1
@@ -128,3 +131,5 @@ cargo run -p xtask -- man nxr.1
 ```
 
 Argument forwarding: one leading `--` is stripped; arguments are never shell-evaluated. See [CLI_CONTRACT.md](CLI_CONTRACT.md) §5. For `nxr task`, trailing args go to the root task app only; see [TASKS.md](TASKS.md).
+
+`nxr affected --json` emits [`affected-v2`](../schemas/affected-v2.schema.json). Nodes are `affected`, `unaffected`, or `unknown` (empty `paths` / invalid globs). Default **strict** includes `unknown` in `apps`/`tasks` for CI; only `unaffected` is skippable. Prefer declaring `paths` (and app metadata `paths`) for tighter ownership — this remains informational, not flawless.

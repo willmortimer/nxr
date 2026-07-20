@@ -534,6 +534,7 @@ dependencies = [
  "nxr-task",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
 ]
 

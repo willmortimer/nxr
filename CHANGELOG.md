@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `nxr affected` schema **v2** (`schemas/affected-v2.schema.json`): classify nodes
+  `affected` / `unaffected` / `unknown`; default **strict** policy includes
+  `unknown` in CI `apps`/`tasks` lists (`--strict` / `--no-strict`).
+- Path collection modes: `--working-tree` (unstaged + staged + untracked) and
+  `--all-changes <ref>` (union of `base...HEAD` and working tree); `--base`
+  remains `base...HEAD`.
+
+### Changed
+
+- Invalid path globs mark the node `unknown` (never silently match nothing).
+- Dependency propagation records **all** contributing upstream reasons.
+
 ### Fixed
 
 - Treat Determinate Nix flakes as enabled when `experimental-features` omits

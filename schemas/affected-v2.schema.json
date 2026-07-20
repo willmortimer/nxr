@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/affected-v2.schema.json",
+  "title": "nxr affected output",
+  "description": "Machine-readable output for `nxr affected --json` (schema version 2). Informational path ownership with a strict CI policy: apps/tasks include affected and unknown; only unaffected is omitted.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "flake",
+    "system",
+    "strict",
+    "changed_paths",
+    "apps",
+    "tasks",
+    "nodes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "flake": {
+      "type": "string",
+      "description": "Selected flake reference."
+    },
+    "system": {
+      "type": "string",
+      "description": "Nix system string for the analyzed workspace."
+    },
+    "strict": {
+      "type": "boolean",
+      "description": "When true, apps/tasks include unknown nodes (default for CI). When false, only affected nodes are listed."
+    },
+    "changed_paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Repository-relative paths considered changed."
+    },
+    "apps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "App leaf names that must not be skipped (affected, plus unknown when strict)."
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Task names that must not be skipped (affected, plus unknown when strict)."
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/affected_node"
+      },
+      "description": "Classified nodes with status affected or unknown (unaffected omitted)."
+    }
+  },
+  "$defs": {
+    "affected_node": {
+      "type": "object",
+      "required": ["kind", "name", "status", "reasons"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["app", "task"]
+        },
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["affected", "unaffected", "unknown"]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/affected_reason"
+          }
+        }
+      }
+    },
+    "affected_reason": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "path"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "path"
+            },
+            "path": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "path"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "global_input"
+            },
+            "path": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "from"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "dependency"
+            },
+            "from": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "app"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "app"
+            },
+            "app": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "pattern"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "invalid_glob"
+            },
+            "pattern": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "empty_roots"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "from"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "unknown_dependency"
+            },
+            "from": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

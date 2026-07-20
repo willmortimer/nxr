@@ -2787,7 +2787,8 @@ fn affected_shared_dependency_change_propagates_to_dependents() {
 
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("json stdout");
-    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["schema_version"], 2);
+    assert_eq!(value["strict"], true);
     let tasks = value["tasks"]
         .as_array()
         .expect("tasks array")
@@ -2798,4 +2799,52 @@ fn affected_shared_dependency_change_propagates_to_dependents() {
     assert!(tasks.contains(&"api-test"));
     assert!(tasks.contains(&"web-test"));
     assert!(tasks.contains(&"ci"));
+    // Apps without path roots are unknown and included under default strict.
+    let apps = value["apps"]
+        .as_array()
+        .expect("apps array")
+        .iter()
+        .filter_map(|entry| entry.as_str())
+        .collect::<Vec<_>>();
+    assert!(apps.contains(&"shared-check"));
+    let statuses = value["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .filter_map(|node| {
+            Some((
+                node["kind"].as_str()?,
+                node["name"].as_str()?,
+                node["status"].as_str()?,
+            ))
+        })
+        .collect::<Vec<_>>();
+    assert!(statuses.contains(&("task", "shared-lib", "affected")));
+    assert!(statuses.contains(&("app", "shared-check", "unknown")));
+}
+
+#[test]
+fn affected_no_strict_omits_unknown_from_lists() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/affected-deps",
+            "--json",
+            "affected",
+            "--no-strict",
+            "shared/lib.txt",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("json stdout");
+    assert_eq!(value["strict"], false);
+    let apps = value["apps"].as_array().expect("apps array");
+    assert!(apps.is_empty());
 }

@@ -3,6 +3,20 @@
 use std::path::Path;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use thiserror::Error;
+
+/// Errors while compiling declared path-root globs.
+#[derive(Debug, Error)]
+pub enum PathRootError {
+    /// A declared root contains an invalid glob pattern.
+    #[error("invalid path glob `{pattern}`: {message}")]
+    InvalidGlob {
+        /// The invalid pattern.
+        pattern: String,
+        /// Underlying globset error message.
+        message: String,
+    },
+}
 
 /// Normalize a repository-relative path for comparisons.
 #[must_use]
@@ -23,24 +37,54 @@ pub fn is_global_invalidation_path(path: &str) -> bool {
             .is_some_and(|ext| ext.eq_ignore_ascii_case("nix"))
 }
 
+/// Whether `root` looks like a glob pattern rather than a plain path prefix.
+#[must_use]
+pub fn looks_like_glob(root: &str) -> bool {
+    root.contains(['*', '?', '[', '{'])
+}
+
+/// Validate that every glob-looking root compiles; never treat invalid globs as empty matches.
+///
+/// # Errors
+///
+/// Returns [`PathRootError::InvalidGlob`] for the first pattern that fails to compile.
+pub fn validate_path_roots(roots: &[String]) -> Result<(), PathRootError> {
+    for root in roots {
+        let root = normalize_relative_path(root);
+        if looks_like_glob(&root) {
+            Glob::new(&root).map_err(|error| PathRootError::InvalidGlob {
+                pattern: root,
+                message: error.to_string(),
+            })?;
+        }
+    }
+    Ok(())
+}
+
 /// Whether `changed` overlaps any declared root prefix or glob (conservative).
 ///
 /// Prefix overlap treats parent-directory edits as affecting child roots.
-#[must_use]
-pub fn path_matches_roots(changed: &str, roots: &[String]) -> bool {
+///
+/// # Errors
+///
+/// Returns [`PathRootError`] when a root contains an invalid glob. Callers must not
+/// treat that as "no match".
+pub fn path_matches_roots(changed: &str, roots: &[String]) -> Result<bool, PathRootError> {
     if roots.is_empty() {
-        return false;
+        return Ok(false);
     }
+
+    validate_path_roots(roots)?;
 
     let changed = normalize_relative_path(changed);
     for root in roots {
         let root = normalize_relative_path(root);
         if prefix_overlap(&changed, &root) {
-            return true;
+            return Ok(true);
         }
     }
 
-    compile_globset(roots).is_some_and(|set| set.is_match(changed.as_str()))
+    Ok(compile_globset(roots)?.is_match(changed.as_str()))
 }
 
 fn prefix_overlap(left: &str, right: &str) -> bool {
@@ -49,25 +93,37 @@ fn prefix_overlap(left: &str, right: &str) -> bool {
         || right.starts_with(&format!("{left}/"))
 }
 
-fn compile_globset(roots: &[String]) -> Option<GlobSet> {
+fn compile_globset(roots: &[String]) -> Result<GlobSet, PathRootError> {
     let mut builder = GlobSetBuilder::new();
     let mut has_glob = false;
     for root in roots {
-        if root.contains(['*', '?', '[', '{']) {
+        let root = normalize_relative_path(root);
+        if looks_like_glob(&root) {
             has_glob = true;
-            let glob = Glob::new(root).ok()?;
+            let glob = Glob::new(&root).map_err(|error| PathRootError::InvalidGlob {
+                pattern: root.clone(),
+                message: error.to_string(),
+            })?;
             builder.add(glob);
         }
     }
     if !has_glob {
-        return None;
+        return Ok(GlobSetBuilder::new()
+            .build()
+            .expect("empty GlobSetBuilder always builds"));
     }
-    builder.build().ok()
+    builder.build().map_err(|error| PathRootError::InvalidGlob {
+        pattern: "*".to_owned(),
+        message: error.to_string(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{is_global_invalidation_path, normalize_relative_path, path_matches_roots};
+    use super::{
+        is_global_invalidation_path, normalize_relative_path, path_matches_roots,
+        validate_path_roots,
+    };
 
     #[test]
     fn normalize_strips_dot_slash() {
@@ -85,14 +141,21 @@ mod tests {
     #[test]
     fn prefix_overlap_is_conservative_for_parents() {
         let roots = vec!["crates/api".to_owned()];
-        assert!(path_matches_roots("crates/api/src/lib.rs", &roots));
-        assert!(path_matches_roots("crates", &roots));
-        assert!(!path_matches_roots("crates/web/lib.rs", &roots));
+        assert!(path_matches_roots("crates/api/src/lib.rs", &roots).expect("valid"));
+        assert!(path_matches_roots("crates", &roots).expect("valid"));
+        assert!(!path_matches_roots("crates/web/lib.rs", &roots).expect("valid"));
     }
 
     #[test]
     fn glob_roots_match_nested_files() {
         let roots = vec!["shared/**".to_owned()];
-        assert!(path_matches_roots("shared/lib.txt", &roots));
+        assert!(path_matches_roots("shared/lib.txt", &roots).expect("valid"));
+    }
+
+    #[test]
+    fn invalid_glob_errors_instead_of_silent_miss() {
+        let roots = vec!["crates/[api".to_owned()];
+        assert!(validate_path_roots(&roots).is_err());
+        assert!(path_matches_roots("crates/api/lib.rs", &roots).is_err());
     }
 }

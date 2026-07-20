@@ -1,25 +1,26 @@
 //! Git diff helpers for collecting changed paths.
 
+use std::collections::BTreeSet;
 use std::io;
 use std::process::Command;
 
 use camino::Utf8Path;
 use thiserror::Error;
 
-/// Errors while running `git diff` for changed paths.
+/// Errors while running git for changed paths.
 #[derive(Debug, Error)]
 pub enum GitDiffError {
     /// `git` is not available on `PATH`.
     #[error("git executable not found on PATH")]
     GitNotFound,
-    /// `git diff` failed.
-    #[error("git diff failed: {stderr}")]
+    /// A git command failed.
+    #[error("git command failed: {stderr}")]
     CommandFailed {
         /// Captured stderr from git.
         stderr: String,
     },
     /// Git output was not valid UTF-8.
-    #[error("git diff output was not valid UTF-8")]
+    #[error("git output was not valid UTF-8")]
     InvalidUtf8,
 }
 
@@ -31,11 +32,60 @@ pub enum GitDiffError {
 ///
 /// Returns [`GitDiffError`] when git is missing or the diff command fails.
 pub fn git_diff_name_only(repo_root: &Utf8Path, base: &str) -> Result<Vec<String>, GitDiffError> {
+    git_lines(
+        repo_root,
+        &[
+            "diff",
+            "--name-only",
+            "--relative",
+            &format!("{base}...HEAD"),
+        ],
+    )
+}
+
+/// Collect unstaged, staged, and untracked paths in the working tree.
+///
+/// # Errors
+///
+/// Returns [`GitDiffError`] when git is missing or a command fails.
+pub fn git_working_tree_changes(repo_root: &Utf8Path) -> Result<Vec<String>, GitDiffError> {
+    let mut paths = BTreeSet::new();
+    for path in git_lines(repo_root, &["diff", "--name-only", "--relative"])? {
+        paths.insert(path);
+    }
+    for path in git_lines(
+        repo_root,
+        &["diff", "--name-only", "--relative", "--cached"],
+    )? {
+        paths.insert(path);
+    }
+    for path in git_lines(repo_root, &["ls-files", "--others", "--exclude-standard"])? {
+        paths.insert(path);
+    }
+    Ok(paths.into_iter().collect())
+}
+
+/// Union of [`git_diff_name_only`] and [`git_working_tree_changes`].
+///
+/// # Errors
+///
+/// Returns [`GitDiffError`] when either collection fails.
+pub fn git_all_changes(repo_root: &Utf8Path, base: &str) -> Result<Vec<String>, GitDiffError> {
+    let mut paths = BTreeSet::new();
+    for path in git_diff_name_only(repo_root, base)? {
+        paths.insert(path);
+    }
+    for path in git_working_tree_changes(repo_root)? {
+        paths.insert(path);
+    }
+    Ok(paths.into_iter().collect())
+}
+
+fn git_lines(repo_root: &Utf8Path, args: &[&str]) -> Result<Vec<String>, GitDiffError> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_root.as_str())
-        .args(["diff", "--name-only", "--relative"])
-        .arg(format!("{base}...HEAD"))
+        .args(args)
         .output()
         .map_err(|error| {
             if error.kind() == io::ErrorKind::NotFound {
@@ -60,4 +110,96 @@ pub fn git_diff_name_only(repo_root: &Utf8Path, base: &str) -> Result<Vec<String
         .filter(|line| !line.is_empty())
         .map(ToOwned::to_owned)
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::process::Command;
+
+    use camino::Utf8Path;
+    use tempfile::TempDir;
+
+    use super::{git_all_changes, git_diff_name_only, git_working_tree_changes};
+
+    fn init_repo() -> TempDir {
+        let temp = TempDir::new().expect("tempdir");
+        run(temp.path(), &["git", "init", "-b", "main"]);
+        run(
+            temp.path(),
+            &["git", "config", "user.email", "test@example.com"],
+        );
+        run(temp.path(), &["git", "config", "user.name", "nxr test"]);
+        temp
+    }
+
+    fn run(cwd: &std::path::Path, args: &[&str]) {
+        let status = Command::new(args[0])
+            .args(&args[1..])
+            .current_dir(cwd)
+            .status()
+            .unwrap_or_else(|error| panic!("spawn {}: {error}", args[0]));
+        assert!(status.success(), "{args:?} failed in {}", cwd.display());
+    }
+
+    fn write(cwd: &std::path::Path, relative: &str, contents: &str) {
+        let path = cwd.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("mkdir");
+        }
+        fs::write(path, contents).expect("write");
+    }
+
+    #[test]
+    fn working_tree_includes_unstaged_staged_and_untracked() {
+        let temp = init_repo();
+        let root = Utf8Path::from_path(temp.path()).expect("utf8");
+        write(temp.path(), "tracked.txt", "v1\n");
+        run(temp.path(), &["git", "add", "tracked.txt"]);
+        run(temp.path(), &["git", "commit", "-m", "initial"]);
+
+        write(temp.path(), "tracked.txt", "v2\n");
+        write(temp.path(), "staged.txt", "staged\n");
+        run(temp.path(), &["git", "add", "staged.txt"]);
+        write(temp.path(), "untracked.txt", "loose\n");
+
+        let paths = git_working_tree_changes(root).expect("working tree");
+        assert!(paths.iter().any(|p| p == "tracked.txt"));
+        assert!(paths.iter().any(|p| p == "staged.txt"));
+        assert!(paths.iter().any(|p| p == "untracked.txt"));
+    }
+
+    #[test]
+    fn all_changes_unions_base_range_and_working_tree() {
+        let temp = init_repo();
+        let root = Utf8Path::from_path(temp.path()).expect("utf8");
+        write(temp.path(), "base.txt", "base\n");
+        run(temp.path(), &["git", "add", "base.txt"]);
+        run(temp.path(), &["git", "commit", "-m", "base"]);
+        let base = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(temp.path())
+                .output()
+                .expect("rev-parse")
+                .stdout,
+        )
+        .expect("utf8")
+        .trim()
+        .to_owned();
+
+        write(temp.path(), "committed.txt", "committed\n");
+        run(temp.path(), &["git", "add", "committed.txt"]);
+        run(temp.path(), &["git", "commit", "-m", "on branch"]);
+
+        write(temp.path(), "dirty.txt", "dirty\n");
+
+        let range_only = git_diff_name_only(root, &base).expect("range");
+        assert!(range_only.iter().any(|p| p == "committed.txt"));
+        assert!(!range_only.iter().any(|p| p == "dirty.txt"));
+
+        let all = git_all_changes(root, &base).expect("all changes");
+        assert!(all.iter().any(|p| p == "committed.txt"));
+        assert!(all.iter().any(|p| p == "dirty.txt"));
+    }
 }

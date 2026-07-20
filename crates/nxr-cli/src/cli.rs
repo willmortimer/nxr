@@ -339,8 +339,24 @@ pub enum Command {
     /// Report apps and tasks likely affected by changed paths
     Affected {
         /// Collect changed paths from `git diff --name-only <base>...HEAD`
-        #[arg(long = "base", value_name = "REF")]
+        #[arg(long = "base", value_name = "REF", conflicts_with = "all_changes")]
         base: Option<String>,
+        /// Collect unstaged, staged, and untracked working-tree paths
+        #[arg(long = "working-tree", conflicts_with = "all_changes")]
+        working_tree: bool,
+        /// Union of `--base <ref>` range and `--working-tree`
+        #[arg(
+            long = "all-changes",
+            value_name = "REF",
+            conflicts_with_all = ["base", "working_tree"]
+        )]
+        all_changes: Option<String>,
+        /// Include unknown nodes in apps/tasks lists (CI default; on unless `--no-strict`)
+        #[arg(long = "strict", action = ArgAction::SetTrue)]
+        strict: bool,
+        /// Omit unknown nodes from apps/tasks lists (affected only)
+        #[arg(long = "no-strict", action = ArgAction::SetTrue, conflicts_with = "strict")]
+        no_strict: bool,
         /// Explicit repository-relative changed paths
         #[arg(value_name = "PATH")]
         paths: Vec<String>,

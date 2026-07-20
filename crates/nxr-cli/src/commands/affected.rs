@@ -4,7 +4,8 @@ use std::collections::BTreeSet;
 use std::io::{self, Write};
 
 use nxr_affected::{
-    AffectedAnalysis, AffectedError, GitDiffError, analyze, build_graph, git_diff_name_only,
+    AffectedAnalysis, AffectedError, GitDiffError, NodeStatus, analyze, build_graph,
+    git_all_changes, git_diff_name_only, git_working_tree_changes,
 };
 use nxr_completion::cache::{
     DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_workspace_with_cache,
@@ -51,6 +52,17 @@ impl AffectedCommandError {
     }
 }
 
+/// How changed paths were collected for analysis.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AffectedPathSources {
+    /// `git diff <base>...HEAD` ref, when requested.
+    pub base: Option<String>,
+    /// Include unstaged, staged, and untracked working-tree paths.
+    pub working_tree: bool,
+    /// Shorthand for base range union working tree.
+    pub all_changes: Option<String>,
+}
+
 /// Discover affected apps and tasks for the given changed paths.
 ///
 /// # Errors
@@ -63,7 +75,8 @@ pub fn run(
     json: bool,
     refresh_discovery: bool,
     nix_flags: &OptionalNixFlags,
-    base: Option<&str>,
+    sources: &AffectedPathSources,
+    strict: bool,
     paths: &[String],
     runner: RunnerOutput,
 ) -> Result<(), AffectedCommandError> {
@@ -72,21 +85,31 @@ pub fn run(
     let adapter = build_adapter(nix_override)?;
 
     let mut changed_paths = paths.to_vec();
-    if let Some(base_ref) = base {
+    let needs_git = sources.base.is_some() || sources.working_tree || sources.all_changes.is_some();
+    if needs_git {
         let local_root = flake.local_root.as_ref().ok_or_else(|| {
             AffectedCommandError::Usage(
-                "--base requires a local flake root (remote flakes are unsupported)".to_owned(),
+                "git path collection (--base / --working-tree / --all-changes) requires a local flake root (remote flakes are unsupported)".to_owned(),
             )
         })?;
-        let git_paths = git_diff_name_only(local_root, base_ref)?;
-        changed_paths.extend(git_paths);
+
+        if let Some(ref_name) = &sources.all_changes {
+            changed_paths.extend(git_all_changes(local_root, ref_name)?);
+        } else {
+            if let Some(base_ref) = &sources.base {
+                changed_paths.extend(git_diff_name_only(local_root, base_ref)?);
+            }
+            if sources.working_tree {
+                changed_paths.extend(git_working_tree_changes(local_root)?);
+            }
+        }
     }
 
     changed_paths = dedupe_paths(changed_paths);
 
     runner
         .info(format!(
-            "analyzing {} changed path(s) for {}",
+            "analyzing {} changed path(s) for {} (strict={strict})",
             changed_paths.len(),
             flake.display
         ))
@@ -97,7 +120,13 @@ pub fn run(
         .tasks
         .expect("affected always discovers tasks with apps");
     let graph = build_graph(&workspace.apps, &task_doc);
-    let analysis = analyze(&graph, &changed_paths, &flake.display, &adapter.system)?;
+    let analysis = analyze(
+        &graph,
+        &changed_paths,
+        &flake.display,
+        &adapter.system,
+        strict,
+    )?;
 
     if json {
         write_json(&mut io::stdout().lock(), &analysis)?;
@@ -161,8 +190,8 @@ fn write_json(writer: &mut impl Write, analysis: &AffectedAnalysis) -> io::Resul
 fn write_human(writer: &mut impl Write, analysis: &AffectedAnalysis) -> io::Result<()> {
     writeln!(
         writer,
-        "Affected operations for {} ({})",
-        analysis.flake, analysis.system
+        "Affected operations for {} ({}) [strict={}]",
+        analysis.flake, analysis.system, analysis.strict
     )?;
     writeln!(writer)?;
     writeln!(writer, "Changed paths:")?;
@@ -171,25 +200,68 @@ fn write_human(writer: &mut impl Write, analysis: &AffectedAnalysis) -> io::Resu
     }
     writeln!(writer)?;
 
-    if analysis.apps.is_empty() && analysis.tasks.is_empty() {
-        writeln!(writer, "No affected apps or tasks.")?;
+    let affected_apps: Vec<_> = analysis
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "app" && node.status == NodeStatus::Affected)
+        .map(|node| node.name.as_str())
+        .collect();
+    let unknown_apps: Vec<_> = analysis
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "app" && node.status == NodeStatus::Unknown)
+        .map(|node| node.name.as_str())
+        .collect();
+    let affected_tasks: Vec<_> = analysis
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "task" && node.status == NodeStatus::Affected)
+        .map(|node| node.name.as_str())
+        .collect();
+    let unknown_tasks: Vec<_> = analysis
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "task" && node.status == NodeStatus::Unknown)
+        .map(|node| node.name.as_str())
+        .collect();
+
+    if affected_apps.is_empty()
+        && unknown_apps.is_empty()
+        && affected_tasks.is_empty()
+        && unknown_tasks.is_empty()
+    {
+        writeln!(writer, "No affected or unknown apps or tasks.")?;
         return Ok(());
     }
 
-    if !analysis.apps.is_empty() {
-        writeln!(writer, "Apps:")?;
-        for name in &analysis.apps {
-            writeln!(writer, "  {}", sanitize_terminal_text(name))?;
-        }
-        writeln!(writer)?;
+    write_section(writer, "Apps (affected)", &affected_apps)?;
+    write_section(writer, "Apps (unknown)", &unknown_apps)?;
+    write_section(writer, "Tasks (affected)", &affected_tasks)?;
+    write_section(writer, "Tasks (unknown)", &unknown_tasks)?;
+
+    if analysis.strict {
+        writeln!(
+            writer,
+            "Strict policy: apps/tasks lists include unknown (only unaffected is skippable)."
+        )?;
+    } else {
+        writeln!(
+            writer,
+            "Non-strict policy: apps/tasks lists omit unknown; see nodes for full classification."
+        )?;
     }
 
-    if !analysis.tasks.is_empty() {
-        writeln!(writer, "Tasks:")?;
-        for name in &analysis.tasks {
-            writeln!(writer, "  {}", sanitize_terminal_text(name))?;
-        }
-    }
+    Ok(())
+}
 
+fn write_section(writer: &mut impl Write, title: &str, names: &[&str]) -> io::Result<()> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    writeln!(writer, "{title}:")?;
+    for name in names {
+        writeln!(writer, "  {}", sanitize_terminal_text(name))?;
+    }
+    writeln!(writer)?;
     Ok(())
 }
