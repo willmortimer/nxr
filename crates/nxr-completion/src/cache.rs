@@ -216,6 +216,8 @@ const CACHE_SCHEMA_VERSION: u32 = 3;
 thread_local! {
     static TEST_CACHE_ROOT: std::cell::RefCell<Option<PathBuf>> =
         const { std::cell::RefCell::new(None) };
+    // Outer Option: unset vs override; inner Option: disabled TTL vs Some(secs).
+    #[allow(clippy::option_option)]
     static TEST_CACHE_TTL_SECS: std::cell::RefCell<Option<Option<u64>>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -470,7 +472,7 @@ fn effective_nix_identity(context: &DiscoveryContext) -> (String, String) {
 
     #[cfg(test)]
     {
-        return ("test-nix".to_owned(), "0.0.0".to_owned());
+        ("test-nix".to_owned(), "0.0.0".to_owned())
     }
 
     #[cfg(not(test))]

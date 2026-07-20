@@ -216,19 +216,16 @@ impl SpillableBuffer {
         }
 
         if self.memory.len().saturating_add(chunk.len()) > BUFFER_SPILL_THRESHOLD {
-            match NamedTempFile::new() {
-                Ok(mut file) => {
-                    let _ = file.write_all(self.memory.as_bytes());
-                    let _ = file.write_all(chunk.as_bytes());
-                    let _ = file.flush();
-                    self.memory.clear();
-                    self.spill = Some(file);
-                    self.ends_with_newline = chunk.as_bytes().last() == Some(&b'\n');
-                }
-                Err(_) => {
-                    self.memory.push_str(chunk);
-                    self.ends_with_newline = self.memory.ends_with('\n');
-                }
+            if let Ok(mut file) = NamedTempFile::new() {
+                let _ = file.write_all(self.memory.as_bytes());
+                let _ = file.write_all(chunk.as_bytes());
+                let _ = file.flush();
+                self.memory.clear();
+                self.spill = Some(file);
+                self.ends_with_newline = chunk.as_bytes().last() == Some(&b'\n');
+            } else {
+                self.memory.push_str(chunk);
+                self.ends_with_newline = self.memory.ends_with('\n');
             }
             return;
         }
