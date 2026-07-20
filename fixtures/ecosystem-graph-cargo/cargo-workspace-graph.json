@@ -1,0 +1,39 @@
+{
+  "schema_version": 0,
+  "adapter_id": "cargo-workspace",
+  "workspace_root": ".",
+  "nodes": [
+    {
+      "id": ".",
+      "label": "nxr",
+      "kind": "workspace_root",
+      "suggested_apps": ["test", "lint", "fmt"]
+    },
+    {
+      "id": "crates/nxr-cli",
+      "label": "nxr-cli",
+      "kind": "package",
+      "suggested_apps": ["test"]
+    },
+    {
+      "id": "crates/nxr-core",
+      "label": "nxr-core",
+      "kind": "package",
+      "suggested_apps": ["test"]
+    }
+  ],
+  "edges": [
+    {
+      "from": "crates/nxr-cli",
+      "to": "crates/nxr-core",
+      "kind": "depends_on",
+      "confidence": "explicit"
+    },
+    {
+      "from": "crates/nxr-cli",
+      "to": ".",
+      "kind": "member_of",
+      "confidence": "explicit"
+    }
+  ]
+}

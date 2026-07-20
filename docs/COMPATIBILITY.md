@@ -113,7 +113,8 @@ operation authority:
 - **Metadata adapters** — optional readers for adjacent project metadata (for
   example devenv or mission-control) may suggest or project task graphs, but
   flake apps (`apps.<system>.<name>`) remain the only canonical leaf
-  operations.
+  operations. See [ADAPTERS.md](ADAPTERS.md) for the read-only ecosystem graph
+  boundary and explicit non-goals.
 - **Capability-negotiated Nix** — the Nix adapter detects available CLI
   features at runtime rather than hard-coding a floor; missing optional
   capabilities degrade gracefully (see [ARCHITECTURE.md](ARCHITECTURE.md) §4.3

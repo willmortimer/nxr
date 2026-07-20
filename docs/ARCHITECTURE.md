@@ -526,9 +526,9 @@ Compatibility should be implemented through:
 Direct linkage to internal Nix libraries should not be required for V1.
 
 V2.x extension points (metadata adapters, capability-negotiated Nix, versioned
-event/schema surfaces) are documented in [COMPATIBILITY.md](COMPATIBILITY.md).
-Adapters must not create a second authoritative operation definition; flake
-apps remain canonical leaf operations.
+event/schema surfaces) are documented in [COMPATIBILITY.md](COMPATIBILITY.md)
+and [ADAPTERS.md](ADAPTERS.md). Adapters must not create a second authoritative
+operation definition; flake apps remain canonical leaf operations.
 
 ## 10. Ecosystem positioning
 
