@@ -263,9 +263,14 @@ fn explain_task(request: &ExplainRequest<'_>) -> Result<ExplainReport, ExplainEr
     snapshot
         .validate_task_apps(&document)
         .map_err(PrepareError::NotFound)?;
+    let root_task_ids: &[String] = if plan.roots.is_empty() {
+        std::slice::from_ref(&plan.root)
+    } else {
+        &plan.roots
+    };
     let prepared_nodes = snapshot.prepare_task_nodes(
         &document,
-        &plan.root,
+        root_task_ids,
         &plan.serial_order,
         request.args,
         request.root,
