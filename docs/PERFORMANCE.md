@@ -8,7 +8,7 @@ Baselines for the runner. App **execution** time is dominated by `nix run` and t
 |---|---|---|
 | Bare `nxr <app>` / `nxr run <app>` | **1×** `nix run`; **0×** `flake show` | Fast path; optional `flake show` only after failure for suggestions |
 | Adapter init | **1×** `nix eval` (`currentSystem`) | Shared via `WorkspaceSnapshot` / `NixAdapter` |
-| `nxr task` with **N** nodes | **N×** `nix run` + **O(1)** discovery | One `flake show` (apps) + one task `eval`; **not** N× `flake show` |
+| `nxr task` with **N** nodes | **N×** `nix run` + **O(1)** discovery | One `flake show` (apps) + one task `eval`; warm cache serves both without re-eval |
 | `nxr list --refresh` | Dominated by `nix flake show` | Catalog commands still discover |
 
 Instrumented integration tests wrap `NXR_NIX` with a counting shim to assert these budgets.
@@ -18,8 +18,10 @@ Instrumented integration tests wrap `NXR_NIX` with a counting shim to assert the
 | Path | Budget | Notes |
 |---|---|---|
 | Interactive completion (`nxr __complete apps`) | ≤ **500 ms** cold discovery wait | [`DISCOVERY_TIMEOUT`](../crates/nxr-completion/src/dynamic.rs); empty candidates on timeout |
-| Warm `nxr list` (cache hit) | Interactive (tens of ms) | Discovery metadata cache |
-| Cold `nxr list --refresh` | Dominated by `nix flake show` | Nix eval/store caches still apply |
+| Warm `nxr list` (cache hit) | Interactive (tens of ms) | Combined apps+tasks discovery cache |
+| Cold `nxr list --refresh` | Dominated by `nix flake show` + one task eval | Nix eval/store caches still apply |
+
+Discovery cache invalidation fingerprints every `.nix` file under the local flake root (relative path, size, mtime), plus `flake.lock` when present, with built-in ignores for `.git`, `result`, `target`, and similar trees. Set `NXR_CACHE_FINGERPRINT_IGNORE` to a colon-separated list of globs to skip huge vendored `.nix` trees. Remote flakes are never cached.
 
 ## Measured baselines
 
@@ -45,7 +47,7 @@ cargo build -p nxr-cli --quiet
 
 ## Interpretation
 
-- Prefer cache hits for interactive listing and completion; use `--refresh` when flake inputs change.
+- Prefer cache hits for interactive listing and completion; use `--refresh` when flake inputs change. Editing imported `.nix` files under the flake root invalidates the cache without touching `flake.nix`.
 - Prefer the bare-app fast path and once-per-run `WorkspaceSnapshot` so task DAGs do not multiply `flake show`.
 - Do not compare `nxr test` wall time to runner overhead — almost all of it is nextest / Nix build of the `test` app.
 - Release (`nix build .#nxr`) binaries are typically faster than debug builds; treat the table as order-of-magnitude guidance.

@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Write};
 
-use nxr_completion::cache::{DiscoveryCacheOptions, DiscoveryContext, discover_with_cache};
+use nxr_completion::cache::{
+    DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_with_cache,
+    discover_workspace_with_cache,
+};
 use nxr_core::diagnostics::exit;
 use nxr_core::sanitize::sanitize_terminal_text;
 use nxr_core::{App, AppList, ListApp};
@@ -138,8 +141,11 @@ pub fn run(
 
     match request.target {
         InspectTarget::Overview => {
-            let apps = discover_apps(&flake, &adapter, refresh)?;
-            let task_doc = adapter.discover_tasks(&flake.nix_ref)?;
+            let workspace = discover_workspace(&flake, &adapter, refresh)?;
+            let apps = workspace.apps;
+            let task_doc = workspace
+                .tasks
+                .expect("overview discovers tasks with apps");
             let mut stdout = io::stdout().lock();
             write_overview(
                 &mut stdout,
@@ -158,7 +164,7 @@ pub fn run(
             write_app(&mut stdout, &flake, &adapter.system, app, json)?;
         }
         InspectTarget::Task { name } => {
-            let task_doc = adapter.discover_tasks(&flake.nix_ref)?;
+            let task_doc = discover_tasks(&flake, &adapter, refresh)?;
             let (canonical, task) = resolve_task(&task_doc, &name).map_err(map_resolve_error)?;
             let mut stdout = io::stdout().lock();
             write_task(&mut stdout, &flake, &adapter.system, canonical, task, json)?;
@@ -180,9 +186,55 @@ fn discover_apps(
     };
     let flake_ref = flake.nix_ref.clone();
 
-    discover_with_cache(&context, DiscoveryCacheOptions { refresh }, || {
-        adapter.discover_apps(&flake_ref)
-    })
+    discover_with_cache(
+        &context,
+        DiscoveryCacheOptions {
+            refresh,
+            require_tasks: false,
+        },
+        || adapter.discover_apps(&flake_ref),
+    )
+}
+
+fn discover_workspace(
+    flake: &FlakeSelection,
+    adapter: &nxr_nix::NixAdapter,
+    refresh: bool,
+) -> Result<WorkspaceDiscovery, InspectError> {
+    let context = DiscoveryContext {
+        flake_ref: flake.nix_ref.clone(),
+        local_root: flake.local_root.clone(),
+        system: adapter.system.clone(),
+    };
+    let flake_ref = flake.nix_ref.clone();
+
+    discover_workspace_with_cache(
+        &context,
+        DiscoveryCacheOptions::with_tasks(refresh),
+        || {
+            let apps = adapter
+                .discover_apps(&flake_ref)
+                .map_err(InspectError::Nix)?;
+            let tasks = adapter
+                .discover_tasks(&flake_ref)
+                .map_err(InspectError::Tasks)?;
+            Ok(WorkspaceDiscovery {
+                apps,
+                tasks: Some(tasks),
+            })
+        },
+    )
+}
+
+fn discover_tasks(
+    flake: &FlakeSelection,
+    adapter: &nxr_nix::NixAdapter,
+    refresh: bool,
+) -> Result<TaskDocument, InspectError> {
+    let workspace = discover_workspace(flake, adapter, refresh)?;
+    Ok(workspace
+        .tasks
+        .expect("task inspect discovers tasks with apps"))
 }
 
 fn map_resolve_error(error: nxr_task::ResolveTaskError) -> TaskNotFoundError {
