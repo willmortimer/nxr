@@ -23,6 +23,8 @@ jobs:
           - os: ubuntu-latest
             nix_label: "2.18"
             nix_package_url: https://releases.nixos.org/nix/nix-2.18.9/nix-2.18.9-x86_64-linux.tar.xz
+          - os: ubuntu-latest
+            nix_label: lix
           - os: macos-latest
             nix_label: latest
           - os: macos-latest
@@ -41,6 +43,13 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41 # main
         with:
           nix-package-url: ${{ matrix.nix_package_url }}
+
+      - name: Install Lix
+        if: matrix.nix_label == 'lix'
+        uses: samueldr/lix-gha-installer-action@8dc19fbd6451fa106a68ecb2dafeeeb90dff3a29
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
 
       - name: Show Nix version
         run: nix --version
@@ -89,5 +98,5 @@ jobs:
         env:
           NXR: ${{ steps.nxr.outputs.bin }}
         run: |
-          "$NXR" --flake fixtures/shell-integration inspect
+          "$NXR" --flake fixtures/shell-integration doctor --json >/dev/null
           nix develop ./fixtures/shell-integration --command bash -lc 'command -v nxr >/dev/null'

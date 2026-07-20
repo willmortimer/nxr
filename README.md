@@ -183,5 +183,5 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**2.3.0** — flake output commands, trustworthy discovery/execution, task
-orchestration, monorepo views, and `nxr affected`. History: [CHANGELOG.md](CHANGELOG.md).
+**2.3.1** — trust and latency: one-process bare apps, cache v3, strict Nix flags,
+safer `affected`, Nix-equipped release archives. History: [CHANGELOG.md](CHANGELOG.md).

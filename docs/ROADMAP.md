@@ -22,10 +22,14 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 | **V2.1** | Trustworthiness | `WorkspaceSnapshot`, discovery cache controls, Nix forwarding, `--shell-mode`, byte-safe output, four-system CI, release SBOMs — shipped as `v2.1.0`. |
 | **V2.2** | Flake UX | Standard flake output commands (`list`/`build`/`check`/`shell`), `explain` and `doctor --all`, multi-root task union DAGs, interactive-task exclusivity — shipped as `v2.2.0`. |
 | **V2.3** | Monorepo ergonomics | Namespaced `list`/`inspect` views, `nxr affected` path analysis, optional read-only ecosystem graph adapters — shipped as `v2.3.0`. |
+| **V2.3.1** | Trust and latency | One-process bare apps, cache v3, strict user Nix flags, affected unknown/strict, Nix-equipped release smoke — shipped as `v2.3.1`. |
 
 ## Active roadmap
 
-No active minor release is scheduled. Speculative platform work — daemon, CAS, remote workers, dashboards, and full monorepo intelligence — lives in [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md) for discussion only.
+No active minor release is scheduled. **Pause feature growth** until the 2.3.1
+command plane has soaked on real flakes. Speculative platform work — daemon,
+CAS, remote workers, dashboards, and full monorepo intelligence — lives in
+[ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md) for discussion only.
 
 ## Invariants
 

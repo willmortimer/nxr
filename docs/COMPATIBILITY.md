@@ -81,6 +81,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) §9 and ADR-0018 in [adr/README.md](adr/R
 |---|---|
 | `latest` | Default Determinate Nix from `nix-installer-action` |
 | `2.18` | Upstream Nix **2.18.9** via `nix-package-url` (support floor) |
+| `lix` | [Lix](https://lix.systems/) via `samueldr/lix-gha-installer-action` (ubuntu) |
 
 Fixture smoke tests run the packaged `nix build .#nxr` binary, not `nix run` on the
 project flake apps.

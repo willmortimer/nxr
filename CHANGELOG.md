@@ -7,26 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-07-20
+
+Trust-and-latency patch: one-process bare apps, sounder discovery cache, strict
+user Nix flags, safer affected analysis, and Nix-equipped release archives.
+
 ### Added
 
-- `nxr affected` schema **v2** (`schemas/affected-v2.schema.json`): classify nodes
-  `affected` / `unaffected` / `unknown`; default **strict** policy includes
-  `unknown` in CI `apps`/`tasks` lists (`--strict` / `--no-strict`).
-- Path collection modes: `--working-tree` (unstaged + staged + untracked) and
-  `--all-changes <ref>` (union of `base...HEAD` and working tree); `--base`
-  remains `base...HEAD`.
+- Discovery cache **v3**: content hashes for `*.nix` / `flake.lock`, Nix
+  identity, discovery-schema version, `perSystem.nxr.discoveryInputs`, and a
+  TTL backstop (`NXR_CACHE_TTL_SECS`).
+- `nxr affected` schema **v2**: `affected` / `unaffected` / `unknown`; default
+  **strict** policy includes `unknown` (`--strict` / `--no-strict`).
+- Path modes: `--working-tree` and `--all-changes <ref>` alongside `--base`.
+- Release extract-smoke job; archives include man, completions, and shell
+  integration assets (Nix-equipped hosts).
 
 ### Changed
 
-- Invalid path globs mark the node `unknown` (never silently match nothing).
-- Dependency propagation records **all** contributing upstream reasons.
+- Bare `nxr <app>` / `nxr run` locate `nix` only — no capability probes unless
+  `--offline` / `--accept-flake-config`; suggestion discovery only on
+  installable-resolution stderr.
+- Named `build` / `check` / `shell` use direct installables (no whole-output
+  discovery).
+- Explicit `--offline` / `--accept-flake-config` fail when unsupported (never
+  silently dropped); internal `--no-write-lock-file` stays best-effort.
+- Fixtures are self-contained (pinned `nixpkgs`, inline `nxr.<system>`); no
+  `path:../..` of this repo.
+- Grouped/failure-only output spills to temp files above a size threshold.
+- Workspace and Nix package version **2.3.1**.
 
 ### Fixed
 
-- Treat Determinate Nix flakes as enabled when `experimental-features` omits
-  `flakes` (stable flakes); pass local flake roots as `path:<absolute>` so Nix
-  2.18 does not rewrite them to `git+file` and reject fixture `path:../..`
-  locks.
+- Determinate Nix flakes detection when `experimental-features` omits `flakes`.
+- Local flake roots passed as `path:<absolute>` URIs.
+- `workingDirectory` rejects parent traversal and must stay under the flake root.
+- Combined output+events uses the supplied stderr writer.
+- Unknown `nxr.projects.json` members surface as `doctor` warnings.
+- Invalid affected globs mark nodes `unknown`; dependency reasons accumulate.
 
 ## [2.3.0] - 2026-07-19
 
@@ -204,6 +222,7 @@ First taggable V1 prerelease: a standard Nix flake app runner through Phase 5 of
 - [Compatibility matrix](docs/COMPATIBILITY.md), [CLI reference](docs/CLI_REFERENCE.md), and [telemetry decision](docs/TELEMETRY.md) (default: none).
 - Tag-triggered [release workflow](.github/workflows/release.yml) (quality gate only; no publish secrets).
 
+[2.3.1]: https://github.com/willmortimer/nxr/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/willmortimer/nxr/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/willmortimer/nxr/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/willmortimer/nxr/compare/v2.0.0...v2.1.0
