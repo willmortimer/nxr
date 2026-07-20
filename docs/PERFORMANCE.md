@@ -11,7 +11,8 @@ Baselines for the runner. App **execution** time is dominated by `nix run` and t
 | Adapter init (list/task/doctor) | **1×** `nix eval` (`currentSystem`) + capability probes (`--version`, config/help) | Shared via `WorkspaceSnapshot` / `NixAdapter`; not repeated per task node |
 | `nxr task` with **N** nodes | **N×** `nix run` + **O(1)** discovery | One `flake show` (apps) + one task `eval` (or warm combined cache); **not** N× `flake show` |
 | `nxr list --refresh-discovery` | Dominated by `nix flake show` | Catalog commands still discover |
-| Named `nxr build` / `check` / `shell` | Direct installable argv (no whole-output discovery) | Adapter init still probes once for system / flags |
+| Named `nxr build` / `check` / `shell` | Direct installable argv (no whole-output discovery up front) | Adapter init still probes once for system / flags |
+| Named build/check/shell missing attribute | **1×** installable + optional diagnostic discovery | Suggestion discovery only when stderr indicates missing attribute |
 
 Instrumented integration tests wrap `NXR_NIX` with a counting shim to assert these budgets (`run==1`, `eval==0`, `flake-show==0`, `other==0` for bare success/fail).
 

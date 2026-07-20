@@ -42,6 +42,8 @@ user Nix flags, safer affected analysis, and Nix-equipped release archives.
 - Determinate Nix flakes detection when `experimental-features` omits `flakes`.
 - Parse Determinate Nix `flake show --json` inventory v2 (`what` /
   `shortDescription`) in addition to upstream legacy `type` / `description`.
+- Named `build` / `check` / `shell` restore close-match suggestions after a
+  missing-attribute Nix failure (still skip discovery on the happy path).
 - Local flake roots passed as `path:<absolute>` URIs.
 - `workingDirectory` rejects parent traversal and must stay under the flake root.
 - Combined output+events uses the supplied stderr writer.

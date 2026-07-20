@@ -4,10 +4,15 @@ use std::io::{self, Write};
 
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
-use nxr_nix::{NixError, OptionalNixFlags, check_installable, package_installable};
+use nxr_nix::{
+    NixError, OptionalNixFlags, OutputNotFoundError, OutputTable, check_installable,
+    package_installable, resolve_output_by_name,
+};
 use serde::Serialize;
 
-use crate::commands::common::{PrepareError, build_adapter, current_invocation_directory};
+use crate::commands::common::{
+    PrepareError, build_adapter, current_invocation_directory, stderr_indicates_missing_installable,
+};
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
 use crate::runner_output::RunnerOutput;
 
@@ -21,6 +26,8 @@ pub enum NixOpError {
     #[error(transparent)]
     Nix(#[from] NixError),
     #[error(transparent)]
+    NotFound(#[from] OutputNotFoundError),
+    #[error(transparent)]
     Io(#[from] io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
@@ -33,6 +40,7 @@ impl NixOpError {
             Self::Prepare(error) => error.exit_code(),
             Self::Flake(error) => error.exit_code(),
             Self::Nix(error) => error.exit_code(),
+            Self::NotFound(error) => error.exit_code(),
             Self::Io(_) | Self::Json(_) => exit::EVALUATION,
         }
     }
@@ -130,13 +138,13 @@ fn write_dry_run(
     Ok(true)
 }
 
-fn run_nix_child(
+fn run_nix_child_with_stderr(
     nix: &camino::Utf8Path,
     arguments: &[String],
     cwd: &camino::Utf8Path,
     environment: &EnvironmentPolicy,
-) -> Result<i32, NixOpError> {
-    nxr_process::run_in(
+) -> Result<(i32, String), NixOpError> {
+    nxr_process::run_in_with_stderr(
         nix.as_std_path(),
         arguments,
         Some(cwd.as_std_path()),
@@ -145,14 +153,32 @@ fn run_nix_child(
     .map_err(NixOpError::Io)
 }
 
+/// After a failed direct installable, discover outputs and map missing names to suggestions.
+fn suggest_missing_output(
+    adapter: &nxr_nix::NixAdapter,
+    flake_ref: &str,
+    name: &str,
+    table: OutputTable,
+    kind: &str,
+    nix_flags: &OptionalNixFlags,
+) -> Result<Option<OutputNotFoundError>, NixOpError> {
+    let outputs = adapter.discover_outputs(flake_ref, table, nix_flags)?;
+    match resolve_output_by_name(&outputs, name, kind) {
+        Ok(_) => Ok(None),
+        Err(error) => Ok(Some(error)),
+    }
+}
+
 /// `nxr build [name]` → `nix build` for `packages.<system>.<name>` (or default package).
+///
+/// Named builds use a direct installable (no whole-output discovery up front).
+/// Suggestion discovery runs only when stderr indicates a missing attribute.
 pub fn execute_build(request: &NixOpRequest<'_>, runner: RunnerOutput) -> Result<i32, NixOpError> {
     let invocation_cwd = current_invocation_directory()?;
     let flake = resolve_flake(request.flake_arg, &invocation_cwd)?;
     let adapter = build_adapter(request.nix_override)?;
 
     let (target, attr_path, installable) = if let Some(name) = request.name {
-        // Direct installable — skip whole-output discovery.
         (
             Some(name.to_owned()),
             Some(format!("packages.{}.{name}", adapter.system)),
@@ -179,12 +205,29 @@ pub fn execute_build(request: &NixOpRequest<'_>, runner: RunnerOutput) -> Result
     runner
         .verbose(format!("building {installable}"))
         .map_err(NixOpError::Io)?;
-    run_nix_child(
+    let (code, stderr) = run_nix_child_with_stderr(
         &adapter.nix,
         &arguments,
         &invocation_cwd,
         request.environment,
-    )
+    )?;
+
+    if code != exit::SUCCESS
+        && let Some(name) = request.name
+        && stderr_indicates_missing_installable(&stderr)
+        && let Ok(Some(not_found)) = suggest_missing_output(
+            &adapter,
+            &flake.nix_ref,
+            name,
+            OutputTable::Packages,
+            "package",
+            request.nix_flags,
+        )
+    {
+        return Err(NixOpError::NotFound(not_found));
+    }
+
+    Ok(code)
 }
 
 /// `nxr check [name]` → named check via `nix build`, or `nix flake check` when omitted.
@@ -225,12 +268,29 @@ pub fn execute_check(request: &NixOpRequest<'_>, runner: RunnerOutput) -> Result
     runner
         .verbose(format!("checking {label}"))
         .map_err(NixOpError::Io)?;
-    run_nix_child(
+    let (code, stderr) = run_nix_child_with_stderr(
         &adapter.nix,
         &arguments,
         &invocation_cwd,
         request.environment,
-    )
+    )?;
+
+    if code != exit::SUCCESS
+        && let Some(name) = request.name
+        && stderr_indicates_missing_installable(&stderr)
+        && let Ok(Some(not_found)) = suggest_missing_output(
+            &adapter,
+            &flake.nix_ref,
+            name,
+            OutputTable::Checks,
+            "check",
+            request.nix_flags,
+        )
+    {
+        return Err(NixOpError::NotFound(not_found));
+    }
+
+    Ok(code)
 }
 
 /// `nxr shell [name]` → interactive `nix develop` for a named (or default) shell.
@@ -266,10 +326,27 @@ pub fn execute_shell(request: &NixOpRequest<'_>, runner: RunnerOutput) -> Result
     runner
         .verbose(format!("entering development shell {label}"))
         .map_err(NixOpError::Io)?;
-    run_nix_child(
+    let (code, stderr) = run_nix_child_with_stderr(
         &adapter.nix,
         &arguments,
         &invocation_cwd,
         request.environment,
-    )
+    )?;
+
+    if code != exit::SUCCESS
+        && let Some(name) = request.name
+        && stderr_indicates_missing_installable(&stderr)
+        && let Ok(Some(not_found)) = suggest_missing_output(
+            &adapter,
+            &flake.nix_ref,
+            name,
+            OutputTable::DevShells,
+            "shell",
+            request.nix_flags,
+        )
+    {
+        return Err(NixOpError::NotFound(not_found));
+    }
+
+    Ok(code)
 }
