@@ -19,6 +19,7 @@ nxr select
 nxr plan <app-or-task>
 nxr doctor [app]
 nxr completion <shell>
+nxr cache clear|status
 nxr inspect ...
 nxr task <task> [args...]
 nxr watch <app-or-task>
@@ -102,7 +103,11 @@ Stable V1 options:
     --no-color             Disable runner color
     --color <WHEN>         auto|always|never
     --nix <PATH>           Override Nix executable
-    --refresh              Ignore nxr discovery cache
+    --refresh-discovery    Ignore nxr discovery cache
+    --offline              Forward `--offline` to Nix when supported
+    --accept-flake-config  Forward `--accept-flake-config` to Nix when supported
+    --nix-option <KEY=VAL> Forward `--option KEY VAL` to Nix (repeatable)
+    --nix-arg <ARG>        Forward arbitrary Nix argv fragments (repeatable)
 -h, --help                 Show help
 -V, --version              Show version
 ```
@@ -110,8 +115,9 @@ Stable V1 options:
 Deferred (not stable yet):
 
 ```text
-    --offline              Forward supported offline behavior to Nix
 ```
+
+Use `--nix-arg --refresh` to forward Nix's `--refresh` global when needed.
 
 V2 / upcoming orchestration options:
 

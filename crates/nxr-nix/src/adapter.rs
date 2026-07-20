@@ -94,9 +94,15 @@ impl NixAdapter {
     pub fn compatible_argv(
         &self,
         base_args: Vec<String>,
-        requested: OptionalNixFlags,
+        requested: &OptionalNixFlags,
     ) -> Vec<String> {
         self.capabilities.apply_optional_flags(base_args, requested)
+    }
+
+    fn discovery_flags(requested: &OptionalNixFlags) -> OptionalNixFlags {
+        let mut flags = requested.clone();
+        flags.no_write_lock_file = true;
+        flags
     }
 
     /// Discover flake apps for the adapter's current system.
@@ -105,14 +111,15 @@ impl NixAdapter {
     ///
     /// Returns [`NixError`] when flakes are disabled, `nix flake show` fails, or
     /// its JSON cannot be parsed.
-    pub fn discover_apps(&self, flake_ref: &str) -> Result<Vec<App>, NixError> {
+    pub fn discover_apps(
+        &self,
+        flake_ref: &str,
+        requested: &OptionalNixFlags,
+    ) -> Result<Vec<App>, NixError> {
         self.require_flakes()?;
         let args = self.compatible_argv(
             command::flake_show_args(flake_ref),
-            OptionalNixFlags {
-                no_write_lock_file: true,
-                ..OptionalNixFlags::default()
-            },
+            &Self::discovery_flags(requested),
         );
         discovery::discover_apps_with_args(&self.nix, &self.system, flake_ref, &args)
     }
@@ -124,14 +131,15 @@ impl NixAdapter {
     /// # Errors
     ///
     /// Returns [`TaskDiscoveryError`] when evaluation or schema validation fails.
-    pub fn discover_tasks(&self, flake_ref: &str) -> Result<TaskDocument, TaskDiscoveryError> {
+    pub fn discover_tasks(
+        &self,
+        flake_ref: &str,
+        requested: &OptionalNixFlags,
+    ) -> Result<TaskDocument, TaskDiscoveryError> {
         self.require_flakes()?;
         let args = self.compatible_argv(
             command::flake_eval_json_args(flake_ref, &tasks::tasks_attr_path(&self.system)),
-            OptionalNixFlags {
-                no_write_lock_file: true,
-                ..OptionalNixFlags::default()
-            },
+            &Self::discovery_flags(requested),
         );
         tasks::discover_tasks_with_args(&self.nix, &self.system, &args)
     }
@@ -146,7 +154,7 @@ impl NixAdapter {
         flake_ref: &str,
         app_name: &str,
         forwarded_args: &[impl AsRef<str>],
-        requested: OptionalNixFlags,
+        requested: &OptionalNixFlags,
     ) -> Result<Vec<String>, NixError> {
         self.require_flakes()?;
         Ok(self.compatible_argv(
@@ -169,7 +177,7 @@ mod tests {
     fn discover_apps_from_basic_apps_fixture() {
         let adapter = NixAdapter::new().expect("adapter");
         let apps = adapter
-            .discover_apps("./fixtures/basic-apps")
+            .discover_apps("./fixtures/basic-apps", &OptionalNixFlags::default())
             .expect("discover apps");
 
         assert!(!apps.is_empty());
@@ -187,7 +195,7 @@ mod tests {
         let adapter = NixAdapter::new().expect("adapter");
         let fixture = fixture_path("task-dag");
         let doc = adapter
-            .discover_tasks(fixture.as_str())
+            .discover_tasks(fixture.as_str(), &OptionalNixFlags::default())
             .expect("discover tasks");
 
         assert_eq!(doc.schema_version, nxr_task::SCHEMA_VERSION);
@@ -208,7 +216,7 @@ mod tests {
         let adapter = NixAdapter::new().expect("adapter");
         let fixture = fixture_path("basic-apps");
         let doc = adapter
-            .discover_tasks(fixture.as_str())
+            .discover_tasks(fixture.as_str(), &OptionalNixFlags::default())
             .expect("missing nxr output is empty");
         assert!(doc.tasks.is_empty());
         assert_eq!(doc.schema_version, nxr_task::SCHEMA_VERSION);
@@ -275,11 +283,13 @@ mod tests {
         );
         let args = adapter.compatible_argv(
             vec!["run".to_owned(), ".#hello".to_owned()],
-            OptionalNixFlags {
+            &OptionalNixFlags {
                 offline: true,
                 no_write_lock_file: true,
                 accept_flake_config: true,
                 json_log_format: true,
+                nix_options: Vec::new(),
+                extra_argv: Vec::new(),
             },
         );
         assert_eq!(

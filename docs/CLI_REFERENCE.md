@@ -17,7 +17,11 @@ nxr <command> --help
     --json                 Emit JSON for data-returning commands
     --nix <PATH>           Override Nix executable
 -s, --select               Open interactive app selector
-    --refresh              Ignore nxr discovery cache
+    --refresh-discovery    Ignore nxr discovery cache
+    --offline              Forward `--offline` to Nix when supported
+    --accept-flake-config  Forward `--accept-flake-config` to Nix when supported
+    --nix-option <KEY=VAL> Forward `--option KEY VAL` to Nix (repeatable)
+    --nix-arg <ARG>        Forward arbitrary Nix argv fragments (repeatable)
     --shell <NAME>         Execute through named dev shell
     --clean-env            Run with reduced inherited environment
     --keep-env <NAME>      Preserve variable in clean mode (repeatable)
@@ -35,7 +39,7 @@ nxr <command> --help
 
 `--keep-env` / `--set-env` / `--unset-env` require `--clean-env`. Clean mode starts from the allowlist in `nxr_core::CLEAN_ENV_ALLOWLIST` (documented in [DEV_ENV_INTEGRATION.md](DEV_ENV_INTEGRATION.md) §10); `PATH` is not allowlisted so shell pollution is visible.
 
-Not in this release (deferred): `--offline`.
+Not in this release (deferred): none. Use `--nix-arg` for other Nix globals (for example `--nix-arg --refresh`).
 
 Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr fixtures/basic-apps#hello`). Combining `--flake` with an inline `flake#app` is a usage error.
 
@@ -55,6 +59,8 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr doctor --all` | Extra non-destructive findings (descriptions, naming) |
 | `nxr doctor --clean-env [app]` | Clean-environment validation |
 | `nxr completion <shell>` | Emit Bash, Zsh, or Fish completion |
+| `nxr cache clear` | Remove all discovery cache entries |
+| `nxr cache status` | Show discovery cache path and size |
 | `nxr inspect` | Overview of apps (+ tasks when present) |
 | `nxr inspect --category <name>` | Overview with tasks filtered by category |
 | `nxr inspect app <name>` | Single app details |

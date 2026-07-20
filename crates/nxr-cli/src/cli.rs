@@ -47,8 +47,24 @@ pub struct Cli {
     pub select: bool,
 
     /// Ignore nxr discovery cache
-    #[arg(long = "refresh", global = true)]
-    pub refresh: bool,
+    #[arg(long = "refresh-discovery", global = true)]
+    pub refresh_discovery: bool,
+
+    /// Forward `--offline` to Nix when supported
+    #[arg(long = "offline", global = true)]
+    pub offline: bool,
+
+    /// Forward `--accept-flake-config` to Nix when supported
+    #[arg(long = "accept-flake-config", global = true)]
+    pub accept_flake_config: bool,
+
+    /// Forward `--option KEY VAL` to Nix (repeatable; `KEY=VAL`)
+    #[arg(long = "nix-option", global = true, value_name = "KEY=VAL")]
+    pub nix_option: Vec<String>,
+
+    /// Forward arbitrary Nix argv fragments (repeatable)
+    #[arg(long = "nix-arg", global = true, value_name = "ARG")]
+    pub nix_arg: Vec<String>,
 
     /// Execute through a named `devShell` (`nix develop <flake>#<name> -c <nix> run …`)
     #[arg(long = "shell", global = true, value_name = "NAME")]
@@ -245,7 +261,21 @@ pub enum Command {
         #[arg(long = "format", value_enum, default_value = "text")]
         format: GraphFormat,
     },
+    /// Manage nxr discovery cache
+    Cache {
+        #[command(subcommand)]
+        action: CacheSubcommand,
+    },
     /// Bare `nxr <app> [args…]` form (reserved names win first)
     #[command(external_subcommand)]
     External(Vec<String>),
+}
+
+/// `nxr cache` subcommands.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum CacheSubcommand {
+    /// Remove all discovery cache entries
+    Clear,
+    /// Show discovery cache location and size
+    Status,
 }

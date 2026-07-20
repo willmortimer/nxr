@@ -88,7 +88,7 @@ fn plan_task(request: &AppRequest<'_>, json: bool, runner: RunnerOutput) -> Resu
         .map_err(|error| PlanError::Prepare(PrepareError::Flake(error)))?;
     let adapter = build_adapter(request.nix_override)
         .map_err(|error| PlanError::Prepare(PrepareError::Nix(error)))?;
-    let document = adapter.discover_tasks(&flake.nix_ref)?;
+    let document = adapter.discover_tasks(&flake.nix_ref, request.nix_flags)?;
     let canonical = resolve_task_name(&document, request.app)?;
     let plan = build_execution_plan(&document.tasks, canonical, FailurePolicy::FailFast, None)?;
 

@@ -433,6 +433,50 @@ fn dry_run_prints_plan_without_executing() {
 }
 
 #[test]
+fn nix_arg_forwards_refresh_to_plan_argv() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/basic-apps",
+            "--nix-arg=--refresh",
+            "plan",
+            "hello",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("parse plan json");
+    let args = value["command"]["arguments"]
+        .as_array()
+        .expect("command arguments");
+    assert!(
+        args.iter().any(|arg| arg.as_str() == Some("--refresh")),
+        "expected --refresh in plan argv, got {args:?}"
+    );
+}
+
+#[test]
+fn refresh_discovery_bypasses_discovery_cache() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "--refresh-discovery", "list"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn run_echo_args_strips_one_separator() {
     let Some(()) = require_nix() else {
         return;
@@ -721,6 +765,55 @@ fn global_output_flags_are_documented_in_help() {
         .stdout(predicate::str::contains("--keep-env"))
         .stdout(predicate::str::contains("--set-env"))
         .stdout(predicate::str::contains("--unset-env"));
+}
+
+#[test]
+fn global_nix_and_cache_flags_are_documented_in_help() {
+    cargo_bin_cmd!("nxr")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--refresh-discovery"))
+        .stdout(predicate::str::contains("--offline"))
+        .stdout(predicate::str::contains("--accept-flake-config"))
+        .stdout(predicate::str::contains("--nix-option"))
+        .stdout(predicate::str::contains("--nix-arg"))
+        .stdout(predicate::str::contains("cache"));
+}
+
+#[test]
+fn legacy_refresh_flag_is_not_registered() {
+    cargo_bin_cmd!("nxr")
+        .args(["--refresh", "list"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unexpected argument '--refresh'"));
+}
+
+#[test]
+fn cache_status_succeeds() {
+    cargo_bin_cmd!("nxr")
+        .args(["cache", "status"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn cache_clear_succeeds() {
+    cargo_bin_cmd!("nxr")
+        .args(["cache", "clear"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn cache_status_json_emits_path_and_entries() {
+    cargo_bin_cmd!("nxr")
+        .args(["cache", "status", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"entries\""))
+        .stdout(predicate::str::contains("\"path\""));
 }
 
 #[test]

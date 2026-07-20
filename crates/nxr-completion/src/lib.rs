@@ -7,8 +7,9 @@ pub mod generate;
 pub mod shell;
 
 pub use cache::{
-    DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, cached_apps, cached_workspace,
-    discover_with_cache, discover_workspace_with_cache,
+    DiscoveryCacheOptions, DiscoveryCacheStatus, DiscoveryContext, WorkspaceDiscovery,
+    cached_apps, cached_workspace, clear_discovery_cache, discover_with_cache,
+    discover_workspace_with_cache, discovery_cache_dir, discovery_cache_status,
 };
 pub use fingerprint::{FINGERPRINT_IGNORE_ENV, nix_tree_fingerprint};
 pub use dynamic::{

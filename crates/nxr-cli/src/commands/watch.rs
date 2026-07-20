@@ -71,6 +71,7 @@ pub struct WatchRequest<'a> {
     pub shell: Option<&'a str>,
     pub environment_policy: EnvironmentPolicy,
     pub options: WatchOptions,
+    pub nix_flags: &'a nxr_nix::OptionalNixFlags,
 }
 
 /// Errors while watching and re-running a target.
@@ -152,14 +153,14 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
         .ok_or(WatchCommandError::RemoteFlake)?;
 
     let adapter = build_adapter(request.nix_override)?;
-    let document = adapter.discover_tasks(&flake.nix_ref)?;
+    let document = adapter.discover_tasks(&flake.nix_ref, request.nix_flags)?;
 
     let target = if let Ok(canonical) = resolve_task_name(&document, request.name) {
         let _order = plan_serial(&document.tasks, canonical)?;
         let root = canonical.to_owned();
         WatchTarget::Task { document, root }
     } else {
-        let apps = adapter.discover_apps(&flake.nix_ref)?;
+        let apps = adapter.discover_apps(&flake.nix_ref, request.nix_flags)?;
         let app = resolve_app_by_name(&apps, request.name)?;
         WatchTarget::App {
             name: app.name.clone(),
@@ -229,6 +230,7 @@ fn run_generation(
                 cwd: request.cwd,
                 shell: request.shell,
                 environment_policy: request.environment_policy.clone(),
+                nix_flags: request.nix_flags,
             };
             let prepared = prepare_app_plan(&app_request)?;
             let supervisor = spawn_prepared(&prepared)?;
@@ -267,6 +269,7 @@ fn run_generation(
                     cwd: request.cwd,
                     shell: request.shell,
                     environment_policy: request.environment_policy.clone(),
+                    nix_flags: request.nix_flags,
                 };
                 let prepared = prepare_app_plan(&app_request)?;
                 let supervisor = spawn_prepared(&prepared)?;

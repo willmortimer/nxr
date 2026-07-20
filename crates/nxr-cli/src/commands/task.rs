@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
-use nxr_nix::{NixError, TaskDiscoveryError};
+use nxr_nix::{NixError, OptionalNixFlags, TaskDiscoveryError};
 use nxr_process::{InterruptFlags, Supervisor};
 use nxr_task::{
     Event, EventSink, ExecutionPlan, FailurePolicy, OutputPayload, PlanError, Scheduler,
@@ -49,6 +49,7 @@ pub struct TaskRequest<'a> {
     pub output_mode: Option<TaskOutputMode>,
     /// Parsed from global `--events`.
     pub events_format: Option<EventsFormat>,
+    pub nix_flags: &'a OptionalNixFlags,
 }
 
 /// Errors while planning or running a task.
@@ -154,7 +155,12 @@ pub fn execute(
         return Err(TaskError::RawConflictsWithMultiplex);
     }
 
-    let snapshot = WorkspaceSnapshot::load(request.flake_arg, request.nix_override, true)?;
+    let snapshot = WorkspaceSnapshot::load(
+        request.flake_arg,
+        request.nix_override,
+        true,
+        request.nix_flags,
+    )?;
     let document = snapshot
         .tasks
         .as_ref()
@@ -193,6 +199,7 @@ pub fn execute(
         request.cwd,
         request.shell,
         &request.environment_policy,
+        request.nix_flags,
     )?;
 
     let waves = parallel_ready_waves(&plan);

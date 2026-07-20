@@ -178,6 +178,93 @@ fn cache_root() -> Option<PathBuf> {
         .map(|dirs| dirs.cache_dir().join("discovery"))
 }
 
+/// Discovery cache directory when the host provides a writable cache location.
+#[must_use]
+pub fn discovery_cache_dir() -> Option<PathBuf> {
+    cache_root()
+}
+
+/// On-disk discovery cache summary for `nxr cache status`.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct DiscoveryCacheStatus {
+    pub path: String,
+    pub entries: usize,
+    pub total_bytes: u64,
+}
+
+/// Remove all discovery cache entries.
+///
+/// Returns the number of cache files removed. Missing cache directories are
+/// treated as empty.
+///
+/// # Errors
+///
+/// Returns [`io::Error`] when the cache directory cannot be read or entries
+/// cannot be removed.
+pub fn clear_discovery_cache() -> io::Result<usize> {
+    let Some(root) = cache_root() else {
+        return Ok(0);
+    };
+    if !root.is_dir() {
+        return Ok(0);
+    }
+
+    let mut removed = 0usize;
+    for entry in fs::read_dir(&root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .extension()
+                .is_some_and(|ext| ext == "json" || ext == "tmp")
+        {
+            fs::remove_file(&path)?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// Summarize the discovery cache directory.
+///
+/// # Errors
+///
+/// Returns [`io::Error`] when the cache directory cannot be read.
+pub fn discovery_cache_status() -> io::Result<DiscoveryCacheStatus> {
+    let Some(root) = cache_root() else {
+        return Ok(DiscoveryCacheStatus {
+            path: String::new(),
+            entries: 0,
+            total_bytes: 0,
+        });
+    };
+
+    if !root.is_dir() {
+        return Ok(DiscoveryCacheStatus {
+            path: root.display().to_string(),
+            entries: 0,
+            total_bytes: 0,
+        });
+    }
+
+    let mut entries = 0usize;
+    let mut total_bytes = 0u64;
+    for entry in fs::read_dir(&root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() && path.extension().is_some_and(|ext| ext == "json") {
+            entries += 1;
+            total_bytes += entry.metadata()?.len();
+        }
+    }
+
+    Ok(DiscoveryCacheStatus {
+        path: root.display().to_string(),
+        entries,
+        total_bytes,
+    })
+}
+
 fn cache_file_path(context: &DiscoveryContext) -> Option<PathBuf> {
     let root = cache_root()?;
     Some(root.join(cache_file_name(&cache_context_key(context))))
@@ -886,6 +973,40 @@ mod tests {
                 .expect("read cache")
                 .expect("cache hit");
             assert_eq!(cached.apps, apps);
+        });
+    }
+
+    #[test]
+    fn clear_and_status_report_discovery_cache() {
+        let temp = TempDir::new().expect("tempdir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        write_flake(&root);
+        let context = test_context(&root, "aarch64-darwin");
+        let apps = sample_apps(root.as_str(), "aarch64-darwin");
+
+        with_cache_dir(&temp, || {
+            store_cached_workspace(
+                &root,
+                &context,
+                &WorkspaceDiscovery {
+                    apps,
+                    tasks: None,
+                },
+            )
+            .expect("store cache");
+
+            let status = super::discovery_cache_status().expect("status");
+            assert_eq!(status.entries, 1);
+            assert!(status.total_bytes > 0);
+            assert!(!status.path.is_empty());
+
+            let removed = super::clear_discovery_cache().expect("clear");
+            assert_eq!(removed, 1);
+
+            let status = super::discovery_cache_status().expect("status after clear");
+            assert_eq!(status.entries, 0);
+            assert_eq!(status.total_bytes, 0);
         });
     }
 }

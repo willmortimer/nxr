@@ -45,6 +45,7 @@ pub struct GraphRequest<'a> {
     pub flake_arg: Option<&'a str>,
     pub nix_override: Option<&'a str>,
     pub task: &'a str,
+    pub nix_flags: &'a nxr_nix::OptionalNixFlags,
 }
 
 /// Errors while discovering or rendering a task graph.
@@ -124,7 +125,7 @@ fn discover_task_document(
     let adapter = build_adapter(request.nix_override)
         .map_err(|error| GraphError::Prepare(PrepareError::Nix(error)))?;
     adapter
-        .discover_tasks(&flake.nix_ref)
+        .discover_tasks(&flake.nix_ref, request.nix_flags)
         .map_err(GraphError::from)
 }
 
@@ -255,10 +256,12 @@ mod tests {
 
     #[test]
     fn graph_request_is_copyable() {
+        let nix_flags = nxr_nix::OptionalNixFlags::default();
         let request = GraphRequest {
             flake_arg: Some("."),
             nix_override: None,
             task: "ci",
+            nix_flags: &nix_flags,
         };
         let copied = request;
         assert_eq!(request, copied);
