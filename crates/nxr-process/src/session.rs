@@ -275,6 +275,18 @@ mod tests {
     use super::{ChildSession, SpawnStdio, spawn_in, spawn_in_with};
 
     #[cfg(unix)]
+    fn group_alive(pgid: u32) -> bool {
+        use nix::sys::signal::killpg;
+        use nix::unistd::Pid;
+
+        let group = Pid::from_raw(i32::try_from(pgid).unwrap_or(0));
+        if group.as_raw() <= 0 {
+            return false;
+        }
+        killpg(group, None).is_ok()
+    }
+
+    #[cfg(unix)]
     fn unix_util(name: &str) -> String {
         for prefix in ["/usr/bin", "/bin"] {
             let candidate = format!("{prefix}/{name}");
@@ -363,5 +375,40 @@ mod tests {
         .expect("spawn");
         assert!(session.pgid() > 0);
         let _ = session.terminate();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminate_escalates_when_child_ignores_sigterm() {
+        let bash = unix_util("bash");
+        let ignore_term = ["-c", "trap '' TERM; while true; do sleep 60; done"];
+        let session = spawn_in(&bash, &ignore_term, None, &EnvironmentPolicy::Inherit)
+            .expect("spawn bash ignoring SIGTERM");
+        let pgid = session.pgid();
+        thread::sleep(Duration::from_millis(100));
+
+        let code = session.terminate().expect("terminate").expect("exit code");
+        assert_eq!(code, 128 + 9, "expected SIGKILL after grace, got {code}");
+        assert!(!group_alive(pgid), "process group {pgid} still alive");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grandchildren_in_process_group_are_terminated() {
+        let bash = unix_util("bash");
+        // Nested shell keeps the leaf `sleep` in the supervised process group.
+        let nested = ["-c", "bash -c 'exec sleep 60'"];
+        let session = spawn_in(&bash, &nested, None, &EnvironmentPolicy::Inherit).expect("spawn");
+        let pgid = session.pgid();
+
+        let code = session.terminate().expect("terminate").expect("exit code");
+        assert!(
+            code == 128 + 15 || code == 128 + 9,
+            "unexpected exit code {code}"
+        );
+        assert!(
+            !group_alive(pgid),
+            "grandchild left process group {pgid} alive"
+        );
     }
 }

@@ -530,6 +530,98 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn handle_interrupt_first_strike_sends_sigterm_only() {
+        let flags = InterruptFlags::install().expect("install flags");
+        let mut supervisor = Supervisor::new();
+        let env = EnvironmentPolicy::Inherit;
+        let sleep = unix_util("sleep");
+
+        let pgid = supervisor
+            .spawn("sleep", &sleep, &["30"], None, &env)
+            .expect("spawn sleep");
+
+        flags.trigger_for_test();
+        let started = Instant::now();
+        let codes = supervisor
+            .handle_interrupt(&flags, Duration::from_secs(5))
+            .expect("handle_interrupt")
+            .expect("shutdown ran");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "first strike should not wait out the full grace window"
+        );
+        assert_eq!(codes.len(), 1);
+        assert_eq!(
+            codes[0].1,
+            128 + 15,
+            "first strike should SIGTERM, got {}",
+            codes[0].1
+        );
+        assert!(supervisor.is_empty());
+        assert!(!group_alive(pgid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_all_escalates_when_child_ignores_sigterm() {
+        let mut supervisor = Supervisor::new();
+        let env = EnvironmentPolicy::Inherit;
+        let bash = unix_util("bash");
+        let ignore_term = ["-c", "trap '' TERM; while true; do sleep 60; done"];
+
+        let pgid = supervisor
+            .spawn("stubborn", &bash, &ignore_term, None, &env)
+            .expect("spawn");
+        thread::sleep(Duration::from_millis(100));
+
+        let started = Instant::now();
+        let codes = supervisor
+            .shutdown_all(Duration::from_millis(300))
+            .expect("shutdown_all");
+        assert!(
+            started.elapsed() >= Duration::from_millis(200),
+            "should wait for grace before SIGKILL"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "should not hang after grace"
+        );
+        assert_eq!(codes.len(), 1);
+        assert_eq!(codes[0].1, 128 + 9, "expected SIGKILL, got {}", codes[0].1);
+        assert!(!group_alive(pgid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nested_grandchildren_do_not_survive_shutdown() {
+        let mut supervisor = Supervisor::new();
+        let env = EnvironmentPolicy::Inherit;
+        let bash = unix_util("bash");
+        let nested = ["-c", "bash -c 'exec sleep 60'"];
+        let child_count = 4usize;
+        let mut pgids = Vec::with_capacity(child_count);
+
+        for index in 0..child_count {
+            let id = format!("nested-{index}");
+            let pgid = supervisor
+                .spawn(&id, &bash, &nested, None, &env)
+                .expect("spawn nested bash");
+            pgids.push(pgid);
+        }
+
+        let codes = supervisor
+            .shutdown_all(Duration::from_secs(2))
+            .expect("shutdown_all");
+        assert_eq!(codes.len(), child_count);
+        assert!(supervisor.is_empty());
+        for pgid in pgids {
+            assert!(!group_alive(pgid), "orphaned process group {pgid}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn kill_all_escalates_immediately() {
         let mut supervisor = Supervisor::new();
         let env = EnvironmentPolicy::Inherit;

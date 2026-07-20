@@ -223,4 +223,90 @@ mod tests {
         let status = child.wait().expect("wait for sleep");
         assert_eq!(exit_code_from_status(status), 128 + Signal::SIGTERM as i32);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn sigint_forwarded_to_child_process_group() {
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        use nix::sys::signal::{Signal, kill};
+        use nix::unistd::Pid;
+
+        use super::unix::SignalForwarder;
+
+        let forwarder = SignalForwarder::install().expect("install forwarder");
+        let mut child = Command::new(unix_util("sleep"))
+            .arg("60")
+            .process_group(0)
+            .spawn()
+            .expect("spawn sleep");
+        let pgid = child.id();
+
+        kill(
+            Pid::from_raw(i32::try_from(std::process::id()).expect("pid fits i32")),
+            Signal::SIGINT,
+        )
+        .expect("SIGINT to test process");
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut code = None;
+        while Instant::now() < deadline {
+            forwarder.poll_and_forward(pgid);
+            if let Ok(Some(status)) = child.try_wait() {
+                code = Some(exit_code_from_status(status));
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        assert_eq!(code, Some(128 + Signal::SIGINT as i32), "child should die from forwarded SIGINT");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sigterm_forwarded_to_child_process_group() {
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        use nix::sys::signal::{Signal, kill};
+        use nix::unistd::Pid;
+
+        use super::unix::SignalForwarder;
+
+        let forwarder = SignalForwarder::install().expect("install forwarder");
+        let mut child = Command::new(unix_util("sleep"))
+            .arg("60")
+            .process_group(0)
+            .spawn()
+            .expect("spawn sleep");
+        let pgid = child.id();
+
+        kill(
+            Pid::from_raw(i32::try_from(std::process::id()).expect("pid fits i32")),
+            Signal::SIGTERM,
+        )
+        .expect("SIGTERM to test process");
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut code = None;
+        while Instant::now() < deadline {
+            forwarder.poll_and_forward(pgid);
+            if let Ok(Some(status)) = child.try_wait() {
+                code = Some(exit_code_from_status(status));
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        assert_eq!(
+            code,
+            Some(128 + Signal::SIGTERM as i32),
+            "child should die from forwarded SIGTERM"
+        );
+    }
 }

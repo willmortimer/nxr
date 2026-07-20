@@ -1,4 +1,12 @@
 //! Foreground child execution (supervised spawn, not `exec`).
+//!
+//! ## CI / PTY limits
+//!
+//! Headless CI runners have no controlling TTY, so PTY allocation and
+//! `SIGWINCH` (terminal resize) forwarding are not covered by automated tests
+//! here. Signal forwarding (`SIGINT` / `SIGTERM`) and process-group shutdown
+//! are exercised instead; interactive resize behavior is manual / future harness
+//! work (see `docs/ARCHITECTURE.md`).
 
 use std::ffi::OsStr;
 use std::io;
@@ -125,6 +133,8 @@ mod unix {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::thread;
+    use std::time::Duration;
 
     use nxr_core::EnvironmentPolicy;
 
@@ -184,5 +194,30 @@ mod tests {
             run_in(unix_util("printenv"), &["NXR_CLEAN_TEST"], None, &policy).expect("printenv");
         // printenv exits 0 when the variable is set
         assert_eq!(code, 0);
+    }
+
+    /// End-to-end: runner SIGINT handler forwards to the supervised child group.
+    #[cfg(unix)]
+    #[test]
+    fn sigint_stops_foreground_child() {
+        use nix::sys::signal::{Signal, kill};
+        use nix::unistd::Pid;
+
+        let sleep = unix_util("sleep");
+        let handle = thread::spawn(move || run(&sleep, &["60"]));
+
+        thread::sleep(Duration::from_millis(150));
+        kill(
+            Pid::from_raw(i32::try_from(std::process::id()).expect("pid fits i32")),
+            Signal::SIGINT,
+        )
+        .expect("SIGINT to test process");
+
+        let code = handle.join().expect("join run thread").expect("run");
+        assert_eq!(
+            code,
+            128 + Signal::SIGINT as i32,
+            "child should die from forwarded SIGINT, got {code}"
+        );
     }
 }
