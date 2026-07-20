@@ -168,10 +168,10 @@ fn cache_root() -> Option<PathBuf> {
     }
 
     #[cfg(test)]
-    if let Ok(guard) = CONCURRENT_TEST_CACHE_ROOT.lock() {
-        if let Some(root) = guard.clone() {
-            return Some(root);
-        }
+    if let Ok(guard) = CONCURRENT_TEST_CACHE_ROOT.lock()
+        && let Some(root) = guard.clone()
+    {
+        return Some(root);
     }
 
     directories::ProjectDirs::from("dev", "nxr", "nxr")
@@ -293,6 +293,24 @@ fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "missing parent directory"))?;
+    fs::create_dir_all(parent)?;
+
+    // Serialize writers to the same cache entry. Concurrent renames onto the same
+    // destination can otherwise race to ENOENT on some platforms.
+    let lock_path = parent.join(format!(
+        ".{}.lock",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("cache")
+    ));
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    lock_file.lock_exclusive()?;
+
     let temp_path = parent.join(format!(
         ".{}.{}.{}.tmp",
         path.file_name()
@@ -305,19 +323,22 @@ fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
             .as_nanos()
     ));
 
-    {
+    let write_result = (|| {
         let mut file = OpenOptions::new()
             .create(true)
             .truncate(true)
             .write(true)
             .open(&temp_path)?;
-        file.lock_exclusive()?;
         file.write_all(contents)?;
         file.sync_all()?;
-        file.unlock()?;
-    }
+        drop(file);
+        fs::rename(&temp_path, path)?;
+        Ok(())
+    })();
 
-    fs::rename(temp_path, path)
+    let _ = fs::remove_file(&temp_path);
+    lock_file.unlock()?;
+    write_result
 }
 
 #[cfg(test)]
@@ -775,11 +796,14 @@ mod tests {
     #[test]
     fn concurrent_writers_leave_valid_cache_entry() {
         let temp = TempDir::new().expect("tempdir");
+        let cache_temp = TempDir::new().expect("cache tempdir");
         let root =
             camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
         write_flake(&root);
         let context = test_context(&root, "aarch64-darwin");
-        let cache_home = temp.path().join("cache").join("discovery");
+        // Keep the cache outside the flake root so fingerprint walks do not race
+        // with concurrent cache file creation.
+        let cache_home = cache_temp.path().join("discovery");
 
         with_shared_cache_dir(&cache_home, || {
             let handles: Vec<_> = (0..8)
