@@ -286,6 +286,18 @@ mod tests {
         killpg(group, None).is_ok()
     }
 
+    /// Wait briefly for init to reap killed grandchildren (zombie PGID race).
+    #[cfg(unix)]
+    fn assert_group_gone(pgid: u32) {
+        for _ in 0..50 {
+            if !group_alive(pgid) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("process group {pgid} still alive");
+    }
+
     #[cfg(unix)]
     fn unix_util(name: &str) -> String {
         for prefix in ["/usr/bin", "/bin"] {
@@ -381,7 +393,9 @@ mod tests {
     #[test]
     fn terminate_escalates_when_child_ignores_sigterm() {
         let bash = unix_util("bash");
-        let ignore_term = ["-c", "trap '' TERM; while true; do sleep 60; done"];
+        // Spin in-process so SIGKILL leaves no grandchild zombie that keeps
+        // the process group visible to killpg(0) after bash is reaped.
+        let ignore_term = ["-c", "trap '' TERM; while true; do true; done"];
         let session = spawn_in(&bash, &ignore_term, None, &EnvironmentPolicy::Inherit)
             .expect("spawn bash ignoring SIGTERM");
         let pgid = session.pgid();
@@ -406,9 +420,6 @@ mod tests {
             code == 128 + 15 || code == 128 + 9,
             "unexpected exit code {code}"
         );
-        assert!(
-            !group_alive(pgid),
-            "grandchild left process group {pgid} alive"
-        );
+        assert_group_gone(pgid);
     }
 }

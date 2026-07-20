@@ -391,6 +391,18 @@ mod tests {
         killpg(group, None).is_ok()
     }
 
+    /// Wait briefly for init to reap killed grandchildren (zombie PGID race).
+    #[cfg(unix)]
+    fn assert_group_gone(pgid: u32) {
+        for _ in 0..50 {
+            if !group_alive(pgid) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("process group {pgid} still alive");
+    }
+
     #[cfg(unix)]
     #[test]
     fn shutdown_all_term_to_kill_many_children() {
@@ -490,9 +502,10 @@ mod tests {
         let env = EnvironmentPolicy::Inherit;
         let bash = unix_util("bash");
 
-        // Ignore SIGTERM in the shell itself and keep looping so a group SIGTERM
-        // that kills inner `sleep` does not exit the supervised process.
-        let ignore_term = ["-c", "trap '' TERM; while true; do sleep 60; done"];
+        // Ignore SIGTERM in the shell itself and spin in-process. Nested
+        // `sleep` leaves a reparented zombie that can make killpg(0) succeed
+        // briefly after the supervised bash is reaped (flaky on Linux CI).
+        let ignore_term = ["-c", "trap '' TERM; while true; do true; done"];
         let pgid_a = supervisor
             .spawn("a", &bash, &ignore_term, None, &env)
             .expect("spawn a");
@@ -568,7 +581,7 @@ mod tests {
         let mut supervisor = Supervisor::new();
         let env = EnvironmentPolicy::Inherit;
         let bash = unix_util("bash");
-        let ignore_term = ["-c", "trap '' TERM; while true; do sleep 60; done"];
+        let ignore_term = ["-c", "trap '' TERM; while true; do true; done"];
 
         let pgid = supervisor
             .spawn("stubborn", &bash, &ignore_term, None, &env)
@@ -616,7 +629,7 @@ mod tests {
         assert_eq!(codes.len(), child_count);
         assert!(supervisor.is_empty());
         for pgid in pgids {
-            assert!(!group_alive(pgid), "orphaned process group {pgid}");
+            assert_group_gone(pgid);
         }
     }
 
@@ -626,7 +639,7 @@ mod tests {
         let mut supervisor = Supervisor::new();
         let env = EnvironmentPolicy::Inherit;
         let bash = unix_util("bash");
-        let ignore_term = ["-c", "trap '' TERM; while true; do sleep 60; done"];
+        let ignore_term = ["-c", "trap '' TERM; while true; do true; done"];
 
         let pgid = supervisor
             .spawn("stubborn", &bash, &ignore_term, None, &env)

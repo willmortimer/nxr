@@ -44,6 +44,8 @@ user Nix flags, safer affected analysis, and Nix-equipped release archives.
   `shortDescription`) in addition to upstream legacy `type` / `description`.
 - Named `build` / `check` / `shell` restore close-match suggestions after a
   missing-attribute Nix failure (still skip discovery on the happy path).
+- Process-group escalation tests avoid nested `sleep` under `trap '' TERM` so
+  Linux CI does not see zombie PGIDs after SIGKILL.
 - Local flake roots passed as `path:<absolute>` URIs.
 - `workingDirectory` rejects parent traversal and must stay under the flake root.
 - Combined output+events uses the supplied stderr writer.
