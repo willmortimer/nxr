@@ -44,7 +44,7 @@ let
     }:
     rustPlatform.buildRustPackage {
       pname = "nxr-check-${name}";
-      version = "2.1.0";
+      version = "2.2.0";
 
       inherit src;
 

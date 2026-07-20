@@ -20,30 +20,11 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 | **V1.0** | Standard flake app runner | Discovery, execution, completion, diagnostics, doctor, `plan` — shipped as `v1.0.0`. |
 | **V2.0** | Workflow orchestration | Task DAG, scheduler, supervision, watch, shell integration, structured output — shipped as `v2.0.0`. |
 | **V2.1** | Trustworthiness | `WorkspaceSnapshot`, discovery cache controls, Nix forwarding, `--shell-mode`, byte-safe output, four-system CI, release SBOMs — shipped as `v2.1.0`. |
+| **V2.2** | Flake UX | Standard flake output commands (`list`/`build`/`check`/`shell`), `explain` and `doctor --all`, multi-root task union DAGs, interactive-task exclusivity — shipped as `v2.2.0`. |
 
-## Active roadmap — 2.2 / 2.3
+## Active roadmap — 2.3
 
-The active plan is two minor releases that harden and extend what already ships. Each section should fit on one screen; defer speculative platform work to [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md).
-
-### 2.2 — Flake UX
-
-**Goal:** Make standard apps and tasks feel native in daily Nix development.
-
-**Deliverables**
-
-- Shell integration polish: direnv-friendly hooks, nested-shell safety, completion cache tuning.
-- Faster warm discovery and completion for large `apps` tables.
-- Remote flake reference ergonomics and actionable evaluation errors.
-- App authoring library examples and fixture flakes for common patterns.
-- `inspect` / `plan` clarity for apps, tasks, shells, and stdin/argument policies.
-- Migration guides from `just`, `mise`, and shell aliases (docs + small helpers where cheap).
-
-**Exit criteria**
-
-- `use flake` activates session-local completion without global dotfile edits.
-- Completion stays responsive on warm projects; cold-start budget documented.
-- Remote and local invocations show the same plan fields developers need to debug.
-- New contributors can author robust apps from documented examples alone.
+The active plan is one minor release that hardens and extends what already ships. Defer speculative platform work to [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md).
 
 ### 2.3 — Monorepo ergonomics
 
