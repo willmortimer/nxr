@@ -21,7 +21,15 @@ Instrumented integration tests wrap `NXR_NIX` with a counting shim to assert the
 | Warm `nxr list` (cache hit) | Interactive (tens of ms) | Combined apps+tasks discovery cache |
 | Cold `nxr list --refresh-discovery` | Dominated by `nix flake show` + one task eval | Nix eval/store caches still apply |
 
-Discovery cache invalidation fingerprints every `.nix` file under the local flake root (relative path, size, mtime), plus `flake.lock` when present, with built-in ignores for `.git`, `result`, `target`, and similar trees. Set `NXR_CACHE_FINGERPRINT_IGNORE` to a colon-separated list of globs to skip huge vendored `.nix` trees. Remote flakes are never cached.
+Discovery cache **schema v3** invalidates on:
+
+- **Content** of every `*.nix` file under the local flake root (path-scoped walk), plus `flake.lock` when present — not mtime/size, and not arbitrary non-Nix sources
+- **Nix identity**: canonical Nix executable path + version string
+- **Discovery schema version** (`nxr.<system>` / task document major)
+- **Sorted `discoveryInputs`**: content hashes of paths declared via `perSystem.nxr.discoveryInputs` (emitted on `nxr.<system>.discoveryInputs`; hashed on store/load without a second eval on warm hits)
+- **TTL backstop**: default 24h (`NXR_CACHE_TTL_SECS`; `0` disables)
+
+Built-in ignores cover `.git`, `result`, `target`, and similar trees. Set `NXR_CACHE_FINGERPRINT_IGNORE` to a colon-separated list of globs to skip huge vendored `.nix` trees. Remote flakes are never cached.
 
 ## Measured baselines
 
@@ -47,7 +55,7 @@ cargo build -p nxr-cli --quiet
 
 ## Interpretation
 
-- Prefer cache hits for interactive listing and completion; use `--refresh-discovery` when flake inputs change. Editing imported `.nix` files under the flake root invalidates the cache without touching `flake.nix`.
+- Prefer cache hits for interactive listing and completion; use `--refresh-discovery` when flake inputs change. Editing imported `.nix` files (content) or declared `discoveryInputs` under the flake root invalidates the cache without touching `flake.nix`.
 - Prefer the bare-app fast path and once-per-run `WorkspaceSnapshot` so task DAGs do not multiply `flake show`.
 - Do not compare `nxr test` wall time to runner overhead — almost all of it is nextest / Nix build of the `test` app.
 - Release (`nix build .#nxr`) binaries are typically faster than debug builds; treat the table as order-of-magnitude guidance.

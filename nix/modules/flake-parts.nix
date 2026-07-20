@@ -56,6 +56,9 @@ let
     }
     // lib.optionalAttrs (appsMeta != { }) {
       apps = appsMeta;
+    }
+    // lib.optionalAttrs (cfg.nxr.discoveryInputs != [ ]) {
+      discoveryInputs = cfg.nxr.discoveryInputs;
     };
 in
 {
@@ -64,9 +67,10 @@ in
       ./apps.nix
       ./tasks.nix
       ./shell-integration.nix
+      ./discovery.nix
     ];
   };
 
-  # `nxr.<system>` → { schema_version = 1; tasks = { ... }; apps? = { ... }; }
+  # `nxr.<system>` → { schema_version = 1; tasks = { ... }; apps?; discoveryInputs?; }
   flake.nxr = lib.mapAttrs (_system: cfg: nxrDocument cfg) config.allSystems;
 }

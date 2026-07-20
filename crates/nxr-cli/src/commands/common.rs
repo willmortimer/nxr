@@ -227,6 +227,9 @@ impl WorkspaceSnapshot {
             flake_ref: flake.nix_ref.clone(),
             local_root: flake.local_root.clone(),
             system: nix.system.clone(),
+            nix_path: nix.nix.as_str().to_owned(),
+            nix_version: nix.capabilities.version.to_string(),
+            discovery_inputs: Vec::new(),
         };
         let flake_ref = flake.nix_ref.clone();
         let discovery = discover_workspace_with_cache(
@@ -741,8 +744,8 @@ mod tests {
     #[test]
     fn resolve_task_execution_directory_rejects_parent_traversal() {
         let temp = tempfile::TempDir::new().expect("tempdir");
-        let flake_root = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf())
-            .expect("utf8 temp path");
+        let flake_root =
+            camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
         std::fs::create_dir(flake_root.join("crates")).expect("crates dir");
         let outside = temp.path().parent().expect("parent").join("outside");
         std::fs::create_dir(&outside).expect("outside dir");
@@ -754,14 +757,9 @@ mod tests {
         };
         let invocation = flake_root.join("crates");
 
-        let err = resolve_task_execution_directory(
-            &invocation,
-            &flake,
-            false,
-            None,
-            Some("../outside"),
-        )
-        .expect_err("parent traversal escapes flake root");
+        let err =
+            resolve_task_execution_directory(&invocation, &flake, false, None, Some("../outside"))
+                .expect_err("parent traversal escapes flake root");
         assert!(matches!(
             err,
             PrepareError::WorkingDirectoryOutsideFlakeRoot { .. }

@@ -327,6 +327,11 @@ Optional `category` on `nxr.apps.<name>` is listing metadata for
 `nxr list --category` / `inspect` (also emitted under `nxr.<system>.apps`).
 It does not change how the app runs. See [MONOREPO_VIEWS.md](MONOREPO_VIEWS.md).
 
+Optional `perSystem.nxr.discoveryInputs` lists flake-root-relative paths whose
+**contents** are hashed into the discovery cache key (schema v3), in addition to
+`*.nix` and `flake.lock`. Emitted on `nxr.<system>.discoveryInputs`. See
+[PERFORMANCE.md](PERFORMANCE.md).
+
 No custom runner is required to execute the emitted app.
 
 For optional task orchestration metadata (`perSystem.nxr.tasks` → evaluable

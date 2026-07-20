@@ -35,9 +35,7 @@ pub enum SchemaError {
     )]
     AbsoluteWorkingDirectory { task: String, value: String },
     /// `workingDirectory` traversed parent directories (`..`).
-    #[error(
-        "task {task}: workingDirectory must not traverse parent directories (got {value})"
-    )]
+    #[error("task {task}: workingDirectory must not traverse parent directories (got {value})")]
     ParentTraversalWorkingDirectory { task: String, value: String },
 }
 
@@ -53,6 +51,13 @@ pub struct TaskDocument {
     /// Optional per-app listing metadata keyed by flake app leaf name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub apps: BTreeMap<String, AppListingMetadata>,
+    /// Extra flake-root-relative paths hashed into the discovery cache key.
+    #[serde(
+        default,
+        rename = "discoveryInputs",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub discovery_inputs: Vec<String>,
 }
 
 /// Listing-only metadata for a flake app leaf (not an operation definition).
@@ -73,6 +78,7 @@ impl TaskDocument {
             schema_version: Self::SCHEMA_VERSION,
             tasks,
             apps: BTreeMap::new(),
+            discovery_inputs: Vec::new(),
         }
     }
 
@@ -359,6 +365,7 @@ mod tests {
             schema_version: 99,
             tasks: BTreeMap::new(),
             apps: BTreeMap::new(),
+            discovery_inputs: Vec::new(),
         };
         let err = doc.validate().expect_err("major 99 unsupported");
         assert!(matches!(
@@ -409,8 +416,8 @@ mod tests {
             }
         );
 
-        let nested = validate_working_directory("fmt", "crates/../../outside")
-            .expect_err("nested parent");
+        let nested =
+            validate_working_directory("fmt", "crates/../../outside").expect_err("nested parent");
         assert_eq!(
             nested,
             SchemaError::ParentTraversalWorkingDirectory {

@@ -5,14 +5,23 @@ use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use fs2::FileExt;
 use nxr_core::App;
-use nxr_task::TaskDocument;
+use nxr_task::{SCHEMA_VERSION as DISCOVERY_SCHEMA_VERSION, TaskDocument};
 use serde::{Deserialize, Serialize};
 
-use crate::fingerprint::nix_tree_fingerprint;
+use crate::fingerprint::{discovery_inputs_fingerprint, nix_tree_fingerprint};
+
+/// Environment variable overriding the discovery cache TTL in seconds.
+///
+/// Unset → default [`DEFAULT_CACHE_TTL_SECS`] (24h). `0` disables the TTL backstop.
+pub const CACHE_TTL_ENV: &str = "NXR_CACHE_TTL_SECS";
+
+/// Default discovery cache TTL (24 hours).
+pub const DEFAULT_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 
 /// Inputs that identify a cached discovery result.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -20,6 +29,50 @@ pub struct DiscoveryContext {
     pub flake_ref: String,
     pub local_root: Option<Utf8PathBuf>,
     pub system: String,
+    /// Canonical Nix executable path. Empty uses a test stub or resolves at cache time.
+    pub nix_path: String,
+    /// Nix version string (for example `2.34.7`). Empty pairs with [`Self::nix_path`].
+    pub nix_version: String,
+    /// Extra flake-root-relative paths to content-hash (`perSystem.nxr.discoveryInputs`).
+    pub discovery_inputs: Vec<String>,
+}
+
+impl DiscoveryContext {
+    /// Build a context with empty Nix identity and discovery inputs.
+    #[must_use]
+    pub fn new(
+        flake_ref: impl Into<String>,
+        local_root: Option<Utf8PathBuf>,
+        system: impl Into<String>,
+    ) -> Self {
+        Self {
+            flake_ref: flake_ref.into(),
+            local_root,
+            system: system.into(),
+            nix_path: String::new(),
+            nix_version: String::new(),
+            discovery_inputs: Vec::new(),
+        }
+    }
+
+    /// Attach Nix executable identity used in the cache key.
+    #[must_use]
+    pub fn with_nix_identity(
+        mut self,
+        nix_path: impl Into<String>,
+        nix_version: impl Into<String>,
+    ) -> Self {
+        self.nix_path = nix_path.into();
+        self.nix_version = nix_version.into();
+        self
+    }
+
+    /// Attach extra content-hashed discovery input paths.
+    #[must_use]
+    pub fn with_discovery_inputs(mut self, inputs: Vec<String>) -> Self {
+        self.discovery_inputs = inputs;
+        self
+    }
 }
 
 /// Options controlling cache lookup.
@@ -141,6 +194,15 @@ struct CachedDiscovery {
     schema_version: u32,
     flake_root: String,
     nix_fingerprint: u64,
+    nix_path: String,
+    nix_version: String,
+    discovery_schema_version: u32,
+    /// Sorted flake-root-relative paths from `discoveryInputs` at store time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    discovery_inputs: Vec<String>,
+    discovery_inputs_fingerprint: u64,
+    /// Unix seconds when the entry was written (TTL backstop).
+    cached_at: u64,
     system: String,
     flake_ref: String,
     apps: Vec<App>,
@@ -148,11 +210,13 @@ struct CachedDiscovery {
     tasks: Option<TaskDocument>,
 }
 
-const CACHE_SCHEMA_VERSION: u32 = 2;
+const CACHE_SCHEMA_VERSION: u32 = 3;
 
 #[cfg(test)]
 thread_local! {
     static TEST_CACHE_ROOT: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_CACHE_TTL_SECS: std::cell::RefCell<Option<Option<u64>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -202,7 +266,7 @@ pub struct DiscoveryCacheEntry {
     pub cache_file: Option<String>,
     /// Whether a valid cache entry exists for the current inputs.
     pub hit: bool,
-    /// Current `.nix` tree fingerprint used for invalidation.
+    /// Current content fingerprint used for invalidation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invalidation_key: Option<u64>,
     /// Fingerprint stored in the on-disk entry (present on hit or stale miss).
@@ -359,10 +423,17 @@ fn cache_context_key(context: &DiscoveryContext) -> DiscoveryContext {
         || context.flake_ref.clone(),
         |root| root.as_str().to_owned(),
     );
+    let (nix_path, nix_version) = effective_nix_identity(context);
+    let mut discovery_inputs = context.discovery_inputs.clone();
+    discovery_inputs.sort();
+    discovery_inputs.dedup();
     DiscoveryContext {
         flake_ref,
         local_root,
         system: context.system.clone(),
+        nix_path,
+        nix_version,
+        discovery_inputs,
     }
 }
 
@@ -371,6 +442,9 @@ fn cache_file_name(context: &DiscoveryContext) -> String {
     context.local_root.hash(&mut hasher);
     context.system.hash(&mut hasher);
     context.flake_ref.hash(&mut hasher);
+    context.nix_path.hash(&mut hasher);
+    context.nix_version.hash(&mut hasher);
+    DISCOVERY_SCHEMA_VERSION.hash(&mut hasher);
     format!("{:016x}.json", hasher.finish())
 }
 
@@ -378,6 +452,101 @@ fn canonical_flake_root(local_root: &Utf8Path) -> Utf8PathBuf {
     local_root
         .canonicalize_utf8()
         .unwrap_or_else(|_| local_root.to_path_buf())
+}
+
+fn effective_nix_identity(context: &DiscoveryContext) -> (String, String) {
+    if !context.nix_path.is_empty() {
+        let path = Path::new(&context.nix_path).canonicalize().map_or_else(
+            |_| context.nix_path.clone(),
+            |path| path.display().to_string(),
+        );
+        let version = if context.nix_version.is_empty() {
+            default_nix_version()
+        } else {
+            context.nix_version.clone()
+        };
+        return (path, version);
+    }
+
+    #[cfg(test)]
+    {
+        return ("test-nix".to_owned(), "0.0.0".to_owned());
+    }
+
+    #[cfg(not(test))]
+    {
+        resolve_nix_identity_from_env().unwrap_or_else(|_| ("nix".to_owned(), "unknown".to_owned()))
+    }
+}
+
+fn default_nix_version() -> String {
+    #[cfg(test)]
+    {
+        "0.0.0".to_owned()
+    }
+    #[cfg(not(test))]
+    {
+        "unknown".to_owned()
+    }
+}
+
+#[cfg(not(test))]
+fn resolve_nix_identity_from_env() -> io::Result<(String, String)> {
+    let nix = std::env::var("NXR_NIX").unwrap_or_else(|_| "nix".to_owned());
+    let path = PathBuf::from(&nix);
+    let canonical = path.canonicalize().unwrap_or(path).display().to_string();
+    let output = std::process::Command::new(&canonical)
+        .arg("--version")
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other("nix --version failed"));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let version = stdout
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().next_back())
+        .unwrap_or("unknown")
+        .to_owned();
+    Ok((canonical, version))
+}
+
+fn cache_ttl_secs() -> Option<u64> {
+    #[cfg(test)]
+    if let Some(override_ttl) = TEST_CACHE_TTL_SECS.with(|cell| *cell.borrow()) {
+        return override_ttl;
+    }
+
+    match std::env::var(CACHE_TTL_ENV) {
+        Ok(raw) => {
+            let Ok(secs) = raw.parse::<u64>() else {
+                return Some(DEFAULT_CACHE_TTL_SECS);
+            };
+            if secs == 0 { None } else { Some(secs) }
+        }
+        Err(_) => Some(DEFAULT_CACHE_TTL_SECS),
+    }
+}
+
+fn unix_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn merged_discovery_inputs(
+    context: &DiscoveryContext,
+    discovery: &WorkspaceDiscovery,
+) -> Vec<String> {
+    let mut inputs = context.discovery_inputs.clone();
+    if let Some(tasks) = &discovery.tasks {
+        inputs.extend(tasks.discovery_inputs.iter().cloned());
+    }
+    inputs.retain(|path| !path.is_empty());
+    inputs.sort();
+    inputs.dedup();
+    inputs
 }
 
 fn load_cached_workspace(
@@ -402,16 +571,34 @@ fn load_cached_workspace(
         return Ok(None);
     }
 
+    if cached.discovery_schema_version != DISCOVERY_SCHEMA_VERSION {
+        return Ok(None);
+    }
+
     let canonical_root = canonical_flake_root(local_root);
     if cached.flake_root != canonical_root.as_str()
         || cached.system != context.system
         || cached.flake_ref != context.flake_ref
+        || cached.nix_path != context.nix_path
+        || cached.nix_version != context.nix_version
+    {
+        return Ok(None);
+    }
+
+    if let Some(ttl) = cache_ttl_secs()
+        && unix_now_secs().saturating_sub(cached.cached_at) > ttl
     {
         return Ok(None);
     }
 
     let current_fingerprint = nix_tree_fingerprint(&canonical_root)?;
     if cached.nix_fingerprint != current_fingerprint {
+        return Ok(None);
+    }
+
+    let inputs_fingerprint =
+        discovery_inputs_fingerprint(&canonical_root, &cached.discovery_inputs)?;
+    if cached.discovery_inputs_fingerprint != inputs_fingerprint {
         return Ok(None);
     }
 
@@ -430,7 +617,10 @@ fn store_cached_workspace(
     context: &DiscoveryContext,
     discovery: &WorkspaceDiscovery,
 ) -> io::Result<()> {
-    let context = cache_context_key(context);
+    let mut context = cache_context_key(context);
+    let discovery_inputs = merged_discovery_inputs(&context, discovery);
+    context.discovery_inputs.clone_from(&discovery_inputs);
+
     let path = cache_file_path(&context)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "cache directory unavailable"))?;
 
@@ -440,10 +630,18 @@ fn store_cached_workspace(
 
     let canonical_root = canonical_flake_root(local_root);
     let nix_fingerprint = nix_tree_fingerprint(&canonical_root)?;
+    let discovery_inputs_fingerprint =
+        discovery_inputs_fingerprint(&canonical_root, &discovery_inputs)?;
     let entry = CachedDiscovery {
         schema_version: CACHE_SCHEMA_VERSION,
         flake_root: canonical_root.as_str().to_owned(),
         nix_fingerprint,
+        nix_path: context.nix_path.clone(),
+        nix_version: context.nix_version.clone(),
+        discovery_schema_version: DISCOVERY_SCHEMA_VERSION,
+        discovery_inputs,
+        discovery_inputs_fingerprint,
+        cached_at: unix_now_secs(),
         system: context.system.clone(),
         flake_ref: context.flake_ref.clone(),
         apps: discovery.apps.clone(),
@@ -527,11 +725,7 @@ mod tests {
     };
 
     fn test_context(root: &camino::Utf8Path, system: &str) -> DiscoveryContext {
-        DiscoveryContext {
-            flake_ref: root.as_str().to_owned(),
-            local_root: Some(root.to_path_buf()),
-            system: system.to_owned(),
-        }
+        DiscoveryContext::new(root.as_str(), Some(root.to_path_buf()), system)
     }
 
     fn sample_apps(flake_ref: &str, system: &str) -> Vec<App> {
@@ -905,11 +1099,7 @@ mod tests {
     #[test]
     fn remote_flake_skips_cache() {
         let temp = TempDir::new().expect("tempdir");
-        let context = DiscoveryContext {
-            flake_ref: "github:owner/repo".to_owned(),
-            local_root: None,
-            system: "aarch64-darwin".to_owned(),
-        };
+        let context = DiscoveryContext::new("github:owner/repo", None, "aarch64-darwin");
 
         with_cache_dir(&temp, || {
             let mut calls = 0;
@@ -1078,6 +1268,143 @@ mod tests {
             let status = super::discovery_cache_status().expect("status after clear");
             assert_eq!(status.entries, 0);
             assert_eq!(status.total_bytes, 0);
+        });
+    }
+
+    #[test]
+    fn content_change_same_length_invalidates_cache() {
+        let temp = TempDir::new().expect("tempdir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        write_flake(&root);
+        fs::write(root.join("flake.nix"), "{ a = 1; }").expect("flake.nix");
+        let context = test_context(&root, "aarch64-darwin");
+        let apps = sample_apps(root.as_str(), "aarch64-darwin");
+
+        with_cache_dir(&temp, || {
+            store_cached_workspace(
+                &root,
+                &context,
+                &WorkspaceDiscovery {
+                    apps: apps.clone(),
+                    tasks: None,
+                },
+            )
+            .expect("seed cache");
+
+            fs::write(root.join("flake.nix"), "{ a = 2; }").expect("edit flake.nix");
+
+            assert!(
+                load_cached_workspace(&root, &context, false)
+                    .expect("read cache")
+                    .is_none()
+            );
+        });
+    }
+
+    #[test]
+    fn schema_version_mismatch_is_cache_miss() {
+        let temp = TempDir::new().expect("tempdir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        write_flake(&root);
+        let context = test_context(&root, "aarch64-darwin");
+        let apps = sample_apps(root.as_str(), "aarch64-darwin");
+
+        with_cache_dir(&temp, || {
+            store_cached_workspace(
+                &root,
+                &context,
+                &WorkspaceDiscovery {
+                    apps: apps.clone(),
+                    tasks: None,
+                },
+            )
+            .expect("seed cache");
+
+            let path = cache_file_path(&super::cache_context_key(&context)).expect("cache path");
+            let mut value: JsonValue =
+                serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("json");
+            value["schema_version"] = JsonValue::from(2);
+            fs::write(&path, serde_json::to_vec_pretty(&value).expect("serialize"))
+                .expect("rewrite");
+
+            assert!(
+                load_cached_workspace(&root, &context, false)
+                    .expect("read cache")
+                    .is_none()
+            );
+        });
+    }
+
+    #[test]
+    fn discovery_inputs_content_change_invalidates_cache() {
+        let temp = TempDir::new().expect("tempdir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        write_flake(&root);
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"a\"\n").expect("cargo");
+        let context = test_context(&root, "aarch64-darwin")
+            .with_discovery_inputs(vec!["Cargo.toml".to_owned()]);
+        let apps = sample_apps(root.as_str(), "aarch64-darwin");
+
+        with_cache_dir(&temp, || {
+            store_cached_workspace(
+                &root,
+                &context,
+                &WorkspaceDiscovery {
+                    apps: apps.clone(),
+                    tasks: None,
+                },
+            )
+            .expect("seed cache");
+
+            fs::write(root.join("Cargo.toml"), "[package]\nname = \"b\"\n").expect("edit cargo");
+
+            assert!(
+                load_cached_workspace(&root, &context, false)
+                    .expect("read cache")
+                    .is_none()
+            );
+        });
+    }
+
+    #[test]
+    fn ttl_expiry_is_cache_miss() {
+        let temp = TempDir::new().expect("tempdir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        write_flake(&root);
+        let context = test_context(&root, "aarch64-darwin");
+        let apps = sample_apps(root.as_str(), "aarch64-darwin");
+
+        with_cache_dir(&temp, || {
+            store_cached_workspace(
+                &root,
+                &context,
+                &WorkspaceDiscovery {
+                    apps: apps.clone(),
+                    tasks: None,
+                },
+            )
+            .expect("seed cache");
+
+            let path = cache_file_path(&super::cache_context_key(&context)).expect("cache path");
+            let mut value: JsonValue =
+                serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("json");
+            value["cached_at"] = JsonValue::from(1u64);
+            fs::write(&path, serde_json::to_vec_pretty(&value).expect("serialize"))
+                .expect("rewrite");
+
+            super::TEST_CACHE_TTL_SECS.with(|cell| {
+                *cell.borrow_mut() = Some(Some(60));
+            });
+            let miss = load_cached_workspace(&root, &context, false).expect("read cache");
+            super::TEST_CACHE_TTL_SECS.with(|cell| {
+                *cell.borrow_mut() = None;
+            });
+
+            assert!(miss.is_none());
         });
     }
 }

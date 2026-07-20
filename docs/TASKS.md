@@ -100,6 +100,10 @@ The optional `apps` map is **listing metadata only** (categories for
 `nxr list` / `inspect`). It does not define flake apps; those remain
 `apps.<system>.*`. See [MONOREPO_VIEWS.md](MONOREPO_VIEWS.md).
 
+Optional `discoveryInputs` (from `perSystem.nxr.discoveryInputs`) lists
+flake-root-relative paths hashed into the discovery cache key. See
+[PERFORMANCE.md](PERFORMANCE.md).
+
 Smoke check against the fixture flake:
 
 ```bash

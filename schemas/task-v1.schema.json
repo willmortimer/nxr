@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://nxr.dev/schemas/task-v1.schema.json",
   "title": "nxr task document",
-  "description": "FROZEN (V2.0): versioned task orchestration metadata (schema version 1). Tasks coordinate flake apps; they do not replace them. Breaking changes require a new major schema_version. Optional additive `apps` listing metadata is allowed within major 1.",
+  "description": "FROZEN (V2.0): versioned task orchestration metadata (schema version 1). Tasks coordinate flake apps; they do not replace them. Breaking changes require a new major schema_version. Optional additive `apps` listing metadata and `discoveryInputs` are allowed within major 1.",
   "type": "object",
   "required": ["schema_version"],
   "additionalProperties": false,
@@ -24,6 +24,15 @@
       "description": "Optional listing metadata for flake app leaf names. Does not define apps; apps remain apps.<system>.* outputs.",
       "additionalProperties": {
         "$ref": "#/$defs/appListing"
+      }
+    },
+    "discoveryInputs": {
+      "type": "array",
+      "description": "Optional flake-root-relative paths whose contents are hashed into the discovery cache key (cache schema v3). Declared via perSystem.nxr.discoveryInputs.",
+      "default": [],
+      "items": {
+        "type": "string",
+        "minLength": 1
       }
     }
   },

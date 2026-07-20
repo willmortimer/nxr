@@ -163,11 +163,17 @@ pub fn workspace_context_from_snapshot(
     environment_policy: &EnvironmentPolicy,
     shell: Option<&str>,
 ) -> io::Result<WorkspaceContext> {
-    let discovery_cache = discovery_cache_entry(&DiscoveryContext {
-        flake_ref: snapshot.flake.nix_ref.clone(),
-        local_root: snapshot.flake.local_root.clone(),
-        system: snapshot.nix.system.clone(),
-    })?;
+    let discovery_cache = discovery_cache_entry(
+        &DiscoveryContext::new(
+            snapshot.flake.nix_ref.clone(),
+            snapshot.flake.local_root.clone(),
+            snapshot.nix.system.clone(),
+        )
+        .with_nix_identity(
+            snapshot.nix.nix.as_str(),
+            snapshot.nix.capabilities.version.to_string(),
+        ),
+    )?;
 
     Ok(WorkspaceContext {
         flake: flake_context(&snapshot.flake),

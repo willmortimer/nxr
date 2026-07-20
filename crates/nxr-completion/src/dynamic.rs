@@ -141,11 +141,7 @@ mod tests {
 
     #[test]
     fn discover_app_candidates_returns_empty_on_slow_discover() {
-        let context = DiscoveryContext {
-            flake_ref: "github:owner/repo".to_owned(),
-            local_root: None,
-            system: "aarch64-darwin".to_owned(),
-        };
+        let context = DiscoveryContext::new("github:owner/repo", None, "aarch64-darwin");
 
         let apps = discover_app_candidates(&context, DiscoveryCacheOptions::normal(), || {
             thread::sleep(DISCOVERY_TIMEOUT + Duration::from_millis(200));

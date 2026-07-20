@@ -323,6 +323,7 @@ The flake-parts module may expose options:
 perSystem.nxr.apps
 perSystem.nxr.tasks
 perSystem.nxr.shellIntegration
+perSystem.nxr.discoveryInputs
 perSystem.nxr.settings
 ```
 

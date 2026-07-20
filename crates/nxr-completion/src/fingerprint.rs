@@ -4,7 +4,6 @@ use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io;
-use std::time::SystemTime;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -14,36 +13,16 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 /// Use this to skip huge vendored `.nix` trees that rarely affect discovery.
 pub const FINGERPRINT_IGNORE_ENV: &str = "NXR_CACHE_FINGERPRINT_IGNORE";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-struct NixFileStamp {
-    len: u64,
-    secs: u64,
-    nanos: u32,
-}
-
-impl NixFileStamp {
-    fn from_metadata(metadata: &fs::Metadata) -> Self {
-        let len = metadata.len();
-        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        let duration = modified
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default();
-        Self {
-            len,
-            secs: duration.as_secs(),
-            nanos: duration.subsec_nanos(),
-        }
-    }
-}
-
-/// Fingerprint all `.nix` files under `flake_root` using relative path, length, and mtime.
+/// Fingerprint all `.nix` files under `flake_root` using relative path and file contents.
 ///
 /// Built-in directory ignores match common Nix/Rust artifacts (`.git`, `result`,
 /// `target`, …). Additional subtrees may be excluded via [`FINGERPRINT_IGNORE_ENV`].
+/// `flake.lock` content is included when present. Non-`.nix` sources are not hashed
+/// here; declare extras via `perSystem.nxr.discoveryInputs`.
 ///
 /// # Errors
 ///
-/// Returns an I/O error when the tree cannot be walked.
+/// Returns an I/O error when the tree cannot be walked or a file cannot be read.
 pub fn nix_tree_fingerprint(flake_root: &Utf8Path) -> io::Result<u64> {
     let ignore = configured_ignore_globs()?;
     nix_tree_fingerprint_with_ignore(flake_root, &ignore)
@@ -57,23 +36,56 @@ pub(crate) fn nix_tree_fingerprint_with_ignore(
     let root = canonical_flake_root(flake_root);
     let mut entries = Vec::new();
     walk_nix_files(&root, &root, extra_ignore, &mut entries)?;
-    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+    entries.sort();
 
     let mut hasher = DefaultHasher::new();
-    for (path, stamp) in entries {
-        path.hash(&mut hasher);
-        stamp.hash(&mut hasher);
+    for relative in entries {
+        relative.hash(&mut hasher);
+        let bytes = fs::read(root.join(&relative))?;
+        bytes.hash(&mut hasher);
     }
     hash_optional_lock_file(&root, &mut hasher)?;
     Ok(hasher.finish())
 }
 
+/// Content-hash sorted flake-root-relative discovery input paths.
+///
+/// Missing paths hash as an explicit absence marker so deletion invalidates the
+/// cache. Paths are sorted and deduplicated before hashing.
+///
+/// # Errors
+///
+/// Returns an I/O error when a path exists but cannot be read.
+pub fn discovery_inputs_fingerprint(flake_root: &Utf8Path, inputs: &[String]) -> io::Result<u64> {
+    let root = canonical_flake_root(flake_root);
+    let mut paths: Vec<&str> = inputs
+        .iter()
+        .map(String::as_str)
+        .filter(|path| !path.is_empty())
+        .collect();
+    paths.sort_unstable();
+    paths.dedup();
+
+    let mut hasher = DefaultHasher::new();
+    for relative in paths {
+        relative.hash(&mut hasher);
+        match fs::read(root.join(relative)) {
+            Ok(bytes) => bytes.hash(&mut hasher),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                "missing".hash(&mut hasher);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(hasher.finish())
+}
+
 fn hash_optional_lock_file(root: &Utf8Path, hasher: &mut DefaultHasher) -> io::Result<()> {
     let lock = root.join("flake.lock");
-    match fs::metadata(&lock) {
-        Ok(metadata) => {
+    match fs::read(&lock) {
+        Ok(bytes) => {
             "flake.lock".hash(hasher);
-            NixFileStamp::from_metadata(&metadata).hash(hasher);
+            bytes.hash(hasher);
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
@@ -114,7 +126,7 @@ fn walk_nix_files(
     root: &Utf8Path,
     dir: &Utf8Path,
     extra_ignore: &GlobSet,
-    entries: &mut Vec<(String, NixFileStamp)>,
+    entries: &mut Vec<String>,
 ) -> io::Result<()> {
     let mut stack = vec![dir.to_path_buf()];
 
@@ -142,8 +154,7 @@ fn walk_nix_files(
                     .unwrap_or(utf8_path)
                     .as_str()
                     .to_owned();
-                let stamp = NixFileStamp::from_metadata(&entry.metadata()?);
-                entries.push((relative, stamp));
+                entries.push(relative);
             }
         }
     }
@@ -194,7 +205,9 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{nix_tree_fingerprint, nix_tree_fingerprint_with_ignore};
+    use super::{
+        discovery_inputs_fingerprint, nix_tree_fingerprint, nix_tree_fingerprint_with_ignore,
+    };
     use globset::{Glob, GlobSetBuilder};
 
     fn utf8_root(temp: &TempDir) -> camino::Utf8PathBuf {
@@ -215,6 +228,22 @@ mod tests {
 
         let initial = nix_tree_fingerprint(&root).expect("fingerprint");
         fs::write(root.join("nix/apps.nix"), "{ changed = true; }").expect("edit apps.nix");
+        let updated = nix_tree_fingerprint(&root).expect("fingerprint after edit");
+
+        assert_ne!(initial, updated);
+    }
+
+    #[test]
+    fn content_change_same_length_invalidates_fingerprint() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        write_flake_tree(&root);
+        fs::write(root.join("nix/apps.nix"), "{ a = 1; }").expect("apps.nix");
+
+        let initial = nix_tree_fingerprint(&root).expect("fingerprint");
+        // Same byte length, different contents (mtime-only fingerprints would miss this
+        // if the filesystem did not update mtime).
+        fs::write(root.join("nix/apps.nix"), "{ a = 2; }").expect("edit apps.nix");
         let updated = nix_tree_fingerprint(&root).expect("fingerprint after edit");
 
         assert_ne!(initial, updated);
@@ -293,6 +322,21 @@ mod tests {
 
         thread::sleep(Duration::from_millis(10));
         let updated = nix_tree_fingerprint(&root).expect("updated fingerprint");
+
+        assert_ne!(initial, updated);
+    }
+
+    #[test]
+    fn discovery_inputs_content_change_invalidates() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        write_flake_tree(&root);
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"a\"\n").expect("cargo");
+
+        let inputs = vec!["Cargo.toml".to_owned()];
+        let initial = discovery_inputs_fingerprint(&root, &inputs).expect("initial");
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"b\"\n").expect("edit cargo");
+        let updated = discovery_inputs_fingerprint(&root, &inputs).expect("updated");
 
         assert_ne!(initial, updated);
     }

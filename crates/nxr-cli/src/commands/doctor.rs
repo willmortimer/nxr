@@ -411,6 +411,9 @@ fn collect_workspace_cache_findings(
         flake_ref: flake.nix_ref.clone(),
         local_root: flake.local_root.clone(),
         system: adapter.system.clone(),
+        nix_path: adapter.nix.as_str().to_owned(),
+        nix_version: adapter.capabilities.version.to_string(),
+        discovery_inputs: Vec::new(),
     };
     let Ok(entry) = discovery_cache_entry(&context) else {
         push_finding(
