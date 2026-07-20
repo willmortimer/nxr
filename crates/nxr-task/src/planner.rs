@@ -30,7 +30,24 @@ pub fn plan_serial(
     tasks: &BTreeMap<String, TaskDefinition>,
     root: &str,
 ) -> Result<Vec<String>, PlanError> {
-    let graph = TaskGraph::subgraph(tasks, root)?;
+    plan_serial_union(tasks, &[root])
+}
+
+/// Compute a deterministic serial execution order for the union of `roots`.
+///
+/// The result includes every root and its transitive `dependsOn` ancestors,
+/// with each task id appearing at most once. Dependencies appear before
+/// dependents.
+///
+/// # Errors
+///
+/// Returns the same errors as [`plan_serial`] for a single root, plus
+/// [`PlanError::UnknownRoot`] when `roots` is empty.
+pub fn plan_serial_union(
+    tasks: &BTreeMap<String, TaskDefinition>,
+    roots: &[&str],
+) -> Result<Vec<String>, PlanError> {
+    let graph = TaskGraph::subgraph_union(tasks, roots)?;
     topo_serial(&graph)
 }
 
@@ -312,5 +329,18 @@ mod tests {
             plan_mermaid(&tasks, "a"),
             Err(PlanError::Cycle { .. })
         ));
+    }
+
+    #[test]
+    fn diamond_dedupe_union_serial_order() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert("a".to_owned(), task(&[]));
+        tasks.insert("b".to_owned(), task(&["a"]));
+        tasks.insert("c".to_owned(), task(&["a"]));
+        tasks.insert("d".to_owned(), task(&["b", "c"]));
+
+        let order = plan_serial_union(&tasks, &["b", "c", "d"]).expect("plan");
+        assert_eq!(order, vec!["a", "b", "c", "d"]);
+        assert_eq!(order.iter().filter(|id| **id == "a").count(), 1);
     }
 }

@@ -109,10 +109,23 @@ Replace the system string with `builtins.currentSystem` as needed.
 | Unsupported `schema_version` major | Typed schema error |
 | Other Nix evaluation failures | Mapped like other Nix adapter errors |
 
+## Multi-root union
+
+Pass multiple task names to build the union of their dependency subgraphs.
+Shared ancestors execute once:
+
+```bash
+nxr task lint unit integration -j 8
+# shared deps deduped; ready siblings may run concurrently when -j allows
+```
+
+The execution plan records every requested root in `roots` (additive); `root`
+remains the first requested name for backward compatibility.
+
 ## Argument forwarding (V2 freeze)
 
-Trailing CLI arguments after the task name are forwarded to the **root task’s
-app only**. Every dependency node receives an empty argument list.
+Trailing CLI arguments after the task name(s) are forwarded to each **root
+task’s app only**. Every dependency node receives an empty argument list.
 
 ```bash
 nxr task ci -- --flag
