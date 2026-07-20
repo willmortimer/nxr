@@ -96,6 +96,21 @@ pub struct ProjectDefinition {
     pub tasks: Vec<String>,
 }
 
+/// Kind of namespace member referenced in [`ProjectsDocument`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum ProjectMemberKind {
+    App,
+    Task,
+}
+
+/// A project namespace member that does not exist in the flake catalog.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnknownProjectMember {
+    pub namespace: String,
+    pub member: String,
+    pub kind: ProjectMemberKind,
+}
+
 impl ProjectsDocument {
     pub const SCHEMA_VERSION: u32 = PROJECTS_SCHEMA_VERSION;
 
@@ -156,6 +171,44 @@ impl ProjectsDocument {
                 path: path.to_owned(),
                 name: namespace.to_owned(),
             })
+    }
+
+    /// Members listed in project namespaces that are absent from the flake catalog.
+    #[must_use]
+    pub fn unknown_members(
+        &self,
+        known_apps: &BTreeSet<String>,
+        known_tasks: &BTreeSet<String>,
+    ) -> Vec<UnknownProjectMember> {
+        let mut unknown = Vec::new();
+        for (namespace, project) in &self.projects {
+            for app in &project.apps {
+                if !known_apps.contains(app) {
+                    unknown.push(UnknownProjectMember {
+                        namespace: namespace.clone(),
+                        member: app.clone(),
+                        kind: ProjectMemberKind::App,
+                    });
+                }
+            }
+            for task in &project.tasks {
+                if !known_tasks.contains(task) {
+                    unknown.push(UnknownProjectMember {
+                        namespace: namespace.clone(),
+                        member: task.clone(),
+                        kind: ProjectMemberKind::Task,
+                    });
+                }
+            }
+        }
+        unknown.sort_by(|left, right| {
+            (&left.namespace, left.kind, &left.member).cmp(&(
+                &right.namespace,
+                right.kind,
+                &right.member,
+            ))
+        });
+        unknown
     }
 }
 
@@ -230,8 +283,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        NXR_CATEGORY_KEY, ProjectDefinition, ProjectsDocument, app_category, listable_apps,
-        load_projects_document, set_app_category,
+        NXR_CATEGORY_KEY, ProjectDefinition, ProjectMemberKind, ProjectsDocument, UnknownProjectMember,
+        app_category, listable_apps, load_projects_document, set_app_category,
     };
     use crate::App;
 
@@ -322,5 +375,36 @@ mod tests {
         let namespaced = listable_apps(&apps, None, Some(&members));
         assert_eq!(namespaced.len(), 1);
         assert_eq!(namespaced[0].name, "web-test");
+    }
+
+    #[test]
+    fn unknown_members_reports_missing_apps_and_tasks() {
+        let mut projects = BTreeMap::new();
+        projects.insert(
+            "api".to_owned(),
+            ProjectDefinition {
+                apps: vec!["known-app".to_owned(), "ghost-app".to_owned()],
+                tasks: vec!["known-task".to_owned(), "ghost-task".to_owned()],
+                ..ProjectDefinition::default()
+            },
+        );
+        let doc = ProjectsDocument::new(projects);
+        let known_apps = BTreeSet::from(["known-app".to_owned()]);
+        let known_tasks = BTreeSet::from(["known-task".to_owned()]);
+        assert_eq!(
+            doc.unknown_members(&known_apps, &known_tasks),
+            vec![
+                UnknownProjectMember {
+                    namespace: "api".to_owned(),
+                    member: "ghost-app".to_owned(),
+                    kind: ProjectMemberKind::App,
+                },
+                UnknownProjectMember {
+                    namespace: "api".to_owned(),
+                    member: "ghost-task".to_owned(),
+                    kind: ProjectMemberKind::Task,
+                },
+            ]
+        );
     }
 }

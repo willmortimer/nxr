@@ -6,6 +6,7 @@ use nxr_completion::cache::{DiscoveryContext, discovery_cache_entry, discovery_c
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::{Diagnostic, DiagnosticLevel, exit};
 use nxr_core::sanitize::sanitize_terminal_text;
+use nxr_core::{load_projects_document, ProjectMemberKind};
 use nxr_nix::{NixAdapter, NixCapabilities, NixError, OptionalNixFlags, resolve_app_by_name};
 use serde::Serialize;
 
@@ -264,6 +265,8 @@ fn collect_flake_findings(
                 collect_workspace_cache_findings(&flake, adapter, findings);
             }
 
+            collect_projects_member_findings(&flake, adapter, &apps, findings);
+
             if let Some(app_name) = request.app {
                 match resolve_app_by_name(&apps, app_name) {
                     Ok(app) => {
@@ -293,6 +296,45 @@ fn collect_flake_findings(
                 error.user_message(),
             );
         }
+    }
+}
+
+fn collect_projects_member_findings(
+    flake: &crate::flake::FlakeSelection,
+    adapter: &NixAdapter,
+    apps: &[nxr_core::App],
+    findings: &mut Vec<Diagnostic>,
+) {
+    let Some(root) = flake.local_root.as_ref() else {
+        return;
+    };
+
+    let Ok(Some((path, doc))) = load_projects_document(root.as_std_path()) else {
+        return;
+    };
+
+    let known_apps = apps.iter().map(|app| app.name.clone()).collect();
+    let known_tasks = match adapter.discover_tasks(&flake.nix_ref, &OptionalNixFlags::default())
+    {
+        Ok(task_doc) => task_doc.tasks.keys().cloned().collect(),
+        Err(_) => std::collections::BTreeSet::new(),
+    };
+
+    for unknown in doc.unknown_members(&known_apps, &known_tasks) {
+        let kind = match unknown.kind {
+            ProjectMemberKind::App => "app",
+            ProjectMemberKind::Task => "task",
+        };
+        push_finding(
+            findings,
+            DiagnosticLevel::Warning,
+            "projects.unknown_member",
+            format!(
+                "project namespace `{}` lists unknown {kind} `{}` in {path} \
+                 (non-authoritative view metadata)",
+                unknown.namespace, unknown.member
+            ),
+        );
     }
 }
 

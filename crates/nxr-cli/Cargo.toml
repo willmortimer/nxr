@@ -26,6 +26,7 @@ nxr-watch = { path = "../nxr-watch" }
 nxr-workspace = { path = "../nxr-workspace" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

@@ -19,8 +19,8 @@ pub use model::{App, AppList, FlakeOutput, FlakeRef, ListApp, OutputList};
 pub use plan::{Plan, PlanCommand, PlanKind};
 pub use projects::{
     NXR_CATEGORY_KEY, PROJECTS_FILENAME, PROJECTS_SCHEMA_VERSION, ProjectDefinition,
-    ProjectsDocument, ProjectsError, app_category, listable_apps, load_projects_document,
-    set_app_category,
+    ProjectMemberKind, ProjectsDocument, ProjectsError, UnknownProjectMember, app_category,
+    listable_apps, load_projects_document, set_app_category,
 };
 pub use sanitize::sanitize_terminal_text;
 

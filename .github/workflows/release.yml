@@ -66,7 +66,8 @@ jobs:
           system="${{ matrix.system }}"
           staging="nxr-${version}-${system}"
           mkdir -p "$staging"
-          install -m 0755 result/bin/nxr "$staging/nxr"
+          cp -a result/bin "$staging/"
+          cp -a result/share "$staging/"
           archive="${staging}.tar.gz"
           tar -czf "$archive" "$staging"
 
@@ -105,11 +106,14 @@ jobs:
           cp crates/nxr-cli/nxr_bin.cdx.json nxr-cargo.cdx.json
           find . -name '*_bin.cdx.json' -delete
 
+      - name: Build nxr package for Syft
+        run: nix build .#packages.x86_64-linux.nxr -L --out-link result
+
       - name: Generate Syft SBOM
         run: |
           set -euo pipefail
           nix shell nixpkgs#syft --command \
-            syft dir:. \
+            syft dir:result \
               --source-name nxr \
               --source-version "${{ steps.version.outputs.value }}" \
               -o cyclonedx-json=nxr-syft.cdx.json
@@ -121,6 +125,35 @@ jobs:
             nxr-cargo.cdx.json
             nxr-syft.cdx.json
           if-no-files-found: error
+
+  smoke:
+    name: release smoke
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: nxr-x86_64-linux
+          path: artifact
+
+      - name: Extract and smoke test release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(find artifact -name '*.tar.gz' -print -quit)"
+          tar -xzf "$archive"
+          staging="$(find . -maxdepth 1 -type d -name 'nxr-*-x86_64-linux' -print -quit)"
+          nxr="$staging/bin/nxr"
+          test -x "$nxr"
+          "$nxr" --version
+          "$nxr" completion bash >/dev/null
+          "$nxr" --flake fixtures/basic-apps hello
+          "$nxr" --flake fixtures/task-dag task ci --dry-run
+          "$nxr" --flake fixtures/task-dag task ci
 
   checksums:
     name: checksums
@@ -148,7 +181,7 @@ jobs:
 
   release:
     name: github-release
-    needs: [build, sbom, checksums]
+    needs: [build, sbom, checksums, smoke]
     if: github.event_name != 'workflow_dispatch' || inputs.dry_run != true
     runs-on: ubuntu-latest
     permissions:

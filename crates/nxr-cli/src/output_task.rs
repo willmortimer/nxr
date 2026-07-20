@@ -5,10 +5,11 @@
 //! pipe reads never split multi-byte characters into replacement garbage.
 
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io::{self, BufReader, Seek, SeekFrom, Write};
 
 use clap::ValueEnum;
 use nxr_task::{Event, EventSink, NullSink, OutputPayload};
+use tempfile::NamedTempFile;
 
 /// Multiplexed stdout/stderr presentation for parallel task runs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -61,14 +62,22 @@ pub struct TaskEventSink<'a> {
 
 enum TaskEventSinkInner<'a> {
     Null,
-    OutputOnly(TaskOutputRenderer<'a>),
+    OutputOnly {
+        mode: TaskOutputMode,
+        stdout: &'a mut dyn Write,
+        stderr: &'a mut dyn Write,
+        state: TaskOutputRendererState,
+    },
     EventsOnly {
         format: EventsFormat,
         writer: &'a mut dyn Write,
     },
     Both {
-        output: TaskOutputRenderer<'a>,
+        mode: TaskOutputMode,
         format: EventsFormat,
+        stdout: &'a mut dyn Write,
+        stderr: &'a mut dyn Write,
+        state: TaskOutputRendererState,
     },
 }
 
@@ -83,16 +92,22 @@ impl<'a> TaskEventSink<'a> {
         let output = output.filter(|mode| mode.is_multiplexed());
         let inner = match (output, events) {
             (None, None) => TaskEventSinkInner::Null,
-            (Some(mode), None) => {
-                TaskEventSinkInner::OutputOnly(TaskOutputRenderer::new(mode, stdout, stderr))
-            }
+            (Some(mode), None) => TaskEventSinkInner::OutputOnly {
+                mode,
+                stdout,
+                stderr,
+                state: TaskOutputRendererState::default(),
+            },
             (None, Some(format)) => TaskEventSinkInner::EventsOnly {
                 format,
                 writer: stderr,
             },
             (Some(mode), Some(format)) => TaskEventSinkInner::Both {
-                output: TaskOutputRenderer::new(mode, stdout, stderr),
+                mode,
                 format,
+                stdout,
+                stderr,
+                state: TaskOutputRendererState::default(),
             },
         };
 
@@ -107,23 +122,54 @@ impl EventSink for TaskEventSink<'_> {
                 let mut sink = NullSink;
                 sink.emit(event);
             }
-            TaskEventSinkInner::OutputOnly(renderer) => renderer.emit(event),
+            TaskEventSinkInner::OutputOnly {
+                mode,
+                stdout,
+                stderr,
+                state,
+            } => {
+                let mut renderer =
+                    TaskOutputRenderer::from_state(*mode, stdout, stderr, state);
+                renderer.emit(event);
+            }
             TaskEventSinkInner::EventsOnly { format, writer } => {
                 write_jsonl_event(*writer, *format, &event);
             }
-            TaskEventSinkInner::Both { output, format } => {
-                output.emit(event.clone());
-                let mut stderr = io::stderr().lock();
-                write_jsonl_event(&mut stderr, *format, &event);
+            TaskEventSinkInner::Both {
+                mode,
+                format,
+                stdout,
+                stderr,
+                state,
+            } => {
+                {
+                    let mut renderer =
+                        TaskOutputRenderer::from_state(*mode, stdout, stderr, state);
+                    renderer.emit(event.clone());
+                }
+                write_jsonl_event(stderr, *format, &event);
             }
         }
     }
 }
 
+/// In-memory buffered output spills to a temp file once per-stream data exceeds
+/// this threshold (grouped and failures modes only).
+#[cfg(not(test))]
+const BUFFER_SPILL_THRESHOLD: usize = 4 * 1024 * 1024;
+
+#[cfg(test)]
+const BUFFER_SPILL_THRESHOLD: usize = 64;
+
 struct TaskOutputRenderer<'a> {
     mode: TaskOutputMode,
     stdout: &'a mut dyn Write,
     stderr: &'a mut dyn Write,
+    state: &'a mut TaskOutputRendererState,
+}
+
+#[derive(Default)]
+struct TaskOutputRendererState {
     live_stdout: BTreeMap<String, StreamState>,
     live_stderr: BTreeMap<String, StreamState>,
     grouped: BTreeMap<String, NodeBuffers>,
@@ -137,31 +183,101 @@ struct StreamState {
     pending: String,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 struct NodeBuffers {
     stdout_decoder: Utf8StreamDecoder,
     stderr_decoder: Utf8StreamDecoder,
-    stdout: String,
-    stderr: String,
+    stdout: SpillableBuffer,
+    stderr: SpillableBuffer,
+}
+
+/// Buffered stream data held in memory until [`BUFFER_SPILL_THRESHOLD`], then
+/// appended to a temp file so grouped/failures modes stay bounded.
+#[derive(Debug, Default)]
+struct SpillableBuffer {
+    memory: String,
+    spill: Option<NamedTempFile>,
+    ends_with_newline: bool,
+}
+
+impl SpillableBuffer {
+    fn push_str(&mut self, chunk: &str) {
+        if chunk.is_empty() {
+            return;
+        }
+
+        if self.spill.is_some() {
+            if let Some(file) = self.spill.as_mut() {
+                let _ = file.write_all(chunk.as_bytes());
+                let _ = file.flush();
+            }
+            self.ends_with_newline = chunk.as_bytes().last() == Some(&b'\n');
+            return;
+        }
+
+        if self.memory.len().saturating_add(chunk.len()) > BUFFER_SPILL_THRESHOLD {
+            match NamedTempFile::new() {
+                Ok(mut file) => {
+                    let _ = file.write_all(self.memory.as_bytes());
+                    let _ = file.write_all(chunk.as_bytes());
+                    let _ = file.flush();
+                    self.memory.clear();
+                    self.spill = Some(file);
+                    self.ends_with_newline = chunk.as_bytes().last() == Some(&b'\n');
+                }
+                Err(_) => {
+                    self.memory.push_str(chunk);
+                    self.ends_with_newline = self.memory.ends_with('\n');
+                }
+            }
+            return;
+        }
+
+        self.memory.push_str(chunk);
+        self.ends_with_newline = self.memory.ends_with('\n');
+    }
+
+    fn write_to(&self, writer: &mut dyn Write) -> io::Result<()> {
+        if let Some(file) = &self.spill {
+            let mut reader = BufReader::new(file.as_file());
+            reader.seek(SeekFrom::Start(0))?;
+            io::copy(&mut reader, writer)?;
+        }
+        if !self.memory.is_empty() {
+            writer.write_all(self.memory.as_bytes())?;
+        }
+        Ok(())
+    }
+
+    fn is_empty(&self) -> bool {
+        self.memory.is_empty() && self.spill.is_none()
+    }
+
+    fn ends_with_newline(&self) -> bool {
+        self.ends_with_newline
+    }
 }
 
 impl<'a> TaskOutputRenderer<'a> {
-    fn new(mode: TaskOutputMode, stdout: &'a mut dyn Write, stderr: &'a mut dyn Write) -> Self {
+    fn from_state(
+        mode: TaskOutputMode,
+        stdout: &'a mut dyn Write,
+        stderr: &'a mut dyn Write,
+        state: &'a mut TaskOutputRendererState,
+    ) -> Self {
         Self {
             mode,
             stdout,
             stderr,
-            live_stdout: BTreeMap::new(),
-            live_stderr: BTreeMap::new(),
-            grouped: BTreeMap::new(),
+            state,
         }
     }
 
     fn ingest_live(&mut self, is_stdout: bool, node: &str, payload: &OutputPayload) {
         let map = if is_stdout {
-            &mut self.live_stdout
+            &mut self.state.live_stdout
         } else {
-            &mut self.live_stderr
+            &mut self.state.live_stderr
         };
         let state = map.entry(node.to_owned()).or_default();
         let decoded = state.decoder.push(payload.as_bytes());
@@ -174,7 +290,7 @@ impl<'a> TaskOutputRenderer<'a> {
     }
 
     fn ingest_buffered(&mut self, is_stdout: bool, node: &str, payload: &OutputPayload) {
-        let entry = self.grouped.entry(node.to_owned()).or_default();
+        let entry = self.state.grouped.entry(node.to_owned()).or_default();
         if is_stdout {
             let decoded = entry.stdout_decoder.push(payload.as_bytes());
             entry.stdout.push_str(&decoded);
@@ -185,12 +301,12 @@ impl<'a> TaskOutputRenderer<'a> {
     }
 
     fn flush_live_partial(&mut self, node: &str) {
-        flush_stream_on_exit(self.stdout, node, &mut self.live_stdout);
-        flush_stream_on_exit(self.stderr, node, &mut self.live_stderr);
+        flush_stream_on_exit(self.stdout, node, &mut self.state.live_stdout);
+        flush_stream_on_exit(self.stderr, node, &mut self.state.live_stderr);
     }
 
     fn finish_buffered_decoders(&mut self, node: &str) {
-        if let Some(buffers) = self.grouped.get_mut(node) {
+        if let Some(buffers) = self.state.grouped.get_mut(node) {
             let rest = buffers.stdout_decoder.finish();
             buffers.stdout.push_str(&rest);
             let rest = buffers.stderr_decoder.finish();
@@ -252,11 +368,11 @@ impl EventSink for TaskOutputRenderer<'_> {
                 };
 
                 if should_flush {
-                    if let Some(buffers) = self.grouped.remove(&node) {
+                    if let Some(buffers) = self.state.grouped.remove(&node) {
                         let _ = write_buffered_output(self.stdout, self.stderr, &buffers);
                     }
                 } else if matches!(self.mode, TaskOutputMode::Failures) {
-                    let _ = self.grouped.remove(&node);
+                    let _ = self.state.grouped.remove(&node);
                 }
             }
             Event::Diagnostic { message } => {
@@ -374,14 +490,14 @@ fn write_buffered_output(
     buffers: &NodeBuffers,
 ) -> io::Result<()> {
     if !buffers.stdout.is_empty() {
-        stdout.write_all(buffers.stdout.as_bytes())?;
-        if !buffers.stdout.ends_with('\n') {
+        buffers.stdout.write_to(stdout)?;
+        if !buffers.stdout.ends_with_newline() {
             stdout.write_all(b"\n")?;
         }
     }
     if !buffers.stderr.is_empty() {
-        stderr.write_all(buffers.stderr.as_bytes())?;
-        if !buffers.stderr.ends_with('\n') {
+        buffers.stderr.write_to(stderr)?;
+        if !buffers.stderr.ends_with_newline() {
             stderr.write_all(b"\n")?;
         }
     }
@@ -440,7 +556,8 @@ mod tests {
     fn render_output(mode: TaskOutputMode, events: &[Event]) -> (String, String) {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let mut sink = TaskOutputRenderer::new(mode, &mut stdout, &mut stderr);
+        let mut state = TaskOutputRendererState::default();
+        let mut sink = TaskOutputRenderer::from_state(mode, &mut stdout, &mut stderr, &mut state);
         for event in events {
             sink.emit(event.clone());
         }
@@ -663,6 +780,51 @@ mod tests {
     }
 
     #[test]
+    fn composite_sink_with_output_and_events_uses_supplied_stderr() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut sink = build_task_event_sink(
+            Some(TaskOutputMode::Grouped),
+            Some(EventsFormat::Jsonl),
+            &mut stdout,
+            &mut stderr,
+        );
+        sink.emit(Event::NodeStarted {
+            node: "fmt".to_owned(),
+        });
+        sink.emit(Event::StdoutChunk {
+            node: "fmt".to_owned(),
+            payload: OutputPayload::utf8("ok\n"),
+        });
+        sink.emit(Event::NodeExited {
+            node: "fmt".to_owned(),
+            code: Some(0),
+        });
+        drop(sink);
+        assert_eq!(String::from_utf8(stdout).expect("utf-8"), "ok\n");
+        let events = String::from_utf8(stderr).expect("utf-8");
+        assert!(events.contains("\"type\":\"node_started\""));
+    }
+
+    #[test]
+    fn grouped_mode_spills_large_buffers_to_temp_files() {
+        let chunk = "x".repeat(BUFFER_SPILL_THRESHOLD);
+        let events = vec![
+            Event::StdoutChunk {
+                node: "big".to_owned(),
+                payload: OutputPayload::utf8(format!("{chunk}\n")),
+            },
+            Event::NodeExited {
+                node: "big".to_owned(),
+                code: Some(0),
+            },
+        ];
+        let (stdout, stderr) = render_output(TaskOutputMode::Grouped, &events);
+        assert_eq!(stdout, format!("{chunk}\n"));
+        assert_eq!(stderr, "");
+    }
+
+    #[test]
     fn composite_sink_with_no_options_is_inert() {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -690,7 +852,13 @@ mod tests {
         }];
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let mut renderer = TaskOutputRenderer::new(TaskOutputMode::Live, &mut stdout, &mut stderr);
+        let mut state = TaskOutputRendererState::default();
+        let mut renderer = TaskOutputRenderer::from_state(
+            TaskOutputMode::Live,
+            &mut stdout,
+            &mut stderr,
+            &mut state,
+        );
         let mut recorder = RecordingSink::new();
         for event in events {
             renderer.emit(event.clone());
