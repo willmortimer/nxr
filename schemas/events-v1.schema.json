@@ -75,7 +75,12 @@
         },
         "text": {
           "type": "string",
-          "description": "UTF-8 text (lossy conversion is the emitter's responsibility)."
+          "description": "Chunk payload. UTF-8 when encoding is absent or utf8; otherwise standard base64 of raw bytes."
+        },
+        "encoding": {
+          "type": "string",
+          "enum": ["utf8", "base64"],
+          "description": "Optional. Absent or utf8: text is a UTF-8 string. base64: text is standard base64 of arbitrary bytes."
         }
       }
     },
@@ -93,7 +98,12 @@
         },
         "text": {
           "type": "string",
-          "description": "UTF-8 text (lossy conversion is the emitter's responsibility)."
+          "description": "Chunk payload. UTF-8 when encoding is absent or utf8; otherwise standard base64 of raw bytes."
+        },
+        "encoding": {
+          "type": "string",
+          "enum": ["utf8", "base64"],
+          "description": "Optional. Absent or utf8: text is a UTF-8 string. base64: text is standard base64 of arbitrary bytes."
         }
       }
     },

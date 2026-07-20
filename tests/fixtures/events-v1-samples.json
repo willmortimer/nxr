@@ -23,6 +23,12 @@
     "text": "warn"
   },
   {
+    "type": "stdout_chunk",
+    "node": "bin",
+    "text": "AP/+gEE=",
+    "encoding": "base64"
+  },
+  {
     "type": "node_exited",
     "node": "fmt",
     "code": 0

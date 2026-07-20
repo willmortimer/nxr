@@ -2,8 +2,158 @@
 //!
 //! Renderers and schedulers share this bus so scheduling stays decoupled from
 //! presentation. Events are sync-only (no Tokio).
+//!
+//! Chunk payloads are byte-safe: pipes emit raw bytes, JSONL may label them as
+//! UTF-8 or base64 (`encoding`), and human renderers decode UTF-8 incrementally.
 
-use serde::{Deserialize, Serialize};
+use std::fmt;
+
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use serde::de::{self, MapAccess, Visitor};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+/// Wire encoding label for stdout/stderr chunk payloads (JSONL).
+///
+/// Absent `encoding` on the wire means UTF-8 (backward compatible).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChunkEncoding {
+    /// `text` is a UTF-8 string.
+    #[default]
+    Utf8,
+    /// `text` is standard base64 of arbitrary bytes.
+    Base64,
+}
+
+impl ChunkEncoding {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Utf8 => "utf8",
+            Self::Base64 => "base64",
+        }
+    }
+}
+
+/// Byte-safe stdout/stderr payload carried by chunk events.
+///
+/// Serializes as `text` plus optional `encoding` (`utf8` omitted for
+/// compatibility; `base64` always written).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OutputPayload {
+    /// Valid UTF-8 text.
+    Utf8(String),
+    /// Arbitrary bytes (invalid UTF-8 or intentionally opaque).
+    Bytes(Vec<u8>),
+}
+
+impl OutputPayload {
+    /// Construct a UTF-8 payload.
+    #[must_use]
+    pub fn utf8(text: impl Into<String>) -> Self {
+        Self::Utf8(text.into())
+    }
+
+    /// Prefer [`Self::Utf8`] when `bytes` is valid UTF-8; otherwise [`Self::Bytes`].
+    #[must_use]
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        match String::from_utf8(bytes) {
+            Ok(text) => Self::Utf8(text),
+            Err(err) => Self::Bytes(err.into_bytes()),
+        }
+    }
+
+    /// Borrow the underlying bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Utf8(text) => text.as_bytes(),
+            Self::Bytes(bytes) => bytes.as_slice(),
+        }
+    }
+
+    /// Wire encoding used when serializing this payload.
+    #[must_use]
+    pub const fn encoding(&self) -> ChunkEncoding {
+        match self {
+            Self::Utf8(_) => ChunkEncoding::Utf8,
+            Self::Bytes(_) => ChunkEncoding::Base64,
+        }
+    }
+}
+
+impl Serialize for OutputPayload {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Utf8(text) => {
+                // Omit encoding for UTF-8 so existing fixtures stay stable.
+                let mut state = serializer.serialize_struct("OutputPayload", 1)?;
+                state.serialize_field("text", text)?;
+                state.end()
+            }
+            Self::Bytes(bytes) => {
+                let mut state = serializer.serialize_struct("OutputPayload", 2)?;
+                state.serialize_field("text", &BASE64.encode(bytes))?;
+                state.serialize_field("encoding", &ChunkEncoding::Base64)?;
+                state.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OutputPayload {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(OutputPayloadVisitor)
+    }
+}
+
+struct OutputPayloadVisitor;
+
+impl<'de> Visitor<'de> for OutputPayloadVisitor {
+    type Value = OutputPayload;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("chunk payload with text and optional encoding")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut text: Option<String> = None;
+        let mut encoding: Option<ChunkEncoding> = None;
+
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "text" => {
+                    if text.is_some() {
+                        return Err(de::Error::duplicate_field("text"));
+                    }
+                    text = Some(map.next_value()?);
+                }
+                "encoding" => {
+                    if encoding.is_some() {
+                        return Err(de::Error::duplicate_field("encoding"));
+                    }
+                    encoding = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(other, &["text", "encoding"]));
+                }
+            }
+        }
+
+        let text = text.ok_or_else(|| de::Error::missing_field("text"))?;
+        match encoding.unwrap_or(ChunkEncoding::Utf8) {
+            ChunkEncoding::Utf8 => Ok(OutputPayload::Utf8(text)),
+            ChunkEncoding::Base64 => {
+                let bytes = BASE64
+                    .decode(text.as_bytes())
+                    .map_err(|err| de::Error::custom(format!("invalid base64 chunk: {err}")))?;
+                Ok(OutputPayload::Bytes(bytes))
+            }
+        }
+    }
+}
 
 /// Typed events emitted during plan construction and node execution.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -30,15 +180,17 @@ pub enum Event {
     StdoutChunk {
         /// Task id.
         node: String,
-        /// UTF-8 text (lossy conversion is the emitter's responsibility).
-        text: String,
+        /// Byte-safe payload (`text` + optional `encoding` on the wire).
+        #[serde(flatten)]
+        payload: OutputPayload,
     },
     /// A chunk of stderr from a running node.
     StderrChunk {
         /// Task id.
         node: String,
-        /// UTF-8 text (lossy conversion is the emitter's responsibility).
-        text: String,
+        /// Byte-safe payload (`text` + optional `encoding` on the wire).
+        #[serde(flatten)]
+        payload: OutputPayload,
     },
     /// A node finished with an exit status.
     NodeExited {
@@ -164,11 +316,11 @@ mod tests {
             },
             Event::StdoutChunk {
                 node: "a".to_owned(),
-                text: "hello".to_owned(),
+                payload: OutputPayload::utf8("hello"),
             },
             Event::StderrChunk {
                 node: "a".to_owned(),
-                text: "warn".to_owned(),
+                payload: OutputPayload::utf8("warn"),
             },
             Event::NodeExited {
                 node: "a".to_owned(),
@@ -250,10 +402,20 @@ mod tests {
     fn assert_json_type(value: &Value, prop_schema: &Value, event_type: &str, field: &str) {
         match prop_schema.get("type") {
             Some(Value::String(ty)) => match ty.as_str() {
-                "string" => assert!(
-                    value.is_string(),
-                    "{event_type}.{field} expected string: {value}"
-                ),
+                "string" => {
+                    assert!(
+                        value.is_string(),
+                        "{event_type}.{field} expected string: {value}"
+                    );
+                    if let Some(Value::Array(allowed)) = prop_schema.get("enum") {
+                        let s = value.as_str().expect("string");
+                        let ok = allowed.iter().any(|v| v.as_str() == Some(s));
+                        assert!(
+                            ok,
+                            "{event_type}.{field} value `{s}` not in enum {allowed:?}"
+                        );
+                    }
+                }
                 "integer" => assert!(
                     value.as_i64().is_some() || value.as_u64().is_some(),
                     "{event_type}.{field} expected integer: {value}"
@@ -324,11 +486,11 @@ mod tests {
         });
         sink.emit(Event::StdoutChunk {
             node: "fmt".to_owned(),
-            text: "ok\n".to_owned(),
+            payload: OutputPayload::utf8("ok\n"),
         });
         sink.emit(Event::StderrChunk {
             node: "fmt".to_owned(),
-            text: String::new(),
+            payload: OutputPayload::utf8(""),
         });
         sink.emit(Event::NodeExited {
             node: "fmt".to_owned(),
@@ -353,6 +515,43 @@ mod tests {
             // Touch every variant via the exhaustive classifier.
             assert!(!event_kind(&decoded).is_empty());
         }
+    }
+
+    #[test]
+    fn binary_chunk_round_trips_as_base64() {
+        let bytes = vec![0x00, 0xff, 0xfe, 0x80, b'A'];
+        let event = Event::StdoutChunk {
+            node: "bin".to_owned(),
+            payload: OutputPayload::from_bytes(bytes.clone()),
+        };
+        assert!(matches!(event, Event::StdoutChunk { payload: OutputPayload::Bytes(_), .. }));
+
+        let encoded = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(
+            encoded.get("encoding").and_then(Value::as_str),
+            Some("base64")
+        );
+        assert_matches_events_schema(&encoded);
+
+        let decoded: Event = serde_json::from_value(encoded).expect("deserialize");
+        match decoded {
+            Event::StdoutChunk { payload, .. } => {
+                assert_eq!(payload.as_bytes(), bytes.as_slice());
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn utf8_chunk_omits_encoding_on_wire() {
+        let event = Event::StdoutChunk {
+            node: "a".to_owned(),
+            payload: OutputPayload::utf8("café"),
+        };
+        let encoded = serde_json::to_value(&event).expect("serialize");
+        assert!(encoded.get("encoding").is_none());
+        assert_eq!(encoded.get("text").and_then(Value::as_str), Some("café"));
+        assert_matches_events_schema(&encoded);
     }
 
     #[test]
@@ -386,7 +585,7 @@ mod tests {
     #[test]
     fn fixture_events_round_trip_and_match_schema() {
         let values: Vec<Value> = serde_json::from_str(EVENTS_SAMPLES).expect("parse fixture");
-        assert_eq!(values.len(), 9);
+        assert_eq!(values.len(), 10);
 
         let mut seen = BTreeSet::new();
         for value in values {

@@ -11,8 +11,8 @@ use nxr_core::diagnostics::exit;
 use nxr_nix::{NixError, TaskDiscoveryError};
 use nxr_process::{InterruptFlags, Supervisor};
 use nxr_task::{
-    Event, EventSink, ExecutionPlan, FailurePolicy, PlanError, Scheduler, SchedulerError,
-    build_execution_plan, resolve_task_name,
+    Event, EventSink, ExecutionPlan, FailurePolicy, OutputPayload, PlanError, Scheduler,
+    SchedulerError, build_execution_plan, resolve_task_name,
 };
 
 use crate::commands::common::{PrepareError, PreparedTaskNode, WorkspaceSnapshot};
@@ -72,6 +72,10 @@ pub enum TaskError {
     Scheduler(#[from] SchedulerError),
     #[error("jobs must be >= 1 (got {0})")]
     InvalidJobs(usize),
+    #[error(
+        "--output raw requires -j 1 and cannot be combined with --events (raw inherits child stdio)"
+    )]
+    RawConflictsWithMultiplex,
     #[error("failed to supervise task children: {0}")]
     Supervision(#[source] io::Error),
     #[error("failed to write runner diagnostics: {0}")]
@@ -90,7 +94,7 @@ impl TaskError {
             Self::Run(error) => error.exit_code(),
             Self::PlanRender(_) => exit::EVALUATION,
             Self::Scheduler(_) | Self::Supervision(_) | Self::Io(_) => exit::PROCESS_SUPERVISION,
-            Self::InvalidJobs(_) => exit::USAGE,
+            Self::InvalidJobs(_) | Self::RawConflictsWithMultiplex => exit::USAGE,
         }
     }
 }
@@ -117,10 +121,14 @@ pub const fn plan_exit_code(error: &PlanError) -> i32 {
 ///
 /// # Stdin policy
 ///
-/// - **Inherit:** `jobs == 1` and neither `--output` nor `--events` is set
-///   (serial interactive / transparent path).
-/// - **Null/closed:** otherwise (`jobs > 1`, `--output`, or `--events`) for
-///   every supervised child so parallel/multiplex runs never share caller stdin.
+/// - **Inherit:** `jobs == 1` and neither multiplexed `--output` nor `--events`
+///   is set (serial interactive / `--output raw` passthrough).
+/// - **Null/closed:** otherwise (`jobs > 1`, multiplexed `--output`, or
+///   `--events`) for every supervised child so parallel/multiplex runs never
+///   share caller stdin.
+///
+/// `--output raw` inherits child stdio for a single foreground job stream and
+/// conflicts with `-j > 1` and `--events`.
 ///
 /// # Errors
 ///
@@ -138,6 +146,12 @@ pub fn execute(
 ) -> Result<i32, TaskError> {
     if request.jobs == 0 {
         return Err(TaskError::InvalidJobs(0));
+    }
+
+    if matches!(request.output_mode, Some(TaskOutputMode::Raw))
+        && (request.jobs > 1 || request.events_format.is_some())
+    {
+        return Err(TaskError::RawConflictsWithMultiplex);
     }
 
     let snapshot = WorkspaceSnapshot::load(request.flake_arg, request.nix_override, true)?;
@@ -213,15 +227,15 @@ pub fn execute(
         });
         run_plan(request, &plan, &prepared_nodes, true, &mut sink, runner)
     } else {
-        // Inherit stdio for interactivity: do not hold stdout/stderr locks.
+        // Inherit stdio for interactivity / --output raw: do not hold stdout/stderr locks.
         let mut sink = nxr_task::NullSink;
         run_plan(request, &plan, &prepared_nodes, false, &mut sink, runner)
     }
 }
 
-/// Serial interactive path inherits caller stdin; parallel/multiplex closes it.
+/// Serial interactive and `--output raw` paths inherit caller stdin; multiplex closes it.
 ///
-/// Inherit when `jobs == 1` and neither `--output` nor `--events` is set.
+/// Inherit when `jobs == 1`, `--events` is unset, and `--output` is absent or `raw`.
 /// Otherwise every supervised child gets null/closed stdin.
 #[must_use]
 pub fn task_inherits_stdin(
@@ -229,7 +243,13 @@ pub fn task_inherits_stdin(
     output_mode: Option<TaskOutputMode>,
     events_format: Option<EventsFormat>,
 ) -> bool {
-    jobs == 1 && output_mode.is_none() && events_format.is_none()
+    if jobs != 1 || events_format.is_some() {
+        return false;
+    }
+    match output_mode {
+        None | Some(TaskOutputMode::Raw) => true,
+        Some(_) => false,
+    }
 }
 
 fn dry_run_execute(
@@ -454,7 +474,7 @@ enum StreamKind {
 struct IoChunk {
     node: String,
     kind: StreamKind,
-    text: String,
+    bytes: Vec<u8>,
 }
 
 fn spawn_pipe_reader(
@@ -469,12 +489,12 @@ fn spawn_pipe_reader(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    // Preserve raw bytes; UTF-8 decoding belongs to human renderers.
                     if tx
                         .send(IoChunk {
                             node: node.clone(),
                             kind,
-                            text,
+                            bytes: buf[..n].to_vec(),
                         })
                         .is_err()
                     {
@@ -519,14 +539,15 @@ fn drain_io_chunks(rx: &Receiver<IoChunk>, sink: &mut dyn EventSink, timeout: Du
         // After the first timed wait, drain remaining without blocking.
         deadline = None;
 
+        let payload = OutputPayload::from_bytes(chunk.bytes);
         match chunk.kind {
             StreamKind::Stdout => sink.emit(Event::StdoutChunk {
                 node: chunk.node,
-                text: chunk.text,
+                payload,
             }),
             StreamKind::Stderr => sink.emit(Event::StderrChunk {
                 node: chunk.node,
-                text: chunk.text,
+                payload,
             }),
         }
     }
@@ -637,6 +658,11 @@ mod tests {
     }
 
     #[test]
+    fn raw_output_inherits_stdin() {
+        assert!(task_inherits_stdin(1, Some(TaskOutputMode::Raw), None));
+    }
+
+    #[test]
     fn parallel_jobs_closes_stdin() {
         assert!(!task_inherits_stdin(2, None, None));
     }
@@ -644,6 +670,11 @@ mod tests {
     #[test]
     fn output_mode_closes_stdin() {
         assert!(!task_inherits_stdin(1, Some(TaskOutputMode::Live), None));
+    }
+
+    #[test]
+    fn raw_with_parallel_jobs_closes_stdin() {
+        assert!(!task_inherits_stdin(2, Some(TaskOutputMode::Raw), None));
     }
 
     #[test]
