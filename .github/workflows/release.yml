@@ -4,45 +4,171 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build artifacts only; skip GitHub Release upload
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NIX_CONFIG: experimental-features = nix-command flakes
+
 jobs:
-  quality:
+  build:
+    name: build (${{ matrix.system }})
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-    runs-on: ${{ matrix.os }}
+        include:
+          - runner: ubuntu-latest
+            system: x86_64-linux
+          - runner: ubuntu-latest
+            system: aarch64-linux
+          - runner: macos-latest
+            system: aarch64-darwin
+          - runner: macos-latest
+            system: x86_64-darwin
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Build nxr
-        run: nix build .#nxr -L
-
-      - name: Format check
-        run: nix run .#fmt -- --check
-
-      - name: Lint
-        run: nix run .#lint
-
-      - name: Test
-        run: nix run .#test
-
-      - name: Dependency policy
-        run: nix run .#deny
-
-      - name: Fixture smoke (basic-apps)
+      - name: Resolve version
+        id: version
+        shell: bash
         run: |
-          nix run ./fixtures/basic-apps#hello
-          nix run ./fixtures/basic-apps#echo-args -- a b
-          nix run ./fixtures/basic-apps#succeed
-          if nix run ./fixtures/basic-apps#fail; then
-            echo "expected fail app to exit non-zero" >&2
-            exit 1
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(nix eval --raw ".#packages.${{ matrix.system }}.nxr.version")"
           fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build nxr package
+        run: nix build ".#packages.${{ matrix.system }}.nxr" -L --out-link result
+
+      - name: Package release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.value }}"
+          system="${{ matrix.system }}"
+          staging="nxr-${version}-${system}"
+          mkdir -p "$staging"
+          install -m 0755 result/bin/nxr "$staging/nxr"
+          archive="${staging}.tar.gz"
+          tar -czf "$archive" "$staging"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nxr-${{ matrix.system }}
+          path: nxr-*.tar.gz
+          if-no-files-found: error
+
+  sbom:
+    name: sbom
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(nix eval --raw .#packages.x86_64-linux.nxr.version)"
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Cargo CycloneDX SBOM
+        run: |
+          set -euo pipefail
+          nix shell nixpkgs#cargo-cyclonedx nixpkgs#cargo nixpkgs#rustc --command \
+            cargo cyclonedx --workspace --format json --output-file nxr-cargo.cdx.json
+
+      - name: Generate Syft SBOM
+        run: |
+          set -euo pipefail
+          nix shell nixpkgs#syft --command \
+            syft dir:. \
+              --source-name nxr \
+              --source-version "${{ steps.version.outputs.value }}" \
+              -o cyclonedx-json=nxr-syft.cdx.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: |
+            nxr-cargo.cdx.json
+            nxr-syft.cdx.json
+          if-no-files-found: error
+
+  checksums:
+    name: checksums
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: nxr-*
+          merge-multiple: true
+
+      - name: Aggregate SHA-256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          find artifacts -name '*.tar.gz' -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: SHA256SUMS
+          if-no-files-found: error
+
+  release:
+    name: github-release
+    needs: [build, sbom, checksums]
+    if: github.event_name != 'workflow_dispatch' || inputs.dry_run != true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Prepare release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find dist -type f \( -name '*.tar.gz' -o -name '*.cdx.json' -o -name 'SHA256SUMS' \) \
+            -exec cp {} release/ \;
+          ls -1 release/
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: release/*
+          generate_release_notes: true
+          draft: ${{ github.event_name == 'workflow_dispatch' }}

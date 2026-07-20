@@ -11,6 +11,7 @@ Product and architecture contract for `nxr`. Prefer these docs over inventing st
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Developing and testing **this** repository |
 | [CONTRACT_SUMMARY.md](CONTRACT_SUMMARY.md) | Locked decisions that must not drift |
 | [TECH_STACK_AND_REPO_SHAPE.md](TECH_STACK_AND_REPO_SHAPE.md) | Languages, crates, and repository layout |
+| [RELEASE.md](RELEASE.md) | Tag releases, artifacts, checksums, and SBOM |
 | [ROADMAP.md](ROADMAP.md) | Shipped V1–V2 and active 2.1–2.3 plan |
 | [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md) | Deferred V3 control-plane ideas (not scheduled) |
 
