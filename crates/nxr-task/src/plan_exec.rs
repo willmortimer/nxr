@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventSink};
 use crate::graph::TaskGraph;
-use crate::planner::{PlanError, plan_serial};
+use crate::planner::{PlanError, plan_serial_union};
 use crate::schema::TaskDefinition;
 
 /// Supported major version for the execution-plan envelope.
@@ -77,8 +77,11 @@ pub struct PlanNode {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionPlan {
     pub schema_version: u32,
-    /// Root task id requested by the caller.
+    /// Primary root task id (first requested root; same as [`Self::root`] when singular).
     pub root: String,
+    /// All requested roots when the plan is a multi-root union (caller order).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roots: Vec<String>,
     /// Failure handling policy for a future scheduler.
     pub failure_policy: FailurePolicy,
     /// Trailing CLI argument forwarding policy (V2 freeze: root only).
@@ -120,8 +123,24 @@ pub fn build_execution_plan(
     failure_policy: FailurePolicy,
     sink: Option<&mut dyn EventSink>,
 ) -> Result<ExecutionPlan, PlanError> {
-    let serial_order = plan_serial(tasks, root)?;
-    let graph = TaskGraph::subgraph(tasks, root)?;
+    build_execution_plan_roots(tasks, &[root], failure_policy, sink)
+}
+
+/// Build an [`ExecutionPlan`] for one or more union roots.
+///
+/// Shared dependencies across roots appear once in `serial_order` and `nodes`.
+///
+/// # Errors
+///
+/// Returns the same errors as [`plan_serial_union`].
+pub fn build_execution_plan_roots(
+    tasks: &BTreeMap<String, TaskDefinition>,
+    roots: &[&str],
+    failure_policy: FailurePolicy,
+    sink: Option<&mut dyn EventSink>,
+) -> Result<ExecutionPlan, PlanError> {
+    let serial_order = plan_serial_union(tasks, roots)?;
+    let graph = TaskGraph::subgraph_union(tasks, roots)?;
 
     let nodes: Vec<PlanNode> = graph
         .node_ids()
@@ -137,9 +156,21 @@ pub fn build_execution_plan(
     // Serial case: one node per wave preserves order and envelope shape for P1.
     let waves: Vec<Vec<String>> = serial_order.iter().cloned().map(|id| vec![id]).collect();
 
+    let root_ids: Vec<String> = roots.iter().map(|id| (*id).to_owned()).collect();
+    let primary_root = root_ids
+        .first()
+        .cloned()
+        .expect("subgraph_union rejects empty roots");
+    let extra_roots = if root_ids.len() > 1 {
+        root_ids.clone()
+    } else {
+        Vec::new()
+    };
+
     let plan = ExecutionPlan {
         schema_version: ExecutionPlan::SCHEMA_VERSION,
-        root: root.to_owned(),
+        root: primary_root,
+        roots: extra_roots,
         failure_policy,
         argument_forwarding: ArgumentForwarding::Root,
         nodes,
@@ -150,6 +181,11 @@ pub fn build_execution_plan(
     if let Some(sink) = sink {
         sink.emit(Event::PlanCreated {
             root: plan.root.clone(),
+            roots: if plan.roots.is_empty() {
+                None
+            } else {
+                Some(plan.roots.clone())
+            },
             node_count: plan.nodes.len(),
         });
     }
@@ -173,6 +209,7 @@ pub fn build_serial_plan(
 mod tests {
     use super::*;
     use crate::events::{RecordingSink, event_kind};
+    use crate::planner::plan_serial;
     use crate::schema::TaskDefinition;
 
     fn task(deps: &[&str]) -> TaskDefinition {
@@ -244,6 +281,7 @@ mod tests {
             sink.events(),
             &[Event::PlanCreated {
                 root: "d".to_owned(),
+                roots: None,
                 node_count: 4,
             }]
         );
@@ -293,5 +331,44 @@ mod tests {
         tasks.insert("unrelated".to_owned(), task(&[]));
         let plan = build_serial_plan(&tasks, "d").expect("plan");
         assert!(!plan.node_ids().any(|id| id == "unrelated"));
+    }
+
+    #[test]
+    fn diamond_dedupe_union_of_sibling_roots() {
+        let tasks = diamond();
+        let plan =
+            build_execution_plan_roots(&tasks, &["b", "c"], FailurePolicy::FailFast, None)
+                .expect("plan");
+
+        assert_eq!(plan.root, "b");
+        assert_eq!(plan.roots, vec!["b".to_owned(), "c".to_owned()]);
+        assert_eq!(plan.serial_order, vec!["a", "b", "c"]);
+        assert_eq!(plan.nodes.len(), 3);
+        assert_eq!(
+            plan.node_ids().collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
+    }
+
+    #[test]
+    fn multi_root_emits_roots_on_plan_created() {
+        let tasks = diamond();
+        let mut sink = RecordingSink::new();
+        let _plan = build_execution_plan_roots(
+            &tasks,
+            &["b", "c"],
+            FailurePolicy::FailFast,
+            Some(&mut sink),
+        )
+        .expect("plan");
+
+        assert_eq!(
+            sink.events(),
+            &[Event::PlanCreated {
+                root: "b".to_owned(),
+                roots: Some(vec!["b".to_owned(), "c".to_owned()]),
+                node_count: 3,
+            }]
+        );
     }
 }

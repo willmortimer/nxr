@@ -319,7 +319,7 @@ impl WorkspaceSnapshot {
     pub fn prepare_task_nodes(
         &self,
         document: &TaskDocument,
-        root_task_id: &str,
+        root_task_ids: &[String],
         serial_order: &[String],
         request_args: &[String],
         root: bool,
@@ -337,7 +337,7 @@ impl WorkspaceSnapshot {
                 .tasks
                 .get(task_id)
                 .expect("execution plan only includes known task ids");
-            let forwarded = if task_id.as_str() == root_task_id {
+            let forwarded = if root_task_ids.iter().any(|id| id == task_id) {
                 request_args
             } else {
                 &[][..]

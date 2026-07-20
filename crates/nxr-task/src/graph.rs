@@ -123,6 +123,70 @@ impl TaskGraph {
         Ok(Self { deps })
     }
 
+    /// Build the union of subgraphs for each root and all transitive dependencies.
+    ///
+    /// Shared ancestors appear once in the resulting graph.
+    ///
+    /// # Errors
+    ///
+    /// - [`GraphError::UnknownRoot`] when any root is not in `tasks`
+    /// - [`GraphError::MissingDependency`] when a reachable task references an
+    ///   undefined dependency
+    pub fn subgraph_union(
+        tasks: &BTreeMap<String, TaskDefinition>,
+        roots: &[&str],
+    ) -> Result<Self, GraphError> {
+        if roots.is_empty() {
+            return Err(GraphError::UnknownRoot {
+                root: String::new(),
+            });
+        }
+
+        for root in roots {
+            if !tasks.contains_key(*root) {
+                return Err(GraphError::UnknownRoot {
+                    root: (*root).to_owned(),
+                });
+            }
+        }
+
+        let mut reachable = BTreeSet::new();
+        for root in roots {
+            let mut stack = vec![(*root).to_owned()];
+            while let Some(name) = stack.pop() {
+                if !reachable.insert(name.clone()) {
+                    continue;
+                }
+                let Some(def) = tasks.get(&name) else {
+                    return Err(GraphError::UnknownRoot {
+                        root: name,
+                    });
+                };
+                for dep in &def.depends_on {
+                    if !tasks.contains_key(dep) {
+                        return Err(GraphError::MissingDependency {
+                            task: name.clone(),
+                            dependency: dep.clone(),
+                        });
+                    }
+                    stack.push(dep.clone());
+                }
+            }
+        }
+
+        let mut deps = BTreeMap::new();
+        for name in &reachable {
+            let mut node_deps = BTreeSet::new();
+            if let Some(def) = tasks.get(name) {
+                for dep in &def.depends_on {
+                    node_deps.insert(dep.clone());
+                }
+            }
+            deps.insert(name.clone(), node_deps.into_iter().collect());
+        }
+        Ok(Self { deps })
+    }
+
     /// Task ids in this graph, sorted lexicographically.
     pub fn node_ids(&self) -> impl Iterator<Item = &str> {
         self.deps.keys().map(String::as_str)
@@ -266,6 +330,20 @@ mod tests {
             GraphError::UnknownRoot {
                 root: "ci".to_owned(),
             }
+        );
+    }
+
+    #[test]
+    fn subgraph_union_dedupes_shared_ancestor() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert("a".to_owned(), task(&[]));
+        tasks.insert("b".to_owned(), task(&["a"]));
+        tasks.insert("c".to_owned(), task(&["a"]));
+        let graph = TaskGraph::subgraph_union(&tasks, &["b", "c"]).expect("graph");
+        assert_eq!(graph.len(), 3);
+        assert_eq!(
+            graph.node_ids().collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
         );
     }
 

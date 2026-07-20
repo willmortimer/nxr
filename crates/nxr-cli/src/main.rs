@@ -135,10 +135,18 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             keep_going,
             watch,
             debounce,
-            task: name,
+            tasks,
             args,
         }) => {
             if *watch {
+                let name = tasks
+                    .first()
+                    .ok_or(RunError::Usage("task name required".to_owned()))?;
+                if tasks.len() > 1 {
+                    return Err(RunError::Usage(
+                        "task --watch supports a single task name".to_owned(),
+                    ));
+                }
                 execute_watch(
                     cli,
                     &nix_flags,
@@ -148,7 +156,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                     runner,
                 )
             } else {
-                let request = task_request(cli, &nix_flags, name, args, *jobs, *keep_going)?;
+                let request = task_request(cli, &nix_flags, tasks, args, *jobs, *keep_going)?;
                 task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
             }
         }
@@ -337,7 +345,7 @@ fn app_request<'a>(
 fn task_request<'a>(
     cli: &'a Cli,
     nix_flags: &'a nxr_nix::OptionalNixFlags,
-    task: &'a str,
+    tasks: &'a [String],
     args: &'a [String],
     jobs: usize,
     keep_going: bool,
@@ -345,7 +353,7 @@ fn task_request<'a>(
     Ok(task::TaskRequest {
         flake_arg: cli.flake.as_deref(),
         nix_override: cli.nix.as_deref(),
-        task,
+        tasks,
         args,
         root: cli.root,
         cwd: cli.cwd.as_deref(),

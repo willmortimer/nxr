@@ -1910,7 +1910,7 @@ fn task_output_flags_parse_before_subcommand() {
         .args(["--output", "live", "--events", "jsonl", "task", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Task name"));
+        .stdout(predicate::str::contains("Task names"));
 }
 
 #[test]
@@ -2020,6 +2020,98 @@ fn task_parallel_join_runs_siblings_concurrently() {
     assert!(
         stdout.contains("left-start") && stdout.contains("right-start") && stdout.contains("join"),
         "expected diamond output:\n{stdout}"
+    );
+}
+
+#[test]
+fn task_help_mentions_multi_root_union() {
+    cargo_bin_cmd!("nxr")
+        .args(["task", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("union DAG"));
+}
+
+#[test]
+fn task_multi_root_diamond_dedupe_runs_shared_once() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/diamond-dedupe",
+            "--events",
+            "jsonl",
+            "task",
+            "lint",
+            "unit",
+            "integration",
+            "-j",
+            "8",
+        ])
+        .assert()
+        .success();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8 stderr");
+    let shared_starts = stderr
+        .lines()
+        .filter(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .is_some_and(|value| {
+                    value["type"] == "node_started" && value["node"] == "shared"
+                })
+        })
+        .count();
+    assert_eq!(
+        shared_starts, 1,
+        "shared ancestor must run once in union DAG:\n{stderr}"
+    );
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("shared")
+            && stdout.contains("lint")
+            && stdout.contains("unit")
+            && stdout.contains("integration"),
+        "expected all task markers in output:\n{stdout}"
+    );
+}
+
+#[test]
+fn task_multi_root_dry_run_lists_union_nodes_once() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/diamond-dedupe",
+            "--dry-run",
+            "task",
+            "lint",
+            "unit",
+            "integration",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert_eq!(
+        stdout.matches("#shared").count(),
+        1,
+        "dry-run must plan shared once:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("#lint") && stdout.contains("#unit") && stdout.contains("#integration"),
+        "expected all roots in dry-run plans:\n{stdout}"
     );
 }
 

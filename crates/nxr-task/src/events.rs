@@ -161,8 +161,11 @@ impl<'de> Visitor<'de> for OutputPayloadVisitor {
 pub enum Event {
     /// An immutable execution plan was produced.
     PlanCreated {
-        /// Root task id the plan was built for.
+        /// Primary root task id (first requested root).
         root: String,
+        /// All requested roots when the plan is a multi-root union.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        roots: Option<Vec<String>>,
         /// Number of nodes in the plan.
         node_count: usize,
     },
@@ -306,6 +309,7 @@ mod tests {
         vec![
             Event::PlanCreated {
                 root: "d".to_owned(),
+                roots: None,
                 node_count: 4,
             },
             Event::NodeQueued {
@@ -476,6 +480,7 @@ mod tests {
         let mut sink = RecordingSink::new();
         sink.emit(Event::PlanCreated {
             root: "ci".to_owned(),
+            roots: None,
             node_count: 2,
         });
         sink.emit(Event::NodeQueued {

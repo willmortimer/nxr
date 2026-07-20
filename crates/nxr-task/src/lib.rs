@@ -21,9 +21,9 @@ pub use events::{
 pub use graph::{GraphError, TaskGraph, render_dot, render_mermaid, render_text};
 pub use plan_exec::{
     ArgumentForwarding, EXECUTION_PLAN_SCHEMA_VERSION, ExecutionPlan, FailurePolicy, PlanNode,
-    build_execution_plan, build_serial_plan,
+    build_execution_plan, build_execution_plan_roots, build_serial_plan,
 };
-pub use planner::{PlanError, plan_mermaid, plan_serial, plan_text};
+pub use planner::{PlanError, plan_mermaid, plan_serial, plan_serial_union, plan_text};
 pub use resolve::{ResolveTaskError, listable_tasks, resolve_task, resolve_task_name};
 pub use scheduler::{NodeState, ScheduleOutcome, Scheduler, SchedulerError};
 pub use schema::{

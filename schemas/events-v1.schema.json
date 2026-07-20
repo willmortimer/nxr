@@ -24,7 +24,14 @@
         },
         "root": {
           "type": "string",
-          "description": "Root task id the plan was built for."
+          "description": "Primary root task id (first requested root)."
+        },
+        "roots": {
+          "type": "array",
+          "description": "All requested roots when the plan is a multi-root union.",
+          "items": {
+            "type": "string"
+          }
         },
         "node_count": {
           "type": "integer",

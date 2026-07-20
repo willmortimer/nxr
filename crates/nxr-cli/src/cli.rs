@@ -270,10 +270,11 @@ pub enum Command {
         /// Debounce window in milliseconds (`--watch` only)
         #[arg(long = "debounce", requires = "watch")]
         debounce: Option<u64>,
-        /// Task name
-        task: String,
-        /// Arguments forwarded to the root task's app only (MVP)
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        /// Task names (union DAG; shared dependencies run once)
+        #[arg(required = true)]
+        tasks: Vec<String>,
+        /// Arguments forwarded to each root task's app only (MVP)
+        #[arg(last = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// Watch and rerun on filesystem changes

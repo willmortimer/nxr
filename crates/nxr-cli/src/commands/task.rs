@@ -12,7 +12,7 @@ use nxr_nix::{NixError, OptionalNixFlags, TaskDiscoveryError};
 use nxr_process::{InterruptFlags, Supervisor};
 use nxr_task::{
     Event, EventSink, ExecutionPlan, FailurePolicy, OutputPayload, PlanError, Scheduler,
-    SchedulerError, build_execution_plan, resolve_task_name,
+    SchedulerError, build_execution_plan_roots, resolve_task_name,
 };
 
 use crate::commands::common::{PrepareError, PreparedTaskNode, WorkspaceSnapshot};
@@ -33,8 +33,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 pub struct TaskRequest<'a> {
     pub flake_arg: Option<&'a str>,
     pub nix_override: Option<&'a str>,
-    pub task: &'a str,
-    /// Forwarded only to the root task's app ([`nxr_task::ArgumentForwarding::Root`]);
+    /// One or more task roots whose dependency subgraphs are unioned.
+    pub tasks: &'a [String],
+    /// Forwarded only to each root task's app ([`nxr_task::ArgumentForwarding::Root`]);
     /// dependency nodes always get none.
     pub args: &'a [String],
     pub root: bool,
@@ -174,8 +175,16 @@ pub fn execute(
         FailurePolicy::FailFast
     };
 
-    let canonical = resolve_task_name(&document, request.task)
-        .map_err(|error| TaskError::Plan(PlanError::UnknownRoot { root: error.name }))?;
+    let canonical_roots: Vec<String> = request
+        .tasks
+        .iter()
+        .map(|name| {
+            resolve_task_name(&document, name)
+                .map(|canonical| canonical.to_owned())
+                .map_err(|error| TaskError::Plan(PlanError::UnknownRoot { root: error.name }))
+        })
+        .collect::<Result<_, _>>()?;
+    let root_refs: Vec<&str> = canonical_roots.iter().map(String::as_str).collect();
 
     let pipe_stdio = !task_inherits_stdin(request.jobs, request.output_mode, request.events_format);
 
@@ -187,13 +196,18 @@ pub fn execute(
         None
     });
 
-    let plan = build_execution_plan(&document.tasks, canonical, failure_policy, None)?;
+    let plan = build_execution_plan_roots(
+        &document.tasks,
+        &root_refs,
+        failure_policy,
+        None,
+    )?;
     snapshot
         .validate_task_apps(&document)
         .map_err(PrepareError::NotFound)?;
     let prepared_nodes = snapshot.prepare_task_nodes(
         &document,
-        &plan.root,
+        &canonical_roots,
         &plan.serial_order,
         request.args,
         request.root,
@@ -208,7 +222,8 @@ pub fn execute(
     let stdin_label = if pipe_stdio { "null" } else { "inherit" };
     runner
         .verbose(format!(
-            "task plan for {canonical} (jobs={}, {}, args={}, stdin={}): {}",
+            "task plan for {} (jobs={}, {}, args={}, stdin={}): {}",
+            format_task_roots(&canonical_roots),
             request.jobs,
             failure_policy.as_str(),
             plan.argument_forwarding.as_str(),
@@ -232,6 +247,11 @@ pub fn execute(
         );
         sink.emit(Event::PlanCreated {
             root: plan.root.clone(),
+            roots: if plan.roots.is_empty() {
+                None
+            } else {
+                Some(plan.roots.clone())
+            },
             node_count: plan.nodes.len(),
         });
         run_plan(request, &plan, &prepared_nodes, true, &mut sink, runner)
@@ -585,6 +605,10 @@ fn parallel_ready_waves(plan: &ExecutionPlan) -> Vec<Vec<String>> {
         }
     }
     waves
+}
+
+fn format_task_roots(roots: &[String]) -> String {
+    roots.join("+")
 }
 
 fn format_wave_summary(waves: &[Vec<String>]) -> String {

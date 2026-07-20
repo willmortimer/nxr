@@ -69,7 +69,7 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr inspect --category <name>` | Overview with tasks filtered by category |
 | `nxr inspect app <name>` | Single app details |
 | `nxr inspect task <name>` | Single task details |
-| `nxr task <name> [args…]` | Run a task DAG; trailing args go to the **root** task app only |
+| `nxr task <name>… [args…]` | Run one or more task roots as a union DAG (shared deps run once); trailing args go to each **root** task app only |
 | `nxr graph <name>` | Print task plan (text) |
 | `nxr graph <name> --format dot` | Graphviz DOT digraph (does not invoke Graphviz) |
 | `nxr graph <name> --format mermaid` | Mermaid flowchart |
@@ -97,6 +97,7 @@ nxr explain hello --json
 nxr explain task ci
 nxr inspect
 nxr task ci --dry-run
+nxr task lint unit integration -j 8
 nxr graph ci --format dot
 nxr graph ci --format mermaid
 nxr watch test --debounce 300
