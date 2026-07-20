@@ -1,6 +1,6 @@
 //! Path normalization and conservative overlap checks.
 
-use std::path::Path;
+use std::path::{Component, Path};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use thiserror::Error;
@@ -15,6 +15,14 @@ pub enum PathRootError {
         pattern: String,
         /// Underlying globset error message.
         message: String,
+    },
+    /// A declared root is empty, absolute, or escapes via `..`.
+    #[error(
+        "invalid path root `{path}`: must be nonempty, repository-relative, and must not contain `..`"
+    )]
+    InvalidRepoPath {
+        /// The invalid root value.
+        path: String,
     },
 }
 
@@ -43,20 +51,40 @@ pub fn looks_like_glob(root: &str) -> bool {
     root.contains(['*', '?', '[', '{'])
 }
 
-/// Validate that every glob-looking root compiles; never treat invalid globs as empty matches.
+/// Validate that every root is repository-relative and that glob-looking roots compile.
 ///
 /// # Errors
 ///
-/// Returns [`PathRootError::InvalidGlob`] for the first pattern that fails to compile.
+/// Returns [`PathRootError`] for the first root that escapes the repo or fails to compile.
 pub fn validate_path_roots(roots: &[String]) -> Result<(), PathRootError> {
     for root in roots {
         let root = normalize_relative_path(root);
+        validate_repo_relative_root(&root)?;
         if looks_like_glob(&root) {
             Glob::new(&root).map_err(|error| PathRootError::InvalidGlob {
                 pattern: root,
                 message: error.to_string(),
             })?;
         }
+    }
+    Ok(())
+}
+
+fn validate_repo_relative_root(root: &str) -> Result<(), PathRootError> {
+    if root.is_empty() {
+        return Err(PathRootError::InvalidRepoPath {
+            path: root.to_owned(),
+        });
+    }
+    let path = Path::new(root);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(PathRootError::InvalidRepoPath {
+            path: root.to_owned(),
+        });
     }
     Ok(())
 }
@@ -157,5 +185,12 @@ mod tests {
         let roots = vec!["crates/[api".to_owned()];
         assert!(validate_path_roots(&roots).is_err());
         assert!(path_matches_roots("crates/api/lib.rs", &roots).is_err());
+    }
+
+    #[test]
+    fn rejects_absolute_and_parent_roots() {
+        assert!(validate_path_roots(&["/abs".to_owned()]).is_err());
+        assert!(validate_path_roots(&["../escape".to_owned()]).is_err());
+        assert!(validate_path_roots(&["".to_owned()]).is_err());
     }
 }

@@ -7,17 +7,18 @@ use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
 use nxr_nix::{AppNotFoundError, NixError, TaskDiscoveryError, resolve_app_by_name};
 use nxr_process::{InterruptFlags, Supervisor, spawn_in};
-use nxr_task::{PlanError, TaskDocument, plan_serial, resolve_task_name};
+use nxr_task::{PlanError, resolve_task_name};
 use nxr_watch::{
     Generation, PathFilterError, PathFilters, WatchConfig, WatchError, WatchPoll, WatchSession,
 };
 
 use crate::commands::common::{
-    AppRequest, PrepareError, PreparedPlan, build_adapter, current_invocation_directory,
+    AppRequest, PrepareError, PreparedPlan, WorkspaceSnapshot, current_invocation_directory,
     prepare_app_plan,
 };
-use crate::commands::task::plan_exit_code;
+use crate::commands::task::{self, TaskError, TaskRequest, plan_exit_code};
 use crate::flake::{FlakeResolveError, resolve_flake};
+use crate::output_task::{EventsFormat, TaskOutputMode};
 use crate::runner_output::RunnerOutput;
 
 /// Default debounce when the CLI omits `--debounce`.
@@ -58,12 +59,23 @@ impl WatchOptions {
     }
 }
 
+/// Task-scheduler options preserved across watch generations (`task --watch`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskWatchSettings {
+    /// One or more task roots (union DAG).
+    pub tasks: Vec<String>,
+    pub jobs: usize,
+    pub keep_going: bool,
+    pub output_mode: Option<TaskOutputMode>,
+    pub events_format: Option<EventsFormat>,
+}
+
 /// Inputs for watch mode.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WatchRequest<'a> {
     pub flake_arg: Option<&'a str>,
     pub nix_override: Option<&'a str>,
-    /// App or task name (task wins when both exist).
+    /// App or single task name when [`Self::task_settings`] is `None`.
     pub name: &'a str,
     pub args: &'a [String],
     pub root: bool,
@@ -72,6 +84,12 @@ pub struct WatchRequest<'a> {
     pub shell_mode: crate::shell_mode::ShellMode,
     pub environment_policy: EnvironmentPolicy,
     pub options: WatchOptions,
+    /// Global `--output` (honored for task generations).
+    pub output_mode: Option<TaskOutputMode>,
+    /// Global `--events` (honored for task generations).
+    pub events_format: Option<EventsFormat>,
+    /// When set, watch runs the normal task scheduler (multi-root, `-j`, output).
+    pub task_settings: Option<TaskWatchSettings>,
     pub nix_flags: &'a nxr_nix::OptionalNixFlags,
 }
 
@@ -88,6 +106,8 @@ pub enum WatchCommandError {
     Discovery(#[from] TaskDiscoveryError),
     #[error(transparent)]
     Plan(#[from] PlanError),
+    #[error(transparent)]
+    Task(#[from] TaskError),
     #[error(transparent)]
     NotFound(#[from] AppNotFoundError),
     #[error(transparent)]
@@ -111,6 +131,7 @@ impl WatchCommandError {
             Self::Nix(error) => error.exit_code(),
             Self::Discovery(error) => error.exit_code(),
             Self::Plan(error) => plan_exit_code(error),
+            Self::Task(error) => error.exit_code(),
             Self::NotFound(error) => error.exit_code(),
             Self::Watch(_) | Self::Filter(_) | Self::RemoteFlake => exit::DISCOVERY,
             Self::Supervision(_) | Self::Io(_) => exit::PROCESS_SUPERVISION,
@@ -120,13 +141,8 @@ impl WatchCommandError {
 
 #[derive(Clone, Debug)]
 enum WatchTarget {
-    App {
-        name: String,
-    },
-    Task {
-        document: TaskDocument,
-        root: String,
-    },
+    App { name: String },
+    Task,
 }
 
 enum GenerationOutcome {
@@ -135,16 +151,23 @@ enum GenerationOutcome {
     /// Filesystem change — start a new generation immediately.
     Restart,
     /// Ctrl-C / SIGTERM — stop watching.
-    Stopped,
+    Stopped { code: i32 },
 }
 
 /// Resolve `name` as a task (preferred) or app, then watch the flake root.
+///
+/// Task targets use the normal [`task::execute`] pipeline each generation
+/// (`WorkspaceSnapshot` → `ExecutionPlan` → `PreparedTaskNode` → `Scheduler`),
+/// preserving `-j`, `--keep-going`, working directories, output/events, and exit
+/// codes. Metadata (`.nix`, `flake.lock`, projects, `discoveryInputs`) is
+/// reloaded because each generation rebuilds the snapshot.
 ///
 /// # Errors
 ///
 /// Returns [`WatchCommandError`] on resolution, watcher, or supervision failures.
 ///
-/// On interrupt, returns success (`0`) after cleaning up the current generation.
+/// On interrupt, returns [`exit::INTERRUPTED`] after cleaning up the current
+/// generation.
 pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, WatchCommandError> {
     let invocation_cwd = current_invocation_directory()?;
     let flake = resolve_flake(request.flake_arg, &invocation_cwd)?;
@@ -153,20 +176,7 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
         .clone()
         .ok_or(WatchCommandError::RemoteFlake)?;
 
-    let adapter = build_adapter(request.nix_override)?;
-    let document = adapter.discover_tasks(&flake.nix_ref, request.nix_flags)?;
-
-    let target = if let Ok(canonical) = resolve_task_name(&document, request.name) {
-        let _order = plan_serial(&document.tasks, canonical)?;
-        let root = canonical.to_owned();
-        WatchTarget::Task { document, root }
-    } else {
-        let apps = adapter.discover_apps(&flake.nix_ref, request.nix_flags)?;
-        let app = resolve_app_by_name(&apps, request.name)?;
-        WatchTarget::App {
-            name: app.name.clone(),
-        }
-    };
+    let target = resolve_target(request)?;
 
     let filters = PathFilters::new(&request.options.include, &request.options.exclude)?;
     let mut session = WatchSession::start(&WatchConfig {
@@ -200,7 +210,7 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
         match run_generation(request, &target, &mut session, &interrupts, runner)? {
             GenerationOutcome::Idle => loop {
                 if interrupts.take_pending() {
-                    return Ok(exit::SUCCESS);
+                    return Ok(exit::INTERRUPTED);
                 }
                 match session.poll_restart(Duration::from_millis(100))? {
                     WatchPoll::Restart => break,
@@ -208,8 +218,35 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
                 }
             },
             GenerationOutcome::Restart => {}
-            GenerationOutcome::Stopped => return Ok(exit::SUCCESS),
+            GenerationOutcome::Stopped { code } => return Ok(code),
         }
+    }
+}
+
+fn resolve_target(request: &WatchRequest<'_>) -> Result<WatchTarget, WatchCommandError> {
+    if request.task_settings.is_some() {
+        return Ok(WatchTarget::Task);
+    }
+
+    let snapshot = WorkspaceSnapshot::load(
+        request.flake_arg,
+        request.nix_override,
+        true,
+        request.nix_flags,
+    )?;
+    let document = snapshot
+        .tasks
+        .as_ref()
+        .expect("load_tasks=true always populates tasks");
+
+    if resolve_task_name(document, request.name).is_ok() {
+        Ok(WatchTarget::Task)
+    } else {
+        let apps: Vec<_> = snapshot.apps.values().cloned().collect();
+        let app = resolve_app_by_name(&apps, request.name)?;
+        Ok(WatchTarget::App {
+            name: app.name.clone(),
+        })
     }
 }
 
@@ -238,52 +275,79 @@ fn run_generation(
             let supervisor = spawn_prepared(&prepared)?;
             wait_supervisor(supervisor, session, interrupts)
         }
-        WatchTarget::Task { document, root } => {
-            let order = plan_serial(&document.tasks, root)?;
-            for task_id in &order {
-                if interrupts.take_pending() {
-                    return Ok(GenerationOutcome::Stopped);
-                }
-                session.drain_events();
-                if matches!(session.poll_restart(Duration::ZERO)?, WatchPoll::Restart) {
-                    return Ok(GenerationOutcome::Restart);
-                }
-
-                let definition = document
-                    .tasks
-                    .get(task_id)
-                    .expect("plan_serial only returns ids present in the document");
-                let forwarded = if task_id.as_str() == root.as_str() {
-                    request.args
-                } else {
-                    &[]
-                };
-                runner
-                    .verbose(format!("watch task {task_id} via app {}", definition.app))
-                    .map_err(WatchCommandError::Io)?;
-
-                let app_request = AppRequest {
-                    flake_arg: request.flake_arg,
-                    nix_override: request.nix_override,
-                    app: definition.app.as_str(),
-                    args: forwarded,
-                    root: request.root,
-                    cwd: request.cwd,
-                    shell: request.shell,
-                    shell_mode: request.shell_mode,
-                    environment_policy: request.environment_policy.clone(),
-                    nix_flags: request.nix_flags,
-                };
-                let prepared = prepare_app_plan(&app_request)?;
-                let supervisor = spawn_prepared(&prepared)?;
-                match wait_supervisor(supervisor, session, interrupts)? {
-                    GenerationOutcome::Idle => {}
-                    other => return Ok(other),
-                }
-            }
-            Ok(GenerationOutcome::Idle)
-        }
+        WatchTarget::Task => run_task_generation(request, session, interrupts, runner),
     }
+}
+
+fn run_task_generation(
+    request: &WatchRequest<'_>,
+    session: &mut WatchSession,
+    interrupts: &InterruptFlags,
+    runner: RunnerOutput,
+) -> Result<GenerationOutcome, WatchCommandError> {
+    let single_root;
+    let (tasks, jobs, keep_going, output_mode, events_format) =
+        if let Some(settings) = &request.task_settings {
+            (
+                settings.tasks.as_slice(),
+                settings.jobs,
+                settings.keep_going,
+                settings.output_mode,
+                settings.events_format,
+            )
+        } else {
+            single_root = vec![request.name.to_owned()];
+            (
+                single_root.as_slice(),
+                1,
+                false,
+                request.output_mode,
+                request.events_format,
+            )
+        };
+
+    let task_request = TaskRequest {
+        flake_arg: request.flake_arg,
+        nix_override: request.nix_override,
+        tasks,
+        args: request.args,
+        root: request.root,
+        cwd: request.cwd,
+        shell: request.shell,
+        shell_mode: request.shell_mode,
+        environment_policy: request.environment_policy.clone(),
+        jobs,
+        keep_going,
+        output_mode,
+        events_format,
+        nix_flags: request.nix_flags,
+    };
+
+    let mut restart_requested = false;
+    let code = task::execute_with_control(&task_request, false, false, runner, &mut || {
+        if interrupts.take_pending() {
+            return Ok(task::RunControl::Stop);
+        }
+        session.drain_events();
+        match session.poll_restart(Duration::ZERO) {
+            Ok(WatchPoll::Restart) => {
+                restart_requested = true;
+                Ok(task::RunControl::Restart)
+            }
+            Ok(WatchPoll::Timeout) => Ok(task::RunControl::Continue),
+            Err(error) => Err(io::Error::other(error)),
+        }
+    })?;
+
+    if restart_requested {
+        return Ok(GenerationOutcome::Restart);
+    }
+    if code == exit::INTERRUPTED {
+        return Ok(GenerationOutcome::Stopped {
+            code: exit::INTERRUPTED,
+        });
+    }
+    Ok(GenerationOutcome::Idle)
 }
 
 fn spawn_prepared(prepared: &PreparedPlan) -> Result<Supervisor, WatchCommandError> {
@@ -309,7 +373,9 @@ fn wait_supervisor(
             let _ = supervisor
                 .shutdown_all(SHUTDOWN_GRACE)
                 .map_err(WatchCommandError::Supervision)?;
-            return Ok(GenerationOutcome::Stopped);
+            return Ok(GenerationOutcome::Stopped {
+                code: exit::INTERRUPTED,
+            });
         }
 
         match session.poll_restart(Duration::from_millis(50))? {
@@ -322,10 +388,9 @@ fn wait_supervisor(
             WatchPoll::Timeout => {}
         }
 
-        if supervisor
+        if let Some((_id, _code)) = supervisor
             .try_wait_any()
             .map_err(WatchCommandError::Supervision)?
-            .is_some()
         {
             return Ok(GenerationOutcome::Idle);
         }
@@ -341,7 +406,7 @@ fn clear_terminal() -> io::Result<()> {
 /// Resolve name as task-first for unit tests of the preference rule.
 #[must_use]
 #[cfg(test)]
-pub fn prefer_task_if_present(document: &TaskDocument, name: &str) -> bool {
+pub fn prefer_task_if_present(document: &nxr_task::TaskDocument, name: &str) -> bool {
     document.tasks.contains_key(name)
 }
 
@@ -359,7 +424,7 @@ mod tests {
     fn prefer_task_when_name_exists() {
         let mut tasks = BTreeMap::new();
         tasks.insert("ci".to_owned(), sample_task("ci"));
-        let doc = TaskDocument::new(tasks);
+        let doc = nxr_task::TaskDocument::new(tasks);
         assert!(prefer_task_if_present(&doc, "ci"));
         assert!(!prefer_task_if_present(&doc, "hello"));
     }

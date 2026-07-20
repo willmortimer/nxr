@@ -1,12 +1,11 @@
 //! Discovery metadata cache keyed by local flake inputs.
 
-use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, OpenOptions};
-use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use blake3::Hasher;
 use camino::{Utf8Path, Utf8PathBuf};
 use fs2::FileExt;
 use nxr_core::App;
@@ -193,14 +192,16 @@ where
 struct CachedDiscovery {
     schema_version: u32,
     flake_root: String,
-    nix_fingerprint: u64,
+    /// Hex-encoded BLAKE3 digest of the `.nix` tree (+ optional `flake.lock`).
+    nix_fingerprint: String,
     nix_path: String,
     nix_version: String,
     discovery_schema_version: u32,
     /// Sorted flake-root-relative paths from `discoveryInputs` at store time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     discovery_inputs: Vec<String>,
-    discovery_inputs_fingerprint: u64,
+    /// Hex-encoded BLAKE3 digest of `discovery_inputs` contents.
+    discovery_inputs_fingerprint: String,
     /// Unix seconds when the entry was written (TTL backstop).
     cached_at: u64,
     system: String,
@@ -210,7 +211,7 @@ struct CachedDiscovery {
     tasks: Option<TaskDocument>,
 }
 
-const CACHE_SCHEMA_VERSION: u32 = 3;
+const CACHE_SCHEMA_VERSION: u32 = 4;
 
 #[cfg(test)]
 thread_local! {
@@ -270,10 +271,10 @@ pub struct DiscoveryCacheEntry {
     pub hit: bool,
     /// Current content fingerprint used for invalidation.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub invalidation_key: Option<u64>,
+    pub invalidation_key: Option<String>,
     /// Fingerprint stored in the on-disk entry (present on hit or stale miss).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cached_invalidation_key: Option<u64>,
+    pub cached_invalidation_key: Option<String>,
 }
 
 /// Remove all discovery cache entries.
@@ -378,7 +379,7 @@ pub fn discovery_cache_entry(context: &DiscoveryContext) -> io::Result<Discovery
     let cache_file = cache_file_path(&context_key).map(|path| path.display().to_string());
     let hit = cached_workspace(context).is_some();
     let cached_invalidation_key = if hit {
-        Some(invalidation_key)
+        Some(invalidation_key.clone())
     } else {
         cache_file
             .as_ref()
@@ -396,7 +397,7 @@ pub fn discovery_cache_entry(context: &DiscoveryContext) -> io::Result<Discovery
     })
 }
 
-fn read_cached_fingerprint(cache_file: &str) -> Option<io::Result<u64>> {
+fn read_cached_fingerprint(cache_file: &str) -> Option<io::Result<String>> {
     let contents = match fs::read_to_string(cache_file) {
         Ok(contents) => contents,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
@@ -440,14 +441,21 @@ fn cache_context_key(context: &DiscoveryContext) -> DiscoveryContext {
 }
 
 fn cache_file_name(context: &DiscoveryContext) -> String {
-    let mut hasher = DefaultHasher::new();
-    context.local_root.hash(&mut hasher);
-    context.system.hash(&mut hasher);
-    context.flake_ref.hash(&mut hasher);
-    context.nix_path.hash(&mut hasher);
-    context.nix_version.hash(&mut hasher);
-    DISCOVERY_SCHEMA_VERSION.hash(&mut hasher);
-    format!("{:016x}.json", hasher.finish())
+    let mut hasher = Hasher::new();
+    if let Some(root) = &context.local_root {
+        hasher.update(root.as_str().as_bytes());
+    }
+    hasher.update(&[0]);
+    hasher.update(context.system.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(context.flake_ref.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(context.nix_path.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(context.nix_version.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(&DISCOVERY_SCHEMA_VERSION.to_le_bytes());
+    format!("{}.json", hasher.finalize().to_hex())
 }
 
 fn canonical_flake_root(local_root: &Utf8Path) -> Utf8PathBuf {

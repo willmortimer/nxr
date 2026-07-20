@@ -7,6 +7,7 @@ pub mod env_policy;
 pub mod model;
 pub mod plan;
 pub mod projects;
+pub mod repo_path;
 pub mod sanitize;
 
 pub use diagnostics::{Diagnostic, DiagnosticLevel};
@@ -22,6 +23,7 @@ pub use projects::{
     ProjectMemberKind, ProjectsDocument, ProjectsError, UnknownProjectMember, app_category,
     listable_apps, load_projects_document, set_app_category,
 };
+pub use repo_path::{RepoPathError, normalize_repo_relative_path, validate_repo_relative_path};
 pub use sanitize::sanitize_terminal_text;
 
 #[cfg(test)]

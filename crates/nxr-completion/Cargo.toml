@@ -8,6 +8,7 @@ publish.workspace = true
 description = "Shell completion generation and discovery cache for nxr"
 
 [dependencies]
+blake3 = { workspace = true }
 camino = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }

@@ -513,7 +513,8 @@ fn write_workspace_header(writer: &mut impl Write, workspace: &WorkspaceContext)
         workspace
             .discovery_cache
             .invalidation_key
-            .map_or_else(|| "n/a".to_owned(), |key| key.to_string())
+            .as_ref()
+            .map_or("n/a".to_owned(), Clone::clone)
     )?;
     if let Some(file) = &workspace.discovery_cache.cache_file {
         writeln!(writer, "cache_file: {file}")?;
@@ -663,8 +664,8 @@ mod tests {
                     directory: "/tmp/nxr-cache".to_owned(),
                     cache_file: Some("/tmp/nxr-cache/abc.json".to_owned()),
                     hit: true,
-                    invalidation_key: Some(42),
-                    cached_invalidation_key: Some(42),
+                    invalidation_key: Some("42".to_owned()),
+                    cached_invalidation_key: Some("42".to_owned()),
                 },
                 invocation_directory: "/work".to_owned(),
                 requested_shell: None,
@@ -728,8 +729,8 @@ mod tests {
                     directory: "/tmp/nxr-cache".to_owned(),
                     cache_file: Some("/tmp/nxr-cache/deadbeef.json".to_owned()),
                     hit: false,
-                    invalidation_key: Some(99),
-                    cached_invalidation_key: Some(88),
+                    invalidation_key: Some("99".to_owned()),
+                    cached_invalidation_key: Some("88".to_owned()),
                 },
                 invocation_directory: "/work".to_owned(),
                 requested_shell: None,

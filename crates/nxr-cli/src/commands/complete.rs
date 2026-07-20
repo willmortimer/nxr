@@ -77,25 +77,21 @@ fn discover_apps(
     let flake_ref = flake.nix_ref.clone();
     let nix_flags = nix_flags.clone();
 
-    // Require tasks so apps-only cache entries are misses and cold population
-    // records discoveryInputs from the lightweight nxr document.
+    // Apps are required; task discovery is best-effort so optional nxr metadata
+    // cannot erase ordinary app completions. When tasks succeed, discoveryInputs
+    // still enter the cache entry for sound invalidation.
     Some(discover_app_candidates(
         &context,
         DiscoveryCacheOptions {
             refresh: refresh_discovery,
-            require_tasks: true,
+            require_tasks: false,
         },
         move || {
             let apps = adapter
                 .discover_apps(&flake_ref, &nix_flags)
                 .map_err(|error| error.to_string())?;
-            let tasks = adapter
-                .discover_tasks(&flake_ref, &nix_flags)
-                .map_err(|error| error.to_string())?;
-            Ok::<WorkspaceDiscovery, String>(WorkspaceDiscovery {
-                apps,
-                tasks: Some(tasks),
-            })
+            let tasks = adapter.discover_tasks(&flake_ref, &nix_flags).ok();
+            Ok::<WorkspaceDiscovery, String>(WorkspaceDiscovery { apps, tasks })
         },
     ))
 }

@@ -37,6 +37,16 @@ pub enum SchemaError {
     /// `workingDirectory` traversed parent directories (`..`).
     #[error("task {task}: workingDirectory must not traverse parent directories (got {value})")]
     ParentTraversalWorkingDirectory { task: String, value: String },
+    /// A `discoveryInputs` entry is not a valid repository-relative path.
+    #[error("discoveryInputs[{index}]: {message}")]
+    InvalidDiscoveryInput { index: usize, message: String },
+    /// A task `paths` entry is not a valid repository-relative path.
+    #[error("task {task}: paths[{index}]: {message}")]
+    InvalidTaskPath {
+        task: String,
+        index: usize,
+        message: String,
+    },
 }
 
 /// Versioned task document: `schema_version` plus named task definitions.
@@ -90,9 +100,26 @@ impl TaskDocument {
     /// field fails validation (for example an absolute `workingDirectory`).
     pub fn validate(&self) -> Result<(), SchemaError> {
         validate_schema_version(self.schema_version)?;
+        for (index, input) in self.discovery_inputs.iter().enumerate() {
+            nxr_core::validate_repo_relative_path("discoveryInputs", input).map_err(|error| {
+                SchemaError::InvalidDiscoveryInput {
+                    index,
+                    message: error.to_string(),
+                }
+            })?;
+        }
         for (task, definition) in &self.tasks {
             if let Some(working_directory) = &definition.working_directory {
                 validate_working_directory(task, working_directory)?;
+            }
+            for (index, path) in definition.paths.iter().enumerate() {
+                nxr_core::validate_repo_relative_path("paths", path).map_err(|error| {
+                    SchemaError::InvalidTaskPath {
+                        task: task.clone(),
+                        index,
+                        message: error.to_string(),
+                    }
+                })?;
             }
         }
         Ok(())
@@ -472,6 +499,37 @@ mod tests {
         let doc = TaskDocument::new(tasks);
         let err = doc.validate().expect_err("absolute path rejected");
         assert!(matches!(err, SchemaError::AbsoluteWorkingDirectory { .. }));
+    }
+
+    #[test]
+    fn validate_document_rejects_escape_discovery_inputs_and_paths() {
+        let mut doc = TaskDocument::new(BTreeMap::new());
+        doc.discovery_inputs = vec!["../escape".to_owned()];
+        assert!(matches!(
+            doc.validate().expect_err("discoveryInputs escape"),
+            SchemaError::InvalidDiscoveryInput { .. }
+        ));
+
+        let mut tasks = BTreeMap::new();
+        tasks.insert(
+            "fmt".to_owned(),
+            TaskDefinition {
+                description: None,
+                depends_on: Vec::new(),
+                app: "fmt".to_owned(),
+                working_directory: None,
+                hidden: false,
+                category: None,
+                aliases: Vec::new(),
+                interactive: false,
+                paths: vec!["/abs".to_owned()],
+            },
+        );
+        let doc = TaskDocument::new(tasks);
+        assert!(matches!(
+            doc.validate().expect_err("paths absolute"),
+            SchemaError::InvalidTaskPath { .. }
+        ));
     }
 
     #[test]

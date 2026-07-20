@@ -25,8 +25,8 @@
       "directory": "/tmp/nxr-cache",
       "cache_file": "/tmp/nxr-cache/deadbeef.json",
       "hit": false,
-      "invalidation_key": 99,
-      "cached_invalidation_key": 88
+      "invalidation_key": "99",
+      "cached_invalidation_key": "88"
     },
     "invocation_directory": "/work",
     "requested_shell": null,

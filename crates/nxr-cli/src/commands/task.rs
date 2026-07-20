@@ -153,6 +153,37 @@ pub fn execute(
     json: bool,
     runner: RunnerOutput,
 ) -> Result<i32, TaskError> {
+    execute_with_control(request, dry_run, json, runner, &mut || {
+        Ok(RunControl::Continue)
+    })
+}
+
+/// External control signals for watch-mode integration with the scheduler loop.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RunControl {
+    /// Keep running the current generation.
+    Continue,
+    /// Filesystem change — shut down children and restart.
+    Restart,
+    /// Cooperative stop (e.g. Ctrl-C observed by the outer watch loop).
+    Stop,
+}
+
+/// Like [`execute`], but polls `control` during the scheduler loop.
+///
+/// Used by `nxr watch` / `task --watch` so mid-run filesystem changes can abort
+/// the current generation and rebuild the snapshot/plan.
+///
+/// # Errors
+///
+/// Same as [`execute`]. Control-poll I/O errors map to [`TaskError::Supervision`].
+pub fn execute_with_control(
+    request: &TaskRequest<'_>,
+    dry_run: bool,
+    json: bool,
+    runner: RunnerOutput,
+    control: &mut dyn FnMut() -> io::Result<RunControl>,
+) -> Result<i32, TaskError> {
     if request.jobs == 0 {
         return Err(TaskError::InvalidJobs(0));
     }
@@ -251,11 +282,11 @@ pub fn execute(
             },
             node_count: plan.nodes.len(),
         });
-        run_plan(request, &plan, &prepared_nodes, &mut sink, runner)
+        run_plan(request, &plan, &prepared_nodes, &mut sink, runner, control)
     } else {
         // Inherit stdio for interactivity / --output raw: do not hold stdout/stderr locks.
         let mut sink = nxr_task::NullSink;
-        run_plan(request, &plan, &prepared_nodes, &mut sink, runner)
+        run_plan(request, &plan, &prepared_nodes, &mut sink, runner, control)
     }
 }
 
@@ -430,12 +461,14 @@ fn dry_run_execute(
     Ok(exit::SUCCESS)
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_plan(
     request: &TaskRequest<'_>,
     plan: &ExecutionPlan,
     prepared_nodes: &BTreeMap<String, PreparedTaskNode>,
     sink: &mut dyn EventSink,
     runner: RunnerOutput,
+    control: &mut dyn FnMut() -> io::Result<RunControl>,
 ) -> Result<i32, TaskError> {
     let mut scheduler = Scheduler::new(plan, request.jobs)?;
     let mut supervisor = Supervisor::new();
@@ -444,6 +477,7 @@ fn run_plan(
 
     let mut first_failure: Option<i32> = None;
     let mut interrupted = false;
+    let mut restarted = false;
 
     let mut to_start = scheduler.schedule_ready();
     loop {
@@ -462,6 +496,28 @@ fn run_plan(
                 let _ = scheduler.on_exit(&id, code);
             }
             break;
+        }
+
+        match control().map_err(TaskError::Supervision)? {
+            RunControl::Continue => {}
+            signal @ (RunControl::Restart | RunControl::Stop) => {
+                let shut = supervisor
+                    .shutdown_all(SHUTDOWN_GRACE)
+                    .map_err(TaskError::Supervision)?;
+                for (stopped_id, stopped_code) in shut {
+                    sink.emit(Event::NodeExited {
+                        node: stopped_id.clone(),
+                        code: Some(stopped_code),
+                    });
+                    let _ = scheduler.on_exit(&stopped_id, stopped_code);
+                }
+                match signal {
+                    RunControl::Restart => restarted = true,
+                    RunControl::Stop => interrupted = true,
+                    RunControl::Continue => {}
+                }
+                break;
+            }
         }
 
         for node_id in to_start.drain(..) {
@@ -526,11 +582,17 @@ fn run_plan(
     drain_io_chunks(&io_rx, sink, Duration::ZERO);
 
     let outcome = scheduler.outcome();
-    let success = !interrupted && outcome.success;
+    let success = !interrupted && !restarted && outcome.success;
     sink.emit(Event::RunCompleted { success });
 
     if interrupted {
         return Ok(exit::INTERRUPTED);
+    }
+
+    // Watch restart: treat as success for this generation so the outer loop
+    // rebuilds; the caller detects Restart via its control flag.
+    if restarted {
+        return Ok(exit::SUCCESS);
     }
 
     Ok(first_failure.unwrap_or(exit::SUCCESS))

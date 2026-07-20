@@ -91,10 +91,11 @@ impl AffectedAnalysis {
 /// [`NodeStatus::Affected`] and [`NodeStatus::Unknown`]. Only
 /// [`NodeStatus::Unaffected`] is omitted from those lists.
 ///
-/// An empty `changed_paths` slice is valid and yields a successful analysis
-/// (typically path-rooted nodes [`NodeStatus::Unaffected`], empty-root nodes
-/// [`NodeStatus::Unknown`]). Callers that require at least one path *source*
-/// should enforce that before invoking analysis.
+/// An empty `changed_paths` slice is valid: every node is
+/// [`NodeStatus::Unaffected`] (a legitimate empty diff means no work). Unknown
+/// ownership only matters when there are changes that cannot be mapped. Callers
+/// that require at least one path *source* should enforce that before invoking
+/// analysis.
 #[must_use]
 pub fn analyze(
     graph: &AffectedGraph,
@@ -106,21 +107,27 @@ pub fn analyze(
     let mut status: BTreeMap<String, NodeStatus> = BTreeMap::new();
     let mut reasons: BTreeMap<String, Vec<AffectedReason>> = BTreeMap::new();
 
-    let global_change = changed_paths
-        .iter()
-        .any(|path| is_global_invalidation_path(path));
-
-    if global_change {
-        mark_global_affected(graph, changed_paths, &mut status, &mut reasons);
+    if changed_paths.is_empty() {
+        for node_key in graph.nodes.keys() {
+            status.insert(node_key.clone(), NodeStatus::Unaffected);
+        }
     } else {
-        classify_path_hits(graph, changed_paths, &mut status, &mut reasons);
-    }
+        let global_change = changed_paths
+            .iter()
+            .any(|path| is_global_invalidation_path(path));
 
-    propagate_dependencies(graph, &mut status, &mut reasons);
+        if global_change {
+            mark_global_affected(graph, changed_paths, &mut status, &mut reasons);
+        } else {
+            classify_path_hits(graph, changed_paths, &mut status, &mut reasons);
+        }
 
-    if !global_change {
-        finalize_empty_roots(graph, &mut status, &mut reasons);
         propagate_dependencies(graph, &mut status, &mut reasons);
+
+        if !global_change {
+            finalize_empty_roots(graph, &mut status, &mut reasons);
+            propagate_dependencies(graph, &mut status, &mut reasons);
+        }
     }
 
     let (apps, tasks, nodes) = collect_results(graph, &status, &mut reasons, strict);
@@ -168,7 +175,10 @@ fn classify_path_hits(
 ) {
     for (node_key, node) in &graph.nodes {
         if let Err(error) = validate_path_roots(&node.path_roots) {
-            let PathRootError::InvalidGlob { pattern, .. } = error;
+            let pattern = match error {
+                PathRootError::InvalidGlob { pattern, .. } => pattern,
+                PathRootError::InvalidRepoPath { path } => path,
+            };
             push_reason(reasons, node_key, AffectedReason::InvalidGlob { pattern });
             status.insert(node_key.clone(), NodeStatus::Unknown);
             continue;
@@ -219,7 +229,10 @@ fn match_changed_paths(
             }
             Ok(false) => {}
             Err(error) => {
-                let PathRootError::InvalidGlob { pattern, .. } = error;
+                let pattern = match error {
+                    PathRootError::InvalidGlob { pattern, .. } => pattern,
+                    PathRootError::InvalidRepoPath { path } => path,
+                };
                 push_reason(reasons, node_key, AffectedReason::InvalidGlob { pattern });
                 return PathMatchOutcome::Invalid;
             }
@@ -564,18 +577,14 @@ mod tests {
 
         assert!(result.changed_paths.is_empty());
         assert_eq!(result.nodes.len(), graph.nodes.len());
-        let unknown = result
-            .nodes
-            .iter()
-            .filter(|node| node.status == NodeStatus::Unknown)
-            .count();
-        let unaffected = result
-            .nodes
-            .iter()
-            .filter(|node| node.status == NodeStatus::Unaffected)
-            .count();
-        assert!(unknown > 0);
-        assert!(unaffected > 0);
+        assert!(result.apps.is_empty());
+        assert!(result.tasks.is_empty());
+        assert!(
+            result
+                .nodes
+                .iter()
+                .all(|node| node.status == NodeStatus::Unaffected)
+        );
     }
 
     #[test]

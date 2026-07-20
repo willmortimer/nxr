@@ -836,8 +836,16 @@ mod tests {
         let flake_root =
             camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
         std::fs::create_dir(flake_root.join("crates")).expect("crates dir");
-        let outside = temp.path().parent().expect("parent").join("outside");
-        std::fs::create_dir(&outside).expect("outside dir");
+        let outside = temp
+            .path()
+            .parent()
+            .expect("parent")
+            .join(format!("nxr-outside-{}", std::process::id()));
+        match std::fs::create_dir(&outside) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => panic!("outside dir: {error}"),
+        }
 
         let flake = FlakeSelection {
             display: flake_root.as_str().to_owned(),

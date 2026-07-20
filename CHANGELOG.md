@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.3] - 2026-07-20
+
+Correctness cut: watch parity with the normal task pipeline, empty-affected
+semantics, path safety, catalog decoupling, and stable cache digests. No new
+product features.
+
+### Fixed
+
+- `task --watch` / `nxr watch` for tasks use WorkspaceSnapshot → ExecutionPlan →
+  PreparedTaskNode → Scheduler (preserve `-j`, `--keep-going`, working
+  directories, multi-root, `--output` / `--events`, and real exit codes).
+- Mid-run filesystem changes abort the current task generation and rebuild.
+- Valid empty affected diffs classify every node as unaffected (strict lists
+  empty).
+- `list apps` and completion no longer require optional `nxr` task metadata;
+  tasks remain best-effort for `discoveryInputs` when available.
+- Repository-relative validation for `discoveryInputs`, task `paths`, affected
+  path roots, and explicit `nxr affected` path args (no absolute / `..`).
+- Discovery cache fingerprints and file names use BLAKE3 hex digests
+  (schema **v4**); `DefaultHasher` is no longer persisted.
+- Docs no longer present unimplemented `--output summary` / timestamps as
+  shipped V2 surface.
+
+### Changed
+
+- Workspace and Nix package version **2.3.3**.
+
 ## [2.3.2] - 2026-07-20
 
 Hardening patch: transparent TTY stderr, colder completion cache honesty, and
@@ -253,6 +280,7 @@ First taggable V1 prerelease: a standard Nix flake app runner through Phase 5 of
 - [Compatibility matrix](docs/COMPATIBILITY.md), [CLI reference](docs/CLI_REFERENCE.md), and [telemetry decision](docs/TELEMETRY.md) (default: none).
 - Tag-triggered [release workflow](.github/workflows/release.yml) (quality gate only; no publish secrets).
 
+[2.3.3]: https://github.com/willmortimer/nxr/compare/v2.3.2...v2.3.3
 [2.3.2]: https://github.com/willmortimer/nxr/compare/v2.3.1...v2.3.2
 [2.3.1]: https://github.com/willmortimer/nxr/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/willmortimer/nxr/compare/v2.2.0...v2.3.0

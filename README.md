@@ -183,5 +183,6 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**2.3.2** — edge-case hardening: TTY-safe stderr, completion cache honesty,
-safer `affected`, release layout/version checks. History: [CHANGELOG.md](CHANGELOG.md).
+**2.3.3** — correctness cut: watch uses the normal task pipeline, empty
+affected diffs are all-unaffected, path validation, catalog decoupling, cache
+v4 BLAKE3 digests. History: [CHANGELOG.md](CHANGELOG.md).

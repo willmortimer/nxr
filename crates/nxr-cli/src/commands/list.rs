@@ -5,7 +5,8 @@ use std::io::{self, Write};
 
 use clap::ValueEnum;
 use nxr_completion::cache::{
-    DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_workspace_with_cache,
+    DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_with_cache,
+    discover_workspace_with_cache,
 };
 use nxr_core::sanitize::sanitize_terminal_text;
 use nxr_core::{App, AppList, FlakeOutput, OutputList, ProjectsError};
@@ -76,7 +77,7 @@ impl ListError {
 /// # Errors
 ///
 /// Returns [`ListError`] when flake resolution, Nix discovery, or output fails.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn run(
     flake_arg: Option<&str>,
     nix_override: Option<&str>,
@@ -101,26 +102,55 @@ pub fn run(
     )?;
 
     match kind {
-        None | Some(ListKind::Apps | ListKind::Tasks) => {
-            let include_apps = !matches!(kind, Some(ListKind::Tasks));
-            let include_tasks = !matches!(kind, Some(ListKind::Apps));
+        Some(ListKind::Apps) => {
             runner
                 .info(format!("discovering apps for {}", flake.display))
                 .map_err(ListError::Io)?;
-            let workspace = discover_workspace(&flake, &adapter, refresh_discovery, nix_flags)?;
-            let task_doc = workspace
-                .tasks
-                .expect("list always discovers tasks with apps");
+            let apps_only = discover_apps(&flake, &adapter, refresh_discovery, nix_flags)?;
+            let task_doc = discover_tasks_best_effort(&flake, &adapter, nix_flags);
+            let apps = filter.filter_apps(&apps_only, &task_doc);
+            runner
+                .verbose(format!(
+                    "found {} app(s) for system {}",
+                    apps.len(),
+                    adapter.system
+                ))
+                .map_err(ListError::Io)?;
+            write_apps_and_tasks(
+                json,
+                &flake,
+                &adapter.system,
+                &apps,
+                &task_doc,
+                &BTreeMap::new(),
+                true,
+                false,
+            )?;
+        }
+        None | Some(ListKind::Tasks) => {
+            let include_apps = !matches!(kind, Some(ListKind::Tasks));
+            let include_tasks = true;
+            runner
+                .info(format!("discovering apps for {}", flake.display))
+                .map_err(ListError::Io)?;
+            let (apps_discovered, task_doc) = if include_apps {
+                let workspace =
+                    discover_workspace_soft_tasks(&flake, &adapter, refresh_discovery, nix_flags)?;
+                let task_doc = workspace
+                    .tasks
+                    .unwrap_or_else(|| TaskDocument::new(BTreeMap::new()));
+                (workspace.apps, task_doc)
+            } else {
+                let task_doc =
+                    discover_tasks_required(&flake, &adapter, refresh_discovery, nix_flags)?;
+                (Vec::new(), task_doc)
+            };
             let apps = if include_apps {
-                filter.filter_apps(&workspace.apps, &task_doc)
+                filter.filter_apps(&apps_discovered, &task_doc)
             } else {
                 Vec::new()
             };
-            let tasks = if include_tasks {
-                filter.filter_tasks(&task_doc)
-            } else {
-                BTreeMap::new()
-            };
+            let tasks = filter.filter_tasks(&task_doc);
             runner
                 .verbose(format!(
                     "found {} app(s) and {} task(s) for system {}",
@@ -267,7 +297,77 @@ fn write_apps_and_tasks(
     Ok(())
 }
 
-fn discover_workspace(
+fn discover_apps(
+    flake: &FlakeSelection,
+    adapter: &nxr_nix::NixAdapter,
+    refresh_discovery: bool,
+    nix_flags: &OptionalNixFlags,
+) -> Result<Vec<App>, ListError> {
+    let context = DiscoveryContext {
+        flake_ref: flake.nix_ref.clone(),
+        local_root: flake.local_root.clone(),
+        system: adapter.system.clone(),
+        nix_path: adapter.nix.as_str().to_owned(),
+        nix_version: adapter.capabilities.version.to_string(),
+        discovery_inputs: Vec::new(),
+    };
+    let flake_ref = flake.nix_ref.clone();
+    discover_with_cache(
+        &context,
+        DiscoveryCacheOptions {
+            refresh: refresh_discovery,
+            require_tasks: false,
+        },
+        || {
+            adapter
+                .discover_apps(&flake_ref, nix_flags)
+                .map_err(ListError::Nix)
+        },
+    )
+}
+
+fn discover_tasks_best_effort(
+    flake: &FlakeSelection,
+    adapter: &nxr_nix::NixAdapter,
+    nix_flags: &OptionalNixFlags,
+) -> TaskDocument {
+    adapter
+        .discover_tasks(&flake.nix_ref, nix_flags)
+        .unwrap_or_else(|_| TaskDocument::new(BTreeMap::new()))
+}
+
+fn discover_tasks_required(
+    flake: &FlakeSelection,
+    adapter: &nxr_nix::NixAdapter,
+    refresh_discovery: bool,
+    nix_flags: &OptionalNixFlags,
+) -> Result<TaskDocument, ListError> {
+    let workspace = discover_workspace_with_cache(
+        &DiscoveryContext {
+            flake_ref: flake.nix_ref.clone(),
+            local_root: flake.local_root.clone(),
+            system: adapter.system.clone(),
+            nix_path: adapter.nix.as_str().to_owned(),
+            nix_version: adapter.capabilities.version.to_string(),
+            discovery_inputs: Vec::new(),
+        },
+        DiscoveryCacheOptions::with_tasks(refresh_discovery),
+        || {
+            let tasks = adapter
+                .discover_tasks(&flake.nix_ref, nix_flags)
+                .map_err(ListError::Tasks)?;
+            Ok::<WorkspaceDiscovery, ListError>(WorkspaceDiscovery {
+                apps: Vec::new(),
+                tasks: Some(tasks),
+            })
+        },
+    )?;
+    Ok(workspace
+        .tasks
+        .unwrap_or_else(|| TaskDocument::new(BTreeMap::new())))
+}
+
+fn discover_workspace_soft_tasks(
     flake: &FlakeSelection,
     adapter: &nxr_nix::NixAdapter,
     refresh_discovery: bool,
@@ -285,18 +385,16 @@ fn discover_workspace(
 
     discover_workspace_with_cache(
         &context,
-        DiscoveryCacheOptions::with_tasks(refresh_discovery),
+        DiscoveryCacheOptions {
+            refresh: refresh_discovery,
+            require_tasks: false,
+        },
         || {
             let apps = adapter
                 .discover_apps(&flake_ref, nix_flags)
                 .map_err(ListError::Nix)?;
-            let tasks = adapter
-                .discover_tasks(&flake_ref, nix_flags)
-                .map_err(ListError::Tasks)?;
-            Ok(WorkspaceDiscovery {
-                apps,
-                tasks: Some(tasks),
-            })
+            let tasks = adapter.discover_tasks(&flake_ref, nix_flags).ok();
+            Ok(WorkspaceDiscovery { apps, tasks })
         },
     )
 }

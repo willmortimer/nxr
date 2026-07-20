@@ -340,29 +340,33 @@ No global shell configuration is modified.
 
 ### 2.7 Rich output handling
 
-Modes:
+Shipped modes:
 
 ```bash
 nxr --output live task dev
 nxr --output grouped task ci
 nxr --output failures task ci
-nxr --output summary task ci
+nxr --output raw task ci
 nxr --events jsonl task ci
 ```
 
-Features:
+Shipped features:
 
 - node prefixes;
-- timestamps;
-- duration reporting;
-- progress state;
 - terminal-width adaptation;
 - ANSI-aware truncation;
-- saved logs;
-- failure excerpts;
+- failure excerpts (failures mode);
 - raw child passthrough;
 - non-TTY CI mode;
-- machine-readable event streams.
+- machine-readable event streams (`--events jsonl`).
+
+Planned (2.4+; not yet implemented):
+
+- `--output summary`;
+- timestamps and duration reporting on events / JSON;
+- progress state;
+- saved logs;
+- `run_id` and richer node outcome statuses.
 
 ### 2.8 Process supervision
 
@@ -413,6 +417,8 @@ Aliases must be explicit and inspectable.
 
 ### 2.11 Task status summaries
 
+Planned for 2.4 (not yet implemented). Today, use `--events jsonl` or `--output failures` / `grouped` / `live` for run feedback.
+
 ```text
 TASK          STATUS      DURATION
 fmt-check     succeeded   1.2s
@@ -421,7 +427,7 @@ test          failed      19.4s
 package       skipped     -
 ```
 
-JSON output includes exact exit codes and timestamps.
+When shipped, JSON output will include exact exit codes and timestamps.
 
 ### 2.12 Configuration inspection
 

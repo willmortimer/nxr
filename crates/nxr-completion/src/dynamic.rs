@@ -29,11 +29,11 @@ pub enum CompleteTarget {
 /// Discover app candidates for shell completion.
 ///
 /// Uses the discovery cache when possible. Cold misses should evaluate apps
-/// together with the lightweight `nxr` task document so `discoveryInputs` enter
-/// the first cache entry (`require_tasks: true` from the CLI completion path).
-/// On a cache miss, discovery runs in a background thread and is abandoned after
-/// [`DISCOVERY_TIMEOUT`], returning an empty list so shells never block on slow
-/// Nix evaluation.
+/// and, when available, the lightweight `nxr` task document so `discoveryInputs`
+/// enter the first cache entry. Task discovery remains best-effort so optional
+/// metadata cannot erase ordinary app completions. On a cache miss, discovery
+/// runs in a background thread and is abandoned after [`DISCOVERY_TIMEOUT`],
+/// returning an empty list so shells never block on slow Nix evaluation.
 pub fn discover_app_candidates<F, E>(
     context: &DiscoveryContext,
     options: DiscoveryCacheOptions,

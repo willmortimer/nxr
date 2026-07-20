@@ -166,22 +166,10 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             args,
         }) => {
             if *watch {
-                let name = tasks
-                    .first()
-                    .ok_or(RunError::Usage("task name required".to_owned()))?;
-                if tasks.len() > 1 {
-                    return Err(RunError::Usage(
-                        "task --watch supports a single task name".to_owned(),
-                    ));
-                }
-                execute_watch(
-                    cli,
-                    &nix_flags,
-                    name,
-                    args,
-                    watch_options_from_debounce(*debounce),
-                    runner,
-                )
+                let options = watch_options_from_debounce(*debounce);
+                let request =
+                    watch_task_request(cli, &nix_flags, tasks, args, *jobs, *keep_going, options)?;
+                watch::run(&request, runner).map_err(RunError::from)
             } else {
                 let request = task_request(cli, &nix_flags, tasks, args, *jobs, *keep_going)?;
                 task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
@@ -594,8 +582,7 @@ fn execute_watch(
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
     let request = watch_request(cli, nix_flags, name, args, options)?;
-    watch::run(&request, runner)?;
-    Ok(exit::SUCCESS)
+    watch::run(&request, runner).map_err(RunError::from)
 }
 
 fn watch_options_from_debounce(debounce: Option<u64>) -> watch::WatchOptions {
@@ -624,6 +611,47 @@ fn watch_request<'a>(
         shell_mode: cli.shell_mode,
         environment_policy: environment_policy_from_cli(cli)?,
         options,
+        output_mode: cli.output,
+        events_format: cli.events,
+        // When `name` resolves as a task, use the normal scheduler with global
+        // output/events; jobs stay at 1 unless entered via `task --watch -j`.
+        task_settings: None,
+        nix_flags,
+    })
+}
+
+fn watch_task_request<'a>(
+    cli: &'a Cli,
+    nix_flags: &'a nxr_nix::OptionalNixFlags,
+    tasks: &'a [String],
+    args: &'a [String],
+    jobs: usize,
+    keep_going: bool,
+    options: watch::WatchOptions,
+) -> Result<watch::WatchRequest<'a>, RunError> {
+    let name = tasks
+        .first()
+        .ok_or(RunError::Usage("task name required".to_owned()))?;
+    Ok(watch::WatchRequest {
+        flake_arg: cli.flake.as_deref(),
+        nix_override: cli.nix.as_deref(),
+        name,
+        args,
+        root: cli.root,
+        cwd: cli.cwd.as_deref(),
+        shell: cli.dev_shell.as_deref(),
+        shell_mode: cli.shell_mode,
+        environment_policy: environment_policy_from_cli(cli)?,
+        options,
+        output_mode: cli.output,
+        events_format: cli.events,
+        task_settings: Some(watch::TaskWatchSettings {
+            tasks: tasks.to_vec(),
+            jobs,
+            keep_going,
+            output_mode: cli.output,
+            events_format: cli.events,
+        }),
         nix_flags,
     })
 }

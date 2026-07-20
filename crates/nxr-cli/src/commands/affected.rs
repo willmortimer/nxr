@@ -83,6 +83,10 @@ pub fn run(
     let adapter = build_adapter(nix_override)?;
 
     let mut changed_paths = paths.to_vec();
+    for (index, path) in changed_paths.iter().enumerate() {
+        nxr_core::validate_repo_relative_path(&format!("paths[{index}]"), path)
+            .map_err(|error| AffectedCommandError::Usage(error.to_string()))?;
+    }
     let needs_git = sources.base.is_some() || sources.working_tree || sources.all_changes.is_some();
     if needs_git {
         let local_root = flake.local_root.as_ref().ok_or_else(|| {
