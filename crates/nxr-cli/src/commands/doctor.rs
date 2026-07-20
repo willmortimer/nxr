@@ -13,6 +13,8 @@ use crate::commands::common::{
 };
 use crate::flake::{FlakeResolveError, resolve_flake};
 use crate::runner_output::RunnerOutput;
+use crate::shell_mode::ShellMode;
+use crate::shell_mode::active_dev_shell;
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -84,6 +86,14 @@ pub fn run(
     runner: RunnerOutput,
 ) -> Result<i32, DoctorError> {
     let mut findings = Vec::new();
+    if let Some(active) = active_dev_shell() {
+        push_finding(
+            &mut findings,
+            DiagnosticLevel::Info,
+            "shell.active",
+            format!("NXR_DEV_SHELL={active}"),
+        );
+    }
     let capabilities = collect_findings(request, &mut findings);
     let exit_code = exit_code_for_findings(&findings);
 
@@ -344,6 +354,7 @@ fn collect_clean_env_findings(request: DoctorRequest<'_>, findings: &mut Vec<Dia
         root: request.root,
         cwd: request.cwd,
         shell: None,
+        shell_mode: ShellMode::Smart,
         environment_policy: EnvironmentPolicy::Inherit,
         nix_flags: &nix_flags,
     };

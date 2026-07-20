@@ -55,6 +55,10 @@
       "type": "string",
       "description": "Selected devShell name when `--shell` is set."
     },
+    "active_shell": {
+      "type": "string",
+      "description": "Active dev shell from `NXR_DEV_SHELL` when set in the caller environment."
+    },
     "environment_policy": {
       "description": "Child environment policy. Either the string \"inherit\" or a clean-env object.",
       "oneOf": [

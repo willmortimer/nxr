@@ -9,6 +9,7 @@ mod output;
 mod output_options;
 mod output_task;
 mod runner_output;
+mod shell_mode;
 
 use std::collections::BTreeMap;
 use std::process;
@@ -125,11 +126,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             debounce,
             args,
         }) => dispatch_run_command(cli, &nix_flags, app, *watch, *debounce, args, runner),
-        Some(Command::Plan { app, args }) => {
-            let request = app_request(cli, &nix_flags, app, args)?;
-            plan::run(&request, cli.json, runner)?;
-            Ok(exit::SUCCESS)
-        }
+        Some(Command::Plan { app, args }) => dispatch_plan(cli, &nix_flags, app, args, runner),
         Some(Command::Task {
             jobs,
             keep_going,
@@ -195,14 +192,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             runner,
         ),
         Some(Command::Graph { task, format }) => {
-            let request = graph::GraphRequest {
-                flake_arg: cli.flake.as_deref(),
-                nix_override: cli.nix.as_deref(),
-                task: task.as_str(),
-                nix_flags: &nix_flags,
-            };
-            graph::run(&request, *format, cli.json, runner)?;
-            Ok(exit::SUCCESS)
+            dispatch_graph(cli, &nix_flags, task, *format, runner)
         }
         Some(Command::Cache { action }) => match action {
             CacheSubcommand::Clear => {
@@ -215,6 +205,35 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             }
         },
     }
+}
+
+fn dispatch_plan(
+    cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
+    app: &str,
+    args: &[String],
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    let request = app_request(cli, nix_flags, app, args)?;
+    plan::run(&request, cli.json, runner)?;
+    Ok(exit::SUCCESS)
+}
+
+fn dispatch_graph(
+    cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
+    task: &str,
+    format: graph::GraphFormat,
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    let request = graph::GraphRequest {
+        flake_arg: cli.flake.as_deref(),
+        nix_override: cli.nix.as_deref(),
+        task,
+        nix_flags,
+    };
+    graph::run(&request, format, cli.json, runner)?;
+    Ok(exit::SUCCESS)
 }
 
 fn run_list(
@@ -301,6 +320,7 @@ fn app_request<'a>(
         root: cli.root,
         cwd: cli.cwd.as_deref(),
         shell: cli.dev_shell.as_deref(),
+        shell_mode: cli.shell_mode,
         environment_policy: environment_policy_from_cli(cli)?,
         nix_flags,
     })
@@ -322,6 +342,7 @@ fn task_request<'a>(
         root: cli.root,
         cwd: cli.cwd.as_deref(),
         shell: cli.dev_shell.as_deref(),
+        shell_mode: cli.shell_mode,
         environment_policy: environment_policy_from_cli(cli)?,
         jobs,
         keep_going,
@@ -428,6 +449,7 @@ fn watch_request<'a>(
         root: cli.root,
         cwd: cli.cwd.as_deref(),
         shell: cli.dev_shell.as_deref(),
+        shell_mode: cli.shell_mode,
         environment_policy: environment_policy_from_cli(cli)?,
         options,
         nix_flags,

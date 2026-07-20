@@ -23,6 +23,7 @@ nxr <command> --help
     --nix-option <KEY=VAL> Forward `--option KEY VAL` to Nix (repeatable)
     --nix-arg <ARG>        Forward arbitrary Nix argv fragments (repeatable)
     --shell <NAME>         Execute through named dev shell
+    --shell-mode <MODE>    smart|always|never (default smart)
     --clean-env            Run with reduced inherited environment
     --keep-env <NAME>      Preserve variable in clean mode (repeatable)
     --set-env <KEY=VALUE>  Set or replace a variable (repeatable)

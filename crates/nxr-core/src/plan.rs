@@ -32,6 +32,9 @@ pub struct Plan {
     /// Selected `devShell` name when `--shell` is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell: Option<String>,
+    /// Active dev shell from `NXR_DEV_SHELL` when set in the caller environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_shell: Option<String>,
     pub environment_policy: EnvironmentPolicy,
     pub command: PlanCommand,
     pub forwarded_arguments: Vec<String>,

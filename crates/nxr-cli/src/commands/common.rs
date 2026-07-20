@@ -19,6 +19,7 @@ use nxr_task::{
 };
 
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
+use crate::shell_mode::{ShellMode, active_dev_shell, effective_shell_wrap};
 
 /// Inputs shared by `run`, bare-app, and `plan` preparation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -30,6 +31,7 @@ pub struct AppRequest<'a> {
     pub root: bool,
     pub cwd: Option<&'a str>,
     pub shell: Option<&'a str>,
+    pub shell_mode: ShellMode,
     pub environment_policy: EnvironmentPolicy,
     pub nix_flags: &'a OptionalNixFlags,
 }
@@ -323,6 +325,7 @@ impl WorkspaceSnapshot {
         root: bool,
         cwd: Option<&str>,
         shell: Option<&str>,
+        shell_mode: ShellMode,
         environment_policy: &EnvironmentPolicy,
         nix_flags: &OptionalNixFlags,
     ) -> Result<BTreeMap<String, PreparedTaskNode>, PrepareError> {
@@ -355,6 +358,7 @@ impl WorkspaceSnapshot {
                 root,
                 cwd,
                 shell,
+                shell_mode,
                 environment_policy: environment_policy.clone(),
                 nix_flags,
             };
@@ -524,7 +528,8 @@ fn build_plan(
     forwarded: &[String],
 ) -> Plan {
     let run_argv = nix_run_args(&flake.nix_ref, &app.name, forwarded);
-    let base_arguments = match request.shell {
+    let wrap_shell = effective_shell_wrap(request.shell, request.shell_mode);
+    let base_arguments = match wrap_shell {
         Some(shell_name) => {
             nix_develop_wrap_run_args(adapter.nix.as_str(), &flake.nix_ref, shell_name, &run_argv)
         }
@@ -542,6 +547,7 @@ fn build_plan(
         invocation_directory: invocation_directory.as_str().to_owned(),
         execution_directory: execution_directory.as_str().to_owned(),
         shell: request.shell.map(str::to_owned),
+        active_shell: active_dev_shell(),
         environment_policy: request.environment_policy.clone(),
         command: PlanCommand {
             program: adapter.nix.as_str().to_owned(),
@@ -560,6 +566,7 @@ mod tests {
         resolve_task_execution_directory, strip_one_separator, synthetic_app,
     };
     use crate::flake::FlakeSelection;
+    use crate::shell_mode::ShellMode;
     use nxr_core::App;
     use nxr_nix::NixAdapter;
     use nxr_nix::OptionalNixFlags;
@@ -639,6 +646,7 @@ mod tests {
             root: false,
             cwd: None,
             shell: None,
+            shell_mode: ShellMode::Smart,
             environment_policy: nxr_core::EnvironmentPolicy::Inherit,
             nix_flags: &nix_flags,
         };
@@ -788,6 +796,7 @@ mod tests {
             root: false,
             cwd: None,
             shell: Some("default"),
+            shell_mode: ShellMode::Always,
             environment_policy: nxr_core::EnvironmentPolicy::Inherit,
             nix_flags: &nix_flags,
         };

@@ -107,6 +107,7 @@ mod tests {
             invocation_directory: invocation.to_owned(),
             execution_directory: invocation.to_owned(),
             shell: None,
+            active_shell: None,
             environment_policy: EnvironmentPolicy::Inherit,
             command: PlanCommand {
                 program: "nix".to_owned(),
@@ -156,6 +157,7 @@ mod tests {
             invocation_directory: "/work".to_owned(),
             execution_directory: "/work".to_owned(),
             shell: None,
+            active_shell: None,
             environment_policy: EnvironmentPolicy::Inherit,
             command: PlanCommand {
                 program: "nix".to_owned(),

@@ -69,6 +69,7 @@ pub struct WatchRequest<'a> {
     pub root: bool,
     pub cwd: Option<&'a str>,
     pub shell: Option<&'a str>,
+    pub shell_mode: crate::shell_mode::ShellMode,
     pub environment_policy: EnvironmentPolicy,
     pub options: WatchOptions,
     pub nix_flags: &'a nxr_nix::OptionalNixFlags,
@@ -229,6 +230,7 @@ fn run_generation(
                 root: request.root,
                 cwd: request.cwd,
                 shell: request.shell,
+                shell_mode: request.shell_mode,
                 environment_policy: request.environment_policy.clone(),
                 nix_flags: request.nix_flags,
             };
@@ -268,6 +270,7 @@ fn run_generation(
                     root: request.root,
                     cwd: request.cwd,
                     shell: request.shell,
+                    shell_mode: request.shell_mode,
                     environment_policy: request.environment_policy.clone(),
                     nix_flags: request.nix_flags,
                 };

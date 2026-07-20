@@ -123,6 +123,7 @@ V2 / upcoming orchestration options:
 
 ```text
     --shell <NAME>         Execute through named dev shell
+    --shell-mode <MODE>    smart|always|never (default smart)
 -j, --jobs <N>             Maximum parallel task nodes
     --fail-fast            Cancel independent work after failure
     --keep-going           Continue independent work
