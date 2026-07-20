@@ -44,11 +44,23 @@ impl OutputTable {
         }
     }
 
+    /// Upstream `nix flake show --json` `type` field (pre-inventory format).
     #[must_use]
     pub const fn expected_type(self) -> &'static str {
         match self {
             Self::Apps => "app",
             Self::Packages | Self::Checks | Self::DevShells => "derivation",
+        }
+    }
+
+    /// Determinate Nix inventory v2 `what` field (flake-schemas).
+    #[must_use]
+    pub const fn expected_what(self) -> &'static str {
+        match self {
+            Self::Apps => "app",
+            Self::Packages => "package",
+            Self::Checks => "CI test",
+            Self::DevShells => "development environment",
         }
     }
 }
@@ -128,6 +140,9 @@ pub fn parse_apps_from_flake_show(
 
 /// Parse a flake output table from `nix flake show --json`.
 ///
+/// Supports both upstream Nix's legacy shape (`apps.<system>.<name>.type`) and
+/// Determinate Nix inventory v2 (`inventory.apps.output.children…what`).
+///
 /// # Errors
 ///
 /// Returns [`ParseAppsError`] when the show JSON has an unexpected structure.
@@ -137,13 +152,26 @@ pub fn parse_outputs_from_flake_show(
     system: &str,
     table: OutputTable,
 ) -> Result<Vec<FlakeOutput>, ParseAppsError> {
-    let Some(entries) = show
+    if let Some(outputs) = parse_legacy_show_table(show, flake_ref, system, table) {
+        return Ok(outputs);
+    }
+    if let Some(outputs) = parse_inventory_v2_table(show, flake_ref, system, table) {
+        return Ok(outputs);
+    }
+    Ok(Vec::new())
+}
+
+/// Upstream / Lix shape: `{ "apps": { "<system>": { "<name>": { "type": … } } } }`.
+fn parse_legacy_show_table(
+    show: &JsonValue,
+    flake_ref: &str,
+    system: &str,
+    table: OutputTable,
+) -> Option<Vec<FlakeOutput>> {
+    let entries = show
         .get(table.show_key())
         .and_then(|root| root.get(system))
-        .and_then(JsonValue::as_object)
-    else {
-        return Ok(Vec::new());
-    };
+        .and_then(JsonValue::as_object)?;
 
     let expected_type = table.expected_type();
     let mut outputs = Vec::new();
@@ -172,7 +200,53 @@ pub fn parse_outputs_from_flake_show(
     }
 
     outputs.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(outputs)
+    Some(outputs)
+}
+
+/// Determinate Nix inventory v2: `{ "version": 2, "inventory": { "apps": { "output": { "children": … } } } }`.
+fn parse_inventory_v2_table(
+    show: &JsonValue,
+    flake_ref: &str,
+    system: &str,
+    table: OutputTable,
+) -> Option<Vec<FlakeOutput>> {
+    let entries = show
+        .get("inventory")
+        .and_then(|inv| inv.get(table.show_key()))
+        .and_then(|root| root.get("output"))
+        .and_then(|output| output.get("children"))
+        .and_then(|systems| systems.get(system))
+        .and_then(|system_node| system_node.get("children"))
+        .and_then(JsonValue::as_object)?;
+
+    let expected_what = table.expected_what();
+    let mut outputs = Vec::new();
+    for (name, entry) in entries {
+        let Some(what) = entry.get("what").and_then(JsonValue::as_str) else {
+            continue;
+        };
+        if what != expected_what {
+            continue;
+        }
+
+        let description = entry
+            .get("shortDescription")
+            .and_then(JsonValue::as_str)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned);
+
+        outputs.push(FlakeOutput {
+            name: name.clone(),
+            attr_path: format!("{}.{system}.{name}", table.attr_prefix()),
+            flake_ref: flake_ref.to_owned(),
+            system: system.to_owned(),
+            description,
+            is_default: name == "default",
+        });
+    }
+
+    outputs.sort_by(|left, right| left.name.cmp(&right.name));
+    Some(outputs)
 }
 
 #[cfg(test)]
@@ -233,6 +307,126 @@ mod tests {
         let show = json!({ "apps": { "x86_64-linux": {} } });
         let apps = parse_apps_from_flake_show(&show, ".", "aarch64-darwin").expect("parse apps");
         assert!(apps.is_empty());
+    }
+
+    #[test]
+    fn parse_determinate_inventory_v2_apps() {
+        let show = json!({
+            "version": 2,
+            "inventory": {
+                "apps": {
+                    "doc": "The apps output",
+                    "output": {
+                        "children": {
+                            "x86_64-linux": {
+                                "forSystems": ["x86_64-linux"],
+                                "children": {
+                                    "shared-check": {
+                                        "what": "app",
+                                        "shortDescription": "Validate shared library inputs",
+                                        "forSystems": ["x86_64-linux"]
+                                    },
+                                    "filtered-out": {
+                                        "what": "package"
+                                    },
+                                    "default": {
+                                        "what": "app",
+                                        "shortDescription": ""
+                                    }
+                                }
+                            },
+                            "aarch64-darwin": {
+                                "filtered": true
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let apps = parse_apps_from_flake_show(&show, "./fixtures/affected-deps", "x86_64-linux")
+            .expect("parse apps");
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0].name, "default");
+        assert!(apps[0].is_default);
+        assert_eq!(apps[0].description, None);
+        assert_eq!(apps[1].name, "shared-check");
+        assert_eq!(
+            apps[1].description.as_deref(),
+            Some("Validate shared library inputs")
+        );
+        assert_eq!(apps[1].attr_path, "apps.x86_64-linux.shared-check");
+
+        let other =
+            parse_apps_from_flake_show(&show, ".", "aarch64-darwin").expect("filtered system");
+        assert!(other.is_empty());
+    }
+
+    #[test]
+    fn parse_determinate_inventory_v2_packages_checks_shells() {
+        let show = json!({
+            "version": 2,
+            "inventory": {
+                "packages": {
+                    "output": {
+                        "children": {
+                            "aarch64-darwin": {
+                                "children": {
+                                    "tool": {
+                                        "what": "package",
+                                        "shortDescription": "A tool"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "checks": {
+                    "output": {
+                        "children": {
+                            "aarch64-darwin": {
+                                "children": {
+                                    "fmt": { "what": "CI test", "shortDescription": "" }
+                                }
+                            }
+                        }
+                    }
+                },
+                "devShells": {
+                    "output": {
+                        "children": {
+                            "aarch64-darwin": {
+                                "children": {
+                                    "backend": {
+                                        "what": "development environment",
+                                        "shortDescription": "Backend shell"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let packages =
+            parse_outputs_from_flake_show(&show, ".", "aarch64-darwin", OutputTable::Packages)
+                .expect("packages");
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].name, "tool");
+        assert_eq!(packages[0].description.as_deref(), Some("A tool"));
+
+        let checks =
+            parse_outputs_from_flake_show(&show, ".", "aarch64-darwin", OutputTable::Checks)
+                .expect("checks");
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].description, None);
+
+        let shells =
+            parse_outputs_from_flake_show(&show, ".", "aarch64-darwin", OutputTable::DevShells)
+                .expect("shells");
+        assert_eq!(shells.len(), 1);
+        assert_eq!(shells[0].description.as_deref(), Some("Backend shell"));
     }
 
     #[test]

@@ -32,6 +32,12 @@ Upstream Nix enables flakes via `experimental-features = nix-command flakes`.
 detects that case from the `nix --version` banner (and from a successful
 `nix flake --help` probe) rather than requiring the experimental flag alone.
 
+Determinate Nix also emits a different `nix flake show --json` envelope
+(inventory v2 with `what` / `shortDescription` under
+`inventory.<output>.output.children`). `nxr` accepts both that shape and the
+upstream legacy `{ apps.<system>.<name>.type }` document so discovery stays
+green on the CI “latest” (Determinate) and “2.18” matrix cells.
+
 Capability negotiation still runs on older Nix releases (roughly 2.4+): `nxr`
 detects version and feature flags once per adapter construction and chooses a
 compatible argv rather than hard-coding a single global flag set. User-requested
