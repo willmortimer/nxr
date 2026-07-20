@@ -7,9 +7,13 @@ Initial release matrix:
 | System | Architecture | CI | Notes |
 |---|---|---|---|
 | `aarch64-darwin` | Apple Silicon macOS | `macos-latest` | Primary developer platform |
+| `x86_64-darwin` | Intel macOS | — | Flake outputs; CI when available |
+| `aarch64-linux` | Linux (arm64) | — | Flake outputs; CI when available |
 | `x86_64-linux` | Linux (amd64) | `ubuntu-latest` | Primary CI platform |
 
-Other Unix targets may build from source but are not part of the V1 compatibility guarantee until listed here.
+The root flake evaluates all four systems. CI currently exercises `aarch64-darwin`
+and `x86_64-linux`; other Unix targets may build from source but are not part of
+the V1 compatibility guarantee until listed with CI coverage.
 
 ## Nix
 
