@@ -1,5 +1,6 @@
 //! CLI subcommands.
 
+pub mod affected;
 pub mod cache;
 pub mod common;
 pub mod complete;

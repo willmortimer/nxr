@@ -2639,3 +2639,36 @@ fn inspect_task_working_directory_matches_dry_run_execution_directory() {
         flake_root.as_str()
     );
 }
+
+#[test]
+fn affected_shared_dependency_change_propagates_to_dependents() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/affected-deps",
+            "--json",
+            "affected",
+            "shared/lib.txt",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("json stdout");
+    assert_eq!(value["schema_version"], 1);
+    let tasks = value["tasks"]
+        .as_array()
+        .expect("tasks array")
+        .iter()
+        .filter_map(|entry| entry.as_str())
+        .collect::<Vec<_>>();
+    assert!(tasks.contains(&"shared-lib"));
+    assert!(tasks.contains(&"api-test"));
+    assert!(tasks.contains(&"web-test"));
+    assert!(tasks.contains(&"ci"));
+}

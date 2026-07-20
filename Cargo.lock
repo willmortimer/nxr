@@ -525,6 +525,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nxr-affected"
+version = "2.2.0"
+dependencies = [
+ "camino",
+ "globset",
+ "nxr-core",
+ "nxr-task",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "nxr-cli"
 version = "2.2.0"
 dependencies = [
@@ -533,6 +546,7 @@ dependencies = [
  "clap",
  "clap_mangen",
  "dialoguer",
+ "nxr-affected",
  "nxr-completion",
  "nxr-core",
  "nxr-nix",

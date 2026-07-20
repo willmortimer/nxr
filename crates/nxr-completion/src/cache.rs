@@ -559,6 +559,7 @@ mod tests {
                 category: None,
                 aliases: Vec::new(),
                 interactive: false,
+                paths: Vec::new(),
             },
         );
         TaskDocument::new(tasks)

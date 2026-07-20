@@ -32,6 +32,9 @@ let
     }
     // lib.optionalAttrs task.interactive {
       interactive = task.interactive;
+    }
+    // lib.optionalAttrs (task.paths != [ ]) {
+      paths = task.paths;
     };
 
   taskDocument = tasksCfg: {

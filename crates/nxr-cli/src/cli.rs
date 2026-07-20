@@ -330,6 +330,15 @@ pub enum Command {
         #[command(subcommand)]
         action: CacheSubcommand,
     },
+    /// Report apps and tasks likely affected by changed paths
+    Affected {
+        /// Collect changed paths from `git diff --name-only <base>...HEAD`
+        #[arg(long = "base", value_name = "REF")]
+        base: Option<String>,
+        /// Explicit repository-relative changed paths
+        #[arg(value_name = "PATH")]
+        paths: Vec<String>,
+    },
     /// Bare `nxr <app> [args…]` form (reserved names win first)
     #[command(external_subcommand)]
     External(Vec<String>),

@@ -74,6 +74,16 @@ let
           concurrent peers), and multiplexed `--output` modes are rejected.
         '';
       };
+
+      paths = lib.mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = ''
+          Optional repository-relative path roots for conservative affected
+          analysis (`nxr affected`). Changes under these paths mark the task
+          (and its dependents) as affected.
+        '';
+      };
     };
   };
 in

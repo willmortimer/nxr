@@ -55,6 +55,7 @@ perSystem = { ... }: {
 | `category` | no | Logical grouping for listings |
 | `aliases` | no | Alternate names for explicit task commands (see below); default `[]` |
 | `interactive` | no | Exclusive terminal access (`stdin`/TTY inherited; runs alone; no multiplexed `--output`); default `false` |
+| `paths` | no | Repository-relative path roots for conservative `nxr affected` analysis; default `[]` |
 
 Field names use the camelCase vocabulary (`dependsOn`, `workingDirectory`) that
 matches [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json) and the

@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/affected-v1.schema.json",
+  "title": "nxr affected output",
+  "description": "Machine-readable output for `nxr affected --json` (schema version 1).",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "flake",
+    "system",
+    "changed_paths",
+    "apps",
+    "tasks",
+    "nodes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "flake": {
+      "type": "string",
+      "description": "Selected flake reference."
+    },
+    "system": {
+      "type": "string",
+      "description": "Nix system string for the analyzed workspace."
+    },
+    "changed_paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Repository-relative paths considered changed."
+    },
+    "apps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Affected flake app leaf names."
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Affected task names."
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/affected_node"
+      }
+    }
+  },
+  "$defs": {
+    "affected_node": {
+      "type": "object",
+      "required": ["kind", "name", "reasons"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["app", "task"]
+        },
+        "name": {
+          "type": "string"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/affected_reason"
+          }
+        }
+      }
+    },
+    "affected_reason": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "path"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "path"
+            },
+            "path": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "path"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "global_input"
+            },
+            "path": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "from"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "dependency"
+            },
+            "from": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "app"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "app"
+            },
+            "app": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

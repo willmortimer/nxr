@@ -8,6 +8,7 @@ members = [
   "crates/nxr-workspace",
   "crates/nxr-completion",
   "crates/nxr-task",
+  "crates/nxr-affected",
   "crates/nxr-watch",
   "xtask",
 ]

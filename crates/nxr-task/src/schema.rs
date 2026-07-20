@@ -108,6 +108,10 @@ pub struct TaskDefinition {
     /// cannot run concurrently with other nodes or multiplexed output).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub interactive: bool,
+
+    /// Optional repository-relative path roots for conservative affected analysis.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
 }
 
 impl TaskDefinition {
@@ -123,6 +127,7 @@ impl TaskDefinition {
             category: None,
             aliases: Vec::new(),
             interactive: false,
+            paths: Vec::new(),
         }
     }
 }
@@ -190,6 +195,7 @@ mod tests {
                 category: Some("validation".to_owned()),
                 aliases: vec!["gate".to_owned()],
                 interactive: false,
+                paths: vec!["crates".to_owned()],
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -375,6 +381,7 @@ mod tests {
                 category: None,
                 aliases: Vec::new(),
                 interactive: false,
+                paths: Vec::new(),
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -396,6 +403,7 @@ mod tests {
                 category: None,
                 aliases: Vec::new(),
                 interactive: false,
+                paths: Vec::new(),
             },
         );
         let value = serde_json::to_value(TaskDocument::new(tasks)).expect("serialize");

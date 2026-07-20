@@ -15,6 +15,7 @@ These are small Nix flakes used to exercise `nxr` discovery and execution
 | [task-dag](task-dag/) | Small task DAG (`fmt` → `test` → `ci`) via `nxr.<system>` |
 | [task-working-directory](task-working-directory/) | Per-task `workingDirectory` tokens and relative paths |
 | [parallel-group](parallel-group/) | Diamond DAG (`a` → `left`||`right` → `join`) for `-j` |
+| [affected-deps](affected-deps/) | Shared `paths` root with dependent tasks for `nxr affected` |
 | [watch-project](watch-project/) | Placeholder for V2 watch mode |
 | [ecosystem-graph-cargo](ecosystem-graph-cargo/) | Read-only Cargo workspace graph snapshot (adapter boundary example; not executed) |
 
@@ -48,6 +49,7 @@ cargo run -p nxr-cli -- --flake fixtures/named-dev-shells --shell default shell-
 cargo run -p nxr-cli -- --flake fixtures/named-dev-shells plan shell-marker --json
 cargo run -p nxr-cli -- --flake fixtures/task-dag task ci
 cargo run -p nxr-cli -- --flake fixtures/parallel-group task join -j 2
+cargo run -p nxr-cli -- --flake fixtures/affected-deps affected shared/lib.txt --json
 (cd fixtures/nested-directory/deep/down/here && cargo run -p nxr-cli -- list)
 (cd fixtures/nested-directory/deep/down/here && cargo run -p nxr-cli -- pwd)
 (cd fixtures/nested-directory/deep/down/here && cargo run -p nxr-cli -- --root pwd)
