@@ -107,7 +107,22 @@ pub fn discover_tasks(
 ) -> Result<TaskDocument, TaskDiscoveryError> {
     let attr = tasks_attr_path(system);
     let args = command::flake_eval_json_args(flake_ref, &attr);
-    let stdout = match run_nix(nix, &args, NixFailureKind::Evaluation) {
+    discover_tasks_with_args(nix, system, &args)
+}
+
+/// Discover tasks using a pre-built (capability-aware) argv.
+///
+/// # Errors
+///
+/// Returns [`TaskDiscoveryError`] when Nix evaluation fails for reasons other
+/// than a missing tasks attribute, or when the JSON/schema is invalid.
+pub fn discover_tasks_with_args(
+    nix: &Utf8Path,
+    system: &str,
+    args: &[String],
+) -> Result<TaskDocument, TaskDiscoveryError> {
+    let attr = tasks_attr_path(system);
+    let stdout = match run_nix(nix, args, NixFailureKind::Evaluation) {
         Ok(stdout) => stdout,
         Err(error) if is_missing_nxr_attr(&error, &attr) => {
             return Ok(TaskDocument::new(std::collections::BTreeMap::new()));

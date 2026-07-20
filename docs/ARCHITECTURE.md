@@ -199,10 +199,11 @@ A task may explicitly request root execution in V2.
 #### WorkspaceSnapshot
 
 Task and multi-app orchestration evaluate the workspace **once** into a
-`WorkspaceSnapshot`: flake selection, Nix adapter (locate + `currentSystem`),
-discovered apps, and optional task document. Every task node is prepared into a
-`PreparedTaskNode` **before** the scheduler starts. Scheduler execution must not
-re-run `flake show`, task eval, or system detection.
+`WorkspaceSnapshot`: flake selection, Nix adapter (locate + `currentSystem` +
+capability negotiation), discovered apps, and optional task document. Every
+task node is prepared into a `PreparedTaskNode` **before** the scheduler starts.
+Scheduler execution must not re-run `flake show`, task eval, system detection,
+or capability probing.
 
 Bare `nxr <app>` / `nxr run <app>` use a **fast path**: construct
 `nix run <flake>#<app>` without `flake show`. On a nonzero Nix exit, `nxr` may

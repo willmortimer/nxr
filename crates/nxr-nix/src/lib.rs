@@ -12,7 +12,11 @@ use camino::Utf8PathBuf;
 use nxr_core::sanitize::sanitize_terminal_text;
 
 pub use adapter::NixAdapter;
-pub use capabilities::{NixFailureKind, detect_system, locate_nix, run_nix};
+pub use capabilities::{
+    NixCapabilities, NixFailureKind, NixVersion, OptionalNixFlags, TESTED_NIX_SUPPORT_FLOOR,
+    detect_capabilities, detect_system, locate_nix, negotiate_capabilities,
+    parse_nix_version_output, run_nix,
+};
 pub use command::{
     NIX_EXECUTABLE_ENV, current_system_args, flake_eval_json_args, flake_show_args,
     nix_develop_wrap_run_args, nix_run_args,
@@ -37,6 +41,12 @@ pub enum NixError {
     /// `builtins.currentSystem` returned unusable output.
     InvalidSystemOutput,
 
+    /// `nix --version` returned unusable output.
+    InvalidVersionOutput,
+
+    /// Flakes are required but not enabled in the Nix configuration.
+    FlakesDisabled { version: NixVersion },
+
     /// A `nix` subprocess exited unsuccessfully.
     CommandFailed {
         nix: Utf8PathBuf,
@@ -59,9 +69,11 @@ impl std::error::Error for NixError {
             Self::SpawnFailed { source, .. } => Some(source),
             Self::InvalidJson { source } => Some(source),
             Self::ParseApps(error) => Some(error),
-            Self::NixNotFound { .. } | Self::InvalidSystemOutput | Self::CommandFailed { .. } => {
-                None
-            }
+            Self::NixNotFound { .. }
+            | Self::InvalidSystemOutput
+            | Self::InvalidVersionOutput
+            | Self::FlakesDisabled { .. }
+            | Self::CommandFailed { .. } => None,
         }
     }
 }
@@ -96,6 +108,18 @@ impl NixError {
             Self::InvalidSystemOutput => {
                 "nix returned an invalid current system string (try `nix eval --raw --impure --expr builtins.currentSystem`)"
                     .to_owned()
+            }
+            Self::InvalidVersionOutput => {
+                "nix returned an invalid version string (try `nix --version`)"
+                    .to_owned()
+            }
+            Self::FlakesDisabled { version } => {
+                format!(
+                    "Nix {version} does not have flakes enabled (`experimental-features` lacks \
+                     `flakes`). Enable flakes, for example: \
+                     `mkdir -p ~/.config/nix && echo 'experimental-features = nix-command flakes' \
+                     >> ~/.config/nix/nix.conf`"
+                )
             }
             Self::CommandFailed {
                 nix,
@@ -138,6 +162,8 @@ impl NixError {
             Self::NixNotFound { .. }
             | Self::SpawnFailed { .. }
             | Self::InvalidSystemOutput
+            | Self::InvalidVersionOutput
+            | Self::FlakesDisabled { .. }
             | Self::CommandFailed {
                 kind: NixFailureKind::Capability,
                 ..

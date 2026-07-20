@@ -1,9 +1,12 @@
-//! Nix CLI adapter: executable discovery, system detection, and app listing.
+//! Nix CLI adapter: executable discovery, capability negotiation, and app listing.
 
 use camino::Utf8PathBuf;
 
 use crate::NixError;
-use crate::capabilities::{detect_system, locate_nix};
+use crate::capabilities::{
+    NixCapabilities, OptionalNixFlags, detect_capabilities, detect_system, locate_nix,
+};
+use crate::command;
 use crate::discovery;
 use crate::tasks::{self, TaskDiscoveryError};
 use nxr_core::App;
@@ -16,33 +19,102 @@ pub struct NixAdapter {
     pub nix: Utf8PathBuf,
     /// Current Nix system string (`builtins.currentSystem`).
     pub system: String,
+    /// Negotiated CLI capabilities (detected once at construction).
+    pub capabilities: NixCapabilities,
 }
 
 impl NixAdapter {
-    /// Locate `nix`, detect the current system, and return a ready adapter.
+    /// Locate `nix`, detect system + capabilities, and return a ready adapter.
     ///
     /// # Errors
     ///
-    /// Returns [`NixError`] when `nix` cannot be located or the current system cannot be detected.
+    /// Returns [`NixError`] when `nix` cannot be located, the current system
+    /// cannot be detected, or capability probing fails.
     pub fn new() -> Result<Self, NixError> {
         let nix = locate_nix()?;
-        let system = detect_system(&nix)?;
-        Ok(Self { nix, system })
+        Self::from_nix(nix)
     }
 
-    /// Construct an adapter from known paths (primarily for tests).
+    /// Build an adapter for an explicit `nix` executable path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixError`] when system or capability detection fails.
+    pub fn from_nix(nix: Utf8PathBuf) -> Result<Self, NixError> {
+        let system = detect_system(&nix)?;
+        let capabilities = detect_capabilities(&nix)?;
+        Ok(Self {
+            nix,
+            system,
+            capabilities,
+        })
+    }
+
+    /// Construct an adapter from known parts (primarily for tests).
     #[must_use]
-    pub const fn with_nix_and_system(nix: Utf8PathBuf, system: String) -> Self {
-        Self { nix, system }
+    pub const fn with_parts(
+        nix: Utf8PathBuf,
+        system: String,
+        capabilities: NixCapabilities,
+    ) -> Self {
+        Self {
+            nix,
+            system,
+            capabilities,
+        }
+    }
+
+    /// Construct an adapter with assumed modern capabilities (unit tests).
+    #[must_use]
+    pub fn with_nix_and_system(nix: Utf8PathBuf, system: String) -> Self {
+        Self::with_parts(
+            nix,
+            system,
+            NixCapabilities::all_supported_for_tests(crate::capabilities::TESTED_NIX_SUPPORT_FLOOR),
+        )
+    }
+
+    /// Fail when flakes are not enabled on this Nix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixError::FlakesDisabled`] when experimental flakes are off.
+    pub fn require_flakes(&self) -> Result<(), NixError> {
+        if self.capabilities.flakes_enabled {
+            Ok(())
+        } else {
+            Err(NixError::FlakesDisabled {
+                version: self.capabilities.version,
+            })
+        }
+    }
+
+    /// Choose a compatible argv for the requested optional flags.
+    #[must_use]
+    pub fn compatible_argv(
+        &self,
+        base_args: Vec<String>,
+        requested: OptionalNixFlags,
+    ) -> Vec<String> {
+        self.capabilities.apply_optional_flags(base_args, requested)
     }
 
     /// Discover flake apps for the adapter's current system.
     ///
     /// # Errors
     ///
-    /// Returns [`NixError`] when `nix flake show` fails or its JSON cannot be parsed.
+    /// Returns [`NixError`] when flakes are disabled, `nix flake show` fails, or
+    /// its JSON cannot be parsed.
     pub fn discover_apps(&self, flake_ref: &str) -> Result<Vec<App>, NixError> {
-        discovery::discover_apps(&self.nix, &self.system, flake_ref)
+        self.require_flakes()?;
+        let args = self.compatible_argv(
+            command::flake_show_args(flake_ref),
+            OptionalNixFlags {
+                no_write_lock_file: true,
+                ..OptionalNixFlags::default()
+            },
+        );
+        discovery::discover_apps_with_args(&self.nix, &self.system, flake_ref, &args)
     }
 
     /// Discover versioned task metadata (`nxr.<system>`) for the current system.
@@ -53,7 +125,34 @@ impl NixAdapter {
     ///
     /// Returns [`TaskDiscoveryError`] when evaluation or schema validation fails.
     pub fn discover_tasks(&self, flake_ref: &str) -> Result<TaskDocument, TaskDiscoveryError> {
-        tasks::discover_tasks(&self.nix, &self.system, flake_ref)
+        self.require_flakes()?;
+        let args = self.compatible_argv(
+            command::flake_eval_json_args(flake_ref, &tasks::tasks_attr_path(&self.system)),
+            OptionalNixFlags {
+                no_write_lock_file: true,
+                ..OptionalNixFlags::default()
+            },
+        );
+        tasks::discover_tasks_with_args(&self.nix, &self.system, &args)
+    }
+
+    /// Build a capability-aware `nix run` argv for an app.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixError::FlakesDisabled`] when flakes are not enabled.
+    pub fn nix_run_argv(
+        &self,
+        flake_ref: &str,
+        app_name: &str,
+        forwarded_args: &[impl AsRef<str>],
+        requested: OptionalNixFlags,
+    ) -> Result<Vec<String>, NixError> {
+        self.require_flakes()?;
+        Ok(self.compatible_argv(
+            command::nix_run_args(flake_ref, app_name, forwarded_args),
+            requested,
+        ))
     }
 }
 
@@ -61,7 +160,7 @@ impl NixAdapter {
 mod tests {
     use super::NixAdapter;
     use crate::NixError;
-    use crate::capabilities::NixFailureKind;
+    use crate::capabilities::{NixFailureKind, NixVersion, OptionalNixFlags};
     use camino::Utf8PathBuf;
     use nxr_core::diagnostics::exit;
 
@@ -130,6 +229,68 @@ mod tests {
             path: camino::Utf8PathBuf::from("/no/such/nix"),
         };
         assert_eq!(error.exit_code(), exit::NIX_CAPABILITY);
+    }
+
+    #[test]
+    fn flakes_disabled_maps_to_capability_exit_code() {
+        let error = NixError::FlakesDisabled {
+            version: NixVersion::new(2, 18, 1),
+        };
+        assert_eq!(error.exit_code(), exit::NIX_CAPABILITY);
+        assert!(error.user_message().contains("flakes"));
+        assert!(error.user_message().contains("experimental-features"));
+    }
+
+    #[test]
+    fn require_flakes_errors_when_disabled() {
+        let adapter = NixAdapter::with_parts(
+            Utf8PathBuf::from("/nix/bin/nix"),
+            "aarch64-darwin".to_owned(),
+            crate::capabilities::NixCapabilities {
+                version: NixVersion::new(2, 18, 1),
+                flakes_enabled: false,
+                supports_json_log_format: true,
+                supports_no_write_lock_file: false,
+                supports_offline: true,
+                supports_accept_flake_config: false,
+            },
+        );
+        let error = adapter.require_flakes().expect_err("flakes disabled");
+        assert!(matches!(error, NixError::FlakesDisabled { .. }));
+    }
+
+    #[test]
+    fn compatible_argv_injects_only_supported_flags() {
+        let adapter = NixAdapter::with_parts(
+            Utf8PathBuf::from("/nix/bin/nix"),
+            "aarch64-darwin".to_owned(),
+            crate::capabilities::NixCapabilities {
+                version: NixVersion::new(2, 18, 1),
+                flakes_enabled: true,
+                supports_json_log_format: false,
+                supports_no_write_lock_file: true,
+                supports_offline: false,
+                supports_accept_flake_config: true,
+            },
+        );
+        let args = adapter.compatible_argv(
+            vec!["run".to_owned(), ".#hello".to_owned()],
+            OptionalNixFlags {
+                offline: true,
+                no_write_lock_file: true,
+                accept_flake_config: true,
+                json_log_format: true,
+            },
+        );
+        assert_eq!(
+            args,
+            vec![
+                "--accept-flake-config".to_owned(),
+                "run".to_owned(),
+                "--no-write-lock-file".to_owned(),
+                ".#hello".to_owned(),
+            ]
+        );
     }
 
     #[test]

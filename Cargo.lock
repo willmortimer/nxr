@@ -573,6 +573,7 @@ dependencies = [
  "camino",
  "nxr-core",
  "nxr-task",
+ "serde",
  "serde_json",
  "thiserror",
  "which",
