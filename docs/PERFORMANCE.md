@@ -1,6 +1,17 @@
-# Performance (V1)
+# Performance (V1 / V2)
 
-Baselines for the V1 runner. App **execution** time is dominated by `nix run` and the app itself; `nxr` overhead is discovery, planning, and process supervision.
+Baselines for the runner. App **execution** time is dominated by `nix run` and the app itself; `nxr` overhead is discovery, planning, and process supervision.
+
+## Nix call budgets
+
+| Path | Expected Nix invocations | Notes |
+|---|---|---|
+| Bare `nxr <app>` / `nxr run <app>` | **1×** `nix run`; **0×** `flake show` | Fast path; optional `flake show` only after failure for suggestions |
+| Adapter init | **1×** `nix eval` (`currentSystem`) | Shared via `WorkspaceSnapshot` / `NixAdapter` |
+| `nxr task` with **N** nodes | **N×** `nix run` + **O(1)** discovery | One `flake show` (apps) + one task `eval`; **not** N× `flake show` |
+| `nxr list --refresh` | Dominated by `nix flake show` | Catalog commands still discover |
+
+Instrumented integration tests wrap `NXR_NIX` with a counting shim to assert these budgets.
 
 ## Budgets
 
@@ -35,5 +46,6 @@ cargo build -p nxr-cli --quiet
 ## Interpretation
 
 - Prefer cache hits for interactive listing and completion; use `--refresh` when flake inputs change.
+- Prefer the bare-app fast path and once-per-run `WorkspaceSnapshot` so task DAGs do not multiply `flake show`.
 - Do not compare `nxr test` wall time to runner overhead — almost all of it is nextest / Nix build of the `test` app.
 - Release (`nix build .#nxr`) binaries are typically faster than debug builds; treat the table as order-of-magnitude guidance.

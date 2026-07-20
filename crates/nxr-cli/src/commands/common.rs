@@ -1,5 +1,6 @@
 //! Shared helpers for list / run / plan commands.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
 
@@ -10,6 +11,7 @@ use nxr_nix::{
     AppNotFoundError, NixAdapter, NixError, detect_system, nix_develop_wrap_run_args, nix_run_args,
     resolve_app_by_name,
 };
+use nxr_task::TaskDocument;
 
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
 
@@ -47,6 +49,34 @@ pub struct PreparedPlan {
     pub execution_directory: Utf8PathBuf,
 }
 
+/// Precomputed spawn inputs for one task graph node.
+///
+/// Built once from a [`WorkspaceSnapshot`] before the scheduler starts so node
+/// execution does not re-run discovery or system detection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedTaskNode {
+    pub id: String,
+    pub program: Utf8PathBuf,
+    pub arguments: Vec<String>,
+    pub cwd: Utf8PathBuf,
+    pub environment: EnvironmentPolicy,
+    /// Full app plan (dry-run / JSON rendering).
+    pub plan: Plan,
+}
+
+/// Once-per-invocation workspace evaluation: flake, Nix adapter, apps, optional tasks.
+///
+/// Task runs resolve flake → detect system → evaluate tasks → discover apps once,
+/// validate referenced apps, then prepare every node before the scheduler starts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceSnapshot {
+    pub flake: FlakeSelection,
+    pub nix: NixAdapter,
+    pub apps: BTreeMap<String, App>,
+    pub tasks: Option<TaskDocument>,
+    pub invocation_directory: Utf8PathBuf,
+}
+
 /// Errors while preparing an app plan.
 #[derive(Debug, thiserror::Error)]
 pub enum PrepareError {
@@ -64,6 +94,8 @@ pub enum PrepareError {
     Nix(#[from] NixError),
     #[error(transparent)]
     NotFound(#[from] AppNotFoundError),
+    #[error(transparent)]
+    TaskDiscovery(#[from] nxr_nix::TaskDiscoveryError),
 }
 
 impl PrepareError {
@@ -77,6 +109,7 @@ impl PrepareError {
             Self::Flake(error) => error.exit_code(),
             Self::Nix(error) => error.exit_code(),
             Self::NotFound(error) => error.exit_code(),
+            Self::TaskDiscovery(error) => error.exit_code(),
         }
     }
 }
@@ -96,34 +129,48 @@ pub fn strip_one_separator(args: &[String]) -> Vec<String> {
 ///
 /// Returns [`PrepareError`] when directories, flake selection, or discovery fail.
 pub fn discover_apps(request: DiscoverRequest<'_>) -> Result<DiscoveredApps, PrepareError> {
-    let invocation_cwd = current_invocation_directory()?;
-    let flake = resolve_flake(request.flake_arg, &invocation_cwd)?;
-    let adapter = build_adapter(request.nix_override)?;
-    let apps = adapter.discover_apps(&flake.nix_ref)?;
-
-    Ok(DiscoveredApps { apps })
+    let snapshot = WorkspaceSnapshot::load(request.flake_arg, request.nix_override, false)?;
+    Ok(DiscoveredApps {
+        apps: snapshot.apps.into_values().collect(),
+    })
 }
 
 /// Resolve invocation CWD, flake, apps, and build a [`Plan`].
+///
+/// Performs app discovery (`nix flake show`) so callers can distinguish missing
+/// apps (with suggestions) before execution. Prefer
+/// [`prepare_fast_app_plan`] for bare `nxr <app>` / `nxr run` execution.
 ///
 /// # Errors
 ///
 /// Returns [`PrepareError`] when directories, flake selection, discovery, or
 /// app resolution fail.
 pub fn prepare_app_plan(request: &AppRequest<'_>) -> Result<PreparedPlan, PrepareError> {
+    let snapshot = WorkspaceSnapshot::load(request.flake_arg, request.nix_override, false)?;
+    snapshot.prepare_discovered_app(request)
+}
+
+/// Build a [`Plan`] for `nix run <flake>#<app>` without `flake show`.
+///
+/// Used by bare-app / `run` execution. Missing apps surface as Nix failures;
+/// callers may optionally discover afterward for "did you mean?" suggestions.
+///
+/// # Errors
+///
+/// Returns [`PrepareError`] when directories, flake selection, or Nix location fail.
+pub fn prepare_fast_app_plan(request: &AppRequest<'_>) -> Result<PreparedPlan, PrepareError> {
     let invocation_cwd = current_invocation_directory()?;
     let flake = resolve_flake(request.flake_arg, &invocation_cwd)?;
     let execution_directory =
         resolve_execution_directory(&invocation_cwd, &flake, request.root, request.cwd)?;
     let adapter = build_adapter(request.nix_override)?;
-    let apps = adapter.discover_apps(&flake.nix_ref)?;
-    let app = resolve_app_by_name(&apps, request.app)?;
+    let app = synthetic_app(request.app, &flake.nix_ref, &adapter.system);
     let forwarded = strip_one_separator(request.args);
     let plan = build_plan(
         request,
         &flake,
         &adapter,
-        app,
+        &app,
         &invocation_cwd,
         &execution_directory,
         &forwarded,
@@ -134,6 +181,143 @@ pub fn prepare_app_plan(request: &AppRequest<'_>) -> Result<PreparedPlan, Prepar
         nix: adapter.nix,
         execution_directory,
     })
+}
+
+impl WorkspaceSnapshot {
+    /// Resolve flake, locate Nix / detect system once, discover apps, optionally tasks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrepareError`] when directories, flake selection, Nix, or discovery fail.
+    pub fn load(
+        flake_arg: Option<&str>,
+        nix_override: Option<&str>,
+        load_tasks: bool,
+    ) -> Result<Self, PrepareError> {
+        let invocation_directory = current_invocation_directory()?;
+        let flake = resolve_flake(flake_arg, &invocation_directory)?;
+        let nix = build_adapter(nix_override)?;
+        let apps_list = nix.discover_apps(&flake.nix_ref)?;
+        let apps = apps_list
+            .into_iter()
+            .map(|app| (app.name.clone(), app))
+            .collect();
+        let tasks = if load_tasks {
+            Some(nix.discover_tasks(&flake.nix_ref)?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            flake,
+            nix,
+            apps,
+            tasks,
+            invocation_directory,
+        })
+    }
+
+    /// Prepare an app plan using already-discovered apps in this snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrepareError`] when the app is missing or cwd flags conflict.
+    pub fn prepare_discovered_app(
+        &self,
+        request: &AppRequest<'_>,
+    ) -> Result<PreparedPlan, PrepareError> {
+        let apps: Vec<App> = self.apps.values().cloned().collect();
+        let app = resolve_app_by_name(&apps, request.app)?;
+        let execution_directory = resolve_execution_directory(
+            &self.invocation_directory,
+            &self.flake,
+            request.root,
+            request.cwd,
+        )?;
+        let forwarded = strip_one_separator(request.args);
+        let plan = build_plan(
+            request,
+            &self.flake,
+            &self.nix,
+            app,
+            &self.invocation_directory,
+            &execution_directory,
+            &forwarded,
+        );
+
+        Ok(PreparedPlan {
+            plan,
+            nix: self.nix.nix.clone(),
+            execution_directory,
+        })
+    }
+
+    /// Ensure every task's `app` field resolves against discovered apps.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppNotFoundError`] when a task references an unknown app.
+    pub fn validate_task_apps(&self, document: &TaskDocument) -> Result<(), AppNotFoundError> {
+        let apps: Vec<App> = self.apps.values().cloned().collect();
+        for definition in document.tasks.values() {
+            resolve_app_by_name(&apps, definition.app.as_str())?;
+        }
+        Ok(())
+    }
+
+    /// Build spawn plans for every node in `serial_order` without further Nix discovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrepareError`] when an app is missing or cwd flags conflict.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_task_nodes(
+        &self,
+        document: &TaskDocument,
+        root_task_id: &str,
+        serial_order: &[String],
+        request_args: &[String],
+        root: bool,
+        cwd: Option<&str>,
+        shell: Option<&str>,
+        environment_policy: &EnvironmentPolicy,
+    ) -> Result<BTreeMap<String, PreparedTaskNode>, PrepareError> {
+        let mut nodes = BTreeMap::new();
+        for task_id in serial_order {
+            let definition = document
+                .tasks
+                .get(task_id)
+                .expect("execution plan only includes known task ids");
+            let forwarded = if task_id.as_str() == root_task_id {
+                request_args
+            } else {
+                &[][..]
+            };
+            let app_request = AppRequest {
+                flake_arg: None,
+                nix_override: None,
+                app: definition.app.as_str(),
+                args: forwarded,
+                root,
+                cwd,
+                shell,
+                environment_policy: environment_policy.clone(),
+            };
+            let prepared = self.prepare_discovered_app(&app_request)?;
+            nodes.insert(
+                task_id.clone(),
+                PreparedTaskNode {
+                    id: task_id.clone(),
+                    program: prepared.nix,
+                    arguments: prepared.plan.command.arguments.clone(),
+                    cwd: prepared.execution_directory,
+                    environment: prepared.plan.environment_policy.clone(),
+                    plan: prepared.plan,
+                },
+            );
+        }
+        Ok(nodes)
+    }
 }
 
 /// Absolute UTF-8 path of the process working directory.
@@ -162,6 +346,40 @@ pub fn build_adapter(nix_override: Option<&str>) -> Result<NixAdapter, NixError>
             Ok(NixAdapter::with_nix_and_system(nix, system))
         }
         None => NixAdapter::new(),
+    }
+}
+
+/// Synthesize an [`App`] for the bare-app fast path (no discovery metadata).
+#[must_use]
+pub fn synthetic_app(name: &str, flake_ref: &str, system: &str) -> App {
+    App {
+        name: name.to_owned(),
+        attr_path: format!("apps.{system}.{name}"),
+        flake_ref: flake_ref.to_owned(),
+        system: system.to_owned(),
+        description: None,
+        is_default: name == "default",
+        metadata: BTreeMap::new(),
+    }
+}
+
+/// After a failed fast-path `nix run`, discover apps and map missing names to suggestions.
+///
+/// Returns `Ok(None)` when the app exists (caller should keep the original exit code)
+/// or discovery fails. Returns `Ok(Some(error))` when the app is absent.
+///
+/// # Errors
+///
+/// Only returns [`PrepareError`] for directory / flake / adapter failures during
+/// the optional discovery pass (not for missing apps).
+pub fn suggest_missing_app_after_run(
+    request: &AppRequest<'_>,
+) -> Result<Option<AppNotFoundError>, PrepareError> {
+    let snapshot = WorkspaceSnapshot::load(request.flake_arg, request.nix_override, false)?;
+    let apps: Vec<App> = snapshot.apps.values().cloned().collect();
+    match resolve_app_by_name(&apps, request.app) {
+        Ok(_) => Ok(None),
+        Err(error) => Ok(Some(error)),
     }
 }
 
@@ -231,6 +449,7 @@ mod tests {
 
     use super::{
         AppRequest, PrepareError, build_plan, resolve_execution_directory, strip_one_separator,
+        synthetic_app,
     };
     use crate::flake::FlakeSelection;
     use nxr_core::App;
@@ -269,6 +488,15 @@ mod tests {
         .expect_err("conflict");
         assert!(matches!(error, PrepareError::RootAndCwdConflict));
         assert_eq!(error.exit_code(), nxr_core::diagnostics::exit::USAGE);
+    }
+
+    #[test]
+    fn synthetic_app_builds_attr_path_without_discovery() {
+        let app = synthetic_app("hello", "/abs/fixtures/basic-apps", "aarch64-darwin");
+        assert_eq!(app.name, "hello");
+        assert_eq!(app.attr_path, "apps.aarch64-darwin.hello");
+        assert!(!app.is_default);
+        assert!(app.metadata.is_empty());
     }
 
     #[test]

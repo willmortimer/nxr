@@ -3,7 +3,7 @@ use predicates::prelude::*;
 
 mod common;
 
-use common::{repo_root, require_nix};
+use common::{NixCallCounter, repo_root, require_nix};
 
 #[test]
 fn help_flag_succeeds() {
@@ -1803,5 +1803,77 @@ fn task_keep_going_runs_unrelated_after_failure() {
     assert!(
         !started.iter().any(|n| n == "gate"),
         "gate depends on boom and must not start:\n{stderr}"
+    );
+}
+
+#[test]
+fn bare_app_fast_path_skips_flake_show() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello from basic-apps"));
+
+    assert_eq!(
+        counter.count("flake-show"),
+        0,
+        "bare app must not call flake show; log={}",
+        std::fs::read_to_string(&counter.log).unwrap_or_default()
+    );
+    assert_eq!(
+        counter.count("run"),
+        1,
+        "bare app must call nix run exactly once; log={}",
+        std::fs::read_to_string(&counter.log).unwrap_or_default()
+    );
+}
+
+#[test]
+fn task_ci_uses_o1_discovery_not_per_node_flake_show() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/task-dag", "list"])
+        .assert();
+    if !assert.get_output().status.success() {
+        eprintln!("skipping task-dag call-count test: app discovery failed on this host");
+        return;
+    }
+
+    // Reset log after probe so only the task run is measured.
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/task-dag", "task", "ci"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fmt\ntest\nci\n"));
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    let flake_shows = counter.count("flake-show");
+    let runs = counter.count("run");
+    assert_eq!(
+        flake_shows, 1,
+        "task run must discover apps once (not per node); log={log}"
+    );
+    assert_eq!(
+        runs, 3,
+        "ci DAG has three app nodes → three nix run calls; log={log}"
     );
 }

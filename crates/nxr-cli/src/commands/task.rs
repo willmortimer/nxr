@@ -1,5 +1,6 @@
 //! `nxr task` execution (serial inherit or parallel supervised).
 
+use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
@@ -11,16 +12,13 @@ use nxr_nix::{NixError, TaskDiscoveryError};
 use nxr_process::{InterruptFlags, Supervisor};
 use nxr_task::{
     Event, EventSink, ExecutionPlan, FailurePolicy, PlanError, Scheduler, SchedulerError,
-    TaskDocument, build_execution_plan, resolve_task_name,
+    build_execution_plan, resolve_task_name,
 };
 
-use crate::commands::common::{
-    AppRequest, PrepareError, PreparedPlan, build_adapter, current_invocation_directory,
-    prepare_app_plan,
-};
+use crate::commands::common::{PrepareError, PreparedTaskNode, WorkspaceSnapshot};
 use crate::commands::plan::{PlanRenderError, write_plan};
 use crate::commands::run::RunError;
-use crate::flake::{FlakeResolveError, resolve_flake};
+use crate::flake::FlakeResolveError;
 use crate::output_task::{EventsFormat, TaskOutputMode, build_task_event_sink};
 use crate::runner_output::RunnerOutput;
 
@@ -106,7 +104,11 @@ pub const fn plan_exit_code(error: &PlanError) -> i32 {
     }
 }
 
-/// Discover tasks, build an execution plan, and run nodes under the scheduler.
+/// Discover tasks once, prepare every node, then run under the scheduler.
+///
+/// Flow: resolve flake → detect system once → evaluate tasks once → discover
+/// apps once → validate referenced apps → construct every node plan → schedule
+/// → execute prepared plans without further discovery/system detection.
 ///
 /// # Argument forwarding (V2 freeze)
 ///
@@ -138,10 +140,12 @@ pub fn execute(
         return Err(TaskError::InvalidJobs(0));
     }
 
-    let invocation_cwd = current_invocation_directory()?;
-    let flake = resolve_flake(request.flake_arg, &invocation_cwd)?;
-    let adapter = build_adapter(request.nix_override)?;
-    let document = adapter.discover_tasks(&flake.nix_ref)?;
+    let snapshot = WorkspaceSnapshot::load(request.flake_arg, request.nix_override, true)?;
+    let document = snapshot
+        .tasks
+        .as_ref()
+        .expect("load_tasks=true always populates tasks")
+        .clone();
 
     let failure_policy = if request.keep_going {
         FailurePolicy::KeepGoing
@@ -163,6 +167,19 @@ pub fn execute(
     });
 
     let plan = build_execution_plan(&document.tasks, canonical, failure_policy, None)?;
+    snapshot
+        .validate_task_apps(&document)
+        .map_err(PrepareError::NotFound)?;
+    let prepared_nodes = snapshot.prepare_task_nodes(
+        &document,
+        &plan.root,
+        &plan.serial_order,
+        request.args,
+        request.root,
+        request.cwd,
+        request.shell,
+        &request.environment_policy,
+    )?;
 
     let waves = parallel_ready_waves(&plan);
     let stdin_label = if pipe_stdio { "null" } else { "inherit" };
@@ -178,7 +195,7 @@ pub fn execute(
         .map_err(TaskError::Io)?;
 
     if dry_run {
-        return dry_run_execute(request, &document, &plan, &waves, json, runner);
+        return dry_run_execute(&prepared_nodes, &plan, &waves, request, json, runner);
     }
 
     if pipe_stdio {
@@ -194,11 +211,11 @@ pub fn execute(
             root: plan.root.clone(),
             node_count: plan.nodes.len(),
         });
-        run_plan(request, &document, &plan, true, &mut sink, runner)
+        run_plan(request, &plan, &prepared_nodes, true, &mut sink, runner)
     } else {
         // Inherit stdio for interactivity: do not hold stdout/stderr locks.
         let mut sink = nxr_task::NullSink;
-        run_plan(request, &document, &plan, false, &mut sink, runner)
+        run_plan(request, &plan, &prepared_nodes, false, &mut sink, runner)
     }
 }
 
@@ -216,10 +233,10 @@ pub fn task_inherits_stdin(
 }
 
 fn dry_run_execute(
-    request: &TaskRequest<'_>,
-    document: &TaskDocument,
+    prepared_nodes: &BTreeMap<String, PreparedTaskNode>,
     plan: &ExecutionPlan,
     waves: &[Vec<String>],
+    request: &TaskRequest<'_>,
     json: bool,
     runner: RunnerOutput,
 ) -> Result<i32, TaskError> {
@@ -258,7 +275,9 @@ fn dry_run_execute(
     }
 
     for task_id in &plan.serial_order {
-        let prepared = prepare_node(request, document, &plan.root, task_id)?;
+        let prepared = prepared_nodes
+            .get(task_id)
+            .expect("every serial_order id was prepared before dry-run");
         runner
             .verbose(format!(
                 "dry-run task {task_id} via app {}",
@@ -273,8 +292,8 @@ fn dry_run_execute(
 
 fn run_plan(
     request: &TaskRequest<'_>,
-    document: &TaskDocument,
     plan: &ExecutionPlan,
+    prepared_nodes: &BTreeMap<String, PreparedTaskNode>,
     pipe_stdio: bool,
     sink: &mut dyn EventSink,
     runner: RunnerOutput,
@@ -308,9 +327,7 @@ fn run_plan(
 
         for node_id in to_start.drain(..) {
             spawn_node(
-                request,
-                document,
-                &plan.root,
+                prepared_nodes,
                 &node_id,
                 pipe_stdio,
                 &mut supervisor,
@@ -374,11 +391,8 @@ fn run_plan(
     Ok(first_failure.unwrap_or(exit::SUCCESS))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn spawn_node(
-    request: &TaskRequest<'_>,
-    document: &TaskDocument,
-    root_task_id: &str,
+    prepared_nodes: &BTreeMap<String, PreparedTaskNode>,
     node_id: &str,
     pipe_stdio: bool,
     supervisor: &mut Supervisor,
@@ -386,7 +400,9 @@ fn spawn_node(
     sink: &mut dyn EventSink,
     runner: RunnerOutput,
 ) -> Result<(), TaskError> {
-    let prepared = prepare_node(request, document, root_task_id, node_id)?;
+    let prepared = prepared_nodes
+        .get(node_id)
+        .expect("scheduler only starts ids prepared before run");
     runner
         .verbose(format!(
             "running task {node_id} via app {}",
@@ -398,10 +414,10 @@ fn spawn_node(
         node: node_id.to_owned(),
     });
 
-    let program = prepared.nix.as_std_path();
-    let args = &prepared.plan.command.arguments;
-    let cwd = Some(prepared.execution_directory.as_std_path());
-    let env = &prepared.plan.environment_policy;
+    let program = prepared.program.as_std_path();
+    let args = &prepared.arguments;
+    let cwd = Some(prepared.cwd.as_std_path());
+    let env = &prepared.environment;
 
     if pipe_stdio {
         // PipeStdoutStderr closes stdin (parallel/multiplex ownership policy).
@@ -427,35 +443,6 @@ fn spawn_node(
     }
 
     Ok(())
-}
-
-fn prepare_node(
-    request: &TaskRequest<'_>,
-    document: &TaskDocument,
-    root_task_id: &str,
-    task_id: &str,
-) -> Result<PreparedPlan, TaskError> {
-    let definition = document
-        .tasks
-        .get(task_id)
-        .expect("scheduler only starts ids present in the plan");
-    // Compare against canonical root id (alias invocations still forward to root).
-    let forwarded = if task_id == root_task_id {
-        request.args
-    } else {
-        &[]
-    };
-    let app_request = AppRequest {
-        flake_arg: request.flake_arg,
-        nix_override: request.nix_override,
-        app: definition.app.as_str(),
-        args: forwarded,
-        root: request.root,
-        cwd: request.cwd,
-        shell: request.shell,
-        environment_policy: request.environment_policy.clone(),
-    };
-    Ok(prepare_app_plan(&app_request)?)
 }
 
 #[derive(Clone, Copy, Debug)]
