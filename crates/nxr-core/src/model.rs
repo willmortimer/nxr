@@ -16,6 +16,25 @@ impl FlakeRef {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Consume this reference into the underlying string.
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+
+    /// Local flake root as a Nix `path:` URI so Nix does not rewrite absolute
+    /// paths inside a git checkout to `git+file://…?dir=…` (which rejects
+    /// unlocked relative `path:../..` inputs on Nix 2.18).
+    #[must_use]
+    pub fn local_path(absolute: impl AsRef<str>) -> Self {
+        let absolute = absolute.as_ref();
+        if absolute.starts_with("path:") {
+            Self(absolute.to_owned())
+        } else {
+            Self(format!("path:{absolute}"))
+        }
+    }
 }
 
 impl fmt::Display for FlakeRef {

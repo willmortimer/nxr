@@ -1,6 +1,7 @@
 //! Flake reference resolution for CLI invocations.
 
 use camino::{Utf8Path, Utf8PathBuf};
+use nxr_core::FlakeRef;
 use nxr_workspace::{DiscoveryError, WorkspaceContext, discover_from};
 
 /// Selected flake reference for discovery and JSON output.
@@ -101,18 +102,17 @@ fn resolve_explicit_selection(reference: &str, invocation_cwd: &Utf8Path) -> Fla
         };
     }
 
-    let nix_ref = resolve_explicit_flake_ref(reference, invocation_cwd);
-    let local_root = Some(Utf8PathBuf::from(&nix_ref));
+    let absolute = resolve_explicit_flake_path(reference, invocation_cwd);
     FlakeSelection {
         display: reference.to_owned(),
-        nix_ref,
-        local_root,
+        nix_ref: FlakeRef::local_path(absolute.as_str()).into_string(),
+        local_root: Some(absolute),
     }
 }
 
-fn resolve_explicit_flake_ref(reference: &str, invocation_cwd: &Utf8Path) -> String {
+fn resolve_explicit_flake_path(reference: &str, invocation_cwd: &Utf8Path) -> Utf8PathBuf {
     let joined = invocation_cwd.join(reference);
-    joined.canonicalize_utf8().unwrap_or(joined).into_string()
+    joined.canonicalize_utf8().unwrap_or(joined)
 }
 
 fn is_flake_uri(reference: &str) -> bool {
@@ -143,7 +143,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        ParseFlakeAppRefError, is_flake_uri, parse_flake_app_ref, resolve_explicit_flake_ref,
+        ParseFlakeAppRefError, is_flake_uri, parse_flake_app_ref, resolve_explicit_flake_path,
         resolve_explicit_selection, resolve_flake,
     };
 
@@ -169,13 +169,28 @@ mod tests {
         let nested = root.join("crates/api");
         fs::create_dir_all(&nested).expect("create nested dir");
 
-        let resolved = resolve_explicit_flake_ref("../..", &nested);
+        let resolved = resolve_explicit_flake_path("../..", &nested);
         let expected = root.canonicalize_utf8().unwrap_or_else(|_| root.clone());
-        let actual = camino::Utf8PathBuf::from(&resolved)
+        let actual = resolved
             .canonicalize_utf8()
-            .map(|path| path.to_string())
-            .unwrap_or(resolved);
-        assert_eq!(actual, expected.as_str());
+            .unwrap_or_else(|_| resolved.clone());
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn local_refs_use_path_uri_for_nix() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_path(&temp);
+        fs::write(root.join("flake.nix"), "{}").expect("write flake.nix");
+
+        let selection = resolve_explicit_selection(".", &root);
+        let expected_root = root.canonicalize_utf8().unwrap_or(root);
+        assert_eq!(
+            selection.local_root.as_deref(),
+            Some(expected_root.as_path())
+        );
+        assert_eq!(selection.nix_ref, format!("path:{expected_root}"));
+        assert_eq!(selection.display, ".");
     }
 
     #[test]
@@ -185,8 +200,8 @@ mod tests {
         fs::write(root.join("flake.nix"), "{}").expect("write flake.nix");
 
         let selection = resolve_flake(None, &root).expect("discover flake");
-        assert_eq!(selection.display, selection.nix_ref);
         assert!(selection.local_root.is_some());
+        assert!(selection.nix_ref.starts_with("path:"));
         assert!(
             selection
                 .nix_ref

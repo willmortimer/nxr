@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  NIX_CONFIG: experimental-features = nix-command flakes
+
 jobs:
   quality:
     name: quality (${{ matrix.os }}, nix ${{ matrix.nix_label }})

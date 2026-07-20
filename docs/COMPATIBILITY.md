@@ -24,14 +24,25 @@ the V1 compatibility guarantee until listed with CI coverage.
 | Requirement | Floor |
 |---|---|
 | Nix CLI | **2.18+** (exercised in development and CI) |
-| Experimental features | `nix-command` and `flakes` must be enabled |
+| Flakes | Required (hard capability error when unavailable) |
+
+Upstream Nix enables flakes via `experimental-features = nix-command flakes`.
+[Determinate Nix](https://docs.determinate.systems/) treats flakes as stable, so
+`experimental-features` may omit `flakes` even when flake commands work. `nxr`
+detects that case from the `nix --version` banner (and from a successful
+`nix flake --help` probe) rather than requiring the experimental flag alone.
 
 Capability negotiation still runs on older Nix releases (roughly 2.4+): `nxr`
 detects version and feature flags once per adapter construction and chooses a
 compatible argv rather than hard-coding a single global flag set. Missing
 optional capabilities (for example `--offline`, `--no-write-lock-file`,
 `--accept-flake-config`, `--log-format json`) are omitted; flakes being
-disabled is a hard capability error.
+unavailable is a hard capability error.
+
+Local flake roots are passed to Nix as `path:<absolute>` URIs. Bare absolute
+paths inside a git checkout can be rewritten to `git+file://…?dir=…`, which
+rejects unlocked relative `path:../..` inputs on Nix 2.18 (common in fixture
+and monorepo subflakes).
 
 Inspect negotiated capabilities with:
 

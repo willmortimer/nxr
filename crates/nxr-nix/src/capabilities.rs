@@ -220,6 +220,7 @@ pub fn detect_capabilities(nix: &Utf8Path) -> Result<NixCapabilities, NixError> 
 
     Ok(negotiate_capabilities(
         version,
+        &version_output,
         config_json.as_deref(),
         help_text.as_deref(),
     ))
@@ -229,13 +230,12 @@ pub fn detect_capabilities(nix: &Utf8Path) -> Result<NixCapabilities, NixError> 
 #[must_use]
 pub fn negotiate_capabilities(
     version: NixVersion,
+    version_output: &str,
     config_json: Option<&str>,
     help_text: Option<&str>,
 ) -> NixCapabilities {
     let experimental = experimental_features_from_config(config_json);
-    let flakes_enabled = experimental
-        .as_ref()
-        .is_some_and(|features| features.iter().any(|feature| feature == "flakes"));
+    let flakes_enabled = detect_flakes_enabled(version_output, experimental.as_deref(), help_text);
 
     let at_feature_floor = version >= FEATURE_FLOOR;
     let help = help_text.unwrap_or("");
@@ -257,6 +257,31 @@ pub fn negotiate_capabilities(
         supports_offline,
         supports_accept_flake_config,
     }
+}
+
+fn detect_flakes_enabled(
+    version_output: &str,
+    experimental: Option<&[String]>,
+    help_text: Option<&str>,
+) -> bool {
+    if experimental.is_some_and(|features| features.iter().any(|feature| feature == "flakes")) {
+        return true;
+    }
+    // Determinate Nix treats flakes as stable; they need not appear in
+    // experimental-features (CI `latest` matrix).
+    if version_output.contains("Determinate") {
+        return true;
+    }
+    // Positive probe: `nix flake --help` succeeded and was captured.
+    help_text.is_some_and(help_indicates_flake_command)
+}
+
+fn help_indicates_flake_command(help: &str) -> bool {
+    help.contains("nix flake")
+        || help.lines().any(|line| {
+            let trimmed = line.trim_start();
+            trimmed == "flake" || trimmed.starts_with("flake ")
+        })
 }
 
 /// Parse `nix --version` stdout into a [`NixVersion`].
@@ -436,6 +461,10 @@ mod tests {
             parse_nix_version_output("nix (Nix) 2.4"),
             Some(NixVersion::new(2, 4, 0))
         );
+        assert_eq!(
+            parse_nix_version_output("nix (Determinate Nix 3.21.7) 2.34.8\n"),
+            Some(NixVersion::new(2, 34, 8))
+        );
         assert_eq!(parse_nix_version_output("not-a-version"), None);
     }
 
@@ -449,6 +478,7 @@ mod tests {
         }"#;
         let caps = negotiate_capabilities(
             NixVersion::new(2, 18, 1),
+            "nix (Nix) 2.18.1\n",
             Some(config),
             Some(
                 "--offline\n--log-format format\n--no-write-lock-file\n--accept-flake-config\njson",
@@ -467,7 +497,12 @@ mod tests {
         let config = r#"{
             "experimental-features": { "value": ["nix-command"] }
         }"#;
-        let caps = negotiate_capabilities(NixVersion::new(2, 18, 1), Some(config), None);
+        let caps = negotiate_capabilities(
+            NixVersion::new(2, 18, 1),
+            "nix (Nix) 2.18.1\n",
+            Some(config),
+            None,
+        );
         assert!(!caps.flakes_enabled);
         assert!(!caps.supports_no_write_lock_file);
         assert!(!caps.supports_accept_flake_config);
@@ -476,8 +511,35 @@ mod tests {
     }
 
     #[test]
+    fn negotiate_enables_flakes_for_determinate_without_experimental_flag() {
+        let config = r#"{
+            "experimental-features": { "value": [] }
+        }"#;
+        let caps = negotiate_capabilities(
+            NixVersion::new(2, 34, 8),
+            "nix (Determinate Nix 3.21.7) 2.34.8\n",
+            Some(config),
+            None,
+        );
+        assert!(caps.flakes_enabled);
+        assert!(caps.supports_no_write_lock_file);
+        assert!(caps.supports_accept_flake_config);
+    }
+
+    #[test]
+    fn negotiate_enables_flakes_from_flake_help_probe() {
+        let caps = negotiate_capabilities(
+            NixVersion::new(2, 18, 1),
+            "nix (Nix) 2.18.1\n",
+            None,
+            Some("Usage: nix flake <subcommand>\n"),
+        );
+        assert!(caps.flakes_enabled);
+    }
+
+    #[test]
     fn negotiate_falls_back_to_version_floor_without_probes() {
-        let caps = negotiate_capabilities(FEATURE_FLOOR, None, None);
+        let caps = negotiate_capabilities(FEATURE_FLOOR, "nix (Nix) 2.4.0\n", None, None);
         assert!(!caps.flakes_enabled);
         assert!(caps.supports_offline);
         assert!(caps.supports_json_log_format);

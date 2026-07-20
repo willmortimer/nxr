@@ -20,6 +20,12 @@ These are small Nix flakes used to exercise `nxr` discovery and execution
 | [watch-project](watch-project/) | Placeholder for V2 watch mode |
 | [ecosystem-graph-cargo](ecosystem-graph-cargo/) | Read-only Cargo workspace graph snapshot (adapter boundary example; not executed) |
 
+Many fixtures take `nxr` (and sometimes `nixpkgs`) as `path:../..` so they can
+import flake-parts modules from this repo. `nxr` passes local flake roots to Nix
+as `path:<absolute>` URIs so those relative path inputs stay valid under Nix
+2.18 (bare absolute paths can become `git+file://…?dir=fixtures/…` and reject
+unlocked path locks).
+
 ## Try them (without nxr yet)
 
 ```bash

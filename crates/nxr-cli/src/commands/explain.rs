@@ -706,7 +706,7 @@ mod tests {
             workspace: super::WorkspaceContext {
                 flake: super::FlakeContext {
                     display: "fixtures/basic-apps".to_owned(),
-                    nix_ref: "/abs/fixtures/basic-apps".to_owned(),
+                    nix_ref: "path:/abs/fixtures/basic-apps".to_owned(),
                     local_root: Some("/abs/fixtures/basic-apps".to_owned()),
                 },
                 system: "aarch64-darwin".to_owned(),

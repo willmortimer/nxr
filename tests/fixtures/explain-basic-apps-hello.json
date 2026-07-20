@@ -4,7 +4,7 @@
   "workspace": {
     "flake": {
       "display": "fixtures/basic-apps",
-      "nix_ref": "/abs/fixtures/basic-apps",
+      "nix_ref": "path:/abs/fixtures/basic-apps",
       "local_root": "/abs/fixtures/basic-apps"
     },
     "system": "aarch64-darwin",

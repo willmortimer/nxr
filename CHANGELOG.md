@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Treat Determinate Nix flakes as enabled when `experimental-features` omits
+  `flakes` (stable flakes); pass local flake roots as `path:<absolute>` so Nix
+  2.18 does not rewrite them to `git+file` and reject fixture `path:../..`
+  locks.
+
 ## [2.3.0] - 2026-07-19
 
 V2.3 monorepo ergonomics release: filtered views for large operation sets, conservative affected analysis, and optional ecosystem graph adapters.

@@ -48,7 +48,7 @@ pub fn discover_from(cwd: &Utf8Path) -> Result<WorkspaceContext, DiscoveryError>
     loop {
         if paths::has_flake_nix(&current) {
             let flake_root = absolute_utf8_path(&current);
-            let flake_ref = FlakeRef::from(flake_root.as_str());
+            let flake_ref = FlakeRef::local_path(flake_root.as_str());
             return Ok(WorkspaceContext {
                 invocation_directory,
                 flake_root,
@@ -99,7 +99,10 @@ mod tests {
 
         assert_eq!(context.invocation_directory, canonicalize(&root));
         assert_eq!(context.flake_root, canonicalize(&root));
-        assert_eq!(context.flake_ref.as_str(), canonicalize(&root).as_str());
+        assert_eq!(
+            context.flake_ref.as_str(),
+            format!("path:{}", canonicalize(&root))
+        );
     }
 
     #[test]
@@ -115,7 +118,10 @@ mod tests {
 
         assert_eq!(context.invocation_directory, canonicalize(&nested));
         assert_eq!(context.flake_root, canonicalize(&root));
-        assert_eq!(context.flake_ref.as_str(), canonicalize(&root).as_str());
+        assert_eq!(
+            context.flake_ref.as_str(),
+            format!("path:{}", canonicalize(&root))
+        );
     }
 
     #[test]
