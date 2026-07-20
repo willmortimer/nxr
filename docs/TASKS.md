@@ -50,7 +50,7 @@ perSystem = { ... }: {
 | `app` | yes | Flake app leaf name (`apps.<system>.<name>`) |
 | `description` | no | Short description for listings |
 | `dependsOn` | no | List of task names; default `[]` |
-| `workingDirectory` | no | Policy or path (for example `flake-root`) |
+| `workingDirectory` | no | `invocation`, `flake-root`, or a flake-root-relative path |
 | `hidden` | no | Omit from default listings; default `false` |
 | `category` | no | Logical grouping for listings |
 | `aliases` | no | Alternate names for explicit task commands (see below); default `[]` |
@@ -132,6 +132,28 @@ plan envelope). Richer per-node forwarding is deferred; there is no interactive
 
 Parallel and labeled/events paths must not inherit caller stdin into multiple
 children — ownership is deterministic (closed).
+
+## Working directory
+
+Task nodes resolve a per-node execution directory before the scheduler starts.
+Precedence:
+
+1. CLI `--root` or `--cwd` / `-C` (applies to every node in the run)
+2. Task `workingDirectory` metadata
+3. Caller invocation directory (default)
+
+Accepted `workingDirectory` values:
+
+| Value | Resolved directory |
+|---|---|
+| `invocation` | Caller invocation directory |
+| `flake-root` | Discovered flake root (local flake required) |
+| Relative path (for example `crates/api`) | Joined under the flake root |
+
+Absolute paths in task metadata are rejected at validation time. Relative
+paths are resolved against the flake root, not the invocation directory.
+
+Fixture: [`fixtures/task-working-directory/`](../fixtures/task-working-directory/).
 
 ## Schema freeze (V2.0)
 

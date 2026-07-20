@@ -11,7 +11,9 @@ use nxr_nix::{
     AppNotFoundError, NixAdapter, NixError, detect_system, nix_develop_wrap_run_args, nix_run_args,
     resolve_app_by_name,
 };
-use nxr_task::TaskDocument;
+use nxr_task::{
+    SchemaError, TaskDocument, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION,
+};
 
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
 
@@ -96,6 +98,8 @@ pub enum PrepareError {
     NotFound(#[from] AppNotFoundError),
     #[error(transparent)]
     TaskDiscovery(#[from] nxr_nix::TaskDiscoveryError),
+    #[error(transparent)]
+    TaskSchema(#[from] SchemaError),
 }
 
 impl PrepareError {
@@ -110,6 +114,7 @@ impl PrepareError {
             Self::Nix(error) => error.exit_code(),
             Self::NotFound(error) => error.exit_code(),
             Self::TaskDiscovery(error) => error.exit_code(),
+            Self::TaskSchema(_) => nxr_core::diagnostics::exit::EVALUATION,
         }
     }
 }
@@ -282,6 +287,8 @@ impl WorkspaceSnapshot {
         shell: Option<&str>,
         environment_policy: &EnvironmentPolicy,
     ) -> Result<BTreeMap<String, PreparedTaskNode>, PrepareError> {
+        document.validate().map_err(PrepareError::TaskSchema)?;
+        let apps: Vec<App> = self.apps.values().cloned().collect();
         let mut nodes = BTreeMap::new();
         for task_id in serial_order {
             let definition = document
@@ -293,6 +300,14 @@ impl WorkspaceSnapshot {
             } else {
                 &[][..]
             };
+            let app = resolve_app_by_name(&apps, definition.app.as_str())?;
+            let execution_directory = resolve_task_execution_directory(
+                &self.invocation_directory,
+                &self.flake,
+                root,
+                cwd,
+                definition.working_directory.as_deref(),
+            )?;
             let app_request = AppRequest {
                 flake_arg: None,
                 nix_override: None,
@@ -303,16 +318,24 @@ impl WorkspaceSnapshot {
                 shell,
                 environment_policy: environment_policy.clone(),
             };
-            let prepared = self.prepare_discovered_app(&app_request)?;
+            let plan = build_plan(
+                &app_request,
+                &self.flake,
+                &self.nix,
+                app,
+                &self.invocation_directory,
+                &execution_directory,
+                &strip_one_separator(forwarded),
+            );
             nodes.insert(
                 task_id.clone(),
                 PreparedTaskNode {
                     id: task_id.clone(),
-                    program: prepared.nix,
-                    arguments: prepared.plan.command.arguments.clone(),
-                    cwd: prepared.execution_directory,
-                    environment: prepared.plan.environment_policy.clone(),
-                    plan: prepared.plan,
+                    program: self.nix.nix.clone(),
+                    arguments: plan.command.arguments.clone(),
+                    cwd: execution_directory,
+                    environment: plan.environment_policy.clone(),
+                    plan,
                 },
             );
         }
@@ -407,6 +430,46 @@ fn resolve_execution_directory(
     }
 }
 
+/// Resolve per-task execution directory with CLI precedence.
+///
+/// Precedence: CLI `--root` / `--cwd` > task `workingDirectory` > invocation directory.
+///
+/// # Errors
+///
+/// Returns [`PrepareError`] when CLI flags conflict, `flake-root` requires a
+/// local flake, or task metadata is invalid.
+pub fn resolve_task_execution_directory(
+    invocation_cwd: &Utf8Path,
+    flake: &FlakeSelection,
+    root: bool,
+    cwd: Option<&str>,
+    task_working_directory: Option<&str>,
+) -> Result<Utf8PathBuf, PrepareError> {
+    if root || cwd.is_some() {
+        return resolve_execution_directory(invocation_cwd, flake, root, cwd);
+    }
+
+    let Some(token) = task_working_directory else {
+        return Ok(invocation_cwd.to_path_buf());
+    };
+
+    match token {
+        WORKING_DIRECTORY_INVOCATION => Ok(invocation_cwd.to_path_buf()),
+        WORKING_DIRECTORY_FLAKE_ROOT => flake
+            .local_root
+            .clone()
+            .ok_or(PrepareError::RootRequiresLocalFlake),
+        relative => {
+            let flake_root = flake
+                .local_root
+                .as_ref()
+                .ok_or(PrepareError::RootRequiresLocalFlake)?;
+            let joined = flake_root.join(relative);
+            Ok(joined.canonicalize_utf8().unwrap_or(joined))
+        }
+    }
+}
+
 fn build_plan(
     request: &AppRequest<'_>,
     flake: &FlakeSelection,
@@ -448,12 +511,13 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        AppRequest, PrepareError, build_plan, resolve_execution_directory, strip_one_separator,
-        synthetic_app,
+        AppRequest, PrepareError, build_plan, resolve_execution_directory,
+        resolve_task_execution_directory, strip_one_separator, synthetic_app,
     };
     use crate::flake::FlakeSelection;
     use nxr_core::App;
     use nxr_nix::NixAdapter;
+    use nxr_task::{WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION};
 
     #[test]
     fn strip_one_separator_removes_only_leading_double_dash() {
@@ -553,6 +617,98 @@ mod tests {
             ]
         );
         assert_eq!(plan.forwarded_arguments, vec!["one".to_owned()]);
+    }
+
+    #[test]
+    fn resolve_task_execution_directory_honors_cli_over_task_metadata() {
+        let flake = FlakeSelection {
+            display: "fixtures/nested-directory".to_owned(),
+            nix_ref: "/tmp/project".to_owned(),
+            local_root: Some(camino::Utf8PathBuf::from("/tmp/project")),
+        };
+        let invocation = camino::Utf8Path::new("/tmp/project/deep/down/here");
+
+        let from_task = resolve_task_execution_directory(
+            invocation,
+            &flake,
+            false,
+            None,
+            Some(WORKING_DIRECTORY_FLAKE_ROOT),
+        )
+        .expect("task flake-root");
+        assert_eq!(from_task, camino::Utf8PathBuf::from("/tmp/project"));
+
+        let from_cli = resolve_task_execution_directory(
+            invocation,
+            &flake,
+            false,
+            Some("override"),
+            Some(WORKING_DIRECTORY_FLAKE_ROOT),
+        )
+        .expect("cli cwd wins");
+        assert_eq!(
+            from_cli,
+            camino::Utf8PathBuf::from("/tmp/project/deep/down/here/override")
+        );
+
+        let from_root = resolve_task_execution_directory(
+            invocation,
+            &flake,
+            true,
+            None,
+            Some(WORKING_DIRECTORY_INVOCATION),
+        )
+        .expect("cli root wins");
+        assert_eq!(from_root, camino::Utf8PathBuf::from("/tmp/project"));
+    }
+
+    #[test]
+    fn resolve_task_execution_directory_matrix() {
+        let flake = FlakeSelection {
+            display: "fixtures/nested-directory".to_owned(),
+            nix_ref: "/tmp/project".to_owned(),
+            local_root: Some(camino::Utf8PathBuf::from("/tmp/project")),
+        };
+        let invocation = camino::Utf8PathBuf::from("/tmp/project/deep/down/here");
+
+        assert_eq!(
+            resolve_task_execution_directory(
+                &invocation,
+                &flake,
+                false,
+                None,
+                Some(WORKING_DIRECTORY_INVOCATION),
+            )
+            .expect("invocation"),
+            invocation
+        );
+        assert_eq!(
+            resolve_task_execution_directory(
+                &invocation,
+                &flake,
+                false,
+                None,
+                Some(WORKING_DIRECTORY_FLAKE_ROOT),
+            )
+            .expect("flake-root"),
+            camino::Utf8PathBuf::from("/tmp/project")
+        );
+        assert_eq!(
+            resolve_task_execution_directory(
+                &invocation,
+                &flake,
+                false,
+                None,
+                Some("deep/down/here"),
+            )
+            .expect("relative"),
+            invocation
+        );
+        assert_eq!(
+            resolve_task_execution_directory(&invocation, &flake, false, None, None)
+                .expect("default"),
+            invocation
+        );
     }
 
     #[test]

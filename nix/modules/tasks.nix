@@ -35,7 +35,12 @@ let
       workingDirectory = lib.mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "Optional working-directory policy or path (for example flake-root or invocation).";
+        description = ''
+          Optional working-directory policy or flake-root-relative path.
+          Accepted values: `invocation`, `flake-root`, or a relative path
+          (absolute paths are rejected by the runner). CLI `--root` / `--cwd`
+          override this field for every node in a task run.
+        '';
       };
 
       hidden = lib.mkOption {
