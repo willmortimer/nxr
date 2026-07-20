@@ -46,6 +46,8 @@ user Nix flags, safer affected analysis, and Nix-equipped release archives.
   missing-attribute Nix failure (still skip discovery on the happy path).
 - Process-group escalation tests avoid nested `sleep` under `trap '' TERM` so
   Linux CI does not see zombie PGIDs after SIGKILL.
+- Release smoke `cmp`s the uploaded archive binary against a local `nix build`
+  (Nix ELFs need their store closure; extract alone is not executable).
 - Local flake roots passed as `path:<absolute>` URIs.
 - `workingDirectory` rejects parent traversal and must stay under the flake root.
 - Combined output+events uses the supplied stderr writer.

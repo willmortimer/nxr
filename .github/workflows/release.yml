@@ -147,8 +147,17 @@ jobs:
           archive="$(find artifact -name '*.tar.gz' -print -quit)"
           tar -xzf "$archive"
           staging="$(find . -maxdepth 1 -type d -name 'nxr-*-x86_64-linux' -print -quit)"
-          nxr="$staging/bin/nxr"
-          test -x "$nxr"
+          test -x "$staging/bin/nxr"
+          test -d "$staging/share/man"
+          test -d "$staging/share/nxr/shell"
+
+          # Nix ELFs need their build-time /nix/store closure. Rebuilding the
+          # same flake output on this runner materializes those paths; cmp
+          # confirms the uploaded archive matches the reproducible package.
+          nix build .#packages.x86_64-linux.nxr -L --out-link result
+          cmp "$staging/bin/nxr" result/bin/nxr
+
+          nxr="$(pwd)/result/bin/nxr"
           "$nxr" --version
           "$nxr" completion bash >/dev/null
           "$nxr" --flake fixtures/basic-apps hello

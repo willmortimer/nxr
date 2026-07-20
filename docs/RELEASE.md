@@ -24,11 +24,19 @@ stages the Nix package layout (`bin/nxr`, man pages, shell completions, and
 | `nxr-cargo.cdx.json` | CycloneDX SBOM for the `nxr` CLI binary (`cargo-cyclonedx --describe binaries`) |
 | `nxr-syft.cdx.json` | CycloneDX SBOM from the built Nix package (`syft dir:result`) |
 
-Release archives are intended for **Nix-equipped** hosts: they ship the `nxr`
-binary plus integration assets, but running apps and tasks still requires a
-working `nix` with flakes. Prefer
-`nix build github:willmortimer/nxr#packages.<system>.nxr` when you want the
-full derivation managed by Nix.
+Release archives ship the Nix package layout (`bin/nxr`, man, completions,
+shell integration) for inspection and asset reuse. The `nxr` ELF is a normal
+Nix build product: it needs its `/nix/store` runtime closure, so extracting the
+tarball alone is not enough to execute `bin/nxr` even when `nix` is on `PATH`.
+
+Prefer installing from the flake when you want a runnable binary:
+
+```bash
+nix profile install github:willmortimer/nxr#packages.x86_64-linux.nxr
+# or
+nix build github:willmortimer/nxr#packages.x86_64-linux.nxr
+./result/bin/nxr --version
+```
 
 Systems match the root flake outputs:
 
@@ -46,12 +54,15 @@ After downloading a tarball:
 ```bash
 sha256sum -c SHA256SUMS --ignore-missing
 tar -xzf nxr-<version>-<system>.tar.gz
-./nxr-<version>-<system>/bin/nxr --version
+# Layout check (ELF needs a Nix store closure to execute):
+test -x ./nxr-<version>-<system>/bin/nxr
+ls ./nxr-<version>-<system>/share/nxr/shell/
 ```
 
-The release workflow also runs an extract-and-smoke job (Nix available) that
-checks `--version`, completion generation, and fixture app/task invocations
-against the staged archive.
+The release workflow extract-and-smoke job verifies archive layout, `cmp`s the
+uploaded `bin/nxr` against a fresh `nix build` of the tagged flake (same
+content-addressed output), then runs `--version`, completion generation, and
+fixture app/task invocations through that store-backed binary.
 
 ## Signing gap
 
