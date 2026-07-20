@@ -118,4 +118,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**2.0.0** — flake app runner plus optional orchestration (parallel tasks, watch, shell integration, frozen `task-v1` / `execution-plan-v1` / `events-v1`). History: [CHANGELOG.md](CHANGELOG.md).
+**2.1.0** — trustworthiness release: single-eval `WorkspaceSnapshot`, discovery cache controls (`--refresh-discovery`, `cache clear|status`), Nix flag forwarding, `--shell-mode`, byte-safe/`raw` output, four-system CI, and release SBOMs. History: [CHANGELOG.md](CHANGELOG.md).

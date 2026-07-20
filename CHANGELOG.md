@@ -7,17 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+## [2.1.0] - 2026-07-19
 
-- Discovery cache bypass renamed from `--refresh` to `--refresh-discovery`. Use `--nix-arg --refresh` to forward Nix's `--refresh` global.
-- Root [README](README.md) retargeted for flake consumers; maintainer/dev content moved to [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
-- Demo GIF covers list/run, inspect/graph (mermaid+dot), task aliases, parallel `-j`, `--shell`, and watch (`docs/demo/nxr.tape`).
+V2.1 trustworthiness release: predictable discovery and execution on real flakes, with CI hardening and release artifacts.
 
 ### Added
 
+- `WorkspaceSnapshot`: evaluate the flake once per run; bare-app `nix run` fast path.
+- Real Nix capability negotiation (`NixCapabilities`) for doctor and the adapter.
 - `nxr cache clear` and `nxr cache status` for discovery cache management.
 - Nix argv forwarding: `--offline`, `--accept-flake-config`, `--nix-option KEY=VAL`, and repeatable `--nix-arg`.
-- V2.x bridge (Phase 16 slim): [`schemas/events-v1.schema.json`](schemas/events-v1.schema.json) aligned with Rust `Event`, extension-point notes in [COMPATIBILITY.md](docs/COMPATIBILITY.md), and a timed large-DAG scheduler CI budget test.
+- `--output raw` for byte-safe task output without UTF-8 loss on binary streams.
+- `--shell-mode smart|always|never` (default `smart`) for nested-shell identity skip.
+- Zero-boilerplate `shellIntegration.package` default from the flake module.
+- Four-system Nix baseline (`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, `aarch64-darwin`) and expanded flake check suite.
+- CI: packaged-binary smoke tests against fixtures, multi-Nix matrix, and pinned third-party actions.
+- Release artifacts with checksums and SBOM.
+- Process supervision invariant tests (signal escalation, orphan prevention).
+- V2.x bridge: [`schemas/events-v1.schema.json`](schemas/events-v1.schema.json) aligned with Rust `Event`, extension-point notes in [COMPATIBILITY.md](docs/COMPATIBILITY.md), and a timed large-DAG scheduler CI budget test.
+
+### Changed
+
+- Discovery cache bypass renamed from `--refresh` to `--refresh-discovery`. Use `--nix-arg --refresh` to forward Nix's `--refresh` global.
+- Task `workingDirectory` honored with CLI precedence.
+- Recursive `.nix` fingerprint for discovery cache invalidation (edits under imported files invalidate without touching `flake.nix`).
+- Serialized discovery cache writes under an exclusive lock.
+- Root [README](README.md) retargeted for flake consumers; maintainer/dev content moved to [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
+- Demo GIF covers list/run, inspect/graph (mermaid+dot), task aliases, parallel `-j`, `--shell`, and watch (`docs/demo/nxr.tape`).
+- Workspace and Nix package version **2.1.0**.
+
+### Migration
+
+- Replace `nxr --refresh …` with `nxr --refresh-discovery …` for nxr's discovery cache bypass. To pass Nix's own `--refresh`, use `nxr --nix-arg --refresh …`.
 
 ## [2.0.0] - 2026-07-19
 
@@ -32,7 +53,7 @@ V2.0 orchestration release (Phases 7–15): parallel task DAG, supervisor, watch
 - Flake-parts `shellIntegration` module: `nxr` + session hooks under `share/nxr/shell/`.
 - `nxr graph --format dot` for stable Graphviz output.
 - Soak/stress tests: watcher debounce burst coalescing, supervisor multi-child TERM→KILL, large synthetic DAG scheduler smoke.
-- **Schema freeze (V2.0):** `task-v1`, `execution-plan-v1`, and events vocabulary documented in [COMPATIBILITY.md](docs/COMPATIBILITY.md); `events-v1` JSON schema published in the V2.x bridge (see Unreleased).
+- **Schema freeze (V2.0):** `task-v1`, `execution-plan-v1`, and events vocabulary documented in [COMPATIBILITY.md](docs/COMPATIBILITY.md); `events-v1` JSON schema published in the V2.x bridge (see [2.1.0]).
 
 ### Changed
 
@@ -111,6 +132,7 @@ First taggable V1 prerelease: a standard Nix flake app runner through Phase 5 of
 - [Compatibility matrix](docs/COMPATIBILITY.md), [CLI reference](docs/CLI_REFERENCE.md), and [telemetry decision](docs/TELEMETRY.md) (default: none).
 - Tag-triggered [release workflow](.github/workflows/release.yml) (quality gate only; no publish secrets).
 
+[2.1.0]: https://github.com/willmortimer/nxr/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/willmortimer/nxr/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/willmortimer/nxr/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/willmortimer/nxr/compare/v0.0.0...v0.1.0
