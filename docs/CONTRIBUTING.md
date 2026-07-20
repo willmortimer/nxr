@@ -48,4 +48,4 @@ The root README embeds a terminal GIF. How to regenerate it: [demo/README.md](de
 
 ## Status
 
-Workspace and Nix package are **2.0.0**. Do not push or tag from agent sessions unless a maintainer explicitly asks. A Ratatui-style dashboard remains long-term (roadmap Phase 35); do not add a TUI crate without an explicit decision.
+Workspace and Nix package are **2.1.0**. Do not push or tag from agent sessions unless a maintainer explicitly asks. A Ratatui-style dashboard remains long-term (roadmap Phase 35); do not add a TUI crate without an explicit decision.

@@ -19,31 +19,11 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 |---|---|---|
 | **V1.0** | Standard flake app runner | Discovery, execution, completion, diagnostics, doctor, `plan` — shipped as `v1.0.0`. |
 | **V2.0** | Workflow orchestration | Task DAG, scheduler, supervision, watch, shell integration, structured output — shipped as `v2.0.0`. |
-| **V2.x bridge** | Stable extension surface | Task, execution-plan, and events schemas frozen; narrow extension points; large-graph scheduling baseline. |
+| **V2.1** | Trustworthiness | `WorkspaceSnapshot`, discovery cache controls, Nix forwarding, `--shell-mode`, byte-safe output, four-system CI, release SBOMs — shipped as `v2.1.0`. |
 
-## Active roadmap — 2.1 / 2.2 / 2.3
+## Active roadmap — 2.2 / 2.3
 
-The active plan is three minor releases that harden and extend what already ships. Each section should fit on one screen; defer speculative platform work to [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md).
-
-### 2.1 — Trustworthiness
-
-**Goal:** Make foreground and task execution predictable on real projects and in CI.
-
-**Deliverables**
-
-- Cross-platform supervision gaps closed (signal escalation, orphan prevention, Windows job objects where applicable).
-- Doctor and static validation expanded (impure `PATH`, missing descriptions, broken programs).
-- Performance regression gates for discovery, completion, and large DAG scheduling.
-- Security follow-ups from the V1 review (metadata sanitization, path handling, log redaction).
-- Schema migration tooling and compatibility tests for task/plan/events V1.
-- Soak and stress coverage for watcher debounce, parallel cleanup, and keep-going semantics.
-
-**Exit criteria**
-
-- Documented compatibility matrix matches tested platforms.
-- No known orphan processes after interrupt in task runs.
-- Perf baselines checked in CI; regressions fail the build.
-- Breaking schema changes require a major version bump and migration note.
+The active plan is two minor releases that harden and extend what already ships. Each section should fit on one screen; defer speculative platform work to [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md).
 
 ### 2.2 — Flake UX
 
