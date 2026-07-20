@@ -6,12 +6,14 @@ Baselines for the runner. App **execution** time is dominated by `nix run` and t
 
 | Path | Expected Nix invocations | Notes |
 |---|---|---|
-| Bare `nxr <app>` / `nxr run <app>` | **1×** `nix run`; **0×** `flake show` | Fast path; optional `flake show` only after failure for suggestions |
-| Adapter init | **1×** `nix eval` (`currentSystem`) + capability probes (`--version`, config/help) | Shared via `WorkspaceSnapshot` / `NixAdapter`; not repeated per task node |
+| Bare `nxr <app>` / `nxr run <app>` (success or ordinary app failure) | **exactly 1×** `nix` (`nix run`); **0×** probes / `flake show` | Locate-only prepare; no `currentSystem` / capability probes unless `--offline` / `--accept-flake-config` |
+| Bare app missing installable | **1×** `nix run` + optional diagnostic discovery | Suggestion discovery only when stderr indicates installable-resolution failure |
+| Adapter init (list/task/doctor) | **1×** `nix eval` (`currentSystem`) + capability probes (`--version`, config/help) | Shared via `WorkspaceSnapshot` / `NixAdapter`; not repeated per task node |
 | `nxr task` with **N** nodes | **N×** `nix run` + **O(1)** discovery | One `flake show` (apps) + one task `eval` (or warm combined cache); **not** N× `flake show` |
 | `nxr list --refresh-discovery` | Dominated by `nix flake show` | Catalog commands still discover |
+| Named `nxr build` / `check` / `shell` | Direct installable argv (no whole-output discovery) | Adapter init still probes once for system / flags |
 
-Instrumented integration tests wrap `NXR_NIX` with a counting shim to assert these budgets.
+Instrumented integration tests wrap `NXR_NIX` with a counting shim to assert these budgets (`run==1`, `eval==0`, `flake-show==0`, `other==0` for bare success/fail).
 
 ## Budgets
 

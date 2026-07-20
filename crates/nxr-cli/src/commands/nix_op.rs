@@ -2,12 +2,9 @@
 
 use std::io::{self, Write};
 
+use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
-use nxr_core::{EnvironmentPolicy, FlakeOutput};
-use nxr_nix::{
-    NixAdapter, NixError, OptionalNixFlags, OutputNotFoundError, OutputTable, check_installable,
-    package_installable, resolve_output_by_name,
-};
+use nxr_nix::{NixError, OptionalNixFlags, check_installable, package_installable};
 use serde::Serialize;
 
 use crate::commands::common::{PrepareError, build_adapter, current_invocation_directory};
@@ -24,8 +21,6 @@ pub enum NixOpError {
     #[error(transparent)]
     Nix(#[from] NixError),
     #[error(transparent)]
-    NotFound(#[from] OutputNotFoundError),
-    #[error(transparent)]
     Io(#[from] io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
@@ -38,7 +33,6 @@ impl NixOpError {
             Self::Prepare(error) => error.exit_code(),
             Self::Flake(error) => error.exit_code(),
             Self::Nix(error) => error.exit_code(),
-            Self::NotFound(error) => error.exit_code(),
             Self::Io(_) | Self::Json(_) => exit::EVALUATION,
         }
     }
@@ -53,6 +47,7 @@ pub enum NixOpKind {
 
 impl NixOpKind {
     #[must_use]
+    #[allow(dead_code)]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Build => "package",
@@ -89,15 +84,6 @@ struct DryRunEnvelope {
 struct DryRunCommand {
     program: String,
     arguments: Vec<String>,
-}
-
-fn discover_table(
-    flake: &FlakeSelection,
-    adapter: &NixAdapter,
-    table: OutputTable,
-    nix_flags: &OptionalNixFlags,
-) -> Result<Vec<FlakeOutput>, NixOpError> {
-    Ok(adapter.discover_outputs(&flake.nix_ref, table, nix_flags)?)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -166,11 +152,10 @@ pub fn execute_build(request: &NixOpRequest<'_>, runner: RunnerOutput) -> Result
     let adapter = build_adapter(request.nix_override)?;
 
     let (target, attr_path, installable) = if let Some(name) = request.name {
-        let outputs = discover_table(&flake, &adapter, OutputTable::Packages, request.nix_flags)?;
-        let output = resolve_output_by_name(&outputs, name, NixOpKind::Build.label())?;
+        // Direct installable — skip whole-output discovery.
         (
-            Some(output.name.clone()),
-            Some(output.attr_path.clone()),
+            Some(name.to_owned()),
+            Some(format!("packages.{}.{name}", adapter.system)),
             package_installable(&flake.nix_ref, &adapter.system, name),
         )
     } else {
@@ -209,13 +194,11 @@ pub fn execute_check(request: &NixOpRequest<'_>, runner: RunnerOutput) -> Result
     let adapter = build_adapter(request.nix_override)?;
 
     let (target, attr_path, arguments) = if let Some(name) = request.name {
-        let outputs = discover_table(&flake, &adapter, OutputTable::Checks, request.nix_flags)?;
-        let output = resolve_output_by_name(&outputs, name, NixOpKind::Check.label())?;
         let installable = check_installable(&flake.nix_ref, &adapter.system, name);
         let arguments = adapter.nix_build_argv(&installable, request.nix_flags)?;
         (
-            Some(output.name.clone()),
-            Some(output.attr_path.clone()),
+            Some(name.to_owned()),
+            Some(format!("checks.{}.{name}", adapter.system)),
             arguments,
         )
     } else {
@@ -257,9 +240,10 @@ pub fn execute_shell(request: &NixOpRequest<'_>, runner: RunnerOutput) -> Result
     let adapter = build_adapter(request.nix_override)?;
 
     let (target, attr_path) = if let Some(name) = request.name {
-        let outputs = discover_table(&flake, &adapter, OutputTable::DevShells, request.nix_flags)?;
-        let output = resolve_output_by_name(&outputs, name, NixOpKind::Shell.label())?;
-        (Some(output.name.clone()), Some(output.attr_path.clone()))
+        (
+            Some(name.to_owned()),
+            Some(format!("devShells.{}.{name}", adapter.system)),
+        )
     } else {
         (None, None)
     };

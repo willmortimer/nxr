@@ -2472,18 +2472,42 @@ fn bare_app_fast_path_skips_flake_show() {
         .success()
         .stdout(predicate::str::contains("hello from basic-apps"));
 
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(counter.count("flake-show"), 0, "log={log}");
+    assert_eq!(counter.count("run"), 1, "log={log}");
     assert_eq!(
-        counter.count("flake-show"),
+        counter.count("eval"),
         0,
-        "bare app must not call flake show; log={}",
-        std::fs::read_to_string(&counter.log).unwrap_or_default()
+        "no system probe on bare success; log={log}"
     );
     assert_eq!(
-        counter.count("run"),
-        1,
-        "bare app must call nix run exactly once; log={}",
-        std::fs::read_to_string(&counter.log).unwrap_or_default()
+        counter.count("other"),
+        0,
+        "no capability probes on bare success; log={log}"
     );
+}
+
+#[test]
+fn bare_app_failing_existing_app_is_one_nix_process() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "fail"])
+        .assert()
+        .failure()
+        .code(42);
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(counter.count("run"), 1, "log={log}");
+    assert_eq!(counter.count("flake-show"), 0, "log={log}");
+    assert_eq!(counter.count("eval"), 0, "log={log}");
+    assert_eq!(counter.count("other"), 0, "log={log}");
 }
 
 #[test]

@@ -5,7 +5,8 @@ use std::io;
 use nxr_core::diagnostics::exit;
 
 use crate::commands::common::{
-    AppRequest, PrepareError, prepare_fast_app_plan, suggest_missing_app_after_run,
+    AppRequest, PrepareError, prepare_fast_app_plan, stderr_indicates_missing_installable,
+    suggest_missing_app_after_run,
 };
 use crate::commands::plan::{PlanRenderError, write_plan};
 use crate::runner_output::RunnerOutput;
@@ -34,9 +35,9 @@ impl RunError {
 
 /// Resolve, optionally print a plan (`dry_run`), or execute the app in the foreground.
 ///
-/// Uses the bare-app fast path: builds `nix run <flake>#<app>` without `flake show`.
-/// On a nonzero Nix exit, optionally discovers apps to emit "did you mean?" when
-/// the name is absent.
+/// Uses the bare-app fast path: builds `nix run <flake>#<app>` without probes or
+/// `flake show`. Suggestion discovery runs only when stderr indicates a missing
+/// installable — not after ordinary app nonzero exits.
 ///
 /// # Errors
 ///
@@ -71,7 +72,7 @@ pub fn execute(
         ))
         .map_err(RunError::Supervision)?;
 
-    let code = nxr_process::run_in(
+    let (code, stderr) = nxr_process::run_in_with_stderr(
         prepared.nix.as_std_path(),
         &prepared.plan.command.arguments,
         Some(prepared.execution_directory.as_std_path()),
@@ -80,6 +81,7 @@ pub fn execute(
     .map_err(RunError::Supervision)?;
 
     if code != exit::SUCCESS
+        && stderr_indicates_missing_installable(&stderr)
         && let Ok(Some(not_found)) = suggest_missing_app_after_run(request)
     {
         return Err(RunError::Prepare(PrepareError::NotFound(not_found)));

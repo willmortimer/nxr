@@ -11,7 +11,8 @@ use nxr_completion::cache::{
 use nxr_core::diagnostics::exit;
 use nxr_core::{App, EnvironmentPolicy, Plan, PlanCommand, PlanKind};
 use nxr_nix::{
-    AppNotFoundError, NixAdapter, NixError, OptionalNixFlags, nix_develop_wrap_run_args,
+    AppNotFoundError, NixAdapter, NixCapabilities, NixError, OptionalNixFlags,
+    TESTED_NIX_SUPPORT_FLOOR, detect_capabilities, locate_nix, nix_develop_wrap_run_args,
     nix_run_args, resolve_app_by_name,
 };
 use nxr_task::{
@@ -175,10 +176,13 @@ pub fn prepare_app_plan(request: &AppRequest<'_>) -> Result<PreparedPlan, Prepar
     snapshot.prepare_discovered_app(request)
 }
 
-/// Build a [`Plan`] for `nix run <flake>#<app>` without `flake show`.
+/// Build a [`Plan`] for `nix run <flake>#<app>` without adapter probes.
 ///
-/// Used by bare-app / `run` execution. Missing apps surface as Nix failures;
-/// callers may optionally discover afterward for "did you mean?" suggestions.
+/// Locates `nix` only (no `currentSystem` / capability probes) unless the user
+/// requested Required flags (`--offline` / `--accept-flake-config`), which need
+/// a one-shot capability check. Missing apps surface as Nix failures; callers
+/// may optionally discover afterward for "did you mean?" suggestions when
+/// stderr indicates an installable-resolution failure.
 ///
 /// # Errors
 ///
@@ -188,13 +192,14 @@ pub fn prepare_fast_app_plan(request: &AppRequest<'_>) -> Result<PreparedPlan, P
     let flake = resolve_flake(request.flake_arg, &invocation_cwd)?;
     let execution_directory =
         resolve_execution_directory(&invocation_cwd, &flake, request.root, request.cwd)?;
-    let adapter = build_adapter(request.nix_override)?;
-    let app = synthetic_app(request.app, &flake.nix_ref, &adapter.system);
+    let nix = locate_nix_path(request.nix_override)?;
+    // Display-only placeholder: `nix run <flake>#<app>` does not need currentSystem.
+    let app = synthetic_app(request.app, &flake.nix_ref, "local");
     let forwarded = strip_one_separator(request.args);
-    let plan = build_plan(
+    let plan = build_fast_plan(
         request,
         &flake,
-        &adapter,
+        &nix,
         &app,
         &invocation_cwd,
         &execution_directory,
@@ -203,9 +208,39 @@ pub fn prepare_fast_app_plan(request: &AppRequest<'_>) -> Result<PreparedPlan, P
 
     Ok(PreparedPlan {
         plan,
-        nix: adapter.nix,
+        nix,
         execution_directory,
     })
+}
+
+/// Locate `nix` without system/capability probes.
+///
+/// # Errors
+///
+/// Returns [`NixError::NixNotFound`] when the executable is missing.
+pub fn locate_nix_path(nix_override: Option<&str>) -> Result<Utf8PathBuf, NixError> {
+    match nix_override {
+        Some(path) => {
+            let nix = Utf8PathBuf::from(path);
+            if !nix.is_file() {
+                return Err(NixError::NixNotFound { path: nix });
+            }
+            Ok(nix)
+        }
+        None => locate_nix(),
+    }
+}
+
+/// Whether stderr from a failed `nix run` indicates a missing installable/app.
+#[must_use]
+pub fn stderr_indicates_missing_installable(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("does not provide attribute")
+        || lower.contains("does not provide")
+            && (lower.contains("attribute") || lower.contains("app"))
+        || lower.contains("error: attribute '")
+        || lower.contains("was not found in the flake")
+        || lower.contains("flake has no attribute")
 }
 
 impl WorkspaceSnapshot {
@@ -573,6 +608,60 @@ fn build_plan(
         environment_policy: request.environment_policy.clone(),
         command: PlanCommand {
             program: adapter.nix.as_str().to_owned(),
+            arguments: command_arguments,
+        },
+        forwarded_arguments: forwarded.to_vec(),
+    })
+}
+
+fn build_fast_plan(
+    request: &AppRequest<'_>,
+    flake: &FlakeSelection,
+    nix: &Utf8Path,
+    app: &App,
+    invocation_directory: &Utf8Path,
+    execution_directory: &Utf8Path,
+    forwarded: &[String],
+) -> Result<Plan, NixError> {
+    let run_argv = nix_run_args(&flake.nix_ref, &app.name, forwarded);
+    let wrap_shell = effective_shell_wrap(request.shell, request.shell_mode);
+    let base_arguments = match wrap_shell {
+        Some(shell_name) => {
+            nix_develop_wrap_run_args(nix.as_str(), &flake.nix_ref, shell_name, &run_argv)
+        }
+        None => run_argv,
+    };
+
+    let needs_capability_probe = request.nix_flags.offline || request.nix_flags.accept_flake_config;
+    let capabilities = if needs_capability_probe {
+        detect_capabilities(nix)?
+    } else {
+        // No RequiredByUser flags: skip probes. Assume floor best-effort support.
+        NixCapabilities {
+            version: TESTED_NIX_SUPPORT_FLOOR,
+            flakes_enabled: true,
+            supports_json_log_format: true,
+            supports_no_write_lock_file: true,
+            supports_offline: false,
+            supports_accept_flake_config: false,
+        }
+    };
+    let command_arguments = capabilities.apply_optional_flags(base_arguments, request.nix_flags)?;
+
+    Ok(Plan {
+        schema_version: Plan::SCHEMA_VERSION,
+        kind: PlanKind::App,
+        flake: flake.nix_ref.clone(),
+        system: app.system.clone(),
+        target: app.name.clone(),
+        attr_path: app.attr_path.clone(),
+        invocation_directory: invocation_directory.as_str().to_owned(),
+        execution_directory: execution_directory.as_str().to_owned(),
+        shell: request.shell.map(str::to_owned),
+        active_shell: active_dev_shell(),
+        environment_policy: request.environment_policy.clone(),
+        command: PlanCommand {
+            program: nix.as_str().to_owned(),
             arguments: command_arguments,
         },
         forwarded_arguments: forwarded.to_vec(),

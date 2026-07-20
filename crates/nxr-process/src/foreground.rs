@@ -55,9 +55,27 @@ where
     P: AsRef<OsStr>,
     A: AsRef<OsStr>,
 {
+    Ok(run_in_with_stderr(program, args, cwd, environment)?.0)
+}
+
+/// Like [`run_in`], but also returns captured stderr (tee'd to the inherited stderr).
+///
+/// # Errors
+///
+/// Same as [`run`].
+pub fn run_in_with_stderr<P, A>(
+    program: P,
+    args: &[A],
+    cwd: Option<&Path>,
+    environment: &EnvironmentPolicy,
+) -> io::Result<(i32, String)>
+where
+    P: AsRef<OsStr>,
+    A: AsRef<OsStr>,
+{
     #[cfg(unix)]
     {
-        unix::run(program.as_ref(), args, cwd, environment)
+        unix::run_with_stderr(program.as_ref(), args, cwd, environment)
     }
 
     #[cfg(windows)]
@@ -87,12 +105,24 @@ mod unix {
     use crate::signals::unix::SignalForwarder;
     use std::os::unix::process::CommandExt;
 
+    #[allow(dead_code)]
     pub(super) fn run<A: AsRef<OsStr>>(
         program: &OsStr,
         args: &[A],
         cwd: Option<&Path>,
         environment: &EnvironmentPolicy,
     ) -> io::Result<i32> {
+        Ok(run_with_stderr(program, args, cwd, environment)?.0)
+    }
+
+    pub(super) fn run_with_stderr<A: AsRef<OsStr>>(
+        program: &OsStr,
+        args: &[A],
+        cwd: Option<&Path>,
+        environment: &EnvironmentPolicy,
+    ) -> io::Result<(i32, String)> {
+        use std::io::{Read, Write};
+
         let forwarder = SignalForwarder::install()?;
 
         let mut command = Command::new(program);
@@ -100,9 +130,7 @@ mod unix {
             .args(args)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            // New process group (pgid == child pid) so we can forward signals
-            // without relying on the terminal's foreground group alone.
+            .stderr(Stdio::piped())
             .process_group(0);
 
         if let Some(dir) = cwd {
@@ -112,21 +140,37 @@ mod unix {
 
         let mut child = command.spawn()?;
         let pgid = child.id();
+        let mut stderr_pipe = child.stderr.take().expect("piped stderr");
+        let tee = thread::spawn(move || {
+            let mut captured = Vec::new();
+            let mut buf = [0_u8; 8192];
+            let mut real_stderr = io::stderr();
+            loop {
+                match stderr_pipe.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let chunk = &buf[..n];
+                        captured.extend_from_slice(chunk);
+                        let _ = real_stderr.write_all(chunk);
+                    }
+                }
+            }
+            let _ = real_stderr.flush();
+            String::from_utf8_lossy(&captured).into_owned()
+        });
 
         let status = loop {
             forwarder.poll_and_forward(pgid);
             match child.try_wait()? {
                 Some(status) => break status,
                 None => {
-                    // Short sleep so signal flags are observed promptly without
-                    // busy-spinning; `Child::wait` retries EINTR and would miss
-                    // our flag-based forwarder.
                     thread::sleep(Duration::from_millis(10));
                 }
             }
         };
 
-        Ok(exit_code_from_status(status))
+        let stderr = tee.join().unwrap_or_default();
+        Ok((exit_code_from_status(status), stderr))
     }
 }
 
