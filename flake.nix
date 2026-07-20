@@ -3,11 +3,20 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # nixos-unstable (26.11+) no longer evaluates x86_64-darwin; pin the last
+    # branch that still builds Intel macOS until upstream restores support.
+    nixpkgsIntelDarwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     flake-parts.url = "github:hercules-ci/flake-parts";
   };
 
   outputs =
-    inputs@{ flake-parts, nixpkgs, ... }:
+    inputs@{ flake-parts, nixpkgs, nixpkgsIntelDarwin, ... }:
+    let
+      pkgsFor = system:
+        import (if system == "x86_64-darwin" then nixpkgsIntelDarwin else nixpkgs) {
+          inherit system;
+        };
+    in
     flake-parts.lib.mkFlake { inherit inputs; } {
       flake = {
         lib = let
@@ -21,36 +30,50 @@
         };
 
         flakeModules.default = import ./nix/modules/flake-parts.nix;
+
+        overlays.default = import ./nix/overlays/default.nix;
+
+        templates.default = {
+          path = ./templates/default;
+          description = "Minimal nxr consumer flake using flake-parts";
+        };
       };
 
       systems = [
         "aarch64-darwin"
+        "x86_64-darwin"
+        "aarch64-linux"
         "x86_64-linux"
       ];
 
       perSystem =
         {
-          pkgs,
           self',
           lib,
+          system,
           ...
         }:
         let
+          pkgs = pkgsFor system;
+
           nxrLib = import ./nix/lib { inherit pkgs; };
 
-          src = lib.fileset.toSource {
+          src = import ./nix/lib/workspace-src.nix {
+            inherit lib;
             root = ./.;
-            fileset = lib.fileset.unions [
-              ./Cargo.toml
-              ./Cargo.lock
-              ./deny.toml
-              ./crates
-              ./shell
-              ./xtask
-            ];
           };
 
           nxr = pkgs.callPackage ./nix/packages/nxr.nix { inherit src; };
+
+          qualityChecks = import ./nix/checks/quality.nix {
+            inherit pkgs src;
+          };
+
+          nxrApp = {
+            type = "app";
+            program = "${nxr}/bin/nxr";
+            meta.description = "Run nxr";
+          };
 
           rustDevInputs = with pkgs; [
             rustc
@@ -70,11 +93,8 @@
           };
 
           apps = {
-            default = {
-              type = "app";
-              program = "${nxr}/bin/nxr";
-              meta.description = "Run nxr";
-            };
+            nxr = nxrApp;
+            default = nxrApp;
 
             fmt = nxrLib.mkRepoApp {
               name = "nxr-fmt";
@@ -129,7 +149,9 @@
 
           checks = {
             inherit nxr;
-          };
+          } // qualityChecks;
+
+          formatter = pkgs.nixpkgs-fmt;
 
           devShells.default = pkgs.mkShell {
             packages = rustDevInputs ++ [

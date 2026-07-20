@@ -368,15 +368,15 @@ Run against fixture flakes:
 
 CI should test selected supported Nix versions and platforms.
 
-Initial practical targets:
+Initial flake targets (all four evaluate; CI exercises a subset):
 
 - aarch64-darwin;
+- x86_64-darwin;
+- aarch64-linux;
 - x86_64-linux.
 
 Later:
 
-- x86_64-darwin;
-- aarch64-linux;
 - Windows when a realistic Nix execution story is defined.
 
 ## 10. Release engineering
