@@ -16,7 +16,7 @@ _nxr_dynamic_apps() {
         completion|__complete|__manpage|help|--help|-h)
             return 1
             ;;
-        list|plan|select|doctor|inspect|task|watch|graph)
+        list|plan|select|doctor|inspect|task|watch|graph|build|check|shell|cache)
             return 1
             ;;
         run)

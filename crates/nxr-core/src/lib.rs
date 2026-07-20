@@ -9,7 +9,7 @@ pub mod sanitize;
 
 pub use diagnostics::{Diagnostic, DiagnosticLevel};
 pub use env_policy::{CLEAN_ENV_ALLOWLIST, EnvironmentPolicy, parse_env_name, parse_set_env};
-pub use model::{App, AppList, FlakeRef, ListApp};
+pub use model::{App, AppList, FlakeOutput, FlakeRef, ListApp, OutputList};
 pub use plan::{Plan, PlanCommand, PlanKind};
 pub use sanitize::sanitize_terminal_text;
 

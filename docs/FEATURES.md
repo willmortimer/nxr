@@ -27,7 +27,26 @@ Commands:
 nxr
 nxr list
 nxr list --json
+nxr list apps|checks|packages|shells|tasks
 ```
+
+### 1.1.1 Native flake outputs
+
+`nxr` also catalogs and invokes standard non-app flake outputs via the same
+`nix flake show` discovery path used for apps:
+
+```bash
+nxr list packages
+nxr list checks
+nxr list shells
+nxr build [name]      # nix build .#packages.<system>.<name>
+nxr check [name]      # nix build .#checks.<system>.<name>  (or nix flake check)
+nxr shell [name]      # nix develop .#<name>
+```
+
+These commands are thin ergonomics over Nix. They do not redefine checks as
+nxr tasks, and `nix build` / `nix flake check` / `nix develop` remain escape
+hatches.
 
 ### 1.2 Ergonomic execution
 

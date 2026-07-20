@@ -10,6 +10,7 @@ pub mod graph;
 pub mod inspect;
 pub mod list;
 pub mod manpage;
+pub mod nix_op;
 pub mod plan;
 pub mod run;
 pub mod select;

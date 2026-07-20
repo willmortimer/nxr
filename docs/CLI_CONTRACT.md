@@ -14,7 +14,10 @@ Primary forms:
 nxr
 nxr <app> [args...]
 nxr run <app> [--] [args...]
-nxr list
+nxr list [apps|checks|packages|shells|tasks]
+nxr build [package]
+nxr check [check]
+nxr shell [devShell]
 nxr select
 nxr plan <app-or-task>
 nxr doctor [app]
@@ -28,7 +31,7 @@ nxr watch <app-or-task>
 nxr graph <task>
 ```
 
-V1 implements the app-oriented subset. V2 activates task-oriented commands.
+V1 implements the app-oriented subset. V2 activates task-oriented commands. Flake output commands (`list` filters, `build`, `check`, `shell`) map to native Nix operations without inventing a second authority.
 
 ## 2. Name resolution
 
@@ -282,6 +285,47 @@ JSON:
 ```
 
 Ordering is stable and lexicographic unless explicit metadata defines display order.
+
+`nxr list` without a kind lists apps and, when present, tasks. Optional kinds:
+
+```bash
+nxr list apps
+nxr list checks
+nxr list packages
+nxr list shells
+nxr list tasks
+```
+
+Filtered package/check/shell JSON uses:
+
+```json
+{
+  "schema_version": 1,
+  "flake": ".",
+  "system": "aarch64-darwin",
+  "kind": "packages",
+  "outputs": [
+    {
+      "name": "nxr",
+      "attr_path": "packages.aarch64-darwin.nxr",
+      "description": "Ergonomic runner for Nix flake apps",
+      "default": false
+    }
+  ]
+}
+```
+
+## 8.1 Native flake output commands
+
+These map directly to Nix; they do not redefine checks as tasks.
+
+```bash
+nxr build [name]     # nix build <flake>#packages.<system>.<name>  (or nix build <flake>)
+nxr check [name]     # nix build <flake>#checks.<system>.<name>    (or nix flake check)
+nxr shell [name]     # nix develop <flake>#<name>                  (or nix develop <flake>)
+```
+
+`--dry-run` prints the planned `nix` argv (JSON with `--json`). Missing named outputs exit `6` with suggestions.
 
 ## 9. Plan contract
 

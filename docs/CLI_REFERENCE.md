@@ -50,10 +50,14 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 |---|---|
 | `nxr` | List apps (same as `nxr list`) |
 | `nxr list` | List apps (and tasks when present) for the current system |
+| `nxr list apps\|checks\|packages\|shells\|tasks` | List one catalog (default without kind: apps + tasks) |
 | `nxr list --category <name>` | Filter listed tasks by category |
 | `nxr <app> [args…]` | Run a flake app |
 | `nxr <flake>#<app> [args…]` | Inline flake + app (like `nix run`) |
 | `nxr run <app> [-- args…]` | Explicit run form |
+| `nxr build [name]` | `nix build` for `packages.<system>.<name>` (default package when omitted) |
+| `nxr check [name]` | Build `checks.<system>.<name>`, or `nix flake check` when omitted |
+| `nxr shell [name]` | Interactive `nix develop` for `devShells.<system>.<name>` (default when omitted) |
 | `nxr plan <app\|task> [-- args…]` | Show app or task execution plan (apps win when both exist) |
 | `nxr select` | Interactive fuzzy app picker |
 | `nxr doctor [app]` | Diagnose environment and flake setup |
@@ -85,6 +89,11 @@ When `nxr watch` / name resolution finds both a task and an app with the same na
 
 ```bash
 nxr list --json
+nxr list packages
+nxr list shells --json
+nxr build marker --dry-run
+nxr check ok --dry-run
+nxr shell backend --dry-run
 nxr test
 nxr test -- --help
 nxr fixtures/basic-apps#hello

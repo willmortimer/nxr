@@ -5,6 +5,7 @@ use clap::{ArgAction, Parser, Subcommand};
 use nxr_completion::{CompleteTarget, Shell};
 
 use crate::commands::graph::GraphFormat;
+use crate::commands::list::ListKind;
 use crate::output_options::{ColorWhen, LogFormat};
 use crate::output_task::{EventsFormat, TaskOutputMode};
 use crate::shell_mode::ShellMode;
@@ -182,8 +183,12 @@ pub enum ExplainSubcommand {
 /// Top-level commands. Bare `nxr` defaults to listing apps.
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 pub enum Command {
-    /// List available flake apps
+    /// List available flake apps (and tasks), or a specific output kind
     List {
+        /// Catalog to list (`apps`, `checks`, `packages`, `shells`, `tasks`).
+        /// Default: apps + tasks.
+        #[arg(value_enum)]
+        kind: Option<ListKind>,
         /// Include only tasks in this category (when tasks are listed)
         #[arg(long = "category", value_name = "NAME")]
         category: Option<String>,
@@ -201,6 +206,21 @@ pub enum Command {
         /// Arguments forwarded to the app (one leading `--` is stripped)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+    /// Build a flake package (`nix build`)
+    Build {
+        /// Package name (`packages.<system>.<name>`); default package when omitted
+        name: Option<String>,
+    },
+    /// Build a flake check, or run `nix flake check` when omitted
+    Check {
+        /// Check name (`checks.<system>.<name>`); all checks when omitted
+        name: Option<String>,
+    },
+    /// Enter a development shell (`nix develop`)
+    Shell {
+        /// Shell name (`devShells.<system>.<name>`); default shell when omitted
+        name: Option<String>,
     },
     /// Show execution plan
     Plan {

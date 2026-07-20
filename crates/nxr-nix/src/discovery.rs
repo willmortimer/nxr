@@ -1,14 +1,57 @@
-//! Flake app discovery via `nix flake show --json`.
+//! Flake output discovery via `nix flake show --json`.
 
 use std::collections::BTreeMap;
 
 use camino::Utf8Path;
-use nxr_core::App;
+use nxr_core::{App, FlakeOutput};
 use serde_json::Value as JsonValue;
 
 use crate::capabilities::{NixFailureKind, run_nix};
 use crate::command;
 use crate::{NixError, ParseAppsError};
+
+/// Which flake output table to parse from `nix flake show --json`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutputTable {
+    /// `apps.<system>.*` (`type == "app"`).
+    Apps,
+    /// `packages.<system>.*` (`type == "derivation"`).
+    Packages,
+    /// `checks.<system>.*` (`type == "derivation"`).
+    Checks,
+    /// `devShells.<system>.*` (`type == "derivation"`).
+    DevShells,
+}
+
+impl OutputTable {
+    #[must_use]
+    pub const fn show_key(self) -> &'static str {
+        match self {
+            Self::Apps => "apps",
+            Self::Packages => "packages",
+            Self::Checks => "checks",
+            Self::DevShells => "devShells",
+        }
+    }
+
+    #[must_use]
+    pub const fn attr_prefix(self) -> &'static str {
+        match self {
+            Self::Apps => "apps",
+            Self::Packages => "packages",
+            Self::Checks => "checks",
+            Self::DevShells => "devShells",
+        }
+    }
+
+    #[must_use]
+    pub const fn expected_type(self) -> &'static str {
+        match self {
+            Self::Apps => "app",
+            Self::Packages | Self::Checks | Self::DevShells => "derivation",
+        }
+    }
+}
 
 /// Discover apps for `system` from `flake_ref`.
 ///
@@ -40,6 +83,24 @@ pub fn discover_apps_with_args(
     parse_apps_from_flake_show(&show, flake_ref, system).map_err(NixError::ParseApps)
 }
 
+/// Discover non-app flake outputs using a pre-built argv.
+///
+/// # Errors
+///
+/// Returns [`NixError`] when `nix` fails or its JSON cannot be parsed.
+pub fn discover_outputs_with_args(
+    nix: &Utf8Path,
+    system: &str,
+    flake_ref: &str,
+    table: OutputTable,
+    args: &[String],
+) -> Result<Vec<FlakeOutput>, NixError> {
+    let stdout = run_nix(nix, args, NixFailureKind::Evaluation)?;
+    let show: JsonValue =
+        serde_json::from_slice(&stdout).map_err(|source| NixError::InvalidJson { source })?;
+    parse_outputs_from_flake_show(&show, flake_ref, system, table).map_err(NixError::ParseApps)
+}
+
 /// Parse `apps.<system>.*` entries from `nix flake show --json` output.
 ///
 /// # Errors
@@ -50,41 +111,68 @@ pub fn parse_apps_from_flake_show(
     flake_ref: &str,
     system: &str,
 ) -> Result<Vec<App>, ParseAppsError> {
-    let Some(apps_for_system) = show
-        .get("apps")
-        .and_then(|apps| apps.get(system))
+    let outputs = parse_outputs_from_flake_show(show, flake_ref, system, OutputTable::Apps)?;
+    Ok(outputs
+        .into_iter()
+        .map(|output| App {
+            name: output.name,
+            attr_path: output.attr_path,
+            flake_ref: output.flake_ref,
+            system: output.system,
+            description: output.description,
+            is_default: output.is_default,
+            metadata: BTreeMap::new(),
+        })
+        .collect())
+}
+
+/// Parse a flake output table from `nix flake show --json`.
+///
+/// # Errors
+///
+/// Returns [`ParseAppsError`] when the show JSON has an unexpected structure.
+pub fn parse_outputs_from_flake_show(
+    show: &JsonValue,
+    flake_ref: &str,
+    system: &str,
+    table: OutputTable,
+) -> Result<Vec<FlakeOutput>, ParseAppsError> {
+    let Some(entries) = show
+        .get(table.show_key())
+        .and_then(|root| root.get(system))
         .and_then(JsonValue::as_object)
     else {
         return Ok(Vec::new());
     };
 
-    let mut apps = Vec::new();
-    for (name, entry) in apps_for_system {
-        let Some(app_type) = entry.get("type").and_then(JsonValue::as_str) else {
+    let expected_type = table.expected_type();
+    let mut outputs = Vec::new();
+    for (name, entry) in entries {
+        let Some(entry_type) = entry.get("type").and_then(JsonValue::as_str) else {
             continue;
         };
-        if app_type != "app" {
+        if entry_type != expected_type {
             continue;
         }
 
         let description = entry
             .get("description")
             .and_then(JsonValue::as_str)
+            .filter(|text| !text.is_empty())
             .map(str::to_owned);
 
-        apps.push(App {
+        outputs.push(FlakeOutput {
             name: name.clone(),
-            attr_path: format!("apps.{system}.{name}"),
+            attr_path: format!("{}.{system}.{name}", table.attr_prefix()),
             flake_ref: flake_ref.to_owned(),
             system: system.to_owned(),
             description,
             is_default: name == "default",
-            metadata: BTreeMap::new(),
         });
     }
 
-    apps.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(apps)
+    outputs.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(outputs)
 }
 
 #[cfg(test)]
@@ -93,7 +181,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::parse_apps_from_flake_show;
+    use super::{OutputTable, parse_apps_from_flake_show, parse_outputs_from_flake_show};
     use nxr_core::App;
 
     const BASIC_APPS_SHOW: &str =
@@ -194,5 +282,56 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn parse_packages_checks_and_shells() {
+        let show = json!({
+            "packages": {
+                "aarch64-darwin": {
+                    "default": { "type": "derivation", "description": "Default package" },
+                    "tool": { "type": "derivation", "description": "A tool" },
+                    "skip": { "type": "app" }
+                }
+            },
+            "checks": {
+                "aarch64-darwin": {
+                    "fmt": { "type": "derivation", "description": "" },
+                    "empty": {}
+                }
+            },
+            "devShells": {
+                "aarch64-darwin": {
+                    "default": { "type": "derivation" },
+                    "backend": { "type": "derivation", "description": "Backend shell" }
+                }
+            }
+        });
+
+        let packages =
+            parse_outputs_from_flake_show(&show, ".", "aarch64-darwin", OutputTable::Packages)
+                .expect("packages");
+        assert_eq!(
+            packages.iter().map(|o| o.name.as_str()).collect::<Vec<_>>(),
+            vec!["default", "tool"]
+        );
+        assert!(packages[0].is_default);
+        assert_eq!(packages[0].attr_path, "packages.aarch64-darwin.default");
+
+        let checks =
+            parse_outputs_from_flake_show(&show, ".", "aarch64-darwin", OutputTable::Checks)
+                .expect("checks");
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "fmt");
+        assert_eq!(checks[0].description, None);
+
+        let shells =
+            parse_outputs_from_flake_show(&show, ".", "aarch64-darwin", OutputTable::DevShells)
+                .expect("shells");
+        assert_eq!(
+            shells.iter().map(|o| o.name.as_str()).collect::<Vec<_>>(),
+            vec!["backend", "default"]
+        );
+        assert_eq!(shells[0].attr_path, "devShells.aarch64-darwin.backend");
     }
 }

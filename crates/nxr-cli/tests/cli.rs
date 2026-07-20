@@ -151,6 +151,144 @@ fn list_fixture_apps_json() {
 }
 
 #[test]
+fn list_standard_outputs_packages_checks_shells() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/standard-outputs", "list", "packages"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Available packages for"))
+        .stdout(predicate::str::contains("default"))
+        .stdout(predicate::str::contains("marker"));
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/standard-outputs", "list", "checks"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Available checks for"))
+        .stdout(predicate::str::contains("ok"));
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/standard-outputs",
+            "--json",
+            "list",
+            "shells",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""kind": "shells""#))
+        .stdout(predicate::str::contains("backend"))
+        .stdout(predicate::str::contains("default"));
+}
+
+#[test]
+fn build_check_shell_dry_run_against_standard_outputs() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/standard-outputs",
+            "--dry-run",
+            "build",
+            "marker",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("build"))
+        .stdout(predicate::str::contains("#packages."))
+        .stdout(predicate::str::contains(".marker"));
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/standard-outputs",
+            "--dry-run",
+            "--json",
+            "check",
+            "ok",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""kind": "check""#))
+        .stdout(predicate::str::contains("#checks."))
+        .stdout(predicate::str::contains(".ok"));
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/standard-outputs",
+            "--dry-run",
+            "shell",
+            "backend",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("develop"))
+        .stdout(predicate::str::contains("#backend"));
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/standard-outputs", "--dry-run", "check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("flake"))
+        .stdout(predicate::str::contains("check"));
+}
+
+#[test]
+fn build_named_package_succeeds() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--quiet",
+            "--flake",
+            "fixtures/standard-outputs",
+            "build",
+            "marker",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn unknown_package_suggests_close_match() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/standard-outputs", "build", "markr"])
+        .assert()
+        .failure()
+        .code(6)
+        .stderr(predicate::str::contains("package not found"))
+        .stderr(predicate::str::contains("marker"));
+}
+
+#[test]
 fn list_fixture_apps_json_bare_list_defaults_to_list_command() {
     let Some(()) = require_nix() else {
         return;
@@ -570,7 +708,12 @@ fn refresh_discovery_bypasses_discovery_cache() {
     let repo_root = repo_root();
     cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
-        .args(["--flake", "fixtures/basic-apps", "--refresh-discovery", "list"])
+        .args([
+            "--flake",
+            "fixtures/basic-apps",
+            "--refresh-discovery",
+            "list",
+        ])
         .assert()
         .success();
 }
@@ -2322,21 +2465,20 @@ fn task_working_directory_tokens_resolve_in_dry_run() {
     for (task, expected_cwd) in cases {
         let assert = cargo_bin_cmd!("nxr")
             .current_dir(&nested_cwd)
-            .args([
-                "--flake",
-                flake_arg,
-                "--dry-run",
-                "--json",
-                "task",
-                task,
-            ])
+            .args(["--flake", flake_arg, "--dry-run", "--json", "task", task])
             .assert()
             .success();
         let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
         let plans = parse_dry_run_plans(&stdout);
-        assert_eq!(plans.len(), 1, "task {task} should emit one plan:\n{stdout}");
         assert_eq!(
-            plans[0]["execution_directory"].as_str().expect("execution_directory"),
+            plans.len(),
+            1,
+            "task {task} should emit one plan:\n{stdout}"
+        );
+        assert_eq!(
+            plans[0]["execution_directory"]
+                .as_str()
+                .expect("execution_directory"),
             expected_cwd,
             "task {task}"
         );
@@ -2356,14 +2498,7 @@ fn task_chain_dependency_nodes_use_distinct_working_directories() {
 
     let assert = cargo_bin_cmd!("nxr")
         .current_dir(&nested_cwd)
-        .args([
-            "--flake",
-            flake_arg,
-            "--dry-run",
-            "--json",
-            "task",
-            "chain",
-        ])
+        .args(["--flake", flake_arg, "--dry-run", "--json", "task", "chain"])
         .assert()
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
@@ -2378,7 +2513,9 @@ fn task_chain_dependency_nodes_use_distinct_working_directories() {
     ];
     for (index, cwd) in expected.iter().enumerate() {
         assert_eq!(
-            plans[index]["execution_directory"].as_str().expect("execution_directory"),
+            plans[index]["execution_directory"]
+                .as_str()
+                .expect("execution_directory"),
             *cwd,
             "cwd mismatch at plan index {index}"
         );
@@ -2412,7 +2549,9 @@ fn task_cli_root_overrides_working_directory_metadata() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
     let plans = parse_dry_run_plans(&stdout);
     assert_eq!(
-        plans[0]["execution_directory"].as_str().expect("execution_directory"),
+        plans[0]["execution_directory"]
+            .as_str()
+            .expect("execution_directory"),
         flake_root.as_str()
     );
 }
@@ -2449,7 +2588,9 @@ fn task_cli_cwd_overrides_working_directory_metadata() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
     let plans = parse_dry_run_plans(&stdout);
     assert_eq!(
-        plans[0]["execution_directory"].as_str().expect("execution_directory"),
+        plans[0]["execution_directory"]
+            .as_str()
+            .expect("execution_directory"),
         override_cwd.as_str()
     );
 }
@@ -2467,13 +2608,7 @@ fn inspect_task_working_directory_matches_dry_run_execution_directory() {
 
     let inspect = cargo_bin_cmd!("nxr")
         .current_dir(&nested_cwd)
-        .args([
-            "--flake",
-            flake_arg,
-            "inspect",
-            "task",
-            "flake-root-pwd",
-        ])
+        .args(["--flake", flake_arg, "inspect", "task", "flake-root-pwd"])
         .assert()
         .success();
     let inspect_stdout =
@@ -2495,11 +2630,12 @@ fn inspect_task_working_directory_matches_dry_run_execution_directory() {
         ])
         .assert()
         .success();
-    let dry_stdout =
-        String::from_utf8(dry_run.get_output().stdout.clone()).expect("utf-8 stdout");
+    let dry_stdout = String::from_utf8(dry_run.get_output().stdout.clone()).expect("utf-8 stdout");
     let plans = parse_dry_run_plans(&dry_stdout);
     assert_eq!(
-        plans[0]["execution_directory"].as_str().expect("execution_directory"),
+        plans[0]["execution_directory"]
+            .as_str()
+            .expect("execution_directory"),
         flake_root.as_str()
     );
 }
