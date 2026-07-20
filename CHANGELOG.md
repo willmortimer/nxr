@@ -7,12 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-07-19
+
+V2.2 flake UX release: standard flake output commands, richer diagnostics, and task ergonomics.
+
 ### Added
 
 - Flake output command plane: `nxr list [apps|checks|packages|shells|tasks]`,
   `nxr build [name]`, `nxr check [name]`, and `nxr shell [name]` map to native
   Nix operations (`nix build` / `nix flake check` / `nix develop`) using the
   same `flake show` discovery path as apps.
+- `nxr explain <app|task>` and `nxr explain app|task <name>` for resolution and
+  exact Nix invocation diagnostics.
+- `nxr doctor --all` for non-destructive workspace findings (app descriptions,
+  naming, discovery cache).
+- Multi-root task union: pass multiple task names to `nxr task` to run the union
+  of their dependency subgraphs (shared deps run once).
+- Interactive task exclusivity: `interactive = true` tasks inherit stdin/TTY, run
+  alone, and reject `--output` / `--events`.
+
+### Changed
+
+- Workspace and Nix package version **2.2.0**.
 
 ## [2.1.0] - 2026-07-19
 
@@ -139,6 +155,7 @@ First taggable V1 prerelease: a standard Nix flake app runner through Phase 5 of
 - [Compatibility matrix](docs/COMPATIBILITY.md), [CLI reference](docs/CLI_REFERENCE.md), and [telemetry decision](docs/TELEMETRY.md) (default: none).
 - Tag-triggered [release workflow](.github/workflows/release.yml) (quality gate only; no publish secrets).
 
+[2.2.0]: https://github.com/willmortimer/nxr/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/willmortimer/nxr/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/willmortimer/nxr/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/willmortimer/nxr/compare/v0.1.0...v1.0.0

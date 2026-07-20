@@ -126,4 +126,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**2.1.0** — trustworthiness release: single-eval `WorkspaceSnapshot`, discovery cache controls (`--refresh-discovery`, `cache clear|status`), Nix flag forwarding, `--shell-mode`, byte-safe/`raw` output, four-system CI, and release SBOMs. History: [CHANGELOG.md](CHANGELOG.md).
+**2.2.0** — flake UX release: `list`/`build`/`check`/`shell` for standard flake outputs, `explain` and `doctor --all`, multi-root task union DAGs, and interactive-task exclusivity. History: [CHANGELOG.md](CHANGELOG.md).

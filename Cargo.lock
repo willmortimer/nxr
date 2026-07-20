@@ -526,7 +526,7 @@ dependencies = [
 
 [[package]]
 name = "nxr-cli"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "assert_cmd",
  "camino",
@@ -550,7 +550,7 @@ dependencies = [
 
 [[package]]
 name = "nxr-completion"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "camino",
  "clap",
@@ -567,7 +567,7 @@ dependencies = [
 
 [[package]]
 name = "nxr-core"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -576,7 +576,7 @@ dependencies = [
 
 [[package]]
 name = "nxr-nix"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "camino",
  "nxr-core",
@@ -589,7 +589,7 @@ dependencies = [
 
 [[package]]
 name = "nxr-process"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "nix",
  "nxr-core",
@@ -598,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "nxr-task"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "base64",
  "nxr-core",
@@ -609,7 +609,7 @@ dependencies = [
 
 [[package]]
 name = "nxr-watch"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "camino",
  "globset",
@@ -621,7 +621,7 @@ dependencies = [
 
 [[package]]
 name = "nxr-workspace"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "camino",
  "nxr-core",
@@ -1078,7 +1078,7 @@ checksum = "d135d17ab770252ad95e9a872d365cf3090e3be864a34ab46f48555993efc904"
 
 [[package]]
 name = "xtask"
-version = "2.1.0"
+version = "2.2.0"
 
 [[package]]
 name = "zmij"
