@@ -21,8 +21,8 @@ use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
 use crate::cli::{CacheSubcommand, Cli, Command, InspectSubcommand};
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
-    cache, complete, completion, doctor, graph, inspect, list, manpage, plan, run, select, task,
-    watch,
+    cache, complete, completion, doctor, graph, inspect, list, manpage, nix_op, plan, run, select,
+    task, watch,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -51,6 +51,8 @@ enum RunError {
     List(#[from] list::ListError),
     #[error(transparent)]
     Run(#[from] run::RunError),
+    #[error(transparent)]
+    NixOp(#[from] nix_op::NixOpError),
     #[error(transparent)]
     Plan(#[from] plan::PlanError),
     #[error(transparent)]
@@ -86,6 +88,7 @@ impl RunError {
         match self {
             Self::List(error) => error.exit_code(),
             Self::Run(error) => error.exit_code(),
+            Self::NixOp(error) => error.exit_code(),
             Self::Plan(error) => error.exit_code(),
             Self::Task(error) => error.exit_code(),
             Self::Select(error) => error.exit_code(),
@@ -113,12 +116,19 @@ fn output_options_from_cli(cli: &Cli) -> OutputOptions {
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
     let nix_flags = nix_flags_from_cli(cli).map_err(RunError::Usage)?;
     match &cli.command {
         None if cli.select => run_with_selected_app(cli, &nix_flags, &[], runner),
-        None => run_list(cli, &nix_flags, None, runner),
-        Some(Command::List { category }) => run_list(cli, &nix_flags, category.as_deref(), runner),
+        None => run_list(cli, &nix_flags, None, None, runner),
+        Some(Command::List { kind, category }) => run_list(
+            cli,
+            &nix_flags,
+            kind.as_ref().copied(),
+            category.as_deref(),
+            runner,
+        ),
         Some(Command::Select) => run_with_selected_app(cli, &nix_flags, &[], runner),
         Some(Command::Run {
             app,
@@ -126,6 +136,15 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             debounce,
             args,
         }) => dispatch_run_command(cli, &nix_flags, app, *watch, *debounce, args, runner),
+        Some(Command::Build { name }) => {
+            dispatch_nix_op(cli, &nix_flags, name.as_deref(), NixOp::Build, runner)
+        }
+        Some(Command::Check { name }) => {
+            dispatch_nix_op(cli, &nix_flags, name.as_deref(), NixOp::Check, runner)
+        }
+        Some(Command::Shell { name }) => {
+            dispatch_nix_op(cli, &nix_flags, name.as_deref(), NixOp::Shell, runner)
+        }
         Some(Command::Plan { app, args }) => dispatch_plan(cli, &nix_flags, app, args, runner),
         Some(Command::Task {
             jobs,
@@ -173,9 +192,13 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             manpage::run()?;
             Ok(exit::SUCCESS)
         }
-        Some(Command::Inspect { category, target }) => {
-            run_inspect(cli, &nix_flags, category.as_deref(), target.as_ref(), runner)
-        }
+        Some(Command::Inspect { category, target }) => run_inspect(
+            cli,
+            &nix_flags,
+            category.as_deref(),
+            target.as_ref(),
+            runner,
+        ),
         Some(Command::Watch {
             name,
             debounce,
@@ -219,6 +242,37 @@ fn dispatch_plan(
     Ok(exit::SUCCESS)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NixOp {
+    Build,
+    Check,
+    Shell,
+}
+
+fn dispatch_nix_op(
+    cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
+    name: Option<&str>,
+    op: NixOp,
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    let environment = environment_policy_from_cli(cli)?;
+    let request = nix_op::NixOpRequest {
+        flake_arg: cli.flake.as_deref(),
+        nix_override: cli.nix.as_deref(),
+        name,
+        dry_run: cli.dry_run,
+        json: cli.json,
+        nix_flags,
+        environment: &environment,
+    };
+    match op {
+        NixOp::Build => nix_op::execute_build(&request, runner).map_err(RunError::from),
+        NixOp::Check => nix_op::execute_check(&request, runner).map_err(RunError::from),
+        NixOp::Shell => nix_op::execute_shell(&request, runner).map_err(RunError::from),
+    }
+}
+
 fn dispatch_graph(
     cli: &Cli,
     nix_flags: &nxr_nix::OptionalNixFlags,
@@ -239,6 +293,7 @@ fn dispatch_graph(
 fn run_list(
     cli: &Cli,
     nix_flags: &nxr_nix::OptionalNixFlags,
+    kind: Option<list::ListKind>,
     category: Option<&str>,
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
@@ -248,6 +303,7 @@ fn run_list(
         cli.json,
         cli.refresh_discovery,
         nix_flags,
+        kind,
         category,
         runner,
     )?;

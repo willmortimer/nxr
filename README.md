@@ -32,6 +32,10 @@ From any directory under a flake:
 
 ```bash
 nxr list             # discover apps (+ tasks when present)
+nxr list packages    # packages.<system>.*
+nxr build            # ≈ nix build .
+nxr check fmt        # ≈ nix build .#checks.<system>.fmt
+nxr shell            # ≈ nix develop
 nxr test             # ≈ nix run .#test
 nxr select           # fuzzy picker
 nxr plan test --json # inspect the exact Nix invocation
@@ -49,6 +53,10 @@ nxr --flake ./path/to/flake hello
 | Command | What it does |
 |---|---|
 | `nxr` / `nxr list` | List apps (and tasks) |
+| `nxr list packages\|checks\|shells` | List standard flake outputs |
+| `nxr build [name]` | `nix build` for a package |
+| `nxr check [name]` | Build a check, or `nix flake check` |
+| `nxr shell [name]` | Interactive `nix develop` |
 | `nxr <app> [args…]` | Run a flake app (apps only — not tasks) |
 | `nxr run <app> [-- args…]` | Explicit run form |
 | `nxr task <name> [-j N]` | Run a task DAG (fail-fast; `--keep-going` opt-in) |

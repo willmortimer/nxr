@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Flake output command plane: `nxr list [apps|checks|packages|shells|tasks]`,
+  `nxr build [name]`, `nxr check [name]`, and `nxr shell [name]` map to native
+  Nix operations (`nix build` / `nix flake check` / `nix develop`) using the
+  same `flake show` discovery path as apps.
+
 ## [2.1.0] - 2026-07-19
 
 V2.1 trustworthiness release: predictable discovery and execution on real flakes, with CI hardening and release artifacts.

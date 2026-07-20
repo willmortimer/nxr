@@ -144,6 +144,26 @@ impl NixAdapter {
         tasks::discover_tasks_with_args(&self.nix, &self.system, &args)
     }
 
+    /// Discover packages, checks, or development shells via `nix flake show`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixError`] when flakes are disabled, `nix flake show` fails, or
+    /// its JSON cannot be parsed.
+    pub fn discover_outputs(
+        &self,
+        flake_ref: &str,
+        table: discovery::OutputTable,
+        requested: &OptionalNixFlags,
+    ) -> Result<Vec<nxr_core::FlakeOutput>, NixError> {
+        self.require_flakes()?;
+        let args = self.compatible_argv(
+            command::flake_show_args(flake_ref),
+            &Self::discovery_flags(requested),
+        );
+        discovery::discover_outputs_with_args(&self.nix, &self.system, flake_ref, table, &args)
+    }
+
     /// Build a capability-aware `nix run` argv for an app.
     ///
     /// # Errors
@@ -161,6 +181,49 @@ impl NixAdapter {
             command::nix_run_args(flake_ref, app_name, forwarded_args),
             requested,
         ))
+    }
+
+    /// Capability-aware `nix build` argv for an installable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixError::FlakesDisabled`] when flakes are not enabled.
+    pub fn nix_build_argv(
+        &self,
+        installable: &str,
+        requested: &OptionalNixFlags,
+    ) -> Result<Vec<String>, NixError> {
+        self.require_flakes()?;
+        Ok(self.compatible_argv(command::nix_build_args(installable), requested))
+    }
+
+    /// Capability-aware `nix flake check` argv.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixError::FlakesDisabled`] when flakes are not enabled.
+    pub fn nix_flake_check_argv(
+        &self,
+        flake_ref: &str,
+        requested: &OptionalNixFlags,
+    ) -> Result<Vec<String>, NixError> {
+        self.require_flakes()?;
+        Ok(self.compatible_argv(command::nix_flake_check_args(flake_ref), requested))
+    }
+
+    /// Capability-aware interactive `nix develop` argv.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixError::FlakesDisabled`] when flakes are not enabled.
+    pub fn nix_develop_argv(
+        &self,
+        flake_ref: &str,
+        shell_name: Option<&str>,
+        requested: &OptionalNixFlags,
+    ) -> Result<Vec<String>, NixError> {
+        self.require_flakes()?;
+        Ok(self.compatible_argv(command::nix_develop_args(flake_ref, shell_name), requested))
     }
 }
 

@@ -18,12 +18,18 @@ pub use capabilities::{
     parse_nix_version_output, run_nix,
 };
 pub use command::{
-    NIX_EXECUTABLE_ENV, current_system_args, flake_eval_json_args, flake_show_args,
-    nix_develop_wrap_run_args, nix_run_args,
+    NIX_EXECUTABLE_ENV, check_installable, current_system_args, flake_eval_json_args,
+    flake_show_args, nix_build_args, nix_develop_args, nix_develop_wrap_run_args,
+    nix_flake_check_args, nix_run_args, package_installable,
 };
-pub use discovery::{discover_apps, parse_apps_from_flake_show};
-pub use resolve::{AppNotFoundError, resolve_app_by_name};
-pub use suggest::{DEFAULT_SUGGESTION_LIMIT, rank_app_suggestions};
+pub use discovery::{
+    OutputTable, discover_apps, discover_outputs_with_args, parse_apps_from_flake_show,
+    parse_outputs_from_flake_show,
+};
+pub use resolve::{
+    AppNotFoundError, OutputNotFoundError, resolve_app_by_name, resolve_output_by_name,
+};
+pub use suggest::{DEFAULT_SUGGESTION_LIMIT, rank_app_suggestions, rank_name_suggestions};
 pub use tasks::{TaskDiscoveryError, discover_tasks, parse_task_document, tasks_attr_path};
 
 /// Errors from the Nix adapter boundary.

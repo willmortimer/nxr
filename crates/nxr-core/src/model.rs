@@ -73,6 +73,33 @@ pub struct ListApp {
     pub is_default: bool,
 }
 
+/// Discovered flake output (package, check, or development shell).
+///
+/// Structurally similar to [`App`]; kept separate so app-specific metadata stays
+/// on [`App`] while catalog commands share one listing shape.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FlakeOutput {
+    pub name: String,
+    pub attr_path: String,
+    pub flake_ref: String,
+    pub system: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub is_default: bool,
+}
+
+impl FlakeOutput {
+    #[must_use]
+    pub fn to_list_app(&self) -> ListApp {
+        ListApp {
+            name: self.name.clone(),
+            attr_path: self.attr_path.clone(),
+            description: self.description.clone(),
+            is_default: self.is_default,
+        }
+    }
+}
+
 /// Versioned JSON envelope for `nxr list --json`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AppList {
@@ -80,6 +107,55 @@ pub struct AppList {
     pub flake: String,
     pub system: String,
     pub apps: Vec<ListApp>,
+}
+
+/// Versioned JSON envelope for `nxr list {packages|checks|shells} --json`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OutputList {
+    pub schema_version: u32,
+    pub flake: String,
+    pub system: String,
+    /// Catalog kind: `packages`, `checks`, or `shells`.
+    pub kind: String,
+    pub outputs: Vec<ListApp>,
+}
+
+impl OutputList {
+    pub const SCHEMA_VERSION: u32 = 1;
+
+    #[must_use]
+    pub fn new(
+        flake: impl Into<String>,
+        system: impl Into<String>,
+        kind: impl Into<String>,
+        outputs: Vec<ListApp>,
+    ) -> Self {
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            flake: flake.into(),
+            system: system.into(),
+            kind: kind.into(),
+            outputs,
+        }
+    }
+
+    #[must_use]
+    pub fn from_outputs(
+        flake: impl Into<String>,
+        system: impl Into<String>,
+        kind: impl Into<String>,
+        outputs: impl IntoIterator<Item = FlakeOutput>,
+    ) -> Self {
+        Self::new(
+            flake,
+            system,
+            kind,
+            outputs
+                .into_iter()
+                .map(|output| output.to_list_app())
+                .collect(),
+        )
+    }
 }
 
 impl AppList {

@@ -1,4 +1,4 @@
-//! Rank discovered app names for unknown-app hints.
+//! Rank discovered names for unknown-target hints.
 
 use nxr_core::App;
 
@@ -11,16 +11,24 @@ pub const DEFAULT_SUGGESTION_LIMIT: usize = 5;
 /// names within a length-aware Levenshtein threshold.
 #[must_use]
 pub fn rank_app_suggestions<'a>(query: &str, apps: &'a [App], limit: usize) -> Vec<&'a str> {
+    rank_name_suggestions(query, apps.iter().map(|app| app.name.as_str()), limit)
+}
+
+/// Rank `query` against an arbitrary list of candidate names.
+#[must_use]
+pub fn rank_name_suggestions<'a, I>(query: &str, names: I, limit: usize) -> Vec<&'a str>
+where
+    I: IntoIterator<Item = &'a str>,
+{
     if query.is_empty() || limit == 0 {
         return Vec::new();
     }
 
     let query_lower = query.to_ascii_lowercase();
 
-    let mut scored: Vec<(u32, &str)> = apps
-        .iter()
-        .map(|app| {
-            let name = app.name.as_str();
+    let mut scored: Vec<(u32, &str)> = names
+        .into_iter()
+        .map(|name| {
             let name_lower = name.to_ascii_lowercase();
             let score = if name_lower.starts_with(&query_lower) {
                 0
@@ -42,17 +50,17 @@ pub fn rank_app_suggestions<'a>(query: &str, apps: &'a [App], limit: usize) -> V
 
     scored.sort_by_key(|(score, name)| (*score, *name));
 
-    let mut names = Vec::with_capacity(limit.min(scored.len()));
+    let mut out = Vec::with_capacity(limit.min(scored.len()));
     for (_, name) in scored {
-        if names.len() >= limit {
+        if out.len() >= limit {
             break;
         }
-        if !names.contains(&name) {
-            names.push(name);
+        if !out.contains(&name) {
+            out.push(name);
         }
     }
 
-    names
+    out
 }
 
 fn suggestion_distance_threshold(query_len: usize, name_len: usize) -> u32 {

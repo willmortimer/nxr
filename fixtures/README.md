@@ -10,6 +10,7 @@ These are small Nix flakes used to exercise `nxr` discovery and execution
 | [nested-directory](nested-directory/) | Flake with a deep subdirectory for CWD / discovery tests |
 | [broken-flake](broken-flake/) | Intentionally invalid flake for diagnostics |
 | [named-dev-shells](named-dev-shells/) | `devShells.default` + `shell-marker` app for `--shell` |
+| [standard-outputs](standard-outputs/) | Packages, checks, apps, and named `devShells` for list/build/check/shell |
 | [shell-integration](shell-integration/) | `nxr.shellIntegration` adds `nxr` to `nix develop` |
 | [task-dag](task-dag/) | Small task DAG (`fmt` → `test` → `ci`) via `nxr.<system>` |
 | [task-working-directory](task-working-directory/) | Per-task `workingDirectory` tokens and relative paths |
