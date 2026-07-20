@@ -51,7 +51,10 @@ pub fn clear(json: bool, runner: RunnerOutput) -> Result<(), CacheError> {
         writeln!(io::stdout().lock(), "{rendered}")?;
     } else {
         runner
-            .info(format!("removed {removed} discovery cache entr{}", if removed == 1 { "y" } else { "ies" }))
+            .info(format!(
+                "removed {removed} discovery cache entr{}",
+                if removed == 1 { "y" } else { "ies" }
+            ))
             .map_err(CacheError::Io)?;
     }
     Ok(())

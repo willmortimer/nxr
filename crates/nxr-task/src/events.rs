@@ -529,7 +529,13 @@ mod tests {
             node: "bin".to_owned(),
             payload: OutputPayload::from_bytes(bytes.clone()),
         };
-        assert!(matches!(event, Event::StdoutChunk { payload: OutputPayload::Bytes(_), .. }));
+        assert!(matches!(
+            event,
+            Event::StdoutChunk {
+                payload: OutputPayload::Bytes(_),
+                ..
+            }
+        ));
 
         let encoded = serde_json::to_value(&event).expect("serialize");
         assert_eq!(

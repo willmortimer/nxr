@@ -435,11 +435,7 @@ fn collect_workspace_cache_findings(
     push_finding(
         findings,
         DiagnosticLevel::Info,
-        if entry.hit {
-            "cache.hit"
-        } else {
-            "cache.miss"
-        },
+        if entry.hit { "cache.hit" } else { "cache.miss" },
         if entry.hit {
             "discovery cache hit for current flake inputs".to_owned()
         } else {

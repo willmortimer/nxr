@@ -628,13 +628,16 @@ mod tests {
         }
 
         // Human path: invalid bytes become U+FFFD, never panic.
-        let (stdout, _) = render_output(TaskOutputMode::Live, &[
-            event,
-            Event::NodeExited {
-                node: "bin".to_owned(),
-                code: Some(0),
-            },
-        ]);
+        let (stdout, _) = render_output(
+            TaskOutputMode::Live,
+            &[
+                event,
+                Event::NodeExited {
+                    node: "bin".to_owned(),
+                    code: Some(0),
+                },
+            ],
+        );
         assert!(stdout.starts_with("[bin] "));
         assert!(stdout.contains('A'));
     }

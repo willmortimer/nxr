@@ -323,6 +323,10 @@ devShells.<system>.default
 
 with `nxr` and shell integration.
 
+Optional `category` on `nxr.apps.<name>` is listing metadata for
+`nxr list --category` / `inspect` (also emitted under `nxr.<system>.apps`).
+It does not change how the app runs. See [MONOREPO_VIEWS.md](MONOREPO_VIEWS.md).
+
 No custom runner is required to execute the emitted app.
 
 For optional task orchestration metadata (`perSystem.nxr.tasks` → evaluable

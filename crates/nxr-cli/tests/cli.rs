@@ -1209,7 +1209,9 @@ fn explain_task_fixture_reports_dependency_path() {
         .assert()
         .success()
         .stdout(predicate::str::contains("kind: task"))
-        .stdout(predicate::str::contains("dependency_path: fmt -> test -> ci"))
+        .stdout(predicate::str::contains(
+            "dependency_path: fmt -> test -> ci",
+        ))
         .stdout(predicate::str::contains("[fmt]"))
         .stdout(predicate::str::contains("[ci]"));
 }
@@ -1223,7 +1225,13 @@ fn explain_json_emits_schema_version_and_workspace() {
     let repo_root = repo_root();
     let assert = cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
-        .args(["--flake", "fixtures/basic-apps", "--json", "explain", "hello"])
+        .args([
+            "--flake",
+            "fixtures/basic-apps",
+            "--json",
+            "explain",
+            "hello",
+        ])
         .assert()
         .success();
 
@@ -1246,7 +1254,13 @@ fn doctor_all_json_includes_workspace_and_cache_findings() {
     let repo_root = repo_root();
     let assert = cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
-        .args(["--flake", "fixtures/basic-apps", "--json", "doctor", "--all"])
+        .args([
+            "--flake",
+            "fixtures/basic-apps",
+            "--json",
+            "doctor",
+            "--all",
+        ])
         .assert()
         .success();
 
@@ -1793,6 +1807,121 @@ fn list_category_filter_limits_tasks_section() {
         .stdout(predicate::str::contains("fmt  Format sources").not());
 }
 
+#[test]
+fn list_namespace_filter_limits_monorepo_fixture() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !namespaced_monorepo_available(&repo_root) {
+        return;
+    }
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/namespaced-monorepo",
+            "list",
+            "--namespace",
+            "api",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse list json");
+    let apps = value["apps"].as_array().expect("apps array");
+    let app_names: Vec<&str> = apps.iter().filter_map(|app| app["name"].as_str()).collect();
+    assert_eq!(app_names, vec!["api-lint", "api-test"]);
+    let tasks = value["tasks"].as_object().expect("tasks object");
+    assert!(tasks.contains_key("api-ci"));
+    assert!(tasks.contains_key("api-test"));
+    assert!(!tasks.contains_key("web-ci"));
+}
+
+#[test]
+fn list_category_filter_limits_monorepo_apps() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !namespaced_monorepo_available(&repo_root) {
+        return;
+    }
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/namespaced-monorepo",
+            "list",
+            "--category",
+            "frontend",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse list json");
+    let apps = value["apps"].as_array().expect("apps array");
+    let app_names: Vec<&str> = apps.iter().filter_map(|app| app["name"].as_str()).collect();
+    assert_eq!(app_names, vec!["web-lint", "web-test"]);
+    let tasks = value["tasks"].as_object().expect("tasks object");
+    assert!(tasks.contains_key("web-ci"));
+    assert!(!tasks.contains_key("api-ci"));
+}
+
+#[test]
+fn inspect_namespace_filter_limits_overview() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !namespaced_monorepo_available(&repo_root) {
+        return;
+    }
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/namespaced-monorepo",
+            "inspect",
+            "--namespace",
+            "web",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse inspect json");
+    let apps = value["apps"].as_array().expect("apps array");
+    assert_eq!(apps.len(), 2);
+    let tasks = value["tasks"].as_object().expect("tasks object");
+    assert_eq!(tasks.len(), 2);
+    assert!(tasks.contains_key("web-ci"));
+}
+
+fn namespaced_monorepo_available(repo_root: &std::path::Path) -> bool {
+    let list = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root)
+        .args(["--flake", "fixtures/namespaced-monorepo", "list"])
+        .output()
+        .expect("spawn nxr list");
+    if !list.status.success() {
+        eprintln!("skipping namespaced-monorepo test: app discovery failed on this host");
+        return false;
+    }
+    true
+}
+
 fn task_dag_discovery_available(repo_root: &std::path::Path) -> bool {
     let list = cargo_bin_cmd!("nxr")
         .current_dir(repo_root)
@@ -2205,9 +2334,7 @@ fn task_multi_root_diamond_dedupe_runs_shared_once() {
         .filter(|line| {
             serde_json::from_str::<serde_json::Value>(line)
                 .ok()
-                .is_some_and(|value| {
-                    value["type"] == "node_started" && value["node"] == "shared"
-                })
+                .is_some_and(|value| value["type"] == "node_started" && value["node"] == "shared")
         })
         .count();
     assert_eq!(

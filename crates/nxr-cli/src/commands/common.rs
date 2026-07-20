@@ -5,14 +5,14 @@ use std::io;
 use std::path::Path;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use nxr_core::diagnostics::exit;
-use nxr_core::{App, EnvironmentPolicy, Plan, PlanCommand, PlanKind};
 use nxr_completion::cache::{
     DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_workspace_with_cache,
 };
+use nxr_core::diagnostics::exit;
+use nxr_core::{App, EnvironmentPolicy, Plan, PlanCommand, PlanKind};
 use nxr_nix::{
-    AppNotFoundError, NixAdapter, NixError, OptionalNixFlags, nix_develop_wrap_run_args, nix_run_args,
-    resolve_app_by_name,
+    AppNotFoundError, NixAdapter, NixError, OptionalNixFlags, nix_develop_wrap_run_args,
+    nix_run_args, resolve_app_by_name,
 };
 use nxr_task::{
     SchemaError, TaskDocument, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION,

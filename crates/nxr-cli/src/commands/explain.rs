@@ -8,14 +8,10 @@ use nxr_core::diagnostics::exit;
 use nxr_core::sanitize::sanitize_terminal_text;
 use nxr_core::{EnvironmentPolicy, Plan, PlanCommand};
 use nxr_nix::{NixAdapter, NixCapabilities, OptionalNixFlags};
-use nxr_task::{
-    ExecutionPlan, FailurePolicy, PlanError, build_execution_plan, resolve_task_name,
-};
+use nxr_task::{ExecutionPlan, FailurePolicy, PlanError, build_execution_plan, resolve_task_name};
 use serde::Serialize;
 
-use crate::commands::common::{
-    AppRequest, PrepareError, PreparedTaskNode, WorkspaceSnapshot,
-};
+use crate::commands::common::{AppRequest, PrepareError, PreparedTaskNode, WorkspaceSnapshot};
 use crate::commands::task::task_inherits_stdin;
 use crate::flake::FlakeSelection;
 use crate::output_task::{EventsFormat, TaskOutputMode};
@@ -190,7 +186,11 @@ pub fn workspace_context_from_snapshot(
 /// # Errors
 ///
 /// Returns [`ExplainError`] when resolution, planning, or rendering fails.
-pub fn run(request: ExplainRequest<'_>, json: bool, runner: RunnerOutput) -> Result<(), ExplainError> {
+pub fn run(
+    request: ExplainRequest<'_>,
+    json: bool,
+    runner: RunnerOutput,
+) -> Result<(), ExplainError> {
     let report = match request.kind {
         Some(ExplainKind::Task) => explain_task(&request)?,
         Some(ExplainKind::App) => explain_app(&request)?,
@@ -292,12 +292,12 @@ fn explain_task(request: &ExplainRequest<'_>) -> Result<ExplainReport, ExplainEr
             .map(|node| &node.plan)
             .expect("root node prepared"),
     );
-    let stdin_policy = if task_inherits_stdin(request.jobs, request.output_mode, request.events_format)
-    {
-        "inherit"
-    } else {
-        "null"
-    };
+    let stdin_policy =
+        if task_inherits_stdin(request.jobs, request.output_mode, request.events_format) {
+            "inherit"
+        } else {
+            "null"
+        };
 
     let nodes = task_nodes_explain(&plan, &document, &prepared_nodes);
 
@@ -378,7 +378,10 @@ fn flake_context(flake: &FlakeSelection) -> FlakeContext {
     FlakeContext {
         display: flake.display.clone(),
         nix_ref: flake.nix_ref.clone(),
-        local_root: flake.local_root.as_ref().map(|path| path.as_str().to_owned()),
+        local_root: flake
+            .local_root
+            .as_ref()
+            .map(|path| path.as_str().to_owned()),
     }
 }
 
@@ -542,7 +545,11 @@ fn write_shell_wrap(writer: &mut impl Write, shell_wrap: &ShellWrapContext) -> i
         }
     )?;
     if let Some(reason) = &shell_wrap.skip_reason {
-        writeln!(writer, "shell_wrap_reason: {}", sanitize_terminal_text(reason))?;
+        writeln!(
+            writer,
+            "shell_wrap_reason: {}",
+            sanitize_terminal_text(reason)
+        )?;
     }
     Ok(())
 }
@@ -665,11 +672,7 @@ mod tests {
             failure_policy: FailurePolicy::FailFast,
             argument_forwarding: "root".to_owned(),
             stdin_policy: "inherit".to_owned(),
-            dependency_path: vec![
-                "fmt".to_owned(),
-                "test".to_owned(),
-                "ci".to_owned(),
-            ],
+            dependency_path: vec!["fmt".to_owned(), "test".to_owned(), "ci".to_owned()],
             shell_wrap: ShellWrapContext {
                 requested_shell: None,
                 active_shell: None,
@@ -684,10 +687,7 @@ mod tests {
                 forwarded_arguments: Vec::new(),
                 command: PlanCommand {
                     program: "/nix/bin/nix".to_owned(),
-                    arguments: vec![
-                        "run".to_owned(),
-                        "/abs/fixtures/task-dag#fmt".to_owned(),
-                    ],
+                    arguments: vec!["run".to_owned(), "/abs/fixtures/task-dag#fmt".to_owned()],
                 },
                 skip_reasons: Vec::new(),
             }],

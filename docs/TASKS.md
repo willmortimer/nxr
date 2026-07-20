@@ -89,9 +89,16 @@ Shape (JSON via `nix eval --json`):
     "fmt": { "app": "fmt", "description": "Format sources", "dependsOn": [], "hidden": false },
     "test": { "app": "test", "dependsOn": ["fmt"], "hidden": false },
     "ci": { "app": "ci", "dependsOn": ["test"], "category": "validation", "hidden": false }
+  },
+  "apps": {
+    "ci": { "category": "validation" }
   }
 }
 ```
+
+The optional `apps` map is **listing metadata only** (categories for
+`nxr list` / `inspect`). It does not define flake apps; those remain
+`apps.<system>.*`. See [MONOREPO_VIEWS.md](MONOREPO_VIEWS.md).
 
 Smoke check against the fixture flake:
 

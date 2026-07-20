@@ -127,12 +127,17 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
     let nix_flags = nix_flags_from_cli(cli).map_err(RunError::Usage)?;
     match &cli.command {
         None if cli.select => run_with_selected_app(cli, &nix_flags, &[], runner),
-        None => run_list(cli, &nix_flags, None, None, runner),
-        Some(Command::List { kind, category }) => run_list(
+        None => run_list(cli, &nix_flags, None, None, None, runner),
+        Some(Command::List {
+            kind,
+            category,
+            namespace,
+        }) => run_list(
             cli,
             &nix_flags,
             kind.as_ref().copied(),
             category.as_deref(),
+            namespace.as_deref(),
             runner,
         ),
         Some(Command::Select) => run_with_selected_app(cli, &nix_flags, &[], runner),
@@ -187,11 +192,14 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             all,
             app,
         }) => dispatch_doctor(cli, *clean_env, *all, app.as_deref(), runner),
-        Some(Command::Explain {
-            name,
-            target,
+        Some(Command::Explain { name, target, args }) => dispatch_explain(
+            cli,
+            &nix_flags,
+            name.as_deref(),
+            target.as_ref(),
             args,
-        }) => dispatch_explain(cli, &nix_flags, name.as_deref(), target.as_ref(), args, runner),
+            runner,
+        ),
         Some(Command::External(tokens)) => dispatch_external(cli, &nix_flags, tokens, runner),
         Some(Command::Completion { shell }) => {
             completion::run(*shell)?;
@@ -211,10 +219,15 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             manpage::run()?;
             Ok(exit::SUCCESS)
         }
-        Some(Command::Inspect { category, target }) => run_inspect(
+        Some(Command::Inspect {
+            category,
+            namespace,
+            target,
+        }) => run_inspect(
             cli,
             &nix_flags,
             category.as_deref(),
+            namespace.as_deref(),
             target.as_ref(),
             runner,
         ),
@@ -327,6 +340,7 @@ fn run_list(
     nix_flags: &nxr_nix::OptionalNixFlags,
     kind: Option<list::ListKind>,
     category: Option<&str>,
+    namespace: Option<&str>,
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
     list::run(
@@ -337,6 +351,7 @@ fn run_list(
         nix_flags,
         kind,
         category,
+        namespace,
         runner,
     )?;
     Ok(exit::SUCCESS)
@@ -346,6 +361,7 @@ fn run_inspect(
     cli: &Cli,
     nix_flags: &nxr_nix::OptionalNixFlags,
     category: Option<&str>,
+    namespace: Option<&str>,
     target: Option<&InspectSubcommand>,
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
@@ -362,6 +378,7 @@ fn run_inspect(
             nix_override: cli.nix.as_deref(),
             target: inspect_target,
             category,
+            namespace,
         },
         cli.json,
         cli.refresh_discovery,
@@ -469,12 +486,16 @@ fn dispatch_explain(
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
     let (resolved_name, resolved_kind, resolved_args) = match (target, name) {
-        (Some(ExplainSubcommand::App { name, args }), None) => {
-            (name.as_str(), Some(explain::ExplainKind::App), args.as_slice())
-        }
-        (Some(ExplainSubcommand::Task { name, args }), None) => {
-            (name.as_str(), Some(explain::ExplainKind::Task), args.as_slice())
-        }
+        (Some(ExplainSubcommand::App { name, args }), None) => (
+            name.as_str(),
+            Some(explain::ExplainKind::App),
+            args.as_slice(),
+        ),
+        (Some(ExplainSubcommand::Task { name, args }), None) => (
+            name.as_str(),
+            Some(explain::ExplainKind::Task),
+            args.as_slice(),
+        ),
         (None, Some(name)) => (name, None, args),
         (Some(_), Some(_)) => {
             return Err(RunError::Usage(

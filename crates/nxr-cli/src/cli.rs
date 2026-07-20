@@ -189,9 +189,12 @@ pub enum Command {
         /// Default: apps + tasks.
         #[arg(value_enum)]
         kind: Option<ListKind>,
-        /// Include only tasks in this category (when tasks are listed)
+        /// Include only apps/tasks in this category
         #[arg(long = "category", value_name = "NAME")]
         category: Option<String>,
+        /// Include only apps/tasks in this project namespace (`nxr.projects.json`)
+        #[arg(long = "namespace", value_name = "NAME")]
+        namespace: Option<String>,
     },
     /// Run a flake app
     Run {
@@ -270,9 +273,12 @@ pub enum Command {
     Manpage,
     /// Inspect flake metadata
     Inspect {
-        /// Include only tasks in this category (overview only)
+        /// Include only apps/tasks in this category (overview only)
         #[arg(long = "category", value_name = "NAME")]
         category: Option<String>,
+        /// Include only apps/tasks in this project namespace (`nxr.projects.json`)
+        #[arg(long = "namespace", value_name = "NAME")]
+        namespace: Option<String>,
         #[command(subcommand)]
         target: Option<InspectSubcommand>,
     },

@@ -192,12 +192,7 @@ pub fn execute(
         .collect::<Result<_, _>>()?;
     let root_refs: Vec<&str> = canonical_roots.iter().map(String::as_str).collect();
 
-    let plan = build_execution_plan_roots(
-        &document.tasks,
-        &root_refs,
-        failure_policy,
-        None,
-    )?;
+    let plan = build_execution_plan_roots(&document.tasks, &root_refs, failure_policy, None)?;
     validate_interactive_run(&plan, request)?;
     snapshot
         .validate_task_apps(&document)

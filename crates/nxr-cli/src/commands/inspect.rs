@@ -5,19 +5,19 @@ use std::fmt;
 use std::io::{self, Write};
 
 use nxr_completion::cache::{
-    DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_with_cache,
-    discover_workspace_with_cache,
+    DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_workspace_with_cache,
 };
 use nxr_core::diagnostics::exit;
 use nxr_core::sanitize::sanitize_terminal_text;
-use nxr_core::{App, AppList, ListApp};
+use nxr_core::{App, AppList, ListApp, ProjectsError};
 use nxr_nix::{
     AppNotFoundError, NixError, OptionalNixFlags, TaskDiscoveryError, resolve_app_by_name,
 };
-use nxr_task::{TaskDefinition, TaskDocument, listable_tasks, resolve_task};
+use nxr_task::{TaskDefinition, TaskDocument, resolve_task};
 use serde::Serialize;
 
 use crate::commands::common::{PrepareError, build_adapter, current_invocation_directory};
+use crate::commands::views::ViewFilter;
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
 use crate::runner_output::RunnerOutput;
 
@@ -38,8 +38,10 @@ pub struct InspectRequest<'a> {
     pub flake_arg: Option<&'a str>,
     pub nix_override: Option<&'a str>,
     pub target: InspectTarget,
-    /// When set, overview listings include only tasks in this category.
+    /// When set, overview listings include only apps/tasks in this category.
     pub category: Option<&'a str>,
+    /// When set, overview listings include only members of this project namespace.
+    pub namespace: Option<&'a str>,
 }
 
 /// Errors while running the inspect command.
@@ -53,6 +55,8 @@ pub enum InspectError {
     Nix(#[from] NixError),
     #[error(transparent)]
     Tasks(#[from] TaskDiscoveryError),
+    #[error(transparent)]
+    Projects(#[from] ProjectsError),
     #[error(transparent)]
     AppNotFound(#[from] AppNotFoundError),
     #[error(transparent)]
@@ -71,6 +75,7 @@ impl InspectError {
             Self::Flake(error) => error.exit_code(),
             Self::Nix(error) => error.exit_code(),
             Self::Tasks(error) => error.exit_code(),
+            Self::Projects(error) => error.exit_code(),
             Self::AppNotFound(error) => error.exit_code(),
             Self::TaskNotFound(_) => TaskNotFoundError::exit_code(),
             Self::Render(_) | Self::Io(_) => exit::EVALUATION,
@@ -145,8 +150,16 @@ pub fn run(
     match request.target {
         InspectTarget::Overview => {
             let workspace = discover_workspace(&flake, &adapter, refresh_discovery, nix_flags)?;
-            let apps = workspace.apps;
             let task_doc = workspace.tasks.expect("overview discovers tasks with apps");
+            let filter = ViewFilter::resolve(
+                flake
+                    .local_root
+                    .as_deref()
+                    .map(camino::Utf8Path::as_std_path),
+                request.category,
+                request.namespace,
+            )?;
+            let apps = filter.filter_apps(&workspace.apps, &task_doc);
             let mut stdout = io::stdout().lock();
             write_overview(
                 &mut stdout,
@@ -154,12 +167,17 @@ pub fn run(
                 &adapter.system,
                 &apps,
                 &task_doc,
-                request.category,
+                &filter,
                 json,
             )?;
         }
         InspectTarget::App { name } => {
-            let apps = discover_apps(&flake, &adapter, refresh_discovery, nix_flags)?;
+            let workspace = discover_workspace(&flake, &adapter, refresh_discovery, nix_flags)?;
+            let task_doc = workspace
+                .tasks
+                .expect("app inspect discovers tasks with apps");
+            let mut apps = workspace.apps;
+            nxr_task::enrich_apps_with_listing_metadata(&mut apps, &task_doc);
             let app = resolve_app_by_name(&apps, &name)?;
             let mut stdout = io::stdout().lock();
             write_app(&mut stdout, &flake, &adapter.system, app, json)?;
@@ -173,29 +191,6 @@ pub fn run(
     }
 
     Ok(())
-}
-
-fn discover_apps(
-    flake: &FlakeSelection,
-    adapter: &nxr_nix::NixAdapter,
-    refresh_discovery: bool,
-    nix_flags: &OptionalNixFlags,
-) -> Result<Vec<App>, NixError> {
-    let context = DiscoveryContext {
-        flake_ref: flake.nix_ref.clone(),
-        local_root: flake.local_root.clone(),
-        system: adapter.system.clone(),
-    };
-    let flake_ref = flake.nix_ref.clone();
-
-    discover_with_cache(
-        &context,
-        DiscoveryCacheOptions {
-            refresh: refresh_discovery,
-            require_tasks: false,
-        },
-        || adapter.discover_apps(&flake_ref, nix_flags),
-    )
 }
 
 fn discover_workspace(
@@ -286,10 +281,10 @@ fn write_overview(
     system: &str,
     apps: &[App],
     task_doc: &TaskDocument,
-    category: Option<&str>,
+    filter: &ViewFilter,
     json: bool,
 ) -> Result<(), InspectRenderError> {
-    let tasks = listable_tasks(task_doc, category);
+    let tasks = filter.filter_tasks(task_doc);
     if json {
         let envelope = InspectOverviewJson {
             schema_version: OVERVIEW_SCHEMA_VERSION,
@@ -357,6 +352,9 @@ fn write_app(
         )?;
     }
     writeln!(writer, "Default: {}", app.is_default)?;
+    if let Some(category) = nxr_core::app_category(app) {
+        writeln!(writer, "Category: {}", sanitize_terminal_text(category))?;
+    }
     if !app.metadata.is_empty() {
         writeln!(writer, "Metadata: {} key(s)", app.metadata.len())?;
     }
@@ -457,6 +455,7 @@ mod tests {
     use nxr_task::{TaskDocument, listable_tasks, resolve_task};
 
     use super::write_overview;
+    use crate::commands::views::ViewFilter;
     use crate::flake::FlakeSelection;
 
     fn sample_apps() -> Vec<App> {
@@ -563,7 +562,7 @@ mod tests {
             "aarch64-darwin",
             &sample_apps(),
             &sample_task_doc(),
-            None,
+            &ViewFilter::default(),
             true,
         )
         .expect("write overview json");
@@ -590,7 +589,7 @@ mod tests {
             "aarch64-darwin",
             &sample_apps(),
             &sample_task_doc(),
-            None,
+            &ViewFilter::default(),
             false,
         )
         .expect("write overview");

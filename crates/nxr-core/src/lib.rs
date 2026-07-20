@@ -6,6 +6,7 @@ pub mod ecosystem;
 pub mod env_policy;
 pub mod model;
 pub mod plan;
+pub mod projects;
 pub mod sanitize;
 
 pub use diagnostics::{Diagnostic, DiagnosticLevel};
@@ -16,6 +17,11 @@ pub use ecosystem::{
 pub use env_policy::{CLEAN_ENV_ALLOWLIST, EnvironmentPolicy, parse_env_name, parse_set_env};
 pub use model::{App, AppList, FlakeOutput, FlakeRef, ListApp, OutputList};
 pub use plan::{Plan, PlanCommand, PlanKind};
+pub use projects::{
+    NXR_CATEGORY_KEY, PROJECTS_FILENAME, PROJECTS_SCHEMA_VERSION, ProjectDefinition,
+    ProjectsDocument, ProjectsError, app_category, listable_apps, load_projects_document,
+    set_app_category,
+};
 pub use sanitize::sanitize_terminal_text;
 
 #[cfg(test)]

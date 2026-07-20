@@ -150,6 +150,11 @@ pub fn build_execution_plan(
 /// # Errors
 ///
 /// Returns the same errors as [`plan_serial_union`].
+///
+/// # Panics
+///
+/// Panics if `roots` is empty after a successful [`TaskGraph::subgraph_union`]
+/// (that path rejects empty roots, so this is defensive).
 pub fn build_execution_plan_roots(
     tasks: &BTreeMap<String, TaskDefinition>,
     roots: &[&str],
@@ -376,18 +381,14 @@ mod tests {
     #[test]
     fn diamond_dedupe_union_of_sibling_roots() {
         let tasks = diamond();
-        let plan =
-            build_execution_plan_roots(&tasks, &["b", "c"], FailurePolicy::FailFast, None)
-                .expect("plan");
+        let plan = build_execution_plan_roots(&tasks, &["b", "c"], FailurePolicy::FailFast, None)
+            .expect("plan");
 
         assert_eq!(plan.root, "b");
         assert_eq!(plan.roots, vec!["b".to_owned(), "c".to_owned()]);
         assert_eq!(plan.serial_order, vec!["a", "b", "c"]);
         assert_eq!(plan.nodes.len(), 3);
-        assert_eq!(
-            plan.node_ids().collect::<Vec<_>>(),
-            vec!["a", "b", "c"]
-        );
+        assert_eq!(plan.node_ids().collect::<Vec<_>>(), vec!["a", "b", "c"]);
     }
 
     #[test]
