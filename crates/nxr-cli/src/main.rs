@@ -18,11 +18,11 @@ use clap::Parser;
 use nxr_core::diagnostics::exit;
 use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
 
-use crate::cli::{CacheSubcommand, Cli, Command, InspectSubcommand};
+use crate::cli::{CacheSubcommand, Cli, Command, ExplainSubcommand, InspectSubcommand};
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
-    cache, complete, completion, doctor, graph, inspect, list, manpage, plan, run, select, task,
-    watch,
+    cache, complete, completion, doctor, explain, graph, inspect, list, manpage, plan, run, select,
+    task, watch,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -59,6 +59,8 @@ enum RunError {
     Select(#[from] select::SelectError),
     #[error(transparent)]
     Doctor(#[from] doctor::DoctorError),
+    #[error(transparent)]
+    Explain(#[from] explain::ExplainError),
     #[error("missing app name")]
     MissingAppName,
     #[error("{0}")]
@@ -90,6 +92,7 @@ impl RunError {
             Self::Task(error) => error.exit_code(),
             Self::Select(error) => error.exit_code(),
             Self::Doctor(error) => error.exit_code(),
+            Self::Explain(error) => error.exit_code(),
             Self::Completion(_) => completion::CompletionError::exit_code(),
             Self::Complete(_) => exit::SUCCESS,
             Self::Manpage(_) => manpage::ManpageError::exit_code(),
@@ -154,6 +157,11 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             all,
             app,
         }) => dispatch_doctor(cli, *clean_env, *all, app.as_deref(), runner),
+        Some(Command::Explain {
+            name,
+            target,
+            args,
+        }) => dispatch_explain(cli, &nix_flags, name.as_deref(), target.as_ref(), args, runner),
         Some(Command::External(tokens)) => dispatch_external(cli, &nix_flags, tokens, runner),
         Some(Command::Completion { shell }) => {
             completion::run(*shell)?;
@@ -370,6 +378,55 @@ fn dispatch_doctor(
         cwd: cli.cwd.as_deref(),
     };
     doctor::run(request, cli.json, runner).map_err(RunError::from)
+}
+
+fn dispatch_explain(
+    cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
+    name: Option<&str>,
+    target: Option<&ExplainSubcommand>,
+    args: &[String],
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    let (resolved_name, resolved_kind, resolved_args) = match (target, name) {
+        (Some(ExplainSubcommand::App { name, args }), None) => {
+            (name.as_str(), Some(explain::ExplainKind::App), args.as_slice())
+        }
+        (Some(ExplainSubcommand::Task { name, args }), None) => {
+            (name.as_str(), Some(explain::ExplainKind::Task), args.as_slice())
+        }
+        (None, Some(name)) => (name, None, args),
+        (Some(_), Some(_)) => {
+            return Err(RunError::Usage(
+                "cannot combine an explain subcommand with a bare name".to_owned(),
+            ));
+        }
+        (None, None) => {
+            return Err(RunError::Usage(
+                "missing explain target (use `nxr explain <name>` or `nxr explain task <name>`)"
+                    .to_owned(),
+            ));
+        }
+    };
+
+    let request = explain::ExplainRequest {
+        flake_arg: cli.flake.as_deref(),
+        nix_override: cli.nix.as_deref(),
+        name: resolved_name,
+        kind: resolved_kind,
+        args: resolved_args,
+        root: cli.root,
+        cwd: cli.cwd.as_deref(),
+        shell: cli.dev_shell.as_deref(),
+        shell_mode: cli.shell_mode,
+        environment_policy: environment_policy_from_cli(cli)?,
+        jobs: 1,
+        output_mode: cli.output,
+        events_format: cli.events,
+        nix_flags,
+    };
+    explain::run(request, cli.json, runner)?;
+    Ok(exit::SUCCESS)
 }
 
 fn dispatch_external(

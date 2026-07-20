@@ -158,6 +158,27 @@ pub enum InspectSubcommand {
     },
 }
 
+/// `nxr explain` sub-targets.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum ExplainSubcommand {
+    /// Explain a single app
+    App {
+        /// App name
+        name: String,
+        /// Arguments included in the explanation (pass after `--`)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Explain a single task
+    Task {
+        /// Task name
+        name: String,
+        /// Arguments forwarded to the root task app only
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+}
+
 /// Top-level commands. Bare `nxr` defaults to listing apps.
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 pub enum Command {
@@ -196,11 +217,22 @@ pub enum Command {
         /// Run clean-environment diagnostics (may dry-run plan only)
         #[arg(long = "clean-env")]
         clean_env: bool,
-        /// Emit extra non-destructive findings (descriptions, naming)
+        /// Emit extra non-destructive findings (descriptions, naming, cache)
         #[arg(long = "all")]
         all: bool,
         /// Optional app name to validate
         app: Option<String>,
+    },
+    /// Explain resolution and invocation for an app or task
+    Explain {
+        /// App or task name (apps win when both exist)
+        #[arg(value_name = "NAME")]
+        name: Option<String>,
+        #[command(subcommand)]
+        target: Option<ExplainSubcommand>,
+        /// Arguments included in the explanation (default form only)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// Generate shell completion script
     Completion {

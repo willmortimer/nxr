@@ -2,6 +2,7 @@
 
 use std::io::{self, Write};
 
+use nxr_completion::cache::{DiscoveryContext, discovery_cache_entry, discovery_cache_status};
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::{Diagnostic, DiagnosticLevel, exit};
 use nxr_core::sanitize::sanitize_terminal_text;
@@ -9,8 +10,10 @@ use nxr_nix::{NixAdapter, NixCapabilities, NixError, OptionalNixFlags, resolve_a
 use serde::Serialize;
 
 use crate::commands::common::{
-    AppRequest, PrepareError, build_adapter, current_invocation_directory, prepare_app_plan,
+    AppRequest, PrepareError, WorkspaceSnapshot, build_adapter, current_invocation_directory,
+    prepare_app_plan,
 };
+use crate::commands::explain::workspace_context_from_snapshot;
 use crate::flake::{FlakeResolveError, resolve_flake};
 use crate::runner_output::RunnerOutput;
 use crate::shell_mode::ShellMode;
@@ -57,6 +60,8 @@ pub struct DoctorReport {
     pub schema_version: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<NixCapabilities>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<crate::commands::explain::WorkspaceContext>,
     pub findings: Vec<Diagnostic>,
 }
 
@@ -95,6 +100,11 @@ pub fn run(
         );
     }
     let capabilities = collect_findings(request, &mut findings);
+    let workspace = if request.all {
+        collect_workspace_context(request, &mut findings)
+    } else {
+        None
+    };
     let exit_code = exit_code_for_findings(&findings);
 
     runner
@@ -104,6 +114,7 @@ pub fn run(
     let report = DoctorReport {
         schema_version: SCHEMA_VERSION,
         capabilities,
+        workspace,
         findings,
     };
     let mut stdout = io::stdout().lock();
@@ -250,6 +261,7 @@ fn collect_flake_findings(
 
             if request.all {
                 collect_app_quality_findings(&apps, findings);
+                collect_workspace_cache_findings(&flake, adapter, findings);
             }
 
             if let Some(app_name) = request.app {
@@ -319,6 +331,151 @@ fn is_recommended_app_name(name: &str) -> bool {
     }
     name.chars()
         .all(|ch| matches!(ch, 'a'..='z' | '0'..='9' | '-'))
+}
+
+fn collect_workspace_context(
+    request: DoctorRequest<'_>,
+    findings: &mut Vec<Diagnostic>,
+) -> Option<crate::commands::explain::WorkspaceContext> {
+    let snapshot = match WorkspaceSnapshot::load(
+        request.flake_arg,
+        request.nix_override,
+        false,
+        &OptionalNixFlags::default(),
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            push_finding(
+                findings,
+                DiagnosticLevel::Warning,
+                "workspace.unavailable",
+                format!("workspace snapshot unavailable: {error}"),
+            );
+            return None;
+        }
+    };
+
+    if let Some(root) = snapshot.flake.local_root.as_ref() {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "flake.root",
+            format!("flake root: {}", root.as_str()),
+        );
+    }
+
+    match workspace_context_from_snapshot(&snapshot, &EnvironmentPolicy::Inherit, None) {
+        Ok(workspace) => Some(workspace),
+        Err(error) => {
+            push_finding(
+                findings,
+                DiagnosticLevel::Warning,
+                "workspace.unavailable",
+                format!("workspace context unavailable: {error}"),
+            );
+            None
+        }
+    }
+}
+
+fn collect_workspace_cache_findings(
+    flake: &crate::flake::FlakeSelection,
+    adapter: &NixAdapter,
+    findings: &mut Vec<Diagnostic>,
+) {
+    if let Ok(status) = discovery_cache_status() {
+        if status.path.is_empty() {
+            push_finding(
+                findings,
+                DiagnosticLevel::Info,
+                "cache.unavailable",
+                "discovery cache unavailable on this host".to_owned(),
+            );
+        } else {
+            push_finding(
+                findings,
+                DiagnosticLevel::Info,
+                "cache.status",
+                format!(
+                    "discovery cache: {} ({} entr{}, {} bytes)",
+                    status.path,
+                    status.entries,
+                    if status.entries == 1 { "y" } else { "ies" },
+                    status.total_bytes
+                ),
+            );
+        }
+    }
+
+    let context = DiscoveryContext {
+        flake_ref: flake.nix_ref.clone(),
+        local_root: flake.local_root.clone(),
+        system: adapter.system.clone(),
+    };
+    let Ok(entry) = discovery_cache_entry(&context) else {
+        push_finding(
+            findings,
+            DiagnosticLevel::Warning,
+            "cache.unavailable",
+            "could not inspect discovery cache for this flake".to_owned(),
+        );
+        return;
+    };
+
+    if !entry.available {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "cache.remote",
+            "discovery cache disabled for remote flakes".to_owned(),
+        );
+        return;
+    }
+
+    push_finding(
+        findings,
+        DiagnosticLevel::Info,
+        if entry.hit {
+            "cache.hit"
+        } else {
+            "cache.miss"
+        },
+        if entry.hit {
+            "discovery cache hit for current flake inputs".to_owned()
+        } else {
+            "discovery cache miss for current flake inputs".to_owned()
+        },
+    );
+
+    if let Some(key) = entry.invalidation_key {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "cache.invalidation_key",
+            format!("nix tree invalidation key: {key}"),
+        );
+    }
+
+    if let Some(cached) = entry.cached_invalidation_key {
+        if entry.hit {
+            return;
+        }
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "cache.cached_invalidation_key",
+            format!("stale cache entry fingerprint: {cached}"),
+        );
+    }
+
+    if let Some(file) = entry.cache_file {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "cache.file",
+            format!("cache file: {file}"),
+        );
+    }
 }
 
 fn collect_clean_env_findings(request: DoctorRequest<'_>, findings: &mut Vec<Diagnostic>) {
@@ -519,6 +676,7 @@ mod tests {
         let report = DoctorReport {
             schema_version: 1,
             capabilities: None,
+            workspace: None,
             findings: vec![Diagnostic {
                 level: DiagnosticLevel::Info,
                 code: "flake.discovered".to_owned(),
@@ -538,6 +696,7 @@ mod tests {
             capabilities: Some(nxr_nix::NixCapabilities::all_supported_for_tests(
                 nxr_nix::NixVersion::new(2, 18, 1),
             )),
+            workspace: None,
             findings: vec![Diagnostic {
                 level: DiagnosticLevel::Warning,
                 code: "path.polluted".to_owned(),

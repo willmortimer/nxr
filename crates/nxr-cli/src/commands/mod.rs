@@ -5,6 +5,7 @@ pub mod common;
 pub mod complete;
 pub mod completion;
 pub mod doctor;
+pub mod explain;
 pub mod graph;
 pub mod inspect;
 pub mod list;

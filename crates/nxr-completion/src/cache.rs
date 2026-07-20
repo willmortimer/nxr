@@ -192,6 +192,26 @@ pub struct DiscoveryCacheStatus {
     pub total_bytes: u64,
 }
 
+/// Per-flake discovery cache metadata for explain / doctor diagnostics.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DiscoveryCacheEntry {
+    /// Whether a local flake root enables discovery caching.
+    pub available: bool,
+    /// Discovery cache directory (empty when unavailable).
+    pub directory: String,
+    /// Cache file path for this flake/system context, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_file: Option<String>,
+    /// Whether a valid cache entry exists for the current inputs.
+    pub hit: bool,
+    /// Current `.nix` tree fingerprint used for invalidation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invalidation_key: Option<u64>,
+    /// Fingerprint stored in the on-disk entry (present on hit or stale miss).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_invalidation_key: Option<u64>,
+}
+
 /// Remove all discovery cache entries.
 ///
 /// Returns the number of cache files removed. Missing cache directories are
@@ -263,6 +283,68 @@ pub fn discovery_cache_status() -> io::Result<DiscoveryCacheStatus> {
         entries,
         total_bytes,
     })
+}
+
+/// Inspect discovery cache validity and invalidation keys for one flake context.
+///
+/// Remote flakes (`local_root` absent) return `available: false` with no keys.
+///
+/// # Errors
+///
+/// Returns [`io::Error`] when fingerprinting or reading a stale cache file fails.
+pub fn discovery_cache_entry(context: &DiscoveryContext) -> io::Result<DiscoveryCacheEntry> {
+    let directory = discovery_cache_dir()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+
+    let Some(local_root) = &context.local_root else {
+        return Ok(DiscoveryCacheEntry {
+            available: false,
+            directory,
+            cache_file: None,
+            hit: false,
+            invalidation_key: None,
+            cached_invalidation_key: None,
+        });
+    };
+
+    let canonical_root = canonical_flake_root(local_root);
+    let invalidation_key = nix_tree_fingerprint(&canonical_root)?;
+    let context_key = cache_context_key(context);
+    let cache_file = cache_file_path(&context_key).map(|path| path.display().to_string());
+    let hit = cached_workspace(context).is_some();
+    let cached_invalidation_key = if hit {
+        Some(invalidation_key)
+    } else {
+        cache_file
+            .as_ref()
+            .and_then(|path| read_cached_fingerprint(path))
+            .transpose()?
+    };
+
+    Ok(DiscoveryCacheEntry {
+        available: true,
+        directory,
+        cache_file,
+        hit,
+        invalidation_key: Some(invalidation_key),
+        cached_invalidation_key,
+    })
+}
+
+fn read_cached_fingerprint(cache_file: &str) -> Option<io::Result<u64>> {
+    let contents = match fs::read_to_string(cache_file) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+        Err(error) => return Some(Err(error)),
+    };
+    let cached: CachedDiscovery = match serde_json::from_str(&contents) {
+        Ok(cached) => cached,
+        Err(error) => {
+            return Some(Err(io::Error::new(io::ErrorKind::InvalidData, error)));
+        }
+    };
+    Some(Ok(cached.nix_fingerprint))
 }
 
 fn cache_file_path(context: &DiscoveryContext) -> Option<PathBuf> {

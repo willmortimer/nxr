@@ -57,8 +57,11 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr plan <app\|task> [-- args…]` | Show app or task execution plan (apps win when both exist) |
 | `nxr select` | Interactive fuzzy app picker |
 | `nxr doctor [app]` | Diagnose environment and flake setup |
-| `nxr doctor --all` | Extra non-destructive findings (descriptions, naming) |
+| `nxr doctor --all` | Extra non-destructive findings (descriptions, naming, cache) |
 | `nxr doctor --clean-env [app]` | Clean-environment validation |
+| `nxr explain <app\|task> [-- args…]` | Explain resolution and exact Nix invocation (apps win when both exist) |
+| `nxr explain app <name> [-- args…]` | Explain a single app |
+| `nxr explain task <name> [-- args…]` | Explain a task DAG node plans and dependency path |
 | `nxr completion <shell>` | Emit Bash, Zsh, or Fish completion |
 | `nxr cache clear` | Remove all discovery cache entries |
 | `nxr cache status` | Show discovery cache path and size |
@@ -90,6 +93,8 @@ nxr plan test --json
 nxr plan ci --json
 nxr --shell default test
 nxr doctor --clean-env test
+nxr explain hello --json
+nxr explain task ci
 nxr inspect
 nxr task ci --dry-run
 nxr graph ci --format dot
