@@ -2,8 +2,7 @@
   description = "nxr fixture: apps with meta descriptions";
 
   inputs = {
-    nxr.url = "path:../..";
-    nixpkgs.follows = "nxr/nixpkgs";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
   outputs =

@@ -2,8 +2,7 @@
   description = "nxr fixture: named devShells and shell-marker app";
 
   inputs = {
-    nxr.url = "path:../..";
-    nixpkgs.follows = "nxr/nixpkgs";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
   outputs =

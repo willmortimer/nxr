@@ -41,8 +41,9 @@ unavailable is a hard capability error.
 
 Local flake roots are passed to Nix as `path:<absolute>` URIs. Bare absolute
 paths inside a git checkout can be rewritten to `git+file://…?dir=…`, which
-rejects unlocked relative `path:../..` inputs on Nix 2.18 (common in fixture
-and monorepo subflakes).
+rejects unlocked relative `path:../..` inputs on Nix 2.18. Repository fixtures
+are therefore **self-contained** (pinned `nixpkgs`, inline `nxr.<system>`
+metadata) and never take `path:../..` of this repo.
 
 Inspect negotiated capabilities with:
 

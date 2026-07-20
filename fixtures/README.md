@@ -1,7 +1,11 @@
 # Fixture flakes
 
-These are small Nix flakes used to exercise `nxr` discovery and execution
-(and, until `nxr` exists, plain `nix run`).
+These are small, **self-contained** Nix flakes used to exercise `nxr` discovery
+and execution (and, until `nxr` exists, plain `nix run`).
+
+They pin `nixpkgs` as a github input and do **not** take `path:../..` of this
+repo. Task fixtures emit `nxr.<system>` metadata inline so evaluation stays
+valid under pure `path:` flake refs (Nix 2.18+).
 
 | Fixture | Purpose |
 |---|---|
@@ -11,20 +15,15 @@ These are small Nix flakes used to exercise `nxr` discovery and execution
 | [broken-flake](broken-flake/) | Intentionally invalid flake for diagnostics |
 | [named-dev-shells](named-dev-shells/) | `devShells.default` + `shell-marker` app for `--shell` |
 | [standard-outputs](standard-outputs/) | Packages, checks, apps, and named `devShells` for list/build/check/shell |
-| [shell-integration](shell-integration/) | `nxr.shellIntegration` adds `nxr` to `nix develop` |
-| [task-dag](task-dag/) | Small task DAG (`fmt` → `test` → `ci`) via `nxr.<system>` |
+| [shell-integration](shell-integration/) | Dev shell with stub `nxr` on PATH (module wiring covered by root flake) |
+| [task-dag](task-dag/) | Small task DAG (`fmt` → `test` → `ci`) via inline `nxr.<system>` |
 | [namespaced-monorepo](namespaced-monorepo/) | Multi-package categories + optional `nxr.projects.json` namespaces |
 | [task-working-directory](task-working-directory/) | Per-task `workingDirectory` tokens and relative paths |
 | [parallel-group](parallel-group/) | Diamond DAG (`a` → `left`||`right` → `join`) for `-j` |
 | [affected-deps](affected-deps/) | Shared `paths` root with dependent tasks for `nxr affected` |
 | [watch-project](watch-project/) | Placeholder for V2 watch mode |
 | [ecosystem-graph-cargo](ecosystem-graph-cargo/) | Read-only Cargo workspace graph snapshot (adapter boundary example; not executed) |
-
-Many fixtures take `nxr` (and sometimes `nixpkgs`) as `path:../..` so they can
-import flake-parts modules from this repo. `nxr` passes local flake roots to Nix
-as `path:<absolute>` URIs so those relative path inputs stay valid under Nix
-2.18 (bare absolute paths can become `git+file://…?dir=fixtures/…` and reject
-unlocked path locks).
+| [diamond-dedupe](diamond-dedupe/) | Multi-root union with shared diamond ancestor |
 
 ## Try them (without nxr yet)
 

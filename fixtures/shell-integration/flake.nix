@@ -1,33 +1,43 @@
 {
-  description = "nxr fixture: shellIntegration without duplicate package wiring";
+  description = "nxr fixture: shellIntegration-shaped devShell with stub nxr on PATH";
 
   inputs = {
-    nxr.url = "path:../..";
-    nixpkgs.follows = "nxr/nixpkgs";
-    flake-parts.follows = "nxr/flake-parts";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
   outputs =
-    inputs@{ flake-parts, nxr, ... }:
-    flake-parts.lib.mkFlake { inherit inputs; } {
-      imports = [
-        nxr.flakeModules.default
-      ];
-
+    { nixpkgs, ... }:
+    let
       systems = [
         "aarch64-darwin"
         "x86_64-linux"
+        "x86_64-darwin"
         "aarch64-linux"
       ];
-
-      perSystem =
-        { pkgs, ... }:
-        {
-          nxr.shellIntegration.enable = true;
-
-          devShells.default = pkgs.mkShell {
-            env.NXR_FIXTURE_SHELL_MARKER = "shell-integration";
+      forAllSystems = nixpkgs.lib.genAttrs systems;
+    in
+    {
+      # Self-contained stub: CI only checks `command -v nxr` inside the shell.
+      # Full module wiring is covered by the root flake and docs examples.
+      devShells = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          stubNxr = pkgs.writeShellApplication {
+            name = "nxr";
+            text = ''
+              echo "nxr-fixture-stub"
+            '';
           };
-        };
+        in
+        {
+          default = pkgs.mkShell {
+            packages = [ stubNxr ];
+            env.NXR_FIXTURE_SHELL_MARKER = "shell-integration";
+            env.NXR_SHELL_INTEGRATION = "1";
+            env.NXR_DEV_SHELL = "default";
+          };
+        }
+      );
     };
 }

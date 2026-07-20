@@ -2,8 +2,7 @@
   description = "nxr fixture: packages, checks, and named development shells";
 
   inputs = {
-    nxr.url = "path:../..";
-    nixpkgs.follows = "nxr/nixpkgs";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
   outputs =

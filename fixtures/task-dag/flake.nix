@@ -2,71 +2,78 @@
   description = "nxr fixture: small task DAG (fmt → test → ci)";
 
   inputs = {
-    nxr.url = "path:../..";
-    nixpkgs.follows = "nxr/nixpkgs";
-    flake-parts.follows = "nxr/flake-parts";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
   outputs =
-    inputs@{ flake-parts, nxr, ... }:
-    flake-parts.lib.mkFlake { inherit inputs; } {
-      imports = [
-        nxr.flakeModules.default
-      ];
-
+    { nixpkgs, ... }:
+    let
       systems = [
         "aarch64-darwin"
         "x86_64-linux"
+        "x86_64-darwin"
         "aarch64-linux"
       ];
+      forAllSystems = nixpkgs.lib.genAttrs systems;
 
-      perSystem =
-        { ... }:
-        {
-          nxr.apps = {
-            fmt = {
-              description = "Format sources";
-              script = ''
-                echo "fmt"
-              '';
-            };
-
-            test = {
-              description = "Run tests";
-              script = ''
-                echo "test"
-              '';
-            };
-
-            ci = {
-              description = "CI entrypoint";
-              script = ''
-                echo "ci"
-              '';
-            };
+      mkApp =
+        pkgs: name: description: text:
+        let
+          drv = pkgs.writeShellApplication {
+            inherit name text;
           };
+        in
+        {
+          type = "app";
+          program = "${drv}/bin/${name}";
+          meta.description = description;
+        };
 
-          # fmt → test → ci
-          nxr.tasks = {
-            fmt = {
-              description = "Format sources";
-              app = "fmt";
-            };
-
-            test = {
-              description = "Run tests";
-              dependsOn = [ "fmt" ];
-              app = "test";
-            };
-
-            ci = {
-              description = "CI gate";
-              dependsOn = [ "test" ];
-              app = "ci";
-              category = "validation";
-              aliases = [ "check" ];
-            };
+      nxrDoc = {
+        schema_version = 1;
+        tasks = {
+          fmt = {
+            description = "Format sources";
+            app = "fmt";
+            dependsOn = [ ];
+            hidden = false;
+          };
+          test = {
+            description = "Run tests";
+            dependsOn = [ "fmt" ];
+            app = "test";
+            hidden = false;
+          };
+          ci = {
+            description = "CI gate";
+            dependsOn = [ "test" ];
+            app = "ci";
+            category = "validation";
+            aliases = [ "check" ];
+            hidden = false;
           };
         };
+      };
+    in
+    {
+      apps = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          fmt = mkApp pkgs "fixture-fmt" "Format sources" ''
+            echo "fmt"
+          '';
+          test = mkApp pkgs "fixture-test" "Run tests" ''
+            echo "test"
+          '';
+          ci = mkApp pkgs "fixture-ci" "CI entrypoint" ''
+            echo "ci"
+          '';
+        }
+      );
+
+      nxr = forAllSystems (_: nxrDoc);
     };
 }

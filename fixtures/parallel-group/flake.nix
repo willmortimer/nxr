@@ -2,134 +2,131 @@
   description = "nxr fixture: diamond task DAG with parallelizable siblings";
 
   inputs = {
-    nxr.url = "path:../..";
-    nixpkgs.follows = "nxr/nixpkgs";
-    flake-parts.follows = "nxr/flake-parts";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
   outputs =
-    inputs@{ flake-parts, nxr, ... }:
-    flake-parts.lib.mkFlake { inherit inputs; } {
-      imports = [
-        nxr.flakeModules.default
-      ];
-
+    { nixpkgs, ... }:
+    let
       systems = [
         "aarch64-darwin"
         "x86_64-linux"
+        "x86_64-darwin"
         "aarch64-linux"
       ];
+      forAllSystems = nixpkgs.lib.genAttrs systems;
 
-      perSystem =
-        { ... }:
-        {
-          nxr.apps = {
-            a = {
-              description = "Diamond root";
-              script = ''
-                echo "a"
-              '';
-            };
-
-            # Sleep so -j 2 can start both siblings before either exits.
-            left = {
-              description = "Left sibling";
-              script = ''
-                echo "left-start"
-                sleep 1
-                echo "left-done"
-              '';
-            };
-
-            right = {
-              description = "Right sibling";
-              script = ''
-                echo "right-start"
-                sleep 1
-                echo "right-done"
-              '';
-            };
-
-            join = {
-              description = "Diamond join";
-              script = ''
-                echo "join"
-              '';
-            };
-
-            # Fail-fast / keep-going helpers (independent of diamond).
-            ok = {
-              description = "Always succeeds";
-              script = ''
-                echo "ok"
-              '';
-            };
-
-            boom = {
-              description = "Always fails";
-              script = ''
-                echo "boom"
-                exit 1
-              '';
-            };
-
-            unrelated = {
-              description = "Independent of boom";
-              script = ''
-                echo "unrelated"
-              '';
-            };
+      mkApp =
+        pkgs: name: description: text:
+        let
+          drv = pkgs.writeShellApplication {
+            inherit name text;
           };
+        in
+        {
+          type = "app";
+          program = "${drv}/bin/${name}";
+          meta.description = description;
+        };
 
-          # a → (left || right) → join
-          nxr.tasks = {
-            a = {
-              description = "Diamond root";
-              app = "a";
-            };
-
-            left = {
-              description = "Left sibling";
-              dependsOn = [ "a" ];
-              app = "left";
-            };
-
-            right = {
-              description = "Right sibling";
-              dependsOn = [ "a" ];
-              app = "right";
-            };
-
-            join = {
-              description = "Diamond join / CI entry";
-              dependsOn = [ "left" "right" ];
-              app = "join";
-              category = "validation";
-            };
-
-            # ok and unrelated are independent; boom fails.
-            # Root `gate` depends on all three for keep-going vs fail-fast tests.
-            ok = {
-              description = "Succeeds";
-              app = "ok";
-            };
-
-            boom = {
-              description = "Fails";
-              app = "boom";
-            };
-
-            unrelated = {
-              description = "Independent success";
-              app = "unrelated";
-            };
-
-            gate = {
-              description = "Fan-in of ok, boom, unrelated";
-              dependsOn = [ "ok" "boom" "unrelated" ];
-              app = "join";
-            };
+      nxrDoc = {
+        schema_version = 1;
+        tasks = {
+          a = {
+            description = "Diamond root";
+            app = "a";
+            dependsOn = [ ];
+            hidden = false;
+          };
+          left = {
+            description = "Left sibling";
+            dependsOn = [ "a" ];
+            app = "left";
+            hidden = false;
+          };
+          right = {
+            description = "Right sibling";
+            dependsOn = [ "a" ];
+            app = "right";
+            hidden = false;
+          };
+          join = {
+            description = "Diamond join / CI entry";
+            dependsOn = [
+              "left"
+              "right"
+            ];
+            app = "join";
+            category = "validation";
+            hidden = false;
+          };
+          ok = {
+            description = "Succeeds";
+            app = "ok";
+            dependsOn = [ ];
+            hidden = false;
+          };
+          boom = {
+            description = "Fails";
+            app = "boom";
+            dependsOn = [ ];
+            hidden = false;
+          };
+          unrelated = {
+            description = "Independent success";
+            app = "unrelated";
+            dependsOn = [ ];
+            hidden = false;
+          };
+          gate = {
+            description = "Fan-in of ok, boom, unrelated";
+            dependsOn = [
+              "ok"
+              "boom"
+              "unrelated"
+            ];
+            app = "join";
+            hidden = false;
           };
         };
+      };
+    in
+    {
+      apps = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          a = mkApp pkgs "fixture-a" "Diamond root" ''
+            echo "a"
+          '';
+          left = mkApp pkgs "fixture-left" "Left sibling" ''
+            echo "left-start"
+            sleep 1
+            echo "left-done"
+          '';
+          right = mkApp pkgs "fixture-right" "Right sibling" ''
+            echo "right-start"
+            sleep 1
+            echo "right-done"
+          '';
+          join = mkApp pkgs "fixture-join" "Diamond join" ''
+            echo "join"
+          '';
+          ok = mkApp pkgs "fixture-ok" "Always succeeds" ''
+            echo "ok"
+          '';
+          boom = mkApp pkgs "fixture-boom" "Always fails" ''
+            echo "boom"
+            exit 1
+          '';
+          unrelated = mkApp pkgs "fixture-unrelated" "Independent of boom" ''
+            echo "unrelated"
+          '';
+        }
+      );
+
+      nxr = forAllSystems (_: nxrDoc);
     };
 }
