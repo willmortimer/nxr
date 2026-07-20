@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-07-19
+
+V2.3 monorepo ergonomics release: filtered views for large operation sets, conservative affected analysis, and optional ecosystem graph adapters.
+
 ### Added
 
 - Namespaced list/inspect views: `--category` filters apps (via `nxr.category`
@@ -15,8 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   see [docs/MONOREPO_VIEWS.md](docs/MONOREPO_VIEWS.md).
 - Optional additive `apps` map on `nxr.<system>` for app listing categories;
   flake-parts `nxr.apps.<name>.category` emits it.
-- Fixture `fixtures/namespaced-monorepo/` and schema
-  `schemas/projects-v1.schema.json`.
+- `nxr affected [--base <ref>] [PATH…]` for conservative path-based affected
+  analysis over apps and tasks (`--json` for CI). Tasks may declare `paths`
+  roots; changes propagate through `dependsOn` edges.
+- Thin ecosystem graph adapter boundary: read-only relationship metadata in
+  `nxr-core`, documented in [docs/ADAPTERS.md](docs/ADAPTERS.md) (adapters are
+  non-authoritative; flake apps stay canonical).
+- Schemas: `projects-v1`, `affected-v1`, and `ecosystem-graph-v0`.
+- Fixtures: `namespaced-monorepo/`, `affected-deps/`, and
+  `ecosystem-graph-cargo/`.
+
+### Changed
+
+- Workspace and Nix package version **2.3.0**.
 
 ## [2.2.0] - 2026-07-19
 
@@ -166,6 +181,7 @@ First taggable V1 prerelease: a standard Nix flake app runner through Phase 5 of
 - [Compatibility matrix](docs/COMPATIBILITY.md), [CLI reference](docs/CLI_REFERENCE.md), and [telemetry decision](docs/TELEMETRY.md) (default: none).
 - Tag-triggered [release workflow](.github/workflows/release.yml) (quality gate only; no publish secrets).
 
+[2.3.0]: https://github.com/willmortimer/nxr/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/willmortimer/nxr/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/willmortimer/nxr/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/willmortimer/nxr/compare/v1.0.0...v2.0.0

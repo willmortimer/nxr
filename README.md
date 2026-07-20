@@ -126,4 +126,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**2.2.0** — flake UX release: `list`/`build`/`check`/`shell` for standard flake outputs, `explain` and `doctor --all`, multi-root task union DAGs, and interactive-task exclusivity. History: [CHANGELOG.md](CHANGELOG.md).
+**2.3.0** — monorepo ergonomics: namespaced `list`/`inspect` views, `nxr affected` path analysis, and optional read-only ecosystem graph adapters. History: [CHANGELOG.md](CHANGELOG.md).
