@@ -196,6 +196,20 @@ Default execution should preserve the caller's working directory. An app can the
 
 A task may explicitly request root execution in V2.
 
+#### WorkspaceSnapshot
+
+Task and multi-app orchestration evaluate the workspace **once** into a
+`WorkspaceSnapshot`: flake selection, Nix adapter (locate + `currentSystem`),
+discovered apps, and optional task document. Every task node is prepared into a
+`PreparedTaskNode` **before** the scheduler starts. Scheduler execution must not
+re-run `flake show`, task eval, or system detection.
+
+Bare `nxr <app>` / `nxr run <app>` use a **fast path**: construct
+`nix run <flake>#<app>` without `flake show`. On a nonzero Nix exit, `nxr` may
+optionally discover apps to emit "did you mean?" suggestions when the name is
+absent. Commands that must know the app catalog (`list`, `plan`, `doctor`,
+completion) still discover explicitly.
+
 ### 4.3 Nix adapter
 
 V1 shells out to the installed Nix CLI rather than linking unstable internal Nix libraries.

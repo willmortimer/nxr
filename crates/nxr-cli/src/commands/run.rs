@@ -4,7 +4,9 @@ use std::io;
 
 use nxr_core::diagnostics::exit;
 
-use crate::commands::common::{AppRequest, PrepareError, prepare_app_plan};
+use crate::commands::common::{
+    AppRequest, PrepareError, prepare_fast_app_plan, suggest_missing_app_after_run,
+};
 use crate::commands::plan::{PlanRenderError, write_plan};
 use crate::runner_output::RunnerOutput;
 
@@ -32,6 +34,10 @@ impl RunError {
 
 /// Resolve, optionally print a plan (`dry_run`), or execute the app in the foreground.
 ///
+/// Uses the bare-app fast path: builds `nix run <flake>#<app>` without `flake show`.
+/// On a nonzero Nix exit, optionally discovers apps to emit "did you mean?" when
+/// the name is absent.
+///
 /// # Errors
 ///
 /// Returns [`RunError`] when planning fails, plan rendering fails, or the child
@@ -44,7 +50,7 @@ pub fn execute(
     json: bool,
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
-    let prepared = prepare_app_plan(request)?;
+    let prepared = prepare_fast_app_plan(request)?;
 
     if dry_run {
         let mut stdout = io::stdout().lock();
@@ -72,6 +78,12 @@ pub fn execute(
         &prepared.plan.environment_policy,
     )
     .map_err(RunError::Supervision)?;
+
+    if code != exit::SUCCESS
+        && let Ok(Some(not_found)) = suggest_missing_app_after_run(request)
+    {
+        return Err(RunError::Prepare(PrepareError::NotFound(not_found)));
+    }
 
     Ok(code)
 }
