@@ -199,7 +199,7 @@ pub fn prepare_fast_app_plan(request: &AppRequest<'_>) -> Result<PreparedPlan, P
         &invocation_cwd,
         &execution_directory,
         &forwarded,
-    );
+    )?;
 
     Ok(PreparedPlan {
         plan,
@@ -291,7 +291,7 @@ impl WorkspaceSnapshot {
             &self.invocation_directory,
             &execution_directory,
             &forwarded,
-        );
+        )?;
 
         Ok(PreparedPlan {
             plan,
@@ -373,7 +373,7 @@ impl WorkspaceSnapshot {
                 &self.invocation_directory,
                 &execution_directory,
                 &strip_one_separator(forwarded),
-            );
+            )?;
             nodes.insert(
                 task_id.clone(),
                 PreparedTaskNode {
@@ -545,7 +545,7 @@ fn build_plan(
     invocation_directory: &Utf8Path,
     execution_directory: &Utf8Path,
     forwarded: &[String],
-) -> Plan {
+) -> Result<Plan, NixError> {
     let run_argv = nix_run_args(&flake.nix_ref, &app.name, forwarded);
     let wrap_shell = effective_shell_wrap(request.shell, request.shell_mode);
     let base_arguments = match wrap_shell {
@@ -554,9 +554,9 @@ fn build_plan(
         }
         None => run_argv,
     };
-    let command_arguments = adapter.compatible_argv(base_arguments, request.nix_flags);
+    let command_arguments = adapter.compatible_argv(base_arguments, request.nix_flags)?;
 
-    Plan {
+    Ok(Plan {
         schema_version: Plan::SCHEMA_VERSION,
         kind: PlanKind::App,
         flake: flake.nix_ref.clone(),
@@ -573,7 +573,7 @@ fn build_plan(
             arguments: command_arguments,
         },
         forwarded_arguments: forwarded.to_vec(),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -677,7 +677,8 @@ mod tests {
             camino::Utf8Path::new("/work"),
             camino::Utf8Path::new("/work"),
             &forwarded,
-        );
+        )
+        .expect("build plan");
 
         assert_eq!(plan.schema_version, 1);
         assert_eq!(plan.target, "hello");
@@ -857,7 +858,8 @@ mod tests {
             camino::Utf8Path::new("/work"),
             camino::Utf8Path::new("/work"),
             &[],
-        );
+        )
+        .expect("build plan");
 
         assert_eq!(plan.shell.as_deref(), Some("default"));
         assert_eq!(

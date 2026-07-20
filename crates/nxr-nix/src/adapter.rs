@@ -90,12 +90,16 @@ impl NixAdapter {
     }
 
     /// Choose a compatible argv for the requested optional flags.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixError::UnsupportedOptionalFlag`] when a user-requested flag
+    /// is unsupported on this Nix.
     pub fn compatible_argv(
         &self,
         base_args: Vec<String>,
         requested: &OptionalNixFlags,
-    ) -> Vec<String> {
+    ) -> Result<Vec<String>, NixError> {
         self.capabilities.apply_optional_flags(base_args, requested)
     }
 
@@ -120,7 +124,7 @@ impl NixAdapter {
         let args = self.compatible_argv(
             command::flake_show_args(flake_ref),
             &Self::discovery_flags(requested),
-        );
+        )?;
         discovery::discover_apps_with_args(&self.nix, &self.system, flake_ref, &args)
     }
 
@@ -140,7 +144,7 @@ impl NixAdapter {
         let args = self.compatible_argv(
             command::flake_eval_json_args(flake_ref, &tasks::tasks_attr_path(&self.system)),
             &Self::discovery_flags(requested),
-        );
+        )?;
         tasks::discover_tasks_with_args(&self.nix, &self.system, &args)
     }
 
@@ -160,7 +164,7 @@ impl NixAdapter {
         let args = self.compatible_argv(
             command::flake_show_args(flake_ref),
             &Self::discovery_flags(requested),
-        );
+        )?;
         discovery::discover_outputs_with_args(&self.nix, &self.system, flake_ref, table, &args)
     }
 
@@ -177,10 +181,10 @@ impl NixAdapter {
         requested: &OptionalNixFlags,
     ) -> Result<Vec<String>, NixError> {
         self.require_flakes()?;
-        Ok(self.compatible_argv(
+        self.compatible_argv(
             command::nix_run_args(flake_ref, app_name, forwarded_args),
             requested,
-        ))
+        )
     }
 
     /// Capability-aware `nix build` argv for an installable.
@@ -194,7 +198,7 @@ impl NixAdapter {
         requested: &OptionalNixFlags,
     ) -> Result<Vec<String>, NixError> {
         self.require_flakes()?;
-        Ok(self.compatible_argv(command::nix_build_args(installable), requested))
+        self.compatible_argv(command::nix_build_args(installable), requested)
     }
 
     /// Capability-aware `nix flake check` argv.
@@ -208,7 +212,7 @@ impl NixAdapter {
         requested: &OptionalNixFlags,
     ) -> Result<Vec<String>, NixError> {
         self.require_flakes()?;
-        Ok(self.compatible_argv(command::nix_flake_check_args(flake_ref), requested))
+        self.compatible_argv(command::nix_flake_check_args(flake_ref), requested)
     }
 
     /// Capability-aware interactive `nix develop` argv.
@@ -223,7 +227,7 @@ impl NixAdapter {
         requested: &OptionalNixFlags,
     ) -> Result<Vec<String>, NixError> {
         self.require_flakes()?;
-        Ok(self.compatible_argv(command::nix_develop_args(flake_ref, shell_name), requested))
+        self.compatible_argv(command::nix_develop_args(flake_ref, shell_name), requested)
     }
 }
 
@@ -340,30 +344,70 @@ mod tests {
                 flakes_enabled: true,
                 supports_json_log_format: false,
                 supports_no_write_lock_file: true,
-                supports_offline: false,
+                supports_offline: true,
                 supports_accept_flake_config: true,
             },
         );
-        let args = adapter.compatible_argv(
-            vec!["run".to_owned(), ".#hello".to_owned()],
-            &OptionalNixFlags {
-                offline: true,
-                no_write_lock_file: true,
-                accept_flake_config: true,
-                json_log_format: true,
-                nix_options: Vec::new(),
-                extra_argv: Vec::new(),
-            },
-        );
+        let args = adapter
+            .compatible_argv(
+                vec!["run".to_owned(), ".#hello".to_owned()],
+                &OptionalNixFlags {
+                    offline: true,
+                    no_write_lock_file: true,
+                    accept_flake_config: true,
+                    json_log_format: true,
+                    nix_options: Vec::new(),
+                    extra_argv: Vec::new(),
+                },
+            )
+            .expect("compatible argv");
         assert_eq!(
             args,
             vec![
+                "--offline".to_owned(),
                 "--accept-flake-config".to_owned(),
                 "run".to_owned(),
                 "--no-write-lock-file".to_owned(),
                 ".#hello".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn compatible_argv_errors_on_unsupported_user_flag() {
+        let adapter = NixAdapter::with_parts(
+            Utf8PathBuf::from("/nix/bin/nix"),
+            "aarch64-darwin".to_owned(),
+            crate::capabilities::NixCapabilities {
+                version: NixVersion::new(2, 18, 1),
+                flakes_enabled: true,
+                supports_json_log_format: false,
+                supports_no_write_lock_file: true,
+                supports_offline: false,
+                supports_accept_flake_config: true,
+            },
+        );
+        let error = adapter
+            .compatible_argv(
+                vec!["run".to_owned(), ".#hello".to_owned()],
+                &OptionalNixFlags {
+                    offline: true,
+                    no_write_lock_file: true,
+                    accept_flake_config: true,
+                    json_log_format: true,
+                    nix_options: Vec::new(),
+                    extra_argv: Vec::new(),
+                },
+            )
+            .expect_err("offline is required by user");
+        assert!(matches!(
+            error,
+            NixError::UnsupportedOptionalFlag {
+                flag: "--offline",
+                ..
+            }
+        ));
+        assert_eq!(error.exit_code(), exit::NIX_CAPABILITY);
     }
 
     #[test]

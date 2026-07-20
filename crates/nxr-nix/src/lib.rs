@@ -13,9 +13,9 @@ use nxr_core::sanitize::sanitize_terminal_text;
 
 pub use adapter::NixAdapter;
 pub use capabilities::{
-    NixCapabilities, NixFailureKind, NixVersion, OptionalNixFlags, TESTED_NIX_SUPPORT_FLOOR,
-    detect_capabilities, detect_system, locate_nix, negotiate_capabilities,
-    parse_nix_version_output, run_nix,
+    FlagPolicy, NixCapabilities, NixFailureKind, NixVersion, OptionalNixFlags,
+    TESTED_NIX_SUPPORT_FLOOR, detect_capabilities, detect_system, locate_nix,
+    negotiate_capabilities, parse_nix_version_output, run_nix,
 };
 pub use command::{
     NIX_EXECUTABLE_ENV, check_installable, current_system_args, flake_eval_json_args,
@@ -53,6 +53,12 @@ pub enum NixError {
     /// Flakes are required but not enabled in the Nix configuration.
     FlakesDisabled { version: NixVersion },
 
+    /// A user-requested optional Nix flag is unsupported on this Nix version.
+    UnsupportedOptionalFlag {
+        flag: &'static str,
+        version: NixVersion,
+    },
+
     /// A `nix` subprocess exited unsuccessfully.
     CommandFailed {
         nix: Utf8PathBuf,
@@ -79,6 +85,7 @@ impl std::error::Error for NixError {
             | Self::InvalidSystemOutput
             | Self::InvalidVersionOutput
             | Self::FlakesDisabled { .. }
+            | Self::UnsupportedOptionalFlag { .. }
             | Self::CommandFailed { .. } => None,
         }
     }
@@ -127,6 +134,12 @@ impl NixError {
                      >> ~/.config/nix/nix.conf`"
                 )
             }
+            Self::UnsupportedOptionalFlag { flag, version } => {
+                format!(
+                    "Nix {version} does not support `{flag}` (requested via nxr); upgrade Nix or \
+                     omit the flag"
+                )
+            }
             Self::CommandFailed {
                 nix,
                 args,
@@ -170,6 +183,7 @@ impl NixError {
             | Self::InvalidSystemOutput
             | Self::InvalidVersionOutput
             | Self::FlakesDisabled { .. }
+            | Self::UnsupportedOptionalFlag { .. }
             | Self::CommandFailed {
                 kind: NixFailureKind::Capability,
                 ..

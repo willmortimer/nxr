@@ -34,10 +34,12 @@ detects that case from the `nix --version` banner (and from a successful
 
 Capability negotiation still runs on older Nix releases (roughly 2.4+): `nxr`
 detects version and feature flags once per adapter construction and chooses a
-compatible argv rather than hard-coding a single global flag set. Missing
-optional capabilities (for example `--offline`, `--no-write-lock-file`,
-`--accept-flake-config`, `--log-format json`) are omitted; flakes being
-unavailable is a hard capability error.
+compatible argv rather than hard-coding a single global flag set. User-requested
+globals (`--offline`, `--accept-flake-config`) are **required**: when
+unsupported they fail with a capability error instead of being silently dropped.
+Internal best-effort flags (for example `--no-write-lock-file` during
+discovery, `--log-format json`) may still be omitted. Flakes being unavailable
+is a hard capability error.
 
 Local flake roots are passed to Nix as `path:<absolute>` URIs. Bare absolute
 paths inside a git checkout can be rewritten to `git+file://…?dir=…`, which
@@ -130,9 +132,9 @@ operation authority:
   follows the same rule (see [MONOREPO_VIEWS.md](MONOREPO_VIEWS.md) and
   [`projects-v1`](../schemas/projects-v1.schema.json)).
 - **Capability-negotiated Nix** — the Nix adapter detects available CLI
-  features at runtime rather than hard-coding a floor; missing optional
-  capabilities degrade gracefully (see [ARCHITECTURE.md](ARCHITECTURE.md) §4.3
-  and §9).
+  features at runtime rather than hard-coding a floor; user-requested optional
+  globals fail when unsupported, while internal best-effort flags may be omitted
+  (see [ARCHITECTURE.md](ARCHITECTURE.md) §4.3 and §9).
 - **Event / schema surfaces** — versioned JSON schemas (`task-v1`,
   `execution-plan-v1`, `events-v1`, `projects-v1`) are the stable
   machine-readable contracts; consumers must ignore additive optional fields

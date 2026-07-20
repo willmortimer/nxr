@@ -18,8 +18,8 @@ nxr <command> --help
     --nix <PATH>           Override Nix executable
 -s, --select               Open interactive app selector
     --refresh-discovery    Ignore nxr discovery cache
-    --offline              Forward `--offline` to Nix when supported
-    --accept-flake-config  Forward `--accept-flake-config` to Nix when supported
+    --offline              Forward `--offline` to Nix (errors when unsupported)
+    --accept-flake-config  Forward `--accept-flake-config` to Nix (errors when unsupported)
     --nix-option <KEY=VAL> Forward `--option KEY VAL` to Nix (repeatable)
     --nix-arg <ARG>        Forward arbitrary Nix argv fragments (repeatable)
     --shell <NAME>         Execute through named dev shell

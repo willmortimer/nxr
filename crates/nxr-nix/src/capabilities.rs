@@ -35,6 +35,18 @@ pub enum NixFailureKind {
     Evaluation,
 }
 
+/// How `nxr` treats an optional Nix flag when capability negotiation says it is
+/// unsupported.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FlagPolicy {
+    /// User-facing CLI flags (`--offline`, `--accept-flake-config`) must not be
+    /// silently dropped.
+    RequiredByUser,
+    /// Internal optimizations (for example `--no-write-lock-file` during
+    /// discovery) may be omitted when unsupported.
+    BestEffortInternal,
+}
+
 /// Parsed Nix CLI version (`major.minor.patch`).
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct NixVersion {
@@ -81,7 +93,11 @@ pub struct NixCapabilities {
     pub supports_accept_flake_config: bool,
 }
 
-/// Optional Nix global flags a caller may request; unsupported ones are dropped.
+/// Optional Nix global flags a caller may request.
+///
+/// User-requested globals ([`FlagPolicy::RequiredByUser`]) error when
+/// unsupported; internal flags ([`FlagPolicy::BestEffortInternal`]) may be
+/// omitted.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 #[allow(clippy::struct_excessive_bools)] // mirrors NixCapabilities optional flag surface
 pub struct OptionalNixFlags {
@@ -109,6 +125,29 @@ impl NixCapabilities {
         }
     }
 
+    /// Fail when a user-requested optional flag is unsupported on this Nix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixError::UnsupportedOptionalFlag`] for
+    /// [`FlagPolicy::RequiredByUser`] flags that were requested but are not
+    /// supported.
+    pub fn ensure_compatible_flags(&self, requested: &OptionalNixFlags) -> Result<(), NixError> {
+        if requested.offline && !self.supports_offline {
+            return Err(NixError::UnsupportedOptionalFlag {
+                flag: "--offline",
+                version: self.version,
+            });
+        }
+        if requested.accept_flake_config && !self.supports_accept_flake_config {
+            return Err(NixError::UnsupportedOptionalFlag {
+                flag: "--accept-flake-config",
+                version: self.version,
+            });
+        }
+        Ok(())
+    }
+
     /// Global flags that are both requested and supported (true Nix globals).
     #[must_use]
     pub fn select_compatible_globals(&self, requested: &OptionalNixFlags) -> Vec<String> {
@@ -134,12 +173,17 @@ impl NixCapabilities {
 
     /// Build a compatible argv: true globals first, then the command, then
     /// installable-scoped options such as `--no-write-lock-file`.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixError::UnsupportedOptionalFlag`] when a
+    /// [`FlagPolicy::RequiredByUser`] flag was requested but is unsupported.
     pub fn apply_optional_flags(
         &self,
         base_args: Vec<String>,
         requested: &OptionalNixFlags,
-    ) -> Vec<String> {
+    ) -> Result<Vec<String>, NixError> {
+        self.ensure_compatible_flags(requested)?;
         let mut out = self.select_compatible_globals(requested);
         let mut rest = base_args;
 
@@ -160,7 +204,7 @@ impl NixCapabilities {
         }
 
         out.extend(rest);
-        out
+        Ok(out)
     }
 }
 
@@ -427,6 +471,7 @@ mod tests {
         FEATURE_FLOOR, NixCapabilities, NixVersion, OptionalNixFlags, TESTED_NIX_SUPPORT_FLOOR,
         detect_system, locate_nix, negotiate_capabilities, parse_nix_version_output,
     };
+    use crate::NixError;
 
     #[test]
     fn locate_nix_finds_executable_on_path() {
@@ -547,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn select_compatible_globals_drops_unsupported_flags() {
+    fn select_compatible_globals_drops_unsupported_best_effort_flags() {
         let caps = NixCapabilities {
             version: NixVersion::new(2, 3, 0),
             flakes_enabled: false,
@@ -559,12 +604,76 @@ mod tests {
         let flags = caps.select_compatible_globals(&OptionalNixFlags {
             offline: true,
             no_write_lock_file: true,
-            accept_flake_config: true,
+            accept_flake_config: false,
             json_log_format: true,
             nix_options: Vec::new(),
             extra_argv: Vec::new(),
         });
         assert_eq!(flags, vec!["--offline".to_owned()]);
+    }
+
+    #[test]
+    fn ensure_compatible_flags_errors_on_unsupported_user_flags() {
+        let caps = NixCapabilities {
+            version: NixVersion::new(2, 3, 0),
+            flakes_enabled: false,
+            supports_json_log_format: false,
+            supports_no_write_lock_file: false,
+            supports_offline: false,
+            supports_accept_flake_config: false,
+        };
+        let offline_error = caps
+            .ensure_compatible_flags(&OptionalNixFlags {
+                offline: true,
+                ..OptionalNixFlags::default()
+            })
+            .expect_err("offline unsupported");
+        assert!(matches!(
+            offline_error,
+            NixError::UnsupportedOptionalFlag {
+                flag: "--offline",
+                ..
+            }
+        ));
+
+        let accept_error = caps
+            .ensure_compatible_flags(&OptionalNixFlags {
+                accept_flake_config: true,
+                ..OptionalNixFlags::default()
+            })
+            .expect_err("accept-flake-config unsupported");
+        assert!(matches!(
+            accept_error,
+            NixError::UnsupportedOptionalFlag {
+                flag: "--accept-flake-config",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn apply_optional_flags_drops_unsupported_best_effort_lock_file_flag() {
+        let caps = NixCapabilities {
+            version: NixVersion::new(2, 18, 1),
+            flakes_enabled: true,
+            supports_json_log_format: true,
+            supports_no_write_lock_file: false,
+            supports_offline: true,
+            supports_accept_flake_config: true,
+        };
+        let args = caps
+            .apply_optional_flags(
+                vec!["flake".to_owned(), "show".to_owned(), ".".to_owned()],
+                &OptionalNixFlags {
+                    no_write_lock_file: true,
+                    ..OptionalNixFlags::default()
+                },
+            )
+            .expect("best-effort lock flag may be omitted");
+        assert_eq!(
+            args,
+            vec!["flake".to_owned(), "show".to_owned(), ".".to_owned()]
+        );
     }
 
     #[test]
@@ -592,22 +701,24 @@ mod tests {
     #[test]
     fn apply_optional_flags_places_lock_option_after_verb() {
         let caps = NixCapabilities::all_supported_for_tests(TESTED_NIX_SUPPORT_FLOOR);
-        let args = caps.apply_optional_flags(
-            vec![
-                "flake".to_owned(),
-                "show".to_owned(),
-                "--json".to_owned(),
-                ".".to_owned(),
-            ],
-            &OptionalNixFlags {
-                offline: true,
-                no_write_lock_file: true,
-                accept_flake_config: false,
-                json_log_format: false,
-                nix_options: Vec::new(),
-                extra_argv: Vec::new(),
-            },
-        );
+        let args = caps
+            .apply_optional_flags(
+                vec![
+                    "flake".to_owned(),
+                    "show".to_owned(),
+                    "--json".to_owned(),
+                    ".".to_owned(),
+                ],
+                &OptionalNixFlags {
+                    offline: true,
+                    no_write_lock_file: true,
+                    accept_flake_config: false,
+                    json_log_format: false,
+                    nix_options: Vec::new(),
+                    extra_argv: Vec::new(),
+                },
+            )
+            .expect("apply optional flags");
         assert_eq!(
             args,
             vec![
@@ -624,17 +735,19 @@ mod tests {
     #[test]
     fn apply_optional_flags_for_run_inserts_after_verb() {
         let caps = NixCapabilities::all_supported_for_tests(TESTED_NIX_SUPPORT_FLOOR);
-        let args = caps.apply_optional_flags(
-            vec!["run".to_owned(), ".#hello".to_owned()],
-            &OptionalNixFlags {
-                offline: true,
-                no_write_lock_file: false,
-                accept_flake_config: false,
-                json_log_format: false,
-                nix_options: Vec::new(),
-                extra_argv: Vec::new(),
-            },
-        );
+        let args = caps
+            .apply_optional_flags(
+                vec!["run".to_owned(), ".#hello".to_owned()],
+                &OptionalNixFlags {
+                    offline: true,
+                    no_write_lock_file: false,
+                    accept_flake_config: false,
+                    json_log_format: false,
+                    nix_options: Vec::new(),
+                    extra_argv: Vec::new(),
+                },
+            )
+            .expect("apply optional flags");
         assert_eq!(
             args,
             vec![

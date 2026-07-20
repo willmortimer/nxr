@@ -1,4 +1,7 @@
 //! Build capability-aware Nix argv flags from CLI globals.
+//!
+//! `--offline` and `--accept-flake-config` are [`nxr_nix::FlagPolicy::RequiredByUser`]:
+//! unsupported capabilities surface as [`nxr_nix::NixError::UnsupportedOptionalFlag`].
 
 use nxr_nix::OptionalNixFlags;
 
