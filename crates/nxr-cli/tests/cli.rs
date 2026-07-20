@@ -1877,3 +1877,249 @@ fn task_ci_uses_o1_discovery_not_per_node_flake_show() {
         "ci DAG has three app nodes → three nix run calls; log={log}"
     );
 }
+
+fn parse_dry_run_plans(stdout: &str) -> Vec<serde_json::Value> {
+    let mut plans = Vec::new();
+    let mut rest = stdout;
+    while let Some(start) = rest.find('{') {
+        let slice = &rest[start..];
+        let mut depth = 0_i32;
+        let mut end = None;
+        for (idx, ch) in slice.char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(idx + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let end = end.expect("balanced json object");
+        let json = &slice[..end];
+        plans.push(serde_json::from_str(json).expect("parse plan json"));
+        rest = &slice[end..];
+    }
+    plans
+}
+
+fn task_working_directory_paths(repo_root: &std::path::Path) -> (String, String) {
+    let flake_root = repo_root
+        .join("fixtures/task-working-directory")
+        .canonicalize()
+        .expect("canonicalize flake root")
+        .to_string_lossy()
+        .into_owned();
+    let invocation = repo_root
+        .join("fixtures/task-working-directory/deep/down/here")
+        .canonicalize()
+        .expect("canonicalize invocation cwd")
+        .to_string_lossy()
+        .into_owned();
+    (flake_root, invocation)
+}
+
+#[test]
+fn task_working_directory_tokens_resolve_in_dry_run() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let (flake_root, invocation) = task_working_directory_paths(&repo_root);
+    let nested_cwd = repo_root.join("fixtures/task-working-directory/deep/down/here");
+    let flake_arg = "../../..";
+
+    let cases = [
+        ("invocation-pwd", invocation.as_str()),
+        ("flake-root-pwd", flake_root.as_str()),
+        ("subdir-pwd", invocation.as_str()),
+    ];
+
+    for (task, expected_cwd) in cases {
+        let assert = cargo_bin_cmd!("nxr")
+            .current_dir(&nested_cwd)
+            .args([
+                "--flake",
+                flake_arg,
+                "--dry-run",
+                "--json",
+                "task",
+                task,
+            ])
+            .assert()
+            .success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+        let plans = parse_dry_run_plans(&stdout);
+        assert_eq!(plans.len(), 1, "task {task} should emit one plan:\n{stdout}");
+        assert_eq!(
+            plans[0]["execution_directory"].as_str().expect("execution_directory"),
+            expected_cwd,
+            "task {task}"
+        );
+    }
+}
+
+#[test]
+fn task_chain_dependency_nodes_use_distinct_working_directories() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let (flake_root, invocation) = task_working_directory_paths(&repo_root);
+    let nested_cwd = repo_root.join("fixtures/task-working-directory/deep/down/here");
+    let flake_arg = "../../..";
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&nested_cwd)
+        .args([
+            "--flake",
+            flake_arg,
+            "--dry-run",
+            "--json",
+            "task",
+            "chain",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let plans = parse_dry_run_plans(&stdout);
+    assert_eq!(plans.len(), 4, "chain has four nodes:\n{stdout}");
+
+    let expected = [
+        flake_root.as_str(),
+        invocation.as_str(),
+        invocation.as_str(),
+        invocation.as_str(),
+    ];
+    for (index, cwd) in expected.iter().enumerate() {
+        assert_eq!(
+            plans[index]["execution_directory"].as_str().expect("execution_directory"),
+            *cwd,
+            "cwd mismatch at plan index {index}"
+        );
+    }
+}
+
+#[test]
+fn task_cli_root_overrides_working_directory_metadata() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let (flake_root, _) = task_working_directory_paths(&repo_root);
+    let nested_cwd = repo_root.join("fixtures/task-working-directory/deep/down/here");
+    let flake_arg = "../../..";
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&nested_cwd)
+        .args([
+            "--flake",
+            flake_arg,
+            "--root",
+            "--dry-run",
+            "--json",
+            "task",
+            "invocation-pwd",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let plans = parse_dry_run_plans(&stdout);
+    assert_eq!(
+        plans[0]["execution_directory"].as_str().expect("execution_directory"),
+        flake_root.as_str()
+    );
+}
+
+#[test]
+fn task_cli_cwd_overrides_working_directory_metadata() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let override_cwd = repo_root
+        .canonicalize()
+        .expect("canonicalize repo root")
+        .to_string_lossy()
+        .into_owned();
+    let nested_cwd = repo_root.join("fixtures/task-working-directory/deep/down/here");
+    let flake_arg = "../../..";
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&nested_cwd)
+        .args([
+            "--flake",
+            flake_arg,
+            "-C",
+            override_cwd.as_str(),
+            "--dry-run",
+            "--json",
+            "task",
+            "flake-root-pwd",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let plans = parse_dry_run_plans(&stdout);
+    assert_eq!(
+        plans[0]["execution_directory"].as_str().expect("execution_directory"),
+        override_cwd.as_str()
+    );
+}
+
+#[test]
+fn inspect_task_working_directory_matches_dry_run_execution_directory() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let (flake_root, _) = task_working_directory_paths(&repo_root);
+    let nested_cwd = repo_root.join("fixtures/task-working-directory/deep/down/here");
+    let flake_arg = "../../..";
+
+    let inspect = cargo_bin_cmd!("nxr")
+        .current_dir(&nested_cwd)
+        .args([
+            "--flake",
+            flake_arg,
+            "inspect",
+            "task",
+            "flake-root-pwd",
+        ])
+        .assert()
+        .success();
+    let inspect_stdout =
+        String::from_utf8(inspect.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        inspect_stdout.contains("Working directory: flake-root"),
+        "expected metadata in inspect output:\n{inspect_stdout}"
+    );
+
+    let dry_run = cargo_bin_cmd!("nxr")
+        .current_dir(&nested_cwd)
+        .args([
+            "--flake",
+            flake_arg,
+            "--dry-run",
+            "--json",
+            "task",
+            "flake-root-pwd",
+        ])
+        .assert()
+        .success();
+    let dry_stdout =
+        String::from_utf8(dry_run.get_output().stdout.clone()).expect("utf-8 stdout");
+    let plans = parse_dry_run_plans(&dry_stdout);
+    assert_eq!(
+        plans[0]["execution_directory"].as_str().expect("execution_directory"),
+        flake_root.as_str()
+    );
+}

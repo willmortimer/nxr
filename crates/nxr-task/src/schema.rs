@@ -12,12 +12,27 @@ use thiserror::Error;
 /// Supported major version for the task schema envelope.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// Run children in the caller's invocation directory.
+pub const WORKING_DIRECTORY_INVOCATION: &str = "invocation";
+
+/// Run children at the discovered flake root.
+pub const WORKING_DIRECTORY_FLAKE_ROOT: &str = "flake-root";
+
 /// Errors produced while validating a task schema document.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum SchemaError {
     /// Document major version is not supported by this crate.
     #[error("unsupported task schema version {found}; expected major version {expected}")]
     UnsupportedVersion { found: u32, expected: u32 },
+    /// `workingDirectory` was empty.
+    #[error("task {task}: workingDirectory must not be empty")]
+    EmptyWorkingDirectory { task: String },
+    /// `workingDirectory` used an absolute path (only relative paths are allowed).
+    #[error(
+        "task {task}: workingDirectory must be {WORKING_DIRECTORY_INVOCATION}, \
+         {WORKING_DIRECTORY_FLAKE_ROOT}, or a relative path (got absolute path {value})"
+    )]
+    AbsoluteWorkingDirectory { task: String, value: String },
 }
 
 /// Versioned task document: `schema_version` plus named task definitions.
@@ -41,14 +56,20 @@ impl TaskDocument {
         }
     }
 
-    /// Validate that [`Self::schema_version`] is supported.
+    /// Validate schema version and task field constraints.
     ///
     /// # Errors
     ///
-    /// Returns [`SchemaError::UnsupportedVersion`] when the major version is not
-    /// [`SCHEMA_VERSION`].
+    /// Returns [`SchemaError`] when the major version is unsupported or a task
+    /// field fails validation (for example an absolute `workingDirectory`).
     pub fn validate(&self) -> Result<(), SchemaError> {
-        validate_schema_version(self.schema_version)
+        validate_schema_version(self.schema_version)?;
+        for (task, definition) in &self.tasks {
+            if let Some(working_directory) = &definition.working_directory {
+                validate_working_directory(task, working_directory)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -98,6 +119,33 @@ impl TaskDefinition {
             aliases: Vec::new(),
         }
     }
+}
+
+/// Validate a task `workingDirectory` token or relative path.
+///
+/// Accepted values: [`WORKING_DIRECTORY_INVOCATION`], [`WORKING_DIRECTORY_FLAKE_ROOT`],
+/// or a non-empty project-relative path. Absolute paths are rejected.
+///
+/// # Errors
+///
+/// Returns [`SchemaError::EmptyWorkingDirectory`] or
+/// [`SchemaError::AbsoluteWorkingDirectory`] when the value is invalid.
+pub fn validate_working_directory(task: &str, value: &str) -> Result<(), SchemaError> {
+    if value.is_empty() {
+        return Err(SchemaError::EmptyWorkingDirectory {
+            task: task.to_owned(),
+        });
+    }
+    if value == WORKING_DIRECTORY_INVOCATION || value == WORKING_DIRECTORY_FLAKE_ROOT {
+        return Ok(());
+    }
+    if std::path::Path::new(value).is_absolute() {
+        return Err(SchemaError::AbsoluteWorkingDirectory {
+            task: task.to_owned(),
+            value: value.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// Reject unsupported major schema versions.
@@ -244,6 +292,57 @@ mod tests {
                 found: 99,
                 expected: 1
             }
+        ));
+    }
+
+    #[test]
+    fn validate_working_directory_accepts_tokens_and_relative_paths() {
+        validate_working_directory("fmt", WORKING_DIRECTORY_INVOCATION).expect("invocation");
+        validate_working_directory("fmt", WORKING_DIRECTORY_FLAKE_ROOT).expect("flake-root");
+        validate_working_directory("fmt", "crates/api").expect("relative");
+        validate_working_directory("fmt", "deep/down/here").expect("nested relative");
+    }
+
+    #[test]
+    fn validate_working_directory_rejects_empty_and_absolute_paths() {
+        let empty = validate_working_directory("fmt", "").expect_err("empty");
+        assert_eq!(
+            empty,
+            SchemaError::EmptyWorkingDirectory {
+                task: "fmt".to_owned(),
+            }
+        );
+
+        let absolute = validate_working_directory("fmt", "/tmp/project").expect_err("absolute");
+        assert_eq!(
+            absolute,
+            SchemaError::AbsoluteWorkingDirectory {
+                task: "fmt".to_owned(),
+                value: "/tmp/project".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn validate_document_rejects_absolute_working_directory() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert(
+            "fmt".to_owned(),
+            TaskDefinition {
+                description: None,
+                depends_on: Vec::new(),
+                app: "fmt".to_owned(),
+                working_directory: Some("/absolute".to_owned()),
+                hidden: false,
+                category: None,
+                aliases: Vec::new(),
+            },
+        );
+        let doc = TaskDocument::new(tasks);
+        let err = doc.validate().expect_err("absolute path rejected");
+        assert!(matches!(
+            err,
+            SchemaError::AbsoluteWorkingDirectory { .. }
         ));
     }
 

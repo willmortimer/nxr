@@ -275,6 +275,10 @@ workingDirectory = "invocation";
 
 Arbitrary relative directories should be resolved against the flake root.
 
+Absolute paths in task metadata are rejected during validation. CLI `--root`
+and `--cwd` / `-C` override task `workingDirectory` for every node in a task
+run (precedence: CLI flags > task metadata > invocation directory).
+
 ## 8. Argument-forwarding semantics
 
 Argument forwarding must be boring and exact.

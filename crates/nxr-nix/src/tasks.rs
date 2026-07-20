@@ -1,7 +1,7 @@
 //! Task metadata discovery via `nix eval --json` on `nxr.<system>`.
 
 use camino::Utf8Path;
-use nxr_task::{SchemaError, TaskDocument, validate_schema_version};
+use nxr_task::{SchemaError, TaskDocument};
 use serde_json::Value as JsonValue;
 
 use crate::NixError;
@@ -129,7 +129,7 @@ pub fn discover_tasks(
 pub fn parse_task_document(value: &JsonValue) -> Result<TaskDocument, TaskDiscoveryError> {
     let doc: TaskDocument = serde_json::from_value(value.clone())
         .map_err(|source| TaskDiscoveryError::InvalidDocument { source })?;
-    validate_schema_version(doc.schema_version)?;
+    doc.validate()?;
     Ok(doc)
 }
 
@@ -233,6 +233,25 @@ mod tests {
         });
         let err = parse_task_document(&value).expect_err("app required");
         assert!(matches!(err, TaskDiscoveryError::InvalidDocument { .. }));
+    }
+
+    #[test]
+    fn parse_rejects_absolute_working_directory() {
+        let value = json!({
+            "schema_version": 1,
+            "tasks": {
+                "fmt": {
+                    "app": "fmt",
+                    "workingDirectory": "/absolute"
+                }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("absolute path rejected");
+        assert!(matches!(
+            err,
+            TaskDiscoveryError::Schema(SchemaError::AbsoluteWorkingDirectory { .. })
+        ));
+        assert_eq!(err.exit_code(), exit::EVALUATION);
     }
 
     #[test]

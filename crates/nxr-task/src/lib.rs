@@ -25,5 +25,6 @@ pub use planner::{PlanError, plan_mermaid, plan_serial, plan_text};
 pub use resolve::{ResolveTaskError, listable_tasks, resolve_task, resolve_task_name};
 pub use scheduler::{NodeState, ScheduleOutcome, Scheduler, SchedulerError};
 pub use schema::{
-    SCHEMA_VERSION, SchemaError, TaskDefinition, TaskDocument, validate_schema_version,
+    SCHEMA_VERSION, SchemaError, TaskDefinition, TaskDocument, WORKING_DIRECTORY_FLAKE_ROOT,
+    WORKING_DIRECTORY_INVOCATION, validate_schema_version, validate_working_directory,
 };

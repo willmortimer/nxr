@@ -12,6 +12,7 @@ These are small Nix flakes used to exercise `nxr` discovery and execution
 | [named-dev-shells](named-dev-shells/) | `devShells.default` + `shell-marker` app for `--shell` |
 | [shell-integration](shell-integration/) | `nxr.shellIntegration` adds `nxr` to `nix develop` |
 | [task-dag](task-dag/) | Small task DAG (`fmt` → `test` → `ci`) via `nxr.<system>` |
+| [task-working-directory](task-working-directory/) | Per-task `workingDirectory` tokens and relative paths |
 | [parallel-group](parallel-group/) | Diamond DAG (`a` → `left`||`right` → `join`) for `-j` |
 | [watch-project](watch-project/) | Placeholder for V2 watch mode |
 
