@@ -124,7 +124,7 @@ fn paths_from_metadata(metadata: &BTreeMap<String, JsonValue>) -> Vec<String> {
             values
                 .iter()
                 .filter_map(JsonValue::as_str)
-                .map(|path| normalize_relative_path(path))
+                .map(normalize_relative_path)
                 .collect()
         })
         .unwrap_or_default()

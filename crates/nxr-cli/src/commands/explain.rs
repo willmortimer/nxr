@@ -187,16 +187,16 @@ pub fn workspace_context_from_snapshot(
 ///
 /// Returns [`ExplainError`] when resolution, planning, or rendering fails.
 pub fn run(
-    request: ExplainRequest<'_>,
+    request: &ExplainRequest<'_>,
     json: bool,
     runner: RunnerOutput,
 ) -> Result<(), ExplainError> {
     let report = match request.kind {
-        Some(ExplainKind::Task) => explain_task(&request)?,
-        Some(ExplainKind::App) => explain_app(&request)?,
-        None => match explain_app(&request) {
+        Some(ExplainKind::Task) => explain_task(request)?,
+        Some(ExplainKind::App) => explain_app(request)?,
+        None => match explain_app(request) {
             Ok(report) => report,
-            Err(ExplainError::Prepare(PrepareError::NotFound(_))) => explain_task(&request)?,
+            Err(ExplainError::Prepare(PrepareError::NotFound(_))) => explain_task(request)?,
             Err(error) => return Err(error),
         },
     };
@@ -344,16 +344,15 @@ fn task_nodes_explain(
 
 fn scheduler_skip_reasons(task_id: &str, plan: &ExecutionPlan) -> Vec<String> {
     let mut reasons = Vec::new();
-    if let Some(node) = plan.nodes.iter().find(|node| node.id == task_id) {
-        if !node.depends_on.is_empty() {
-            match plan.failure_policy {
-                FailurePolicy::FailFast => reasons.push(
-                    "not started after an upstream failure under fail-fast policy".to_owned(),
-                ),
-                FailurePolicy::KeepGoing => reasons.push(
-                    "cancelled when a direct dependency fails under keep-going policy".to_owned(),
-                ),
-            }
+    if let Some(node) = plan.nodes.iter().find(|node| node.id == task_id)
+        && !node.depends_on.is_empty()
+    {
+        match plan.failure_policy {
+            FailurePolicy::FailFast => reasons
+                .push("not started after an upstream failure under fail-fast policy".to_owned()),
+            FailurePolicy::KeepGoing => reasons.push(
+                "cancelled when a direct dependency fails under keep-going policy".to_owned(),
+            ),
         }
     }
     reasons
@@ -409,8 +408,7 @@ fn shell_wrap_context(
             ShellMode::Smart if active == Some(name) => {
                 Some(format!("active dev shell matches requested shell ({name})"))
             }
-            ShellMode::Smart => Some("shell wrap not applied".to_owned()),
-            ShellMode::Always => Some("shell wrap not applied".to_owned()),
+            ShellMode::Smart | ShellMode::Always => Some("shell wrap not applied".to_owned()),
         }
     });
 
@@ -509,8 +507,7 @@ fn write_workspace_header(writer: &mut impl Write, workspace: &WorkspaceContext)
         workspace
             .discovery_cache
             .invalidation_key
-            .map(|key| key.to_string())
-            .unwrap_or_else(|| "n/a".to_owned())
+            .map_or_else(|| "n/a".to_owned(), |key| key.to_string())
     )?;
     if let Some(file) = &workspace.discovery_cache.cache_file {
         writeln!(writer, "cache_file: {file}")?;

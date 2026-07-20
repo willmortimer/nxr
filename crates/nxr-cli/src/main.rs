@@ -526,7 +526,7 @@ fn dispatch_explain(
         events_format: cli.events,
         nix_flags,
     };
-    explain::run(request, cli.json, runner)?;
+    explain::run(&request, cli.json, runner)?;
     Ok(exit::SUCCESS)
 }
 

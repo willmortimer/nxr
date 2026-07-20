@@ -186,7 +186,7 @@ pub fn execute(
         .iter()
         .map(|name| {
             resolve_task_name(&document, name)
-                .map(|canonical| canonical.to_owned())
+                .map(str::to_owned)
                 .map_err(|error| TaskError::Plan(PlanError::UnknownRoot { root: error.name }))
         })
         .collect::<Result<_, _>>()?;

@@ -56,6 +56,7 @@ impl AffectedCommandError {
 /// # Errors
 ///
 /// Returns [`AffectedCommandError`] when discovery or analysis fails.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     flake_arg: Option<&str>,
     nix_override: Option<&str>,

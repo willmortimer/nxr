@@ -1,5 +1,7 @@
 //! Path normalization and conservative overlap checks.
 
+use std::path::Path;
+
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
 /// Normalize a repository-relative path for comparisons.
@@ -14,7 +16,11 @@ pub fn normalize_relative_path(path: &str) -> String {
 #[must_use]
 pub fn is_global_invalidation_path(path: &str) -> bool {
     let normalized = normalize_relative_path(path);
-    normalized == "flake.nix" || normalized == "flake.lock" || normalized.ends_with(".nix")
+    normalized == "flake.nix"
+        || normalized == "flake.lock"
+        || Path::new(&normalized)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("nix"))
 }
 
 /// Whether `changed` overlaps any declared root prefix or glob (conservative).
@@ -34,9 +40,7 @@ pub fn path_matches_roots(changed: &str, roots: &[String]) -> bool {
         }
     }
 
-    compile_globset(roots)
-        .map(|set| set.is_match(changed.as_str()))
-        .unwrap_or(false)
+    compile_globset(roots).is_some_and(|set| set.is_match(changed.as_str()))
 }
 
 fn prefix_overlap(left: &str, right: &str) -> bool {

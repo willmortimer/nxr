@@ -190,6 +190,28 @@ mod tests {
         panic!("missing {name} under /usr/bin or /bin");
     }
 
+    /// Poll until the child exits or the deadline passes, then always reap.
+    #[cfg(unix)]
+    fn wait_forwarded_exit(
+        child: &mut std::process::Child,
+        forwarder: &super::unix::SignalForwarder,
+        pgid: u32,
+        deadline: std::time::Instant,
+    ) -> Option<i32> {
+        use std::thread;
+        use std::time::Duration;
+
+        while std::time::Instant::now() < deadline {
+            forwarder.poll_and_forward(pgid);
+            if let Ok(Some(status)) = child.try_wait() {
+                return Some(exit_code_from_status(status));
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let _ = child.kill();
+        child.wait().ok().map(exit_code_from_status)
+    }
+
     #[cfg(unix)]
     #[test]
     fn exit_code_passthrough_for_normal_exit() {
@@ -229,7 +251,6 @@ mod tests {
     fn sigint_forwarded_to_child_process_group() {
         use std::os::unix::process::CommandExt;
         use std::process::Command;
-        use std::thread;
         use std::time::{Duration, Instant};
 
         use nix::sys::signal::{Signal, kill};
@@ -251,16 +272,12 @@ mod tests {
         )
         .expect("SIGINT to test process");
 
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let mut code = None;
-        while Instant::now() < deadline {
-            forwarder.poll_and_forward(pgid);
-            if let Ok(Some(status)) = child.try_wait() {
-                code = Some(exit_code_from_status(status));
-                break;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
+        let code = wait_forwarded_exit(
+            &mut child,
+            &forwarder,
+            pgid,
+            Instant::now() + Duration::from_secs(3),
+        );
 
         assert_eq!(
             code,
@@ -274,7 +291,6 @@ mod tests {
     fn sigterm_forwarded_to_child_process_group() {
         use std::os::unix::process::CommandExt;
         use std::process::Command;
-        use std::thread;
         use std::time::{Duration, Instant};
 
         use nix::sys::signal::{Signal, kill};
@@ -296,16 +312,12 @@ mod tests {
         )
         .expect("SIGTERM to test process");
 
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let mut code = None;
-        while Instant::now() < deadline {
-            forwarder.poll_and_forward(pgid);
-            if let Ok(Some(status)) = child.try_wait() {
-                code = Some(exit_code_from_status(status));
-                break;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
+        let code = wait_forwarded_exit(
+            &mut child,
+            &forwarder,
+            pgid,
+            Instant::now() + Duration::from_secs(3),
+        );
 
         assert_eq!(
             code,
