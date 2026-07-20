@@ -108,8 +108,7 @@ where
         return discover();
     };
 
-    if let Ok(Some(discovery)) = load_cached_workspace(local_root, context, options.require_tasks)
-    {
+    if let Ok(Some(discovery)) = load_cached_workspace(local_root, context, options.require_tasks) {
         return Ok(discovery);
     }
 
@@ -158,8 +157,7 @@ thread_local! {
 }
 
 #[cfg(test)]
-static CONCURRENT_TEST_CACHE_ROOT: std::sync::Mutex<Option<PathBuf>> =
-    std::sync::Mutex::new(None);
+static CONCURRENT_TEST_CACHE_ROOT: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
 fn cache_root() -> Option<PathBuf> {
     #[cfg(test)]
@@ -560,6 +558,7 @@ mod tests {
                 hidden: false,
                 category: None,
                 aliases: Vec::new(),
+                interactive: false,
             },
         );
         TaskDocument::new(tasks)
@@ -880,8 +879,7 @@ mod tests {
         fs::create_dir_all(&links).expect("links dir");
         let link = links.join("flake-link");
         std::os::unix::fs::symlink(&root, &link).expect("symlink");
-        let link_root =
-            camino::Utf8PathBuf::from_path_buf(link).expect("utf8 link path");
+        let link_root = camino::Utf8PathBuf::from_path_buf(link).expect("utf8 link path");
         let context = test_context(&link_root, "aarch64-darwin");
         let canonical_context = test_context(&root, "aarch64-darwin");
 
@@ -992,10 +990,7 @@ mod tests {
                         store_cached_workspace(
                             &root,
                             &context,
-                            &WorkspaceDiscovery {
-                                apps,
-                                tasks: None,
-                            },
+                            &WorkspaceDiscovery { apps, tasks: None },
                         )
                     })
                 })
@@ -1068,15 +1063,8 @@ mod tests {
         let apps = sample_apps(root.as_str(), "aarch64-darwin");
 
         with_cache_dir(&temp, || {
-            store_cached_workspace(
-                &root,
-                &context,
-                &WorkspaceDiscovery {
-                    apps,
-                    tasks: None,
-                },
-            )
-            .expect("store cache");
+            store_cached_workspace(&root, &context, &WorkspaceDiscovery { apps, tasks: None })
+                .expect("store cache");
 
             let status = super::discovery_cache_status().expect("status");
             assert_eq!(status.entries, 1);

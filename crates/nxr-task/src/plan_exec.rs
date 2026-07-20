@@ -68,6 +68,9 @@ pub struct PlanNode {
     /// Direct `dependsOn` targets that must complete before this node.
     #[serde(default, rename = "dependsOn", skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
+    /// When true, the scheduler runs this node exclusively (no concurrent peers).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interactive: bool,
 }
 
 /// Versioned, immutable execution plan for a chosen root.
@@ -103,6 +106,20 @@ impl ExecutionPlan {
     /// Task ids present in the plan (same as [`Self::nodes`] ids).
     pub fn node_ids(&self) -> impl Iterator<Item = &str> {
         self.nodes.iter().map(|n| n.id.as_str())
+    }
+
+    /// Task ids marked `interactive` in the reachable subgraph.
+    pub fn interactive_node_ids(&self) -> impl Iterator<Item = &str> {
+        self.nodes
+            .iter()
+            .filter(|n| n.interactive)
+            .map(|n| n.id.as_str())
+    }
+
+    /// Whether any node in the plan requires exclusive interactive execution.
+    #[must_use]
+    pub fn has_interactive_nodes(&self) -> bool {
+        self.nodes.iter().any(|n| n.interactive)
     }
 }
 
@@ -144,12 +161,16 @@ pub fn build_execution_plan_roots(
 
     let nodes: Vec<PlanNode> = graph
         .node_ids()
-        .map(|id| PlanNode {
-            id: id.to_owned(),
-            depends_on: graph
-                .dependencies(id)
-                .map(<[String]>::to_vec)
-                .unwrap_or_default(),
+        .filter_map(|id| {
+            let definition = tasks.get(id)?;
+            Some(PlanNode {
+                id: id.to_owned(),
+                depends_on: graph
+                    .dependencies(id)
+                    .map(<[String]>::to_vec)
+                    .unwrap_or_default(),
+                interactive: definition.interactive,
+            })
         })
         .collect();
 
@@ -315,6 +336,25 @@ mod tests {
         let plan: ExecutionPlan = serde_json::from_value(json).expect("deserialize");
         assert_eq!(plan.argument_forwarding, ArgumentForwarding::Root);
         assert_eq!(plan.argument_forwarding.as_str(), "root");
+    }
+
+    #[test]
+    fn interactive_flag_propagates_to_plan_nodes() {
+        let mut tasks = diamond();
+        tasks.get_mut("b").expect("b").interactive = true;
+        let plan = build_serial_plan(&tasks, "d").expect("plan");
+        let b = plan.nodes.iter().find(|n| n.id == "b").expect("b");
+        assert!(b.interactive);
+        assert!(
+            !plan
+                .nodes
+                .iter()
+                .find(|n| n.id == "c")
+                .expect("c")
+                .interactive
+        );
+        assert_eq!(plan.interactive_node_ids().collect::<Vec<_>>(), vec!["b"]);
+        assert!(plan.has_interactive_nodes());
     }
 
     #[test]

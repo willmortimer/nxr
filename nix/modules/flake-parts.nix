@@ -29,6 +29,9 @@ let
     }
     // lib.optionalAttrs (task.aliases != [ ]) {
       aliases = task.aliases;
+    }
+    // lib.optionalAttrs task.interactive {
+      interactive = task.interactive;
     };
 
   taskDocument = tasksCfg: {

@@ -64,6 +64,16 @@ let
           name is not an app). Bare `nxr <name>` remains app-only.
         '';
       };
+
+      interactive = lib.mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          When true, the node requires exclusive terminal access: stdin and the
+          controlling TTY are inherited, the scheduler runs it alone (no
+          concurrent peers), and multiplexed `--output` modes are rejected.
+        '';
+      };
     };
   };
 in

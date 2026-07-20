@@ -79,6 +79,10 @@ pub enum TaskError {
         "--output raw requires -j 1 and cannot be combined with --events (raw inherits child stdio)"
     )]
     RawConflictsWithMultiplex,
+    #[error(
+        "interactive tasks cannot be combined with multiplexed --output or --events (interactive nodes inherit stdin/terminal)"
+    )]
+    InteractiveConflictsWithMultiplex,
     #[error("failed to supervise task children: {0}")]
     Supervision(#[source] io::Error),
     #[error("failed to write runner diagnostics: {0}")]
@@ -97,7 +101,9 @@ impl TaskError {
             Self::Run(error) => error.exit_code(),
             Self::PlanRender(_) => exit::EVALUATION,
             Self::Scheduler(_) | Self::Supervision(_) | Self::Io(_) => exit::PROCESS_SUPERVISION,
-            Self::InvalidJobs(_) | Self::RawConflictsWithMultiplex => exit::USAGE,
+            Self::InvalidJobs(_)
+            | Self::RawConflictsWithMultiplex
+            | Self::InteractiveConflictsWithMultiplex => exit::USAGE,
         }
     }
 }
@@ -186,22 +192,13 @@ pub fn execute(
         .collect::<Result<_, _>>()?;
     let root_refs: Vec<&str> = canonical_roots.iter().map(String::as_str).collect();
 
-    let pipe_stdio = !task_inherits_stdin(request.jobs, request.output_mode, request.events_format);
-
-    // Parallel runs without an explicit --output still need a labeled renderer so
-    // piped child stdout is not discarded by NullSink.
-    let effective_output = request.output_mode.or(if request.jobs > 1 {
-        Some(TaskOutputMode::Live)
-    } else {
-        None
-    });
-
     let plan = build_execution_plan_roots(
         &document.tasks,
         &root_refs,
         failure_policy,
         None,
     )?;
+    validate_interactive_run(&plan, request)?;
     snapshot
         .validate_task_apps(&document)
         .map_err(PrepareError::NotFound)?;
@@ -218,19 +215,24 @@ pub fn execute(
         request.nix_flags,
     )?;
 
-    let waves = parallel_ready_waves(&plan);
-    let stdin_label = if pipe_stdio { "null" } else { "inherit" };
-    runner
-        .verbose(format!(
-            "task plan for {} (jobs={}, {}, args={}, stdin={}): {}",
-            format_task_roots(&canonical_roots),
-            request.jobs,
-            failure_policy.as_str(),
-            plan.argument_forwarding.as_str(),
-            stdin_label,
-            format_wave_summary(&waves)
-        ))
-        .map_err(TaskError::Io)?;
+    // Parallel runs without an explicit --output still need a labeled renderer so
+    // piped child stdout is not discarded by NullSink.
+    let effective_output = request.output_mode.or(if request.jobs > 1 {
+        Some(TaskOutputMode::Live)
+    } else {
+        None
+    });
+
+    let waves = parallel_ready_waves(&plan, request.jobs);
+    let pipe_stdio = plan_uses_piped_stdio(&plan, request);
+    log_task_plan_verbose(
+        &format_task_roots(&canonical_roots),
+        &plan,
+        request,
+        failure_policy,
+        &waves,
+        runner,
+    )?;
 
     if dry_run {
         return dry_run_execute(&prepared_nodes, &plan, &waves, request, json, runner);
@@ -254,12 +256,70 @@ pub fn execute(
             },
             node_count: plan.nodes.len(),
         });
-        run_plan(request, &plan, &prepared_nodes, true, &mut sink, runner)
+        run_plan(request, &plan, &prepared_nodes, &mut sink, runner)
     } else {
         // Inherit stdio for interactivity / --output raw: do not hold stdout/stderr locks.
         let mut sink = nxr_task::NullSink;
-        run_plan(request, &plan, &prepared_nodes, false, &mut sink, runner)
+        run_plan(request, &plan, &prepared_nodes, &mut sink, runner)
     }
+}
+
+/// Reject multiplex output/events when the plan contains interactive nodes.
+fn validate_interactive_run(
+    plan: &ExecutionPlan,
+    request: &TaskRequest<'_>,
+) -> Result<(), TaskError> {
+    if plan.has_interactive_nodes()
+        && (request.events_format.is_some()
+            || matches!(request.output_mode, Some(mode) if mode.is_multiplexed()))
+    {
+        return Err(TaskError::InteractiveConflictsWithMultiplex);
+    }
+    Ok(())
+}
+
+fn log_task_plan_verbose(
+    canonical: &str,
+    plan: &ExecutionPlan,
+    request: &TaskRequest<'_>,
+    failure_policy: FailurePolicy,
+    waves: &[Vec<String>],
+    runner: RunnerOutput,
+) -> Result<(), TaskError> {
+    let pipe_stdio = plan_uses_piped_stdio(plan, request);
+    let stdin_label = if plan.has_interactive_nodes() {
+        "inherit (interactive)"
+    } else if pipe_stdio {
+        "null"
+    } else {
+        "inherit"
+    };
+    runner
+        .verbose(format!(
+            "task plan for {canonical} (jobs={}, {}, args={}, stdin={}): {}",
+            request.jobs,
+            failure_policy.as_str(),
+            plan.argument_forwarding.as_str(),
+            stdin_label,
+            format_wave_summary(waves)
+        ))
+        .map_err(TaskError::Io)?;
+    if plan.has_interactive_nodes() {
+        let interactive = plan.interactive_node_ids().collect::<Vec<_>>().join(", ");
+        runner
+            .verbose(format!(
+                "interactive exclusivity: nodes [{interactive}] run alone (stdin/terminal inherited; no concurrent peers)"
+            ))
+            .map_err(TaskError::Io)?;
+    }
+    Ok(())
+}
+
+fn node_is_interactive(plan: &ExecutionPlan, node_id: &str) -> bool {
+    plan.nodes
+        .iter()
+        .find(|node| node.id == node_id)
+        .is_some_and(|node| node.interactive)
 }
 
 /// Serial interactive and `--output raw` paths inherit caller stdin; multiplex closes it.
@@ -281,6 +341,33 @@ pub fn task_inherits_stdin(
     }
 }
 
+/// Whether any node in `plan` uses piped stdio under `request`.
+#[must_use]
+pub fn plan_uses_piped_stdio(plan: &ExecutionPlan, request: &TaskRequest<'_>) -> bool {
+    plan.nodes.iter().any(|node| {
+        node_uses_piped_stdio(
+            node.interactive,
+            request.jobs,
+            request.output_mode,
+            request.events_format,
+        )
+    })
+}
+
+/// Per-node stdio policy: interactive nodes always inherit; others follow serial/multiplex rules.
+#[must_use]
+pub fn node_uses_piped_stdio(
+    interactive: bool,
+    jobs: usize,
+    output_mode: Option<TaskOutputMode>,
+    events_format: Option<EventsFormat>,
+) -> bool {
+    if interactive {
+        return false;
+    }
+    !task_inherits_stdin(jobs, output_mode, events_format)
+}
+
 fn dry_run_execute(
     prepared_nodes: &BTreeMap<String, PreparedTaskNode>,
     plan: &ExecutionPlan,
@@ -290,12 +377,13 @@ fn dry_run_execute(
     runner: RunnerOutput,
 ) -> Result<i32, TaskError> {
     let mut stdout = io::stdout().lock();
-    let stdin_label =
-        if task_inherits_stdin(request.jobs, request.output_mode, request.events_format) {
-            "inherit"
-        } else {
-            "null"
-        };
+    let stdin_label = if plan.has_interactive_nodes() {
+        "inherit (interactive)"
+    } else if plan_uses_piped_stdio(plan, request) {
+        "null"
+    } else {
+        "inherit"
+    };
     writeln!(
         stdout,
         "# argument_forwarding={} stdin={}",
@@ -303,6 +391,14 @@ fn dry_run_execute(
         stdin_label
     )
     .map_err(TaskError::Io)?;
+    if plan.has_interactive_nodes() {
+        let interactive = plan.interactive_node_ids().collect::<Vec<_>>().join(", ");
+        writeln!(
+            stdout,
+            "# interactive_exclusivity: nodes [{interactive}] run alone (stdin/terminal inherited)"
+        )
+        .map_err(TaskError::Io)?;
+    }
     if request.jobs > 1 {
         writeln!(
             stdout,
@@ -343,7 +439,6 @@ fn run_plan(
     request: &TaskRequest<'_>,
     plan: &ExecutionPlan,
     prepared_nodes: &BTreeMap<String, PreparedTaskNode>,
-    pipe_stdio: bool,
     sink: &mut dyn EventSink,
     runner: RunnerOutput,
 ) -> Result<i32, TaskError> {
@@ -375,6 +470,12 @@ fn run_plan(
         }
 
         for node_id in to_start.drain(..) {
+            let pipe_stdio = node_uses_piped_stdio(
+                node_is_interactive(plan, &node_id),
+                request.jobs,
+                request.output_mode,
+                request.events_format,
+            );
             spawn_node(
                 prepared_nodes,
                 &node_id,
@@ -583,8 +684,8 @@ fn drain_io_chunks(rx: &Receiver<IoChunk>, sink: &mut dyn EventSink, timeout: Du
 }
 
 /// Compute ready-set waves assuming every node succeeds (for dry-run / verbose).
-fn parallel_ready_waves(plan: &ExecutionPlan) -> Vec<Vec<String>> {
-    let Ok(mut scheduler) = Scheduler::new(plan, usize::MAX) else {
+fn parallel_ready_waves(plan: &ExecutionPlan, jobs: usize) -> Vec<Vec<String>> {
+    let Ok(mut scheduler) = Scheduler::new(plan, jobs.max(1)) else {
         return plan
             .serial_order
             .iter()
@@ -627,8 +728,12 @@ fn format_wave_summary(waves: &[Vec<String>]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_wave_summary, parallel_ready_waves, plan_exit_code, task_inherits_stdin};
+    use super::{
+        format_wave_summary, node_uses_piped_stdio, parallel_ready_waves, plan_exit_code,
+        plan_uses_piped_stdio, task_inherits_stdin,
+    };
     use crate::output_task::{EventsFormat, TaskOutputMode};
+    use nxr_core::EnvironmentPolicy;
     use nxr_core::diagnostics::exit;
     use nxr_task::{FailurePolicy, PlanError, TaskDefinition, build_execution_plan};
     use std::collections::BTreeMap;
@@ -673,7 +778,7 @@ mod tests {
         tasks.insert("d".to_owned(), d);
 
         let plan = build_execution_plan(&tasks, "d", FailurePolicy::FailFast, None).expect("plan");
-        let waves = parallel_ready_waves(&plan);
+        let waves = parallel_ready_waves(&plan, 2);
         assert_eq!(
             waves,
             vec![
@@ -713,5 +818,73 @@ mod tests {
     #[test]
     fn events_format_closes_stdin() {
         assert!(!task_inherits_stdin(1, None, Some(EventsFormat::Jsonl)));
+    }
+
+    #[test]
+    fn interactive_node_never_uses_piped_stdio() {
+        assert!(!node_uses_piped_stdio(
+            true,
+            2,
+            Some(TaskOutputMode::Live),
+            None
+        ));
+        assert!(!node_uses_piped_stdio(true, 2, None, None));
+    }
+
+    #[test]
+    fn interactive_siblings_serialize_waves_with_jobs_2() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert("a".to_owned(), TaskDefinition::new("a"));
+        let mut b = TaskDefinition::new("b");
+        b.depends_on = vec!["a".to_owned()];
+        b.interactive = true;
+        tasks.insert("b".to_owned(), b);
+        let mut c = TaskDefinition::new("c");
+        c.depends_on = vec!["a".to_owned()];
+        tasks.insert("c".to_owned(), c);
+        let mut d = TaskDefinition::new("d");
+        d.depends_on = vec!["b".to_owned(), "c".to_owned()];
+        tasks.insert("d".to_owned(), d);
+
+        let plan = build_execution_plan(&tasks, "d", FailurePolicy::FailFast, None).expect("plan");
+        let waves = parallel_ready_waves(&plan, 2);
+        assert_eq!(
+            waves,
+            vec![
+                vec!["a".to_owned()],
+                vec!["b".to_owned()],
+                vec!["c".to_owned()],
+                vec!["d".to_owned()],
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_with_interactive_uses_piped_stdio_for_parallel_non_interactive() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert("a".to_owned(), TaskDefinition::new("a"));
+        let mut b = TaskDefinition::new("b");
+        b.depends_on = vec!["a".to_owned()];
+        b.interactive = true;
+        tasks.insert("b".to_owned(), b);
+        let plan = build_execution_plan(&tasks, "b", FailurePolicy::FailFast, None).expect("plan");
+        let nix_flags = nxr_nix::OptionalNixFlags::default();
+        let request = super::TaskRequest {
+            flake_arg: None,
+            nix_override: None,
+            task: "b",
+            args: &[],
+            root: false,
+            cwd: None,
+            shell: None,
+            shell_mode: crate::shell_mode::ShellMode::Smart,
+            environment_policy: EnvironmentPolicy::Inherit,
+            jobs: 2,
+            keep_going: false,
+            output_mode: None,
+            events_format: None,
+            nix_flags: &nix_flags,
+        };
+        assert!(plan_uses_piped_stdio(&plan, &request));
     }
 }

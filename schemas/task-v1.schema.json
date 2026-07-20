@@ -65,6 +65,11 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        "interactive": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the node requires exclusive terminal access (stdin inherited; cannot run concurrently with peers or multiplexed output)."
         }
       }
     }

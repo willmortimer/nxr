@@ -72,6 +72,11 @@
           "items": {
             "type": "string"
           }
+        },
+        "interactive": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the scheduler runs this node exclusively (stdin/terminal inherited; no concurrent peers)."
         }
       }
     }

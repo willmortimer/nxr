@@ -54,6 +54,7 @@ perSystem = { ... }: {
 | `hidden` | no | Omit from default listings; default `false` |
 | `category` | no | Logical grouping for listings |
 | `aliases` | no | Alternate names for explicit task commands (see below); default `[]` |
+| `interactive` | no | Exclusive terminal access (`stdin`/TTY inherited; runs alone; no multiplexed `--output`); default `false` |
 
 Field names use the camelCase vocabulary (`dependsOn`, `workingDirectory`) that
 matches [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json) and the
@@ -145,6 +146,31 @@ plan envelope). Richer per-node forwarding is deferred; there is no interactive
 
 Parallel and labeled/events paths must not inherit caller stdin into multiple
 children — ownership is deterministic (closed).
+
+## Interactive tasks
+
+Set `interactive = true` on tasks that need the caller's terminal (debuggers,
+prompts, TUIs). Interactive nodes:
+
+| Property | Behavior |
+|---|---|
+| Stdin / TTY | Inherited for the interactive node |
+| Concurrency | Run exclusively — no concurrent peers while in flight |
+| `--output` | Multiplexed modes (`live`, `grouped`, `failures`) are rejected |
+| `--events` | Rejected when any interactive node is in the plan |
+
+Non-interactive siblings may still run in parallel (`-j > 1`) when ready, but
+an interactive node starts only when no other node is in flight. `nxr plan`
+lists interactive nodes under `interactive_exclusivity`.
+
+```nix
+nxr.tasks = {
+  debug = {
+    app = "debug";
+    interactive = true;
+  };
+};
+```
 
 ## Working directory
 
