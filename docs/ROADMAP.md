@@ -21,33 +21,11 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 | **V2.0** | Workflow orchestration | Task DAG, scheduler, supervision, watch, shell integration, structured output — shipped as `v2.0.0`. |
 | **V2.1** | Trustworthiness | `WorkspaceSnapshot`, discovery cache controls, Nix forwarding, `--shell-mode`, byte-safe output, four-system CI, release SBOMs — shipped as `v2.1.0`. |
 | **V2.2** | Flake UX | Standard flake output commands (`list`/`build`/`check`/`shell`), `explain` and `doctor --all`, multi-root task union DAGs, interactive-task exclusivity — shipped as `v2.2.0`. |
+| **V2.3** | Monorepo ergonomics | Namespaced `list`/`inspect` views, `nxr affected` path analysis, optional read-only ecosystem graph adapters — shipped as `v2.3.0`. |
 
-## Active roadmap — 2.3
+## Active roadmap
 
-The active plan is one minor release that hardens and extends what already ships. Defer speculative platform work to [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md).
-
-### 2.3 — Monorepo ergonomics
-
-**Goal:** Improve day-to-day use in repositories with many apps and tasks — without a second project graph or remote execution layer.
-
-**Deliverables**
-
-- Categories, aliases, and filtered `list` / `inspect` for large operation sets.
-- Large DAG plan and summary UX (grouped/failures modes, graph formats, deterministic ordering).
-- Working-directory and environment-policy conventions for nested package layouts.
-- Documentation for multi-package flake layout and task naming.
-- Read-only metadata adapters where they do not create a second source of truth (exploratory; no new authoritative schema). Boundary: [ADAPTERS.md](ADAPTERS.md).
-
-**Exit criteria**
-
-- Repositories with dozens of apps/tasks remain navigable via `list`, completion, and categories.
-- Plans and graphs stay inspectable at 500+ nodes within documented time budgets.
-- Monorepo guidance lives in docs; no mandatory project manifest is introduced.
-- Adapters, if shipped, are optional and overrideable; leaf apps stay canonical.
-
-## Deferred ideas
-
-Daemon, content-addressed artifact stores, remote workers, CI control-plane generation, dashboards, and full monorepo intelligence are **not** on the active schedule. Preserved design prose lives in [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md) for discussion only.
+No active minor release is scheduled. Speculative platform work — daemon, CAS, remote workers, dashboards, and full monorepo intelligence — lives in [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md) for discussion only.
 
 ## Invariants
 
