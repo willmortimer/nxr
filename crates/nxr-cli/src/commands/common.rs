@@ -97,6 +97,8 @@ pub enum PrepareError {
     RootAndCwdConflict,
     #[error("--root requires a local flake path")]
     RootRequiresLocalFlake,
+    #[error("task workingDirectory must stay within the flake root (got {value})")]
+    WorkingDirectoryOutsideFlakeRoot { value: String },
     #[error(transparent)]
     Flake(#[from] FlakeResolveError),
     #[error(transparent)]
@@ -115,7 +117,8 @@ impl PrepareError {
         match self {
             Self::InvocationDirectory(_)
             | Self::NonUtf8InvocationDirectory
-            | Self::RootRequiresLocalFlake => exit::DISCOVERY,
+            | Self::RootRequiresLocalFlake
+            | Self::WorkingDirectoryOutsideFlakeRoot { .. } => exit::DISCOVERY,
             Self::RootAndCwdConflict => exit::USAGE,
             Self::Flake(error) => error.exit_code(),
             Self::Nix(error) => error.exit_code(),
@@ -512,10 +515,26 @@ pub fn resolve_task_execution_directory(
                 .local_root
                 .as_ref()
                 .ok_or(PrepareError::RootRequiresLocalFlake)?;
-            let joined = flake_root.join(relative);
-            Ok(joined.canonicalize_utf8().unwrap_or(joined))
+            resolve_flake_relative_working_directory(flake_root, relative)
         }
     }
+}
+
+fn resolve_flake_relative_working_directory(
+    flake_root: &Utf8Path,
+    relative: &str,
+) -> Result<Utf8PathBuf, PrepareError> {
+    let joined = flake_root.join(relative);
+    let canonical_flake_root = flake_root
+        .canonicalize_utf8()
+        .unwrap_or_else(|_| flake_root.to_path_buf());
+    let canonical = joined.canonicalize_utf8().unwrap_or(joined);
+    if !canonical.starts_with(&canonical_flake_root) {
+        return Err(PrepareError::WorkingDirectoryOutsideFlakeRoot {
+            value: relative.to_owned(),
+        });
+    }
+    Ok(canonical)
 }
 
 fn build_plan(
@@ -716,6 +735,36 @@ mod tests {
         )
         .expect("cli root wins");
         assert_eq!(from_root, camino::Utf8PathBuf::from("/tmp/project"));
+    }
+
+    #[test]
+    fn resolve_task_execution_directory_rejects_parent_traversal() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let flake_root = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf())
+            .expect("utf8 temp path");
+        std::fs::create_dir(flake_root.join("crates")).expect("crates dir");
+        let outside = temp.path().parent().expect("parent").join("outside");
+        std::fs::create_dir(&outside).expect("outside dir");
+
+        let flake = FlakeSelection {
+            display: flake_root.as_str().to_owned(),
+            nix_ref: format!("path:{flake_root}"),
+            local_root: Some(flake_root.clone()),
+        };
+        let invocation = flake_root.join("crates");
+
+        let err = resolve_task_execution_directory(
+            &invocation,
+            &flake,
+            false,
+            None,
+            Some("../outside"),
+        )
+        .expect_err("parent traversal escapes flake root");
+        assert!(matches!(
+            err,
+            PrepareError::WorkingDirectoryOutsideFlakeRoot { .. }
+        ));
     }
 
     #[test]

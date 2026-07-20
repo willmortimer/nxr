@@ -251,6 +251,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_rejects_parent_traversal_working_directory() {
+        let value = json!({
+            "schema_version": 1,
+            "tasks": {
+                "fmt": {
+                    "app": "fmt",
+                    "workingDirectory": "../outside"
+                }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("parent traversal rejected");
+        assert!(matches!(
+            err,
+            TaskDiscoveryError::Schema(SchemaError::ParentTraversalWorkingDirectory { .. })
+        ));
+        assert_eq!(err.exit_code(), exit::EVALUATION);
+    }
+
+    #[test]
     fn parse_rejects_absolute_working_directory() {
         let value = json!({
             "schema_version": 1,

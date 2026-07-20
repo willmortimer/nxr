@@ -197,8 +197,9 @@ Accepted `workingDirectory` values:
 | `flake-root` | Discovered flake root (local flake required) |
 | Relative path (for example `crates/api`) | Joined under the flake root |
 
-Absolute paths in task metadata are rejected at validation time. Relative
-paths are resolved against the flake root, not the invocation directory.
+Absolute paths and parent traversal (`..`) in task metadata are rejected at
+validation time. Relative paths are resolved against the flake root, not the
+invocation directory, and must stay within the flake root after resolution.
 
 Fixture: [`fixtures/task-working-directory/`](../fixtures/task-working-directory/).
 

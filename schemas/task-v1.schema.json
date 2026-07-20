@@ -63,7 +63,7 @@
         },
         "workingDirectory": {
           "type": "string",
-          "description": "Optional working-directory policy (`invocation`, `flake-root`) or flake-root-relative path. Absolute paths are rejected."
+          "description": "Optional working-directory policy (`invocation`, `flake-root`) or flake-root-relative path. Absolute paths and parent traversal (`..`) are rejected."
         },
         "hidden": {
           "type": "boolean",

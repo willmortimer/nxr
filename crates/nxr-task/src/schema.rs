@@ -5,6 +5,7 @@
 //! `workingDirectory`). Unknown task fields are tolerated by serde defaults.
 
 use std::collections::BTreeMap;
+use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -33,6 +34,11 @@ pub enum SchemaError {
          {WORKING_DIRECTORY_FLAKE_ROOT}, or a relative path (got absolute path {value})"
     )]
     AbsoluteWorkingDirectory { task: String, value: String },
+    /// `workingDirectory` traversed parent directories (`..`).
+    #[error(
+        "task {task}: workingDirectory must not traverse parent directories (got {value})"
+    )]
+    ParentTraversalWorkingDirectory { task: String, value: String },
 }
 
 /// Versioned task document: `schema_version` plus named task definitions.
@@ -153,8 +159,9 @@ impl TaskDefinition {
 ///
 /// # Errors
 ///
-/// Returns [`SchemaError::EmptyWorkingDirectory`] or
-/// [`SchemaError::AbsoluteWorkingDirectory`] when the value is invalid.
+/// Returns [`SchemaError::EmptyWorkingDirectory`],
+/// [`SchemaError::AbsoluteWorkingDirectory`], or
+/// [`SchemaError::ParentTraversalWorkingDirectory`] when the value is invalid.
 pub fn validate_working_directory(task: &str, value: &str) -> Result<(), SchemaError> {
     if value.is_empty() {
         return Err(SchemaError::EmptyWorkingDirectory {
@@ -164,8 +171,17 @@ pub fn validate_working_directory(task: &str, value: &str) -> Result<(), SchemaE
     if value == WORKING_DIRECTORY_INVOCATION || value == WORKING_DIRECTORY_FLAKE_ROOT {
         return Ok(());
     }
-    if std::path::Path::new(value).is_absolute() {
+    if Path::new(value).is_absolute() {
         return Err(SchemaError::AbsoluteWorkingDirectory {
+            task: task.to_owned(),
+            value: value.to_owned(),
+        });
+    }
+    if Path::new(value)
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(SchemaError::ParentTraversalWorkingDirectory {
             task: task.to_owned(),
             value: value.to_owned(),
         });
@@ -380,6 +396,53 @@ mod tests {
                 value: "/tmp/project".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn validate_working_directory_rejects_parent_traversal() {
+        let parent = validate_working_directory("fmt", "../outside").expect_err("parent");
+        assert_eq!(
+            parent,
+            SchemaError::ParentTraversalWorkingDirectory {
+                task: "fmt".to_owned(),
+                value: "../outside".to_owned(),
+            }
+        );
+
+        let nested = validate_working_directory("fmt", "crates/../../outside")
+            .expect_err("nested parent");
+        assert_eq!(
+            nested,
+            SchemaError::ParentTraversalWorkingDirectory {
+                task: "fmt".to_owned(),
+                value: "crates/../../outside".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn validate_document_rejects_parent_traversal_working_directory() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert(
+            "fmt".to_owned(),
+            TaskDefinition {
+                description: None,
+                depends_on: Vec::new(),
+                app: "fmt".to_owned(),
+                working_directory: Some("../outside".to_owned()),
+                hidden: false,
+                category: None,
+                aliases: Vec::new(),
+                interactive: false,
+                paths: Vec::new(),
+            },
+        );
+        let doc = TaskDocument::new(tasks);
+        let err = doc.validate().expect_err("parent traversal rejected");
+        assert!(matches!(
+            err,
+            SchemaError::ParentTraversalWorkingDirectory { .. }
+        ));
     }
 
     #[test]
