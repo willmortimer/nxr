@@ -25,13 +25,13 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 | **V2.3.1** | Trust and latency | One-process bare apps, cache v3, strict user Nix flags, affected unknown/strict, Nix-equipped release smoke — shipped as `v2.3.1`. |
 | **V2.3.2** | Edge-case hardening | TTY-safe stderr, completion `discoveryInputs`, affected empty/rename/full nodes, release version/layout checks — shipped as `v2.3.2`. |
 | **V2.3.3** | Correctness cut | Watch ↔ task pipeline parity, empty affected = all unaffected, path validation, apps↔tasks decoupling, cache v4 BLAKE3 — shipped as `v2.3.3`. |
+| **V2.4** | Run model + UX | Structured run results / `--output summary`, per-task timeouts, richer completion — shipped as `v2.4.0`. |
 
 ## Active roadmap
 
-**2.4** is next: structured run results (`run_id`, timestamps, durations,
-statuses), `--output summary`, per-task timeouts, and richer dynamic completion.
-Affected execution (`task --affected`) follows as **2.5**. Speculative platform
-work — daemon, CAS, remote workers, dashboards — lives in
+**2.5** is next: affected execution (`task --affected` / `plan --affected`).
+Read-only adapter intelligence follows as **2.6**. Speculative platform work —
+daemon, CAS, remote workers, dashboards — lives in
 [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md) for discussion only.
 
 ## Invariants

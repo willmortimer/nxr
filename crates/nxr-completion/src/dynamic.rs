@@ -24,6 +24,18 @@ pub const DISCOVERY_TIMEOUT: Duration = Duration::from_millis(500);
 pub enum CompleteTarget {
     /// Flake app names for the current workspace.
     Apps,
+    /// Task names (and aliases) from optional `nxr` metadata.
+    Tasks,
+    /// `packages.<system>.*` leaf names.
+    Packages,
+    /// `checks.<system>.*` leaf names.
+    Checks,
+    /// `devShells.<system>.*` leaf names.
+    Shells,
+    /// Project namespaces from `nxr.projects.json`.
+    Namespaces,
+    /// Categories declared on apps/tasks.
+    Categories,
 }
 
 /// Discover app candidates for shell completion.

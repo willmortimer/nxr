@@ -47,6 +47,9 @@ pub enum SchemaError {
         index: usize,
         message: String,
     },
+    /// A task `timeout` or `terminationGracePeriod` string is invalid.
+    #[error("task {task}: {message}")]
+    InvalidTimeout { task: String, message: String },
 }
 
 /// Versioned task document: `schema_version` plus named task definitions.
@@ -121,6 +124,18 @@ impl TaskDocument {
                     }
                 })?;
             }
+            if let Some(timeout) = &definition.timeout {
+                crate::parse_duration(timeout).map_err(|error| SchemaError::InvalidTimeout {
+                    task: task.clone(),
+                    message: error.to_string(),
+                })?;
+            }
+            if let Some(grace) = &definition.termination_grace_period {
+                crate::parse_duration(grace).map_err(|error| SchemaError::InvalidTimeout {
+                    task: task.clone(),
+                    message: error.to_string(),
+                })?;
+            }
         }
         Ok(())
     }
@@ -165,6 +180,18 @@ pub struct TaskDefinition {
     /// Optional repository-relative path roots for conservative affected analysis.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
+
+    /// Optional wall-clock timeout for this task's process (e.g. `10m`, `30s`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<String>,
+
+    /// Grace period after timeout/interrupt before SIGKILL (e.g. `5s`).
+    #[serde(
+        default,
+        rename = "terminationGracePeriod",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub termination_grace_period: Option<String>,
 }
 
 impl TaskDefinition {
@@ -181,6 +208,8 @@ impl TaskDefinition {
             aliases: Vec::new(),
             interactive: false,
             paths: Vec::new(),
+            timeout: None,
+            termination_grace_period: None,
         }
     }
 }
@@ -259,6 +288,8 @@ mod tests {
                 aliases: vec!["gate".to_owned()],
                 interactive: false,
                 paths: vec!["crates".to_owned()],
+                timeout: None,
+                termination_grace_period: None,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -469,6 +500,8 @@ mod tests {
                 aliases: Vec::new(),
                 interactive: false,
                 paths: Vec::new(),
+                timeout: None,
+                termination_grace_period: None,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -494,6 +527,8 @@ mod tests {
                 aliases: Vec::new(),
                 interactive: false,
                 paths: Vec::new(),
+                timeout: None,
+                termination_grace_period: None,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -523,6 +558,8 @@ mod tests {
                 aliases: Vec::new(),
                 interactive: false,
                 paths: vec!["/abs".to_owned()],
+                timeout: None,
+                termination_grace_period: None,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -547,6 +584,8 @@ mod tests {
                 aliases: Vec::new(),
                 interactive: false,
                 paths: Vec::new(),
+                timeout: None,
+                termination_grace_period: None,
             },
         );
         let value = serde_json::to_value(TaskDocument::new(tasks)).expect("serialize");

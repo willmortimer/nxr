@@ -273,15 +273,15 @@ pub fn execute_with_control(
             &mut stdout,
             &mut stderr,
         );
-        sink.emit(Event::PlanCreated {
-            root: plan.root.clone(),
-            roots: if plan.roots.is_empty() {
+        sink.emit(Event::plan_created(
+            plan.root.clone(),
+            if plan.roots.is_empty() {
                 None
             } else {
                 Some(plan.roots.clone())
             },
-            node_count: plan.nodes.len(),
-        });
+            plan.nodes.len(),
+        ));
         run_plan(request, &plan, &prepared_nodes, &mut sink, runner, control)
     } else {
         // Inherit stdio for interactivity / --output raw: do not hold stdout/stderr locks.
@@ -478,6 +478,7 @@ fn run_plan(
     let mut first_failure: Option<i32> = None;
     let mut interrupted = false;
     let mut restarted = false;
+    let mut started_at: BTreeMap<String, std::time::Instant> = BTreeMap::new();
 
     let mut to_start = scheduler.schedule_ready();
     loop {
@@ -490,9 +491,13 @@ fn run_plan(
                 sink.emit(Event::NodeExited {
                     node: id.clone(),
                     code: Some(code),
+                    status: Some(nxr_task::NodeOutcome::Cancelled),
+                    duration_ms: started_at.remove(&id).map(duration_ms_since),
+                    started_at: None,
+                    finished_at: None,
+                    reason: Some("interrupted".to_owned()),
+                    seq: None,
                 });
-                // Mark scheduler nodes complete so outcome is consistent; ignore
-                // unknown ids (already reaped) by best-effort complete.
                 let _ = scheduler.on_exit(&id, code);
             }
             break;
@@ -508,6 +513,15 @@ fn run_plan(
                     sink.emit(Event::NodeExited {
                         node: stopped_id.clone(),
                         code: Some(stopped_code),
+                        status: Some(nxr_task::NodeOutcome::Cancelled),
+                        duration_ms: started_at.remove(&stopped_id).map(duration_ms_since),
+                        started_at: None,
+                        finished_at: None,
+                        reason: Some(match signal {
+                            RunControl::Restart => "watch_restart".to_owned(),
+                            _ => "stopped".to_owned(),
+                        }),
+                        seq: None,
                     });
                     let _ = scheduler.on_exit(&stopped_id, stopped_code);
                 }
@@ -517,6 +531,58 @@ fn run_plan(
                     RunControl::Continue => {}
                 }
                 break;
+            }
+        }
+
+        // Enforce per-task timeouts before starting more work.
+        let timed_out: Vec<String> = started_at
+            .iter()
+            .filter_map(|(id, start)| {
+                let prepared = prepared_nodes.get(id)?;
+                let timeout = prepared.timeout?;
+                (start.elapsed() >= timeout).then(|| id.clone())
+            })
+            .collect();
+        for id in timed_out {
+            let grace = prepared_nodes
+                .get(&id)
+                .and_then(|node| node.termination_grace)
+                .unwrap_or(SHUTDOWN_GRACE);
+            let code = supervisor
+                .shutdown_one(&id, grace)
+                .map_err(TaskError::Supervision)?
+                .unwrap_or(124);
+            sink.emit(Event::NodeExited {
+                node: id.clone(),
+                code: Some(code),
+                status: Some(nxr_task::NodeOutcome::TimedOut),
+                duration_ms: started_at.remove(&id).map(duration_ms_since),
+                started_at: None,
+                finished_at: None,
+                reason: Some("timeout".to_owned()),
+                seq: None,
+            });
+            if first_failure.is_none() {
+                first_failure = Some(code);
+            }
+            to_start = scheduler.complete(&id, code)?;
+            if scheduler.failure_policy() == FailurePolicy::FailFast && !supervisor.is_empty() {
+                let shut = supervisor
+                    .shutdown_all(SHUTDOWN_GRACE)
+                    .map_err(TaskError::Supervision)?;
+                for (stopped_id, stopped_code) in shut {
+                    sink.emit(Event::NodeExited {
+                        node: stopped_id.clone(),
+                        code: Some(stopped_code),
+                        status: Some(nxr_task::NodeOutcome::Cancelled),
+                        duration_ms: started_at.remove(&stopped_id).map(duration_ms_since),
+                        started_at: None,
+                        finished_at: None,
+                        reason: Some("fail_fast".to_owned()),
+                        seq: None,
+                    });
+                    let _ = scheduler.on_exit(&stopped_id, stopped_code);
+                }
             }
         }
 
@@ -536,14 +602,26 @@ fn run_plan(
                 sink,
                 runner,
             )?;
+            started_at.insert(node_id, std::time::Instant::now());
         }
 
         drain_io_chunks(&io_rx, sink, Duration::ZERO);
 
         if let Some((id, code)) = supervisor.try_wait_any().map_err(TaskError::Supervision)? {
+            let status = if code == exit::SUCCESS {
+                nxr_task::NodeOutcome::Succeeded
+            } else {
+                nxr_task::NodeOutcome::Failed
+            };
             sink.emit(Event::NodeExited {
                 node: id.clone(),
                 code: Some(code),
+                status: Some(status),
+                duration_ms: started_at.remove(&id).map(duration_ms_since),
+                started_at: None,
+                finished_at: None,
+                reason: None,
+                seq: None,
             });
 
             if code != exit::SUCCESS && first_failure.is_none() {
@@ -563,6 +641,12 @@ fn run_plan(
                     sink.emit(Event::NodeExited {
                         node: stopped_id.clone(),
                         code: Some(stopped_code),
+                        status: Some(nxr_task::NodeOutcome::Cancelled),
+                        duration_ms: started_at.remove(&stopped_id).map(duration_ms_since),
+                        started_at: None,
+                        finished_at: None,
+                        reason: Some("fail_fast".to_owned()),
+                        seq: None,
                     });
                     let _ = scheduler.on_exit(&stopped_id, stopped_code);
                 }
@@ -574,7 +658,6 @@ fn run_plan(
             break;
         }
 
-        // Wait briefly for pipe data or a child exit.
         drain_io_chunks(&io_rx, sink, POLL_INTERVAL);
     }
 
@@ -583,7 +666,21 @@ fn run_plan(
 
     let outcome = scheduler.outcome();
     let success = !interrupted && !restarted && outcome.success;
-    sink.emit(Event::RunCompleted { success });
+    let run_status = if interrupted {
+        Some(nxr_task::RunOutcome::Cancelled)
+    } else if success {
+        Some(nxr_task::RunOutcome::Succeeded)
+    } else {
+        Some(nxr_task::RunOutcome::Failed)
+    };
+    sink.emit(Event::RunCompleted {
+        success,
+        run_id: None,
+        status: run_status,
+        duration_ms: None,
+        started_at: None,
+        finished_at: None,
+    });
 
     if interrupted {
         return Ok(exit::INTERRUPTED);
@@ -596,6 +693,10 @@ fn run_plan(
     }
 
     Ok(first_failure.unwrap_or(exit::SUCCESS))
+}
+
+fn duration_ms_since(start: std::time::Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 fn spawn_node(
@@ -617,9 +718,7 @@ fn spawn_node(
         ))
         .map_err(TaskError::Io)?;
 
-    sink.emit(Event::NodeStarted {
-        node: node_id.to_owned(),
-    });
+    sink.emit(Event::node_started(node_id.to_owned()));
 
     let program = prepared.program.as_std_path();
     let args = &prepared.arguments;

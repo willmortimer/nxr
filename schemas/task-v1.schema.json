@@ -105,6 +105,14 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        "timeout": {
+          "type": "string",
+          "description": "Optional wall-clock timeout for this task's process (e.g. `10m`, `30s`, `500ms`)."
+        },
+        "terminationGracePeriod": {
+          "type": "string",
+          "description": "Optional grace period after timeout/interrupt before SIGKILL (e.g. `5s`)."
         }
       }
     }

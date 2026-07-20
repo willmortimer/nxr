@@ -72,6 +72,10 @@ pub struct PreparedTaskNode {
     pub environment: EnvironmentPolicy,
     /// Full app plan (dry-run / JSON rendering).
     pub plan: Plan,
+    /// Optional wall-clock timeout for this node.
+    pub timeout: Option<std::time::Duration>,
+    /// Grace before SIGKILL after timeout/interrupt for this node.
+    pub termination_grace: Option<std::time::Duration>,
 }
 
 /// Once-per-invocation workspace evaluation: flake, Nix adapter, apps, optional tasks.
@@ -412,6 +416,28 @@ impl WorkspaceSnapshot {
                 &execution_directory,
                 &strip_one_separator(forwarded),
             )?;
+            let timeout = definition
+                .timeout
+                .as_deref()
+                .map(nxr_task::parse_duration)
+                .transpose()
+                .map_err(|error| {
+                    PrepareError::TaskSchema(SchemaError::InvalidTimeout {
+                        task: task_id.clone(),
+                        message: error.to_string(),
+                    })
+                })?;
+            let termination_grace = definition
+                .termination_grace_period
+                .as_deref()
+                .map(nxr_task::parse_duration)
+                .transpose()
+                .map_err(|error| {
+                    PrepareError::TaskSchema(SchemaError::InvalidTimeout {
+                        task: task_id.clone(),
+                        message: error.to_string(),
+                    })
+                })?;
             nodes.insert(
                 task_id.clone(),
                 PreparedTaskNode {
@@ -421,6 +447,8 @@ impl WorkspaceSnapshot {
                     cwd: execution_directory,
                     environment: plan.environment_policy.clone(),
                     plan,
+                    timeout,
+                    termination_grace,
                 },
             );
         }

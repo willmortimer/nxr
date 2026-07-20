@@ -205,15 +205,15 @@ pub fn build_execution_plan_roots(
     };
 
     if let Some(sink) = sink {
-        sink.emit(Event::PlanCreated {
-            root: plan.root.clone(),
-            roots: if plan.roots.is_empty() {
+        sink.emit(Event::plan_created(
+            plan.root.clone(),
+            if plan.roots.is_empty() {
                 None
             } else {
                 Some(plan.roots.clone())
             },
-            node_count: plan.nodes.len(),
-        });
+            plan.nodes.len(),
+        ));
     }
 
     Ok(plan)
@@ -305,11 +305,7 @@ mod tests {
         assert_eq!(plan.failure_policy, FailurePolicy::KeepGoing);
         assert_eq!(
             sink.events(),
-            &[Event::PlanCreated {
-                root: "d".to_owned(),
-                roots: None,
-                node_count: 4,
-            }]
+            &[Event::plan_created("d".to_owned(), None, 4)]
         );
         assert_eq!(event_kind(&sink.events()[0]), "plan_created");
     }
@@ -405,11 +401,11 @@ mod tests {
 
         assert_eq!(
             sink.events(),
-            &[Event::PlanCreated {
-                root: "b".to_owned(),
-                roots: Some(vec!["b".to_owned(), "c".to_owned()]),
-                node_count: 3,
-            }]
+            &[Event::plan_created(
+                "b".to_owned(),
+                Some(vec!["b".to_owned(), "c".to_owned()]),
+                3
+            )]
         );
     }
 }

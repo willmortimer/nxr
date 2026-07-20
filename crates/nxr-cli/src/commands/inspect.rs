@@ -499,6 +499,8 @@ mod tests {
                 aliases: Vec::new(),
                 interactive: false,
                 paths: Vec::new(),
+                timeout: None,
+                termination_grace_period: None,
             },
         );
         tasks.insert(
@@ -513,6 +515,8 @@ mod tests {
                 aliases: Vec::new(),
                 interactive: false,
                 paths: Vec::new(),
+                timeout: None,
+                termination_grace_period: None,
             },
         );
         TaskDocument::new(tasks)

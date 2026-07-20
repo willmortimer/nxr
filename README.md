@@ -183,6 +183,5 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**2.3.3** — correctness cut: watch uses the normal task pipeline, empty
-affected diffs are all-unaffected, path validation, catalog decoupling, cache
-v4 BLAKE3 digests. History: [CHANGELOG.md](CHANGELOG.md).
+**2.4.0** — structured run results (`--output summary`, event statuses/durations),
+per-task timeouts, richer dynamic completion. History: [CHANGELOG.md](CHANGELOG.md).

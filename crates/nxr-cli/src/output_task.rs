@@ -20,6 +20,8 @@ pub enum TaskOutputMode {
     Grouped,
     /// Buffer per node; emit buffered output only on nonzero [`Event::NodeExited`].
     Failures,
+    /// One-line status table per node (no multiplexed child logs).
+    Summary,
     /// Single foreground child inherits stdio (no pipe multiplexing).
     ///
     /// Conflicts with `-j > 1` and `--events`; handled before the event sink.
@@ -30,7 +32,10 @@ impl TaskOutputMode {
     /// Modes that require piped child stdio and a renderer.
     #[must_use]
     pub const fn is_multiplexed(self) -> bool {
-        matches!(self, Self::Live | Self::Grouped | Self::Failures)
+        matches!(
+            self,
+            Self::Live | Self::Grouped | Self::Failures | Self::Summary
+        )
     }
 }
 
@@ -335,16 +340,22 @@ impl EventSink for TaskOutputRenderer<'_> {
                 TaskOutputMode::Grouped | TaskOutputMode::Failures => {
                     self.ingest_buffered(true, &node, &payload);
                 }
-                TaskOutputMode::Raw => {}
+                TaskOutputMode::Raw | TaskOutputMode::Summary => {}
             },
             Event::StderrChunk { node, payload } => match self.mode {
                 TaskOutputMode::Live => self.ingest_live(false, &node, &payload),
                 TaskOutputMode::Grouped | TaskOutputMode::Failures => {
                     self.ingest_buffered(false, &node, &payload);
                 }
-                TaskOutputMode::Raw => {}
+                TaskOutputMode::Raw | TaskOutputMode::Summary => {}
             },
-            Event::NodeExited { node, code } => {
+            Event::NodeExited {
+                node,
+                code,
+                status,
+                duration_ms,
+                ..
+            } => {
                 if matches!(self.mode, TaskOutputMode::Live) {
                     self.flush_live_partial(&node);
                 }
@@ -357,7 +368,7 @@ impl EventSink for TaskOutputRenderer<'_> {
                 }
 
                 let should_flush = match self.mode {
-                    TaskOutputMode::Live | TaskOutputMode::Raw => false,
+                    TaskOutputMode::Live | TaskOutputMode::Raw | TaskOutputMode::Summary => false,
                     TaskOutputMode::Grouped => true,
                     TaskOutputMode::Failures => node_failed(code),
                 };
@@ -368,6 +379,25 @@ impl EventSink for TaskOutputRenderer<'_> {
                     }
                 } else if matches!(self.mode, TaskOutputMode::Failures) {
                     let _ = self.state.grouped.remove(&node);
+                }
+
+                if matches!(self.mode, TaskOutputMode::Summary) {
+                    let status = match status {
+                        Some(nxr_task::NodeOutcome::Succeeded) => "succeeded",
+                        Some(nxr_task::NodeOutcome::Failed) => "failed",
+                        Some(nxr_task::NodeOutcome::Cancelled) => "cancelled",
+                        Some(nxr_task::NodeOutcome::Skipped) => "skipped",
+                        Some(nxr_task::NodeOutcome::TimedOut) => "timed_out",
+                        None => match code {
+                            Some(0) => "succeeded",
+                            _ => "failed",
+                        },
+                    };
+                    let duration = duration_ms.map_or_else(
+                        || "-".to_owned(),
+                        |ms| nxr_task::format_duration(std::time::Duration::from_millis(ms)),
+                    );
+                    let _ = writeln!(self.stdout, "{node:<24} {status:<10} {duration}");
                 }
             }
             Event::Diagnostic { message } => {
@@ -533,18 +563,9 @@ mod tests {
                 node: "worker".to_owned(),
                 payload: OutputPayload::utf8("warn: retry\n"),
             },
-            Event::NodeExited {
-                node: "api".to_owned(),
-                code: Some(0),
-            },
-            Event::NodeExited {
-                node: "web".to_owned(),
-                code: Some(0),
-            },
-            Event::NodeExited {
-                node: "worker".to_owned(),
-                code: Some(1),
-            },
+            Event::node_exited("api".to_owned(), Some(0)),
+            Event::node_exited("web".to_owned(), Some(0)),
+            Event::node_exited("worker".to_owned(), Some(1)),
         ]
     }
 
@@ -576,10 +597,7 @@ mod tests {
                 node: "api".to_owned(),
                 payload: OutputPayload::utf8("partial"),
             },
-            Event::NodeExited {
-                node: "api".to_owned(),
-                code: Some(0),
-            },
+            Event::node_exited("api".to_owned(), Some(0)),
         ];
         let (stdout, stderr) = render_output(TaskOutputMode::Live, &events);
         assert_eq!(stdout, "[api] partial\n");
@@ -593,10 +611,7 @@ mod tests {
                 node: "api".to_owned(),
                 payload: OutputPayload::utf8("no-nl"),
             },
-            Event::NodeExited {
-                node: "api".to_owned(),
-                code: Some(0),
-            },
+            Event::node_exited("api".to_owned(), Some(0)),
         ];
         let (stdout, _) = render_output(TaskOutputMode::Live, &events);
         assert_eq!(stdout, "[api] no-nl\n");
@@ -609,10 +624,7 @@ mod tests {
                 node: "t".to_owned(),
                 payload: OutputPayload::utf8("\u{1b}[31mred\u{1b}[0m\n"),
             },
-            Event::NodeExited {
-                node: "t".to_owned(),
-                code: Some(0),
-            },
+            Event::node_exited("t".to_owned(), Some(0)),
         ];
         let (stdout, _) = render_output(TaskOutputMode::Live, &events);
         assert_eq!(stdout, "[t] \u{1b}[31mred\u{1b}[0m\n");
@@ -626,10 +638,7 @@ mod tests {
                 node: "t".to_owned(),
                 payload: OutputPayload::utf8(format!("{long}\n")),
             },
-            Event::NodeExited {
-                node: "t".to_owned(),
-                code: Some(0),
-            },
+            Event::node_exited("t".to_owned(), Some(0)),
         ];
         let (stdout, _) = render_output(TaskOutputMode::Live, &events);
         assert_eq!(stdout, format!("[t] {long}\n"));
@@ -653,14 +662,8 @@ mod tests {
                 node: "bad".to_owned(),
                 payload: OutputPayload::utf8("boom\n"),
             },
-            Event::NodeExited {
-                node: "ok".to_owned(),
-                code: Some(0),
-            },
-            Event::NodeExited {
-                node: "bad".to_owned(),
-                code: Some(2),
-            },
+            Event::node_exited("ok".to_owned(), Some(0)),
+            Event::node_exited("bad".to_owned(), Some(2)),
         ];
         let (stdout, stderr) = render_output(TaskOutputMode::Failures, &events);
         assert_eq!(stdout, "boom\n");
@@ -674,10 +677,7 @@ mod tests {
                 node: "sig".to_owned(),
                 payload: OutputPayload::utf8("killed\n"),
             },
-            Event::NodeExited {
-                node: "sig".to_owned(),
-                code: None,
-            },
+            Event::node_exited("sig".to_owned(), None),
         ];
         let (stdout, stderr) = render_output(TaskOutputMode::Failures, &events);
         assert_eq!(stdout, "");
@@ -711,10 +711,7 @@ mod tests {
             node: "n".to_owned(),
             payload: OutputPayload::utf8("\n"),
         });
-        events.push(Event::NodeExited {
-            node: "n".to_owned(),
-            code: Some(0),
-        });
+        events.push(Event::node_exited("n".to_owned(), Some(0)));
         let (stdout, _) = render_output(TaskOutputMode::Live, &events);
         assert_eq!(stdout, format!("[n] {text}\n"));
     }
@@ -742,13 +739,7 @@ mod tests {
         // Human path: invalid bytes become U+FFFD, never panic.
         let (stdout, _) = render_output(
             TaskOutputMode::Live,
-            &[
-                event,
-                Event::NodeExited {
-                    node: "bin".to_owned(),
-                    code: Some(0),
-                },
-            ],
+            &[event, Event::node_exited("bin".to_owned(), Some(0))],
         );
         assert!(stdout.starts_with("[bin] "));
         assert!(stdout.contains('A'));
@@ -757,10 +748,8 @@ mod tests {
     #[test]
     fn jsonl_events_writer_emits_one_line_per_event() {
         let events = vec![
-            Event::NodeStarted {
-                node: "fmt".to_owned(),
-            },
-            Event::RunCompleted { success: true },
+            Event::node_started("fmt".to_owned()),
+            Event::run_completed(true),
         ];
         let mut stderr = Vec::new();
         let mut sink = JsonlEventsWriter::new(&mut stderr);
@@ -784,17 +773,12 @@ mod tests {
             &mut stdout,
             &mut stderr,
         );
-        sink.emit(Event::NodeStarted {
-            node: "fmt".to_owned(),
-        });
+        sink.emit(Event::node_started("fmt".to_owned()));
         sink.emit(Event::StdoutChunk {
             node: "fmt".to_owned(),
             payload: OutputPayload::utf8("ok\n"),
         });
-        sink.emit(Event::NodeExited {
-            node: "fmt".to_owned(),
-            code: Some(0),
-        });
+        sink.emit(Event::node_exited("fmt".to_owned(), Some(0)));
         drop(sink);
         assert_eq!(String::from_utf8(stdout).expect("utf-8"), "ok\n");
         let events = String::from_utf8(stderr).expect("utf-8");
@@ -809,10 +793,7 @@ mod tests {
                 node: "big".to_owned(),
                 payload: OutputPayload::utf8(format!("{chunk}\n")),
             },
-            Event::NodeExited {
-                node: "big".to_owned(),
-                code: Some(0),
-            },
+            Event::node_exited("big".to_owned(), Some(0)),
         ];
         let (stdout, stderr) = render_output(TaskOutputMode::Grouped, &events);
         assert_eq!(stdout, format!("{chunk}\n"));

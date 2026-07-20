@@ -7,6 +7,7 @@
 //! - [`events`] — typed execution event bus (`Event` / [`EventSink`])
 //! - [`scheduler`] — ready-queue scheduler with job limit ([`Scheduler`])
 
+pub mod duration;
 pub mod events;
 pub mod graph;
 pub mod plan_exec;
@@ -15,8 +16,10 @@ pub mod resolve;
 pub mod scheduler;
 pub mod schema;
 
+pub use duration::{DurationParseError, format_duration, parse_duration};
 pub use events::{
-    ChunkEncoding, Event, EventSink, NullSink, OutputPayload, RecordingSink, event_kind,
+    ChunkEncoding, Event, EventSink, NodeOutcome, NullSink, OutputPayload, RecordingSink,
+    RunOutcome, event_kind,
 };
 pub use graph::{GraphError, TaskGraph, render_dot, render_mermaid, render_text};
 pub use plan_exec::{

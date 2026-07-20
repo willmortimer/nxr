@@ -225,6 +225,38 @@ impl Supervisor {
         Ok(codes)
     }
 
+    /// Graceful shutdown of a single tracked child by id.
+    ///
+    /// Returns `Ok(None)` when `id` is not currently tracked.
+    ///
+    /// # Errors
+    ///
+    /// Propagates signal or wait errors.
+    pub fn shutdown_one(&mut self, id: &str, grace: Duration) -> io::Result<Option<i32>> {
+        let Some(index) = self.children.iter().position(|child| child.id == id) else {
+            return Ok(None);
+        };
+        let mut child = self.children.swap_remove(index);
+        child.session.signal_terminate()?;
+        let deadline = std::time::Instant::now() + grace;
+        loop {
+            if let Some(code) = child.session.try_wait()? {
+                return Ok(Some(code));
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        child.session.signal_kill()?;
+        loop {
+            if let Some(code) = child.session.try_wait()? {
+                return Ok(Some(code));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// Immediate SIGKILL of every live process group, then reap.
     ///
     /// Clears the interrupt-armed state.

@@ -417,6 +417,7 @@ mod tests {
     use super::{AffectedReason, NodeStatus, analyze};
     use crate::graph::build_graph;
 
+    #[allow(clippy::too_many_lines)]
     fn shared_dep_fixture() -> (Vec<App>, TaskDocument) {
         let apps = vec![
             App {
@@ -470,6 +471,8 @@ mod tests {
                 aliases: Vec::new(),
                 interactive: false,
                 paths: vec!["shared".to_owned()],
+                timeout: None,
+                termination_grace_period: None,
             },
         );
         tasks.insert(
@@ -484,6 +487,8 @@ mod tests {
                 aliases: Vec::new(),
                 interactive: false,
                 paths: Vec::new(),
+                timeout: None,
+                termination_grace_period: None,
             },
         );
         tasks.insert(
@@ -498,6 +503,8 @@ mod tests {
                 aliases: Vec::new(),
                 interactive: false,
                 paths: Vec::new(),
+                timeout: None,
+                termination_grace_period: None,
             },
         );
         tasks.insert(
@@ -512,6 +519,8 @@ mod tests {
                 aliases: Vec::new(),
                 interactive: false,
                 paths: Vec::new(),
+                timeout: None,
+                termination_grace_period: None,
             },
         );
 

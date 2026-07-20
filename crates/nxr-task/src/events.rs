@@ -155,6 +155,47 @@ impl<'de> Visitor<'de> for OutputPayloadVisitor {
     }
 }
 
+/// Outcome of a single task node within a run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeOutcome {
+    /// Process exited successfully (code 0).
+    Succeeded,
+    /// Process exited nonzero (or unavailable exit status treated as failure).
+    Failed,
+    /// Cancelled by fail-fast / interrupt / watch restart before finishing.
+    Cancelled,
+    /// Skipped because an upstream dependency failed or was cancelled.
+    Skipped,
+    /// Exceeded the configured per-task timeout.
+    TimedOut,
+}
+
+impl NodeOutcome {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Skipped => "skipped",
+            Self::TimedOut => "timed_out",
+        }
+    }
+}
+
+/// Overall run outcome (mirrors [`NodeOutcome`] at the plan level).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunOutcome {
+    /// Every required node succeeded.
+    Succeeded,
+    /// At least one required node failed or timed out.
+    Failed,
+    /// Run stopped by interrupt / cooperative stop.
+    Cancelled,
+}
+
 /// Typed events emitted during plan construction and node execution.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -168,16 +209,28 @@ pub enum Event {
         roots: Option<Vec<String>>,
         /// Number of nodes in the plan.
         node_count: usize,
+        /// Opaque run identifier shared by subsequent events for this generation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
     },
     /// A node entered the ready/queued set.
     NodeQueued {
         /// Task id.
         node: String,
+        /// Monotonic sequence number within the run (optional).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
     },
     /// A node process (or equivalent) started.
     NodeStarted {
         /// Task id.
         node: String,
+        /// RFC 3339 UTC timestamp when the node started.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at: Option<String>,
+        /// Monotonic sequence number within the run (optional).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
     },
     /// A chunk of stdout from a running node.
     StdoutChunk {
@@ -201,17 +254,114 @@ pub enum Event {
         node: String,
         /// Process exit code (`None` when terminated by signal / unavailable).
         code: Option<i32>,
+        /// Structured node outcome (additive; absent on older emitters).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<NodeOutcome>,
+        /// Wall-clock duration in milliseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        /// RFC 3339 UTC timestamp when the node started.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at: Option<String>,
+        /// RFC 3339 UTC timestamp when the node finished.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        finished_at: Option<String>,
+        /// Why the node was cancelled or skipped (when applicable).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// Monotonic sequence number within the run (optional).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
     },
     /// The overall run finished.
     RunCompleted {
         /// Whether every required node succeeded under the active failure policy.
         success: bool,
+        /// Opaque run identifier.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
+        /// Structured overall outcome.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<RunOutcome>,
+        /// Wall-clock duration of the whole run in milliseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        /// RFC 3339 UTC timestamp when the run started.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at: Option<String>,
+        /// RFC 3339 UTC timestamp when the run finished.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        finished_at: Option<String>,
     },
     /// Non-fatal diagnostic for operators / renderers.
     Diagnostic {
         /// Human-readable message (already sanitized for terminals by the emitter).
         message: String,
     },
+}
+
+impl Event {
+    /// [`Event::PlanCreated`] without optional run metadata.
+    #[must_use]
+    pub fn plan_created(
+        root: impl Into<String>,
+        roots: Option<Vec<String>>,
+        node_count: usize,
+    ) -> Self {
+        Self::PlanCreated {
+            root: root.into(),
+            roots,
+            node_count,
+            run_id: None,
+        }
+    }
+
+    /// [`Event::NodeQueued`] without optional sequence.
+    #[must_use]
+    pub fn node_queued(node: impl Into<String>) -> Self {
+        Self::NodeQueued {
+            node: node.into(),
+            seq: None,
+        }
+    }
+
+    /// [`Event::NodeStarted`] without optional timing metadata.
+    #[must_use]
+    pub fn node_started(node: impl Into<String>) -> Self {
+        Self::NodeStarted {
+            node: node.into(),
+            started_at: None,
+            seq: None,
+        }
+    }
+
+    /// [`Event::NodeExited`] without optional outcome metadata.
+    #[must_use]
+    pub fn node_exited(node: impl Into<String>, code: Option<i32>) -> Self {
+        Self::NodeExited {
+            node: node.into(),
+            code,
+            status: None,
+            duration_ms: None,
+            started_at: None,
+            finished_at: None,
+            reason: None,
+            seq: None,
+        }
+    }
+
+    /// [`Event::RunCompleted`] without optional run metadata.
+    #[must_use]
+    pub fn run_completed(success: bool) -> Self {
+        Self::RunCompleted {
+            success,
+            run_id: None,
+            status: None,
+            duration_ms: None,
+            started_at: None,
+            finished_at: None,
+        }
+    }
 }
 
 /// Synchronous consumer of [`Event`] values.
@@ -307,17 +457,9 @@ mod tests {
 
     fn sample_events() -> Vec<Event> {
         vec![
-            Event::PlanCreated {
-                root: "d".to_owned(),
-                roots: None,
-                node_count: 4,
-            },
-            Event::NodeQueued {
-                node: "a".to_owned(),
-            },
-            Event::NodeStarted {
-                node: "a".to_owned(),
-            },
+            Event::plan_created("d".to_owned(), None, 4),
+            Event::node_queued("a".to_owned()),
+            Event::node_started("a".to_owned()),
             Event::StdoutChunk {
                 node: "a".to_owned(),
                 payload: OutputPayload::utf8("hello"),
@@ -326,15 +468,9 @@ mod tests {
                 node: "a".to_owned(),
                 payload: OutputPayload::utf8("warn"),
             },
-            Event::NodeExited {
-                node: "a".to_owned(),
-                code: Some(1),
-            },
-            Event::NodeExited {
-                node: "b".to_owned(),
-                code: None,
-            },
-            Event::RunCompleted { success: false },
+            Event::node_exited("a".to_owned(), Some(1)),
+            Event::node_exited("b".to_owned(), None),
+            Event::run_completed(false),
             Event::Diagnostic {
                 message: "cycle avoided".to_owned(),
             },
@@ -478,17 +614,9 @@ mod tests {
     #[test]
     fn recording_sink_preserves_order() {
         let mut sink = RecordingSink::new();
-        sink.emit(Event::PlanCreated {
-            root: "ci".to_owned(),
-            roots: None,
-            node_count: 2,
-        });
-        sink.emit(Event::NodeQueued {
-            node: "fmt".to_owned(),
-        });
-        sink.emit(Event::NodeStarted {
-            node: "fmt".to_owned(),
-        });
+        sink.emit(Event::plan_created("ci".to_owned(), None, 2));
+        sink.emit(Event::node_queued("fmt".to_owned()));
+        sink.emit(Event::node_started("fmt".to_owned()));
         sink.emit(Event::StdoutChunk {
             node: "fmt".to_owned(),
             payload: OutputPayload::utf8("ok\n"),
@@ -497,11 +625,8 @@ mod tests {
             node: "fmt".to_owned(),
             payload: OutputPayload::utf8(""),
         });
-        sink.emit(Event::NodeExited {
-            node: "fmt".to_owned(),
-            code: Some(0),
-        });
-        sink.emit(Event::RunCompleted { success: true });
+        sink.emit(Event::node_exited("fmt".to_owned(), Some(0)));
+        sink.emit(Event::run_completed(true));
         sink.emit(Event::Diagnostic {
             message: "done".to_owned(),
         });

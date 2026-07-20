@@ -37,6 +37,10 @@
           "type": "integer",
           "minimum": 0,
           "description": "Number of nodes in the plan."
+        },
+        "run_id": {
+          "type": "string",
+          "description": "Optional opaque run identifier shared by subsequent events."
         }
       }
     },
@@ -51,6 +55,11 @@
         "node": {
           "type": "string",
           "description": "Task id."
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional monotonic sequence number within the run."
         }
       }
     },
@@ -65,6 +74,15 @@
         "node": {
           "type": "string",
           "description": "Task id."
+        },
+        "started_at": {
+          "type": "string",
+          "description": "Optional RFC 3339 UTC timestamp when the node started."
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional monotonic sequence number within the run."
         }
       }
     },
@@ -129,6 +147,33 @@
         "code": {
           "type": ["integer", "null"],
           "description": "Process exit code (`null` when terminated by signal / unavailable)."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["succeeded", "failed", "cancelled", "skipped", "timed_out"],
+          "description": "Optional structured node outcome."
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional wall-clock duration in milliseconds."
+        },
+        "started_at": {
+          "type": "string",
+          "description": "Optional RFC 3339 UTC start timestamp."
+        },
+        "finished_at": {
+          "type": "string",
+          "description": "Optional RFC 3339 UTC finish timestamp."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional cancellation/skip/timeout reason."
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional monotonic sequence number within the run."
         }
       }
     },
@@ -143,6 +188,28 @@
         "success": {
           "type": "boolean",
           "description": "Whether every required node succeeded under the active failure policy."
+        },
+        "run_id": {
+          "type": "string",
+          "description": "Optional opaque run identifier."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["succeeded", "failed", "cancelled"],
+          "description": "Optional structured overall outcome."
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional wall-clock duration of the whole run in milliseconds."
+        },
+        "started_at": {
+          "type": "string",
+          "description": "Optional RFC 3339 UTC start timestamp."
+        },
+        "finished_at": {
+          "type": "string",
+          "description": "Optional RFC 3339 UTC finish timestamp."
         }
       }
     },

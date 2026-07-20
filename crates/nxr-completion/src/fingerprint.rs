@@ -347,9 +347,9 @@ mod tests {
         let initial = nix_tree_fingerprint(&root).expect("initial fingerprint");
         // Brief pause so coarse filesystems still observe a distinct write.
         thread::sleep(Duration::from_millis(5));
-        let tmp = root.join("flake.lock.tmp");
-        fs::write(&tmp, "v2\n").expect("write tmp");
-        fs::rename(&tmp, root.join("flake.lock")).expect("rename");
+        let lock_tmp = root.join("flake.lock.tmp");
+        fs::write(&lock_tmp, "v2\n").expect("write tmp");
+        fs::rename(&lock_tmp, root.join("flake.lock")).expect("rename");
         let updated = nix_tree_fingerprint(&root).expect("updated fingerprint");
         assert_ne!(initial, updated);
     }

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-07-20
+
+Feature release: structured run results, per-task timeouts, richer completion,
+and `--output summary`.
+
+### Added
+
+- Event fields (additive): node/run `status`, `duration_ms`, optional timestamps,
+  `reason`, `seq`, and `run_id` on plan/run envelopes.
+- `--output summary` prints a per-node status/duration table.
+- Optional task `timeout` and `terminationGracePeriod` (e.g. `10m`, `5s`) with
+  supervisor timeout enforcement (`timed_out` outcome).
+- Dynamic completion targets: `apps`, `tasks`, `packages`, `checks`, `shells`,
+  `namespaces`, `categories`.
+- Duration parsing helpers (`parse_duration` / `format_duration`).
+
+### Changed
+
+- Workspace and Nix package version **2.4.0**.
+- Docs mark summary / timestamps / timeouts as shipped where implemented.
+
 ## [2.3.3] - 2026-07-20
 
 Correctness cut: watch parity with the normal task pipeline, empty-affected
@@ -280,6 +301,7 @@ First taggable V1 prerelease: a standard Nix flake app runner through Phase 5 of
 - [Compatibility matrix](docs/COMPATIBILITY.md), [CLI reference](docs/CLI_REFERENCE.md), and [telemetry decision](docs/TELEMETRY.md) (default: none).
 - Tag-triggered [release workflow](.github/workflows/release.yml) (quality gate only; no publish secrets).
 
+[2.4.0]: https://github.com/willmortimer/nxr/compare/v2.3.3...v2.4.0
 [2.3.3]: https://github.com/willmortimer/nxr/compare/v2.3.2...v2.3.3
 [2.3.2]: https://github.com/willmortimer/nxr/compare/v2.3.1...v2.3.2
 [2.3.1]: https://github.com/willmortimer/nxr/compare/v2.3.0...v2.3.1

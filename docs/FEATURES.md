@@ -346,6 +346,7 @@ Shipped modes:
 nxr --output live task dev
 nxr --output grouped task ci
 nxr --output failures task ci
+nxr --output summary task ci
 nxr --output raw task ci
 nxr --events jsonl task ci
 ```
@@ -356,17 +357,16 @@ Shipped features:
 - terminal-width adaptation;
 - ANSI-aware truncation;
 - failure excerpts (failures mode);
+- summary status/duration table;
 - raw child passthrough;
 - non-TTY CI mode;
-- machine-readable event streams (`--events jsonl`).
+- machine-readable event streams (`--events jsonl`) with optional status,
+  duration, and run metadata.
 
-Planned (2.4+; not yet implemented):
+Planned later:
 
-- `--output summary`;
-- timestamps and duration reporting on events / JSON;
-- progress state;
-- saved logs;
-- `run_id` and richer node outcome statuses.
+- persisted run database / `inspect run <run-id>`;
+- saved logs on disk.
 
 ### 2.8 Process supervision
 
@@ -417,17 +417,19 @@ Aliases must be explicit and inspectable.
 
 ### 2.11 Task status summaries
 
-Planned for 2.4 (not yet implemented). Today, use `--events jsonl` or `--output failures` / `grouped` / `live` for run feedback.
-
-```text
-TASK          STATUS      DURATION
-fmt-check     succeeded   1.2s
-lint          succeeded   4.8s
-test          failed      19.4s
-package       skipped     -
+```bash
+nxr --output summary task ci
 ```
 
-When shipped, JSON output will include exact exit codes and timestamps.
+```text
+TASK                     STATUS     DURATION
+fmt-check                succeeded  1.2s
+lint                     succeeded  4.8s
+test                     failed     19.4s
+```
+
+Event JSON (`--events jsonl`) may include `status`, `duration_ms`, and related
+optional fields on `node_exited` / `run_completed`.
 
 ### 2.12 Configuration inspection
 

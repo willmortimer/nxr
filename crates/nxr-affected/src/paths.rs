@@ -191,6 +191,6 @@ mod tests {
     fn rejects_absolute_and_parent_roots() {
         assert!(validate_path_roots(&["/abs".to_owned()]).is_err());
         assert!(validate_path_roots(&["../escape".to_owned()]).is_err());
-        assert!(validate_path_roots(&["".to_owned()]).is_err());
+        assert!(validate_path_roots(&[String::new()]).is_err());
     }
 }
