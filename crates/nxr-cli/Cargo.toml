@@ -16,6 +16,7 @@ camino = { workspace = true }
 clap = { workspace = true }
 clap_mangen = { workspace = true }
 dialoguer = { workspace = true }
+nxr-affected = { path = "../nxr-affected" }
 nxr-core = { path = "../nxr-core" }
 nxr-completion = { path = "../nxr-completion" }
 nxr-nix = { path = "../nxr-nix" }

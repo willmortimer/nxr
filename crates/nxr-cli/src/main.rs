@@ -21,8 +21,8 @@ use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
 use crate::cli::{CacheSubcommand, Cli, Command, ExplainSubcommand, InspectSubcommand};
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
-    cache, complete, completion, doctor, explain, graph, inspect, list, manpage, nix_op, plan, run,
-    select, task, watch,
+    affected, cache, complete, completion, doctor, explain, graph, inspect, list, manpage, nix_op,
+    plan, run, select, task, watch,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -83,6 +83,8 @@ enum RunError {
     Watch(#[from] watch::WatchCommandError),
     #[error(transparent)]
     Cache(#[from] cache::CacheError),
+    #[error(transparent)]
+    Affected(#[from] affected::AffectedCommandError),
 }
 
 impl RunError {
@@ -103,6 +105,7 @@ impl RunError {
             Self::Inspect(error) => error.exit_code(),
             Self::Watch(error) => error.exit_code(),
             Self::Cache(error) => error.exit_code(),
+            Self::Affected(error) => error.exit_code(),
             Self::MissingAppName | Self::Usage(_) | Self::FlakeAppRef(_) => exit::USAGE,
         }
     }
@@ -243,6 +246,19 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 Ok(exit::SUCCESS)
             }
         },
+        Some(Command::Affected { base, paths }) => {
+            affected::run(
+                cli.flake.as_deref(),
+                cli.nix.as_deref(),
+                cli.json,
+                cli.refresh_discovery,
+                &nix_flags,
+                base.as_deref(),
+                paths,
+                runner,
+            )?;
+            Ok(exit::SUCCESS)
+        }
     }
 }
 

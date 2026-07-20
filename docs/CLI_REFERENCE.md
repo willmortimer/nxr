@@ -69,6 +69,7 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr completion <shell>` | Emit Bash, Zsh, or Fish completion |
 | `nxr cache clear` | Remove all discovery cache entries |
 | `nxr cache status` | Show discovery cache path and size |
+| `nxr affected [--base <ref>] [PATH…]` | Report apps and tasks likely affected by changed paths (`--json` for CI) |
 | `nxr inspect` | Overview of apps (+ tasks when present) |
 | `nxr inspect --category <name>` | Overview with tasks filtered by category |
 | `nxr inspect app <name>` | Single app details |
