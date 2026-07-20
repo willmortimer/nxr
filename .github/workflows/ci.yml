@@ -10,20 +10,46 @@ permissions:
 
 jobs:
   quality:
+    name: quality (${{ matrix.os }}, nix ${{ matrix.nix_label }})
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
+        include:
+          - os: ubuntu-latest
+            nix_label: latest
+          - os: ubuntu-latest
+            nix_label: "2.18"
+            nix_package_url: https://releases.nixos.org/nix/nix-2.18.9/nix-2.18.9-x86_64-linux.tar.xz
+          - os: macos-latest
+            nix_label: latest
+          - os: macos-latest
+            nix_label: "2.18"
+            nix_package_url: https://releases.nixos.org/nix/nix-2.18.9/nix-2.18.9-aarch64-darwin.tar.xz
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Install Nix (latest)
+        if: matrix.nix_label == 'latest'
+        uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41 # main
+
+      - name: Install Nix (2.18 support floor)
+        if: matrix.nix_label == '2.18'
+        uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41 # main
+        with:
+          nix-package-url: ${{ matrix.nix_package_url }}
+
+      - name: Show Nix version
+        run: nix --version
 
       - name: Build nxr
-        run: nix build .#nxr -L
+        id: nxr
+        run: |
+          nix build .#nxr -L
+          nxr_bin="$(nix path-info ./result)/bin/nxr"
+          echo "bin=$nxr_bin" >> "$GITHUB_OUTPUT"
+          echo "Packaged nxr: $nxr_bin"
+          "$nxr_bin" --version
 
       - name: Format check
         run: nix run .#fmt -- --check
@@ -38,11 +64,27 @@ jobs:
         run: nix run .#deny
 
       - name: Fixture smoke (basic-apps)
+        env:
+          NXR: ${{ steps.nxr.outputs.bin }}
         run: |
-          nix run ./fixtures/basic-apps#hello
-          nix run ./fixtures/basic-apps#echo-args -- a b
-          nix run ./fixtures/basic-apps#succeed
-          if nix run ./fixtures/basic-apps#fail; then
+          "$NXR" --flake fixtures/basic-apps hello
+          "$NXR" --flake fixtures/basic-apps echo-args -- a b
+          "$NXR" --flake fixtures/basic-apps succeed
+          if "$NXR" --flake fixtures/basic-apps fail; then
             echo "expected fail app to exit non-zero" >&2
             exit 1
           fi
+
+      - name: Fixture smoke (task-dag)
+        env:
+          NXR: ${{ steps.nxr.outputs.bin }}
+        run: |
+          "$NXR" --flake fixtures/task-dag task ci --dry-run
+          "$NXR" --flake fixtures/task-dag task ci
+
+      - name: Fixture smoke (shell-integration)
+        env:
+          NXR: ${{ steps.nxr.outputs.bin }}
+        run: |
+          "$NXR" --flake fixtures/shell-integration inspect
+          nix develop ./fixtures/shell-integration --command bash -lc 'command -v nxr >/dev/null'
