@@ -14,9 +14,7 @@ pub fn normalize_relative_path(path: &str) -> String {
 #[must_use]
 pub fn is_global_invalidation_path(path: &str) -> bool {
     let normalized = normalize_relative_path(path);
-    normalized == "flake.nix"
-        || normalized == "flake.lock"
-        || normalized.ends_with(".nix")
+    normalized == "flake.nix" || normalized == "flake.lock" || normalized.ends_with(".nix")
 }
 
 /// Whether `changed` overlaps any declared root prefix or glob (conservative).

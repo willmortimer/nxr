@@ -105,9 +105,7 @@ pub fn analyze(
                     push_reason(
                         &mut reasons,
                         node_key,
-                        AffectedReason::Path {
-                            path: path.clone(),
-                        },
+                        AffectedReason::Path { path: path.clone() },
                     );
                 }
             }
@@ -157,11 +155,18 @@ fn kind_label(kind: NodeKind) -> &'static str {
     }
 }
 
-fn push_reason(reasons: &mut BTreeMap<String, Vec<AffectedReason>>, node_key: &str, reason: AffectedReason) {
+fn push_reason(
+    reasons: &mut BTreeMap<String, Vec<AffectedReason>>,
+    node_key: &str,
+    reason: AffectedReason,
+) {
     reasons.entry(node_key.to_owned()).or_default().push(reason);
 }
 
-fn propagate_dependencies(graph: &AffectedGraph, reasons: &mut BTreeMap<String, Vec<AffectedReason>>) {
+fn propagate_dependencies(
+    graph: &AffectedGraph,
+    reasons: &mut BTreeMap<String, Vec<AffectedReason>>,
+) {
     let mut queue: VecDeque<String> = reasons.keys().cloned().collect();
     let mut seen: BTreeSet<String> = reasons.keys().cloned().collect();
 

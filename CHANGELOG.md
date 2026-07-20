@@ -32,6 +32,8 @@ V2.3 monorepo ergonomics release: filtered views for large operation sets, conse
 ### Changed
 
 - Workspace and Nix package version **2.3.0**.
+- Release workflow: build `aarch64-linux` on native `ubuntu-24.04-arm`; update
+  `cargo-cyclonedx` invocation for current CLI (`--describe binaries`).
 
 ## [2.2.0] - 2026-07-19
 

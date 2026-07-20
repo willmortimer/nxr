@@ -262,7 +262,11 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
 
-        assert_eq!(code, Some(128 + Signal::SIGINT as i32), "child should die from forwarded SIGINT");
+        assert_eq!(
+            code,
+            Some(128 + Signal::SIGINT as i32),
+            "child should die from forwarded SIGINT"
+        );
     }
 
     #[cfg(unix)]

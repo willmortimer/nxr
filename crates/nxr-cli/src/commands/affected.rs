@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::io::{self, Write};
 
 use nxr_affected::{
-    AffectedAnalysis, AffectedError, analyze, build_graph, git_diff_name_only, GitDiffError,
+    AffectedAnalysis, AffectedError, GitDiffError, analyze, build_graph, git_diff_name_only,
 };
 use nxr_completion::cache::{
     DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_workspace_with_cache,
@@ -72,14 +72,11 @@ pub fn run(
 
     let mut changed_paths = paths.to_vec();
     if let Some(base_ref) = base {
-        let local_root = flake
-            .local_root
-            .as_ref()
-            .ok_or_else(|| {
-                AffectedCommandError::Usage(
-                    "--base requires a local flake root (remote flakes are unsupported)".to_owned(),
-                )
-            })?;
+        let local_root = flake.local_root.as_ref().ok_or_else(|| {
+            AffectedCommandError::Usage(
+                "--base requires a local flake root (remote flakes are unsupported)".to_owned(),
+            )
+        })?;
         let git_paths = git_diff_name_only(local_root, base_ref)?;
         changed_paths.extend(git_paths);
     }

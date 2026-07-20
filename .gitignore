@@ -2,6 +2,8 @@
 /target/
 **/*.rs.bk
 *.pdb
+*.cdx.json
+*_bin.cdx.json
 
 # --- Nix ---
 result

@@ -30,7 +30,8 @@ jobs:
         include:
           - runner: ubuntu-latest
             system: x86_64-linux
-          - runner: ubuntu-latest
+          # Native ARM: crate2nix/vendor cannot cross-build aarch64-linux on x86.
+          - runner: ubuntu-24.04-arm
             system: aarch64-linux
           - runner: macos-latest
             system: aarch64-darwin
@@ -98,8 +99,11 @@ jobs:
       - name: Generate Cargo CycloneDX SBOM
         run: |
           set -euo pipefail
+          # Current cargo-cyclonedx emits one BOM per binary; publish the CLI binary SBOM.
           nix shell nixpkgs#cargo-cyclonedx nixpkgs#cargo nixpkgs#rustc --command \
-            cargo cyclonedx --workspace --format json --output-file nxr-cargo.cdx.json
+            cargo cyclonedx -f json --manifest-path Cargo.toml --describe binaries
+          cp crates/nxr-cli/nxr_bin.cdx.json nxr-cargo.cdx.json
+          find . -name '*_bin.cdx.json' -delete
 
       - name: Generate Syft SBOM
         run: |

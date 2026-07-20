@@ -19,7 +19,7 @@ For each supported flake system the workflow builds `.#packages.<system>.nxr`, p
 |---|---|
 | `nxr-<version>-<system>.tar.gz` | `nxr-<version>-<system>/nxr` binary |
 | `SHA256SUMS` | `sha256sum` lines for every tarball |
-| `nxr-cargo.cdx.json` | CycloneDX SBOM from the Cargo workspace (`cargo-cyclonedx`) |
+| `nxr-cargo.cdx.json` | CycloneDX SBOM for the `nxr` CLI binary (`cargo-cyclonedx --describe binaries`) |
 | `nxr-syft.cdx.json` | CycloneDX SBOM from repository sources (`syft`) |
 
 Systems match the root flake outputs:
@@ -29,7 +29,7 @@ Systems match the root flake outputs:
 - `aarch64-linux`
 - `x86_64-linux`
 
-Linux archives build on `ubuntu-latest`; Darwin archives build on `macos-latest` (Nix cross-compiles where the runner architecture differs).
+Linux `x86_64` builds on `ubuntu-latest`; Linux `aarch64` builds on `ubuntu-24.04-arm` (native). Darwin archives build on `macos-latest` (Nix may cross-compile when the runner architecture differs).
 
 ## Verification
 
@@ -54,6 +54,8 @@ From a flake checkout:
 ```bash
 nix build .#packages.x86_64-linux.nxr -L
 nix shell nixpkgs#cargo-cyclonedx nixpkgs#cargo nixpkgs#rustc --command \
-  cargo cyclonedx --workspace --format json --output-file /tmp/nxr-cargo.cdx.json
+  cargo cyclonedx -f json --manifest-path Cargo.toml --describe binaries
+cp crates/nxr-cli/nxr_bin.cdx.json /tmp/nxr-cargo.cdx.json
+find . -name '*_bin.cdx.json' -delete
 nix shell nixpkgs#syft --command syft dir:. -o cyclonedx-json=/tmp/nxr-syft.cdx.json
 ```

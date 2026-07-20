@@ -3,7 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use nxr_core::App;
-use nxr_task::{TaskDefinition, TaskDocument, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION};
+use nxr_task::{
+    TaskDefinition, TaskDocument, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION,
+};
 use serde_json::Value as JsonValue;
 
 use crate::paths::normalize_relative_path;
@@ -85,17 +87,11 @@ fn reverse_dependencies(nodes: &BTreeMap<String, GraphNode>) -> BTreeMap<String,
     for (key, node) in nodes {
         for dep in &node.depends_on {
             let dep_key = node_key(NodeKind::Task, dep);
-            dependents
-                .entry(dep_key)
-                .or_default()
-                .insert(key.clone());
+            dependents.entry(dep_key).or_default().insert(key.clone());
         }
         if let Some(app_name) = &node.app {
             let app_key = node_key(NodeKind::App, app_name);
-            dependents
-                .entry(app_key)
-                .or_default()
-                .insert(key.clone());
+            dependents.entry(app_key).or_default().insert(key.clone());
         }
     }
     dependents

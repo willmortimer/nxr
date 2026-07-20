@@ -87,7 +87,11 @@ fn configured_ignore_globs() -> io::Result<GlobSet> {
     };
 
     let mut builder = GlobSetBuilder::new();
-    for pattern in raw.to_string_lossy().split(':').filter(|part| !part.is_empty()) {
+    for pattern in raw
+        .to_string_lossy()
+        .split(':')
+        .filter(|part| !part.is_empty())
+    {
         let glob = Glob::new(pattern).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -230,8 +234,8 @@ mod tests {
             .add(Glob::new("vendor/**").expect("glob"))
             .build()
             .expect("ignore set");
-        let ignored = nix_tree_fingerprint_with_ignore(&root, &ignore)
-            .expect("fingerprint ignoring vendor");
+        let ignored =
+            nix_tree_fingerprint_with_ignore(&root, &ignore).expect("fingerprint ignoring vendor");
 
         assert_ne!(with_vendor, ignored);
     }
@@ -248,10 +252,9 @@ mod tests {
         std::os::unix::fs::symlink(&root, &link).expect("symlink");
 
         let canonical = nix_tree_fingerprint(&root).expect("canonical fingerprint");
-        let via_link = nix_tree_fingerprint(
-            &camino::Utf8PathBuf::from_path_buf(link).expect("utf8 link"),
-        )
-        .expect("symlink fingerprint");
+        let via_link =
+            nix_tree_fingerprint(&camino::Utf8PathBuf::from_path_buf(link).expect("utf8 link"))
+                .expect("symlink fingerprint");
 
         assert_eq!(canonical, via_link);
     }
