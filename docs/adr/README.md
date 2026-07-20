@@ -4,6 +4,8 @@
 
 This index lists decisions that should be captured as individual Architecture Decision Records as implementation proceeds.
 
+V3-era ADRs (0201–0412) are **Deferred** and parked with [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md). They are not active roadmap commitments. Active delivery follows [ROADMAP.md](../ROADMAP.md) (2.1–2.3).
+
 An ADR is required when a decision:
 
 - changes a public CLI or schema contract;
@@ -11,8 +13,7 @@ An ADR is required when a decision:
 - defines a security or trust boundary;
 - chooses between native Nix behavior and runner-owned behavior;
 - affects local/CI equivalence;
-- introduces persistent state, a daemon, a cache, or a network protocol;
-- establishes a V3 platform primitive.
+- introduces persistent state, a daemon, a cache, or a network protocol (V3 ideas only until explicitly scheduled);
 
 Statuses used here:
 
@@ -72,7 +73,9 @@ Rejected   considered and explicitly not chosen
 | ADR-0119 | Make dangerous-operation metadata a guardrail, not a security boundary | Accepted | V2 |
 | ADR-0120 | Define schema migration and unknown-field compatibility policy | Proposed | V2 |
 
-## 4. V3 monorepo and action ADRs
+## 4. V3 monorepo and action ADRs (deferred)
+
+Parked with [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md). Not scheduled for the active 2.x roadmap.
 
 | ADR | Title | Status | Target |
 |---|---|---:|---:|
@@ -97,7 +100,9 @@ Rejected   considered and explicitly not chosen
 | ADR-0219 | Decide whether the run event protocol uses JSON, Protobuf, or both | Deferred | V3.2 |
 | ADR-0220 | Define provenance records and reproducible-run capsules | Deferred | V3.2 |
 
-## 5. V3 worker and development-fabric ADRs
+## 5. V3 worker and development-fabric ADRs (deferred)
+
+Parked with [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md). Not scheduled for the active 2.x roadmap.
 
 | ADR | Title | Status | Target |
 |---|---|---:|---:|
@@ -118,7 +123,9 @@ Rejected   considered and explicitly not chosen
 | ADR-0315 | Define DevPod, devcontainer, and DevCell backend interfaces | Deferred | V3.4 |
 | ADR-0316 | Define remote development environment lifecycle | Deferred | V3.4 |
 
-## 6. V3 platform and governance ADRs
+## 6. V3 platform and governance ADRs (deferred)
+
+Parked with [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md). Not scheduled for the active 2.x roadmap.
 
 | ADR | Title | Status | Target |
 |---|---|---:|---:|
@@ -142,12 +149,7 @@ The first implementation ADRs should be written in this order:
 1. ADR-0001 through ADR-0013 before the CLI contract is considered stable.
 2. ADR-0101 through ADR-0110 before V2 task execution begins.
 3. ADR-0111 through ADR-0120 before V2 schema freeze.
-4. ADR-0201 through ADR-0206 before writing ecosystem project adapters.
-5. ADR-0207 through ADR-0213 before implementing any non-Nix task cache.
-6. ADR-0214 through ADR-0220 before CI provider integration.
-7. ADR-0301 through ADR-0308 before introducing `nxrd`.
-8. ADR-0309 through ADR-0316 before persistent development services.
-9. ADR-0401 through ADR-0412 before exposing organization-scale APIs.
+4. V3 ADRs (0201–0412) only if a future control-plane effort is explicitly scheduled — see [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md).
 
 ## 8. Repository location
 

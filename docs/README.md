@@ -39,13 +39,9 @@ nix run .#test
 nxr test
         ↓
 nxr task ci
-        ↓
-nxr affected test
-        ↓
-nxr ci run pull-request
 ```
 
-Each higher layer is optional, and each leaf operation remains an ordinary flake app.
+Each higher layer is optional, and each leaf operation remains an ordinary flake app. Speculative control-plane steps (affected analysis, CI plans, remote workers) are documented as ideas only in [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md), not committed roadmap work.
 
 ## Why nxr exists
 
@@ -233,22 +229,13 @@ V2 adds optional workflow semantics:
 The task layer is additive. A V2 task graph points to standard apps or external commands; it does not invalidate the V1 model.
 
 
-### V3: workspace and CI control plane
+### V2.x: stabilization and ergonomics
 
-V3 extends the same model to complex repositories:
+After V2.0, minor releases focus on trustworthiness, flake UX, and monorepo ergonomics without introducing a second project graph or remote execution layer. See [ROADMAP.md](ROADMAP.md).
 
-- first-class projects and project graphs;
-- affected project/task analysis;
-- declared action inputs and outputs;
-- artifact and result replay;
-- provider-independent CI plans;
-- test intelligence and dynamic sharding;
-- optional local daemon and remote worker fabric;
-- service readiness, local DNS, ports, and worktree environments;
-- IDE, web, event, and agent protocols;
-- policy, approvals, provenance, and release orchestration.
+### Deferred: workspace control plane
 
-V3 remains local-first and self-hostable. Native Nix derivations continue to use the Nix store, substituters, and remote builders before `nxr` introduces any parallel mechanism.
+Ideas for projects, affected analysis, action contracts, artifact caches, CI planning, remote workers, service fabric, and IDE protocols are preserved in [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md). They are not scheduled work. Nix derivations continue to use the Nix store, substituters, and remote builders; `nxr` does not replace those primitives.
 
 ## Non-goals
 
@@ -275,8 +262,9 @@ Start at [INDEX.md](INDEX.md).
 - [APP_AUTHORING.md](APP_AUTHORING.md) — conventions for robust flake apps
 - [DEV_ENV_INTEGRATION.md](DEV_ENV_INTEGRATION.md) — dev shells, direnv, DevPod, and containers
 - [TECH_STACK_AND_REPO_SHAPE.md](TECH_STACK_AND_REPO_SHAPE.md) — implementation stack and repository layout
-- [ROADMAP.md](ROADMAP.md) — V1 through V3.5 delivery plan
+- [ROADMAP.md](ROADMAP.md) — shipped V1–V2 and active 2.1–2.3 plan
+- [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md) — deferred V3 control-plane ideas (not scheduled)
 - [ECOSYSTEM_SYNTHESIS.md](ECOSYSTEM_SYNTHESIS.md) — which ideas to inherit from adjacent tools and which boundaries to preserve
 - [CONTRACT_SUMMARY.md](CONTRACT_SUMMARY.md) — locked decisions that must not drift
-- [adr/README.md](adr/README.md) — planned architecture decisions from V1 through V3.5
+- [adr/README.md](adr/README.md) — architecture decisions (Accepted / Proposed / Deferred)
 - [adr/template.md](adr/template.md) — required structure for individual ADRs
