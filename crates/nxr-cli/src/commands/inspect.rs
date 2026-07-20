@@ -11,7 +11,9 @@ use nxr_completion::cache::{
 use nxr_core::diagnostics::exit;
 use nxr_core::sanitize::sanitize_terminal_text;
 use nxr_core::{App, AppList, ListApp};
-use nxr_nix::{AppNotFoundError, NixError, OptionalNixFlags, TaskDiscoveryError, resolve_app_by_name};
+use nxr_nix::{
+    AppNotFoundError, NixError, OptionalNixFlags, TaskDiscoveryError, resolve_app_by_name,
+};
 use nxr_task::{TaskDefinition, TaskDocument, listable_tasks, resolve_task};
 use serde::Serialize;
 
@@ -144,9 +146,7 @@ pub fn run(
         InspectTarget::Overview => {
             let workspace = discover_workspace(&flake, &adapter, refresh_discovery, nix_flags)?;
             let apps = workspace.apps;
-            let task_doc = workspace
-                .tasks
-                .expect("overview discovers tasks with apps");
+            let task_doc = workspace.tasks.expect("overview discovers tasks with apps");
             let mut stdout = io::stdout().lock();
             write_overview(
                 &mut stdout,
@@ -495,6 +495,7 @@ mod tests {
                 hidden: false,
                 category: Some("validation".to_owned()),
                 aliases: Vec::new(),
+                interactive: false,
             },
         );
         tasks.insert(
@@ -507,6 +508,7 @@ mod tests {
                 hidden: true,
                 category: None,
                 aliases: Vec::new(),
+                interactive: false,
             },
         );
         TaskDocument::new(tasks)

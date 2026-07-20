@@ -77,6 +77,7 @@ pub struct ScheduleOutcome {
 pub struct Scheduler {
     failure_policy: FailurePolicy,
     jobs: usize,
+    interactive: BTreeMap<String, bool>,
     states: BTreeMap<String, NodeState>,
     /// Remaining unsatisfied dependencies (decremented only on success).
     remaining_deps: BTreeMap<String, usize>,
@@ -108,11 +109,13 @@ impl Scheduler {
         let mut remaining_deps = BTreeMap::new();
         let mut dependents: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut ready = BTreeSet::new();
+        let mut interactive = BTreeMap::new();
 
         for node in &plan.nodes {
             states.insert(node.id.clone(), NodeState::Pending);
             remaining_deps.insert(node.id.clone(), node.depends_on.len());
             dependents.entry(node.id.clone()).or_default();
+            interactive.insert(node.id.clone(), node.interactive);
         }
 
         for node in &plan.nodes {
@@ -134,6 +137,7 @@ impl Scheduler {
         Ok(Self {
             failure_policy: plan.failure_policy,
             jobs,
+            interactive,
             states,
             remaining_deps,
             dependents,
@@ -148,6 +152,18 @@ impl Scheduler {
     pub fn with_failure_policy(mut self, policy: FailurePolicy) -> Self {
         self.failure_policy = policy;
         self
+    }
+
+    /// Whether `node` is marked interactive in the plan.
+    #[must_use]
+    pub fn is_interactive(&self, node: &str) -> bool {
+        self.interactive.get(node).copied().unwrap_or(false)
+    }
+
+    /// True when any in-flight node is interactive (exclusive hold).
+    #[must_use]
+    pub fn has_interactive_in_flight(&self) -> bool {
+        self.running.iter().any(|id| self.is_interactive(id))
     }
 
     /// Number of allowed concurrent running nodes.
@@ -207,11 +223,28 @@ impl Scheduler {
             return Vec::new();
         }
 
+        // Interactive nodes hold the terminal exclusively while running.
+        if self.has_interactive_in_flight() {
+            return Vec::new();
+        }
+
         let mut started = Vec::new();
         while self.running.len() < self.jobs {
             let Some(id) = self.ready.iter().next().cloned() else {
                 break;
             };
+
+            if self.is_interactive(&id) {
+                if !self.running.is_empty() || !started.is_empty() {
+                    break;
+                }
+                self.ready.remove(&id);
+                self.states.insert(id.clone(), NodeState::Running);
+                self.running.insert(id.clone());
+                started.push(id);
+                break;
+            }
+
             self.ready.remove(&id);
             self.states.insert(id.clone(), NodeState::Running);
             self.running.insert(id.clone());
@@ -395,6 +428,12 @@ mod tests {
     fn task(deps: &[&str]) -> TaskDefinition {
         let mut def = TaskDefinition::new("app");
         def.depends_on = deps.iter().map(|s| (*s).to_owned()).collect();
+        def
+    }
+
+    fn interactive_task(deps: &[&str]) -> TaskDefinition {
+        let mut def = task(deps);
+        def.interactive = true;
         def
     }
 
@@ -689,5 +728,60 @@ mod tests {
         sched.complete("b", 1).expect("b fail");
         // KeepGoing override: c still starts.
         assert_eq!(sched.state("c"), Some(NodeState::Running));
+    }
+
+    #[test]
+    fn interactive_sibling_runs_exclusively_with_jobs_2() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert("a".to_owned(), task(&[]));
+        tasks.insert("b".to_owned(), interactive_task(&["a"]));
+        tasks.insert("c".to_owned(), task(&["a"]));
+        tasks.insert("d".to_owned(), task(&["b", "c"]));
+        let plan = build_serial_plan(&tasks, "d").expect("plan");
+
+        let mut sched = Scheduler::new(&plan, 2).expect("sched");
+        assert_eq!(sched.schedule_ready(), vec!["a".to_owned()]);
+        assert_eq!(sched.complete("a", 0).expect("a"), vec!["b".to_owned()]);
+        assert_eq!(sched.in_flight(), 1);
+        assert!(sched.is_interactive("b"));
+        assert_eq!(sched.state("c"), Some(NodeState::Ready));
+
+        assert_eq!(sched.complete("b", 0).expect("b"), vec!["c".to_owned()]);
+        assert_eq!(sched.complete("c", 0).expect("c"), vec!["d".to_owned()]);
+        assert!(sched.complete("d", 0).expect("d").is_empty());
+        assert!(sched.outcome().success);
+    }
+
+    #[test]
+    fn interactive_holds_terminal_while_running() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert("a".to_owned(), interactive_task(&[]));
+        tasks.insert("b".to_owned(), task(&["a"]));
+        let plan = build_serial_plan(&tasks, "b").expect("plan");
+
+        let mut sched = Scheduler::new(&plan, 4).expect("sched");
+        assert_eq!(sched.schedule_ready(), vec!["a".to_owned()]);
+        assert!(sched.has_interactive_in_flight());
+        assert!(sched.schedule_ready().is_empty());
+        assert_eq!(sched.complete("a", 0).expect("a"), vec!["b".to_owned()]);
+    }
+
+    #[test]
+    fn two_interactive_siblings_run_serially() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert("a".to_owned(), task(&[]));
+        tasks.insert("b".to_owned(), interactive_task(&["a"]));
+        tasks.insert("c".to_owned(), interactive_task(&["a"]));
+        tasks.insert("d".to_owned(), task(&["b", "c"]));
+        let plan = build_serial_plan(&tasks, "d").expect("plan");
+
+        let mut sched = Scheduler::new(&plan, 2).expect("sched");
+        assert_eq!(sched.schedule_ready(), vec!["a".to_owned()]);
+        assert_eq!(sched.complete("a", 0).expect("a"), vec!["b".to_owned()]);
+        assert!(sched.schedule_ready().is_empty());
+        assert_eq!(sched.complete("b", 0).expect("b"), vec!["c".to_owned()]);
+        assert!(sched.schedule_ready().is_empty());
+        assert_eq!(sched.complete("c", 0).expect("c"), vec!["d".to_owned()]);
+        assert!(sched.complete("d", 0).expect("d").is_empty());
     }
 }

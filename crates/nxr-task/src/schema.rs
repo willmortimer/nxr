@@ -103,6 +103,11 @@ pub struct TaskDefinition {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
+
+    /// When true, the node requires exclusive terminal access (stdin inherited;
+    /// cannot run concurrently with other nodes or multiplexed output).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interactive: bool,
 }
 
 impl TaskDefinition {
@@ -117,6 +122,7 @@ impl TaskDefinition {
             hidden: false,
             category: None,
             aliases: Vec::new(),
+            interactive: false,
         }
     }
 }
@@ -183,6 +189,7 @@ mod tests {
                 hidden: false,
                 category: Some("validation".to_owned()),
                 aliases: vec!["gate".to_owned()],
+                interactive: false,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -241,6 +248,37 @@ mod tests {
         assert!(task.depends_on.is_empty());
         assert!(!task.hidden);
         assert_eq!(task.app, "test");
+    }
+
+    #[test]
+    fn interactive_defaults_to_false() {
+        let value = json!({
+            "schema_version": 1,
+            "tasks": {
+                "test": {
+                    "app": "test"
+                }
+            }
+        });
+        let doc: TaskDocument = serde_json::from_value(value).expect("deserialize");
+        assert!(!doc.tasks["test"].interactive);
+    }
+
+    #[test]
+    fn round_trip_interactive() {
+        let value = json!({
+            "schema_version": 1,
+            "tasks": {
+                "debug": {
+                    "app": "debug",
+                    "interactive": true
+                }
+            }
+        });
+        let doc: TaskDocument = serde_json::from_value(value).expect("deserialize");
+        assert!(doc.tasks["debug"].interactive);
+        let encoded = serde_json::to_value(&doc).expect("serialize");
+        assert_eq!(encoded["tasks"]["debug"]["interactive"], Value::Bool(true));
     }
 
     #[test]
@@ -336,14 +374,12 @@ mod tests {
                 hidden: false,
                 category: None,
                 aliases: Vec::new(),
+                interactive: false,
             },
         );
         let doc = TaskDocument::new(tasks);
         let err = doc.validate().expect_err("absolute path rejected");
-        assert!(matches!(
-            err,
-            SchemaError::AbsoluteWorkingDirectory { .. }
-        ));
+        assert!(matches!(err, SchemaError::AbsoluteWorkingDirectory { .. }));
     }
 
     #[test]
@@ -359,6 +395,7 @@ mod tests {
                 hidden: true,
                 category: None,
                 aliases: Vec::new(),
+                interactive: false,
             },
         );
         let value = serde_json::to_value(TaskDocument::new(tasks)).expect("serialize");

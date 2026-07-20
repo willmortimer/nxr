@@ -164,6 +164,13 @@ fn write_human_execution_plan(writer: &mut impl Write, plan: &ExecutionPlan) -> 
         plan.argument_forwarding.as_str()
     )?;
     writeln!(writer, "serial_order: {}", plan.serial_order.join(" -> "))?;
+    if plan.has_interactive_nodes() {
+        writeln!(
+            writer,
+            "interactive_exclusivity: {}",
+            plan.interactive_node_ids().collect::<Vec<_>>().join(", ")
+        )?;
+    }
     writeln!(writer, "nodes: {}", plan.nodes.len())?;
     Ok(())
 }
@@ -231,5 +238,20 @@ mod tests {
         assert!(rendered.contains("argument_forwarding: root\n"));
         assert!(rendered.contains("serial_order: a -> b\n"));
         assert_eq!(plan.failure_policy, FailurePolicy::FailFast);
+    }
+
+    #[test]
+    fn human_execution_plan_prints_interactive_exclusivity() {
+        let mut tasks = std::collections::BTreeMap::new();
+        tasks.insert("a".to_owned(), nxr_task::TaskDefinition::new("a"));
+        let mut debug = nxr_task::TaskDefinition::new("debug");
+        debug.interactive = true;
+        tasks.insert("debug".to_owned(), debug);
+        let plan = build_serial_plan(&tasks, "debug").expect("plan");
+
+        let mut output = Vec::new();
+        write_execution_plan(&mut output, &plan, false).expect("write execution plan");
+        let rendered = String::from_utf8(output).expect("utf-8");
+        assert!(rendered.contains("interactive_exclusivity: debug\n"));
     }
 }

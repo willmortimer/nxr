@@ -217,6 +217,7 @@ mod tests {
                 hidden: false,
                 category: Some("validation".to_owned()),
                 aliases: Vec::new(),
+                interactive: false,
             },
         );
         tasks.insert(
@@ -229,6 +230,7 @@ mod tests {
                 hidden: true,
                 category: Some("validation".to_owned()),
                 aliases: Vec::new(),
+                interactive: false,
             },
         );
         let doc = TaskDocument::new(tasks);
