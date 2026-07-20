@@ -1035,6 +1035,93 @@ fn doctor_clean_env_reports_policy_without_executing_app() {
 }
 
 #[test]
+fn explain_app_fixture_reports_workspace_and_command() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "explain", "hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("kind: app"))
+        .stdout(predicate::str::contains("target: hello"))
+        .stdout(predicate::str::contains("attr_path:"))
+        .stdout(predicate::str::contains("command: "))
+        .stdout(predicate::str::contains("invalidation_key="));
+}
+
+#[test]
+fn explain_task_fixture_reports_dependency_path() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "explain", "task", "ci"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("kind: task"))
+        .stdout(predicate::str::contains("dependency_path: fmt -> test -> ci"))
+        .stdout(predicate::str::contains("[fmt]"))
+        .stdout(predicate::str::contains("[ci]"));
+}
+
+#[test]
+fn explain_json_emits_schema_version_and_workspace() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "--json", "explain", "hello"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse explain json");
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["kind"], "app");
+    assert_eq!(value["target"], "hello");
+    assert!(value["workspace"]["nix"]["executable"].is_string());
+    assert!(value["workspace"]["discovery_cache"]["invalidation_key"].is_number());
+    assert!(value["command"]["arguments"].is_array());
+}
+
+#[test]
+fn doctor_all_json_includes_workspace_and_cache_findings() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/basic-apps", "--json", "doctor", "--all"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse doctor json");
+    assert!(value["workspace"].is_object());
+    assert!(value["workspace"]["discovery_cache"]["invalidation_key"].is_number());
+    let codes: Vec<&str> = value["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .map(|finding| finding["code"].as_str().expect("code"))
+        .collect();
+    assert!(codes.contains(&"cache.status") || codes.contains(&"cache.unavailable"));
+    assert!(codes.iter().any(|code| code.starts_with("cache.")));
+}
+
+#[test]
 fn graph_ci_text_lists_ordered_tasks() {
     let Some(()) = require_nix() else {
         return;

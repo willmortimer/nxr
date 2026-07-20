@@ -18,6 +18,8 @@ nxr list
 nxr select
 nxr plan <app-or-task>
 nxr doctor [app]
+nxr explain <app|task> [args...]
+nxr explain task <name> [args...]
 nxr completion <shell>
 nxr cache clear|status
 nxr inspect ...
@@ -332,6 +334,10 @@ Clean-environment validation never executes apps; with a named app it may emit a
 nxr doctor --clean-env test
 nxr doctor --all
 ```
+
+`doctor --all` adds non-destructive workspace findings: app description/naming quality, discovery cache status, invalidation key, and a structured `workspace` object in JSON (flake root, system, Nix capabilities, cache metadata).
+
+`nxr explain` prints how nxr would resolve and invoke an app or task: flake root, system, Nix executable/version/capabilities, discovery cache hit/miss and invalidation key, attr path, execution directory, environment policy, requested/active dev shell, exact Nix argv, task dependency path, shell-wrap skip reason, and scheduler skip reasons for dependent task nodes.
 
 Apps may declare themselves unsafe for automatic execution.
 

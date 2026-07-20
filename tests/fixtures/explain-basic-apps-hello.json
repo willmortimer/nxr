@@ -1,0 +1,52 @@
+{
+  "kind": "app",
+  "schema_version": 1,
+  "workspace": {
+    "flake": {
+      "display": "fixtures/basic-apps",
+      "nix_ref": "/abs/fixtures/basic-apps",
+      "local_root": "/abs/fixtures/basic-apps"
+    },
+    "system": "aarch64-darwin",
+    "nix": {
+      "executable": "/nix/bin/nix",
+      "version": "2.18.1",
+      "capabilities": {
+        "version": "2.18.1",
+        "flakes_enabled": true,
+        "supports_json_log_format": true,
+        "supports_no_write_lock_file": true,
+        "supports_offline": true,
+        "supports_accept_flake_config": true
+      }
+    },
+    "discovery_cache": {
+      "available": true,
+      "directory": "/tmp/nxr-cache",
+      "cache_file": "/tmp/nxr-cache/deadbeef.json",
+      "hit": false,
+      "invalidation_key": 99,
+      "cached_invalidation_key": 88
+    },
+    "invocation_directory": "/work",
+    "requested_shell": null,
+    "active_shell": null,
+    "environment_policy": "inherit"
+  },
+  "target": "hello",
+  "attr_path": "apps.aarch64-darwin.hello",
+  "execution_directory": "/work",
+  "shell_wrap": {
+    "requested_shell": null,
+    "active_shell": null,
+    "applied": false
+  },
+  "command": {
+    "program": "/nix/bin/nix",
+    "arguments": [
+      "run",
+      "/abs/fixtures/basic-apps#hello"
+    ]
+  },
+  "forwarded_arguments": []
+}
