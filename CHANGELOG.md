@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Namespaced list/inspect views: `--category` filters apps (via `nxr.category`
+  listing metadata) and tasks; `--namespace` filters by optional
+  `nxr.projects.json` membership. Flake apps remain the operation authority;
+  see [docs/MONOREPO_VIEWS.md](docs/MONOREPO_VIEWS.md).
+- Optional additive `apps` map on `nxr.<system>` for app listing categories;
+  flake-parts `nxr.apps.<name>.category` emits it.
+- Fixture `fixtures/namespaced-monorepo/` and schema
+  `schemas/projects-v1.schema.json`.
+
 ## [2.2.0] - 2026-07-19
 
 V2.2 flake UX release: standard flake output commands, richer diagnostics, and task ergonomics.

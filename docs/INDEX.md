@@ -30,6 +30,7 @@ Product and architecture contract for `nxr`. Prefer these docs over inventing st
 | [SECURITY_REVIEW_V1.md](SECURITY_REVIEW_V1.md) | V1.0 security review vs ARCHITECTURE §8 |
 | [APP_AUTHORING.md](APP_AUTHORING.md) | Conventions for robust flake apps |
 | [TASKS.md](TASKS.md) | Declaring tasks and the `nxr.<system>` discovery attr |
+| [MONOREPO_VIEWS.md](MONOREPO_VIEWS.md) | Category/namespace filters; optional non-authoritative projects file |
 | [MIGRATE_FROM_MISE_JUST.md](MIGRATE_FROM_MISE_JUST.md) | How-to: move from mise/just/aliases to flake apps |
 | [DEV_ENV_INTEGRATION.md](DEV_ENV_INTEGRATION.md) | Dev shells, direnv, DevPod, containers |
 | [ECOSYSTEM_SYNTHESIS.md](ECOSYSTEM_SYNTHESIS.md) | Adjacent-tool inheritance and boundaries |

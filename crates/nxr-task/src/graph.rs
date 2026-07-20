@@ -158,9 +158,7 @@ impl TaskGraph {
                     continue;
                 }
                 let Some(def) = tasks.get(&name) else {
-                    return Err(GraphError::UnknownRoot {
-                        root: name,
-                    });
+                    return Err(GraphError::UnknownRoot { root: name });
                 };
                 for dep in &def.depends_on {
                     if !tasks.contains_key(dep) {
@@ -341,10 +339,7 @@ mod tests {
         tasks.insert("c".to_owned(), task(&["a"]));
         let graph = TaskGraph::subgraph_union(&tasks, &["b", "c"]).expect("graph");
         assert_eq!(graph.len(), 3);
-        assert_eq!(
-            graph.node_ids().collect::<Vec<_>>(),
-            vec!["a", "b", "c"]
-        );
+        assert_eq!(graph.node_ids().collect::<Vec<_>>(), vec!["a", "b", "c"]);
     }
 
     #[test]

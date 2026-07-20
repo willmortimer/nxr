@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "projects": {
+    "api": {
+      "description": "API package (view only; apps still come from the flake)",
+      "category": "backend",
+      "apps": ["api-test", "api-lint"],
+      "tasks": ["api-test", "api-ci"]
+    },
+    "web": {
+      "description": "Web package (view only; apps still come from the flake)",
+      "category": "frontend",
+      "apps": ["web-test", "web-lint"],
+      "tasks": ["web-test", "web-ci"]
+    }
+  }
+}

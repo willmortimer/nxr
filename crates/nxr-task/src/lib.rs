@@ -24,9 +24,13 @@ pub use plan_exec::{
     build_execution_plan, build_execution_plan_roots, build_serial_plan,
 };
 pub use planner::{PlanError, plan_mermaid, plan_serial, plan_serial_union, plan_text};
-pub use resolve::{ResolveTaskError, listable_tasks, resolve_task, resolve_task_name};
+pub use resolve::{
+    ResolveTaskError, enrich_apps_with_listing_metadata, listable_tasks, listable_tasks_filtered,
+    resolve_task, resolve_task_name,
+};
 pub use scheduler::{NodeState, ScheduleOutcome, Scheduler, SchedulerError};
 pub use schema::{
-    SCHEMA_VERSION, SchemaError, TaskDefinition, TaskDocument, WORKING_DIRECTORY_FLAKE_ROOT,
-    WORKING_DIRECTORY_INVOCATION, validate_schema_version, validate_working_directory,
+    AppListingMetadata, SCHEMA_VERSION, SchemaError, TaskDefinition, TaskDocument,
+    WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, validate_schema_version,
+    validate_working_directory,
 };

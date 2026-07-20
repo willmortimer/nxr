@@ -36,11 +36,24 @@ pub enum SchemaError {
 }
 
 /// Versioned task document: `schema_version` plus named task definitions.
+///
+/// Optional [`Self::apps`] is additive listing metadata for flake apps (category
+/// and similar). It does not define or replace `apps.<system>.*` outputs.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TaskDocument {
     pub schema_version: u32,
     #[serde(default)]
     pub tasks: BTreeMap<String, TaskDefinition>,
+    /// Optional per-app listing metadata keyed by flake app leaf name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub apps: BTreeMap<String, AppListingMetadata>,
+}
+
+/// Listing-only metadata for a flake app leaf (not an operation definition).
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AppListingMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
 }
 
 impl TaskDocument {
@@ -53,6 +66,7 @@ impl TaskDocument {
         Self {
             schema_version: Self::SCHEMA_VERSION,
             tasks,
+            apps: BTreeMap::new(),
         }
     }
 
@@ -322,6 +336,7 @@ mod tests {
         let doc = TaskDocument {
             schema_version: 99,
             tasks: BTreeMap::new(),
+            apps: BTreeMap::new(),
         };
         let err = doc.validate().expect_err("major 99 unsupported");
         assert!(matches!(

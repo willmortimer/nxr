@@ -17,6 +17,12 @@ let
         description = "Short imperative description shown by nix flake show and nxr list.";
       };
 
+      category = lib.mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Optional logical category for list/inspect filtering (nxr.<system>.apps metadata).";
+      };
+
       runtimeInputs = lib.mkOption {
         type = types.listOf types.package;
         default = [ ];
@@ -45,6 +51,7 @@ in
       inherit pkgs;
       name = attrName;
       description = appCfg.description;
+      category = appCfg.category;
       runtimeInputs = appCfg.runtimeInputs;
       text = appCfg.script;
     }

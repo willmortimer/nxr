@@ -1,8 +1,8 @@
 # Entry flake-parts module for nxr consumers.
 #
 # Imports per-system apps, tasks, and shellIntegration modules, then emits
-# versioned task metadata at flake output `nxr.<system>` (TaskDocument:
-# schema_version + tasks).
+# versioned metadata at flake output `nxr.<system>` (TaskDocument:
+# schema_version + tasks + optional apps listing metadata).
 {
   lib,
   config,
@@ -34,10 +34,26 @@ let
       interactive = task.interactive;
     };
 
-  taskDocument = tasksCfg: {
-    schema_version = 1;
-    tasks = lib.mapAttrs (_name: taskToJson) tasksCfg;
-  };
+  appListingToJson =
+    app:
+    lib.optionalAttrs (app.category != null) {
+      category = app.category;
+    };
+
+  nxrDocument =
+    cfg:
+    let
+      appsMeta = lib.filterAttrs (_: meta: meta != { }) (
+        lib.mapAttrs (_name: appListingToJson) cfg.nxr.apps
+      );
+    in
+    {
+      schema_version = 1;
+      tasks = lib.mapAttrs (_name: taskToJson) cfg.nxr.tasks;
+    }
+    // lib.optionalAttrs (appsMeta != { }) {
+      apps = appsMeta;
+    };
 in
 {
   perSystem = {
@@ -48,8 +64,6 @@ in
     ];
   };
 
-  # `nxr.<system>` → { schema_version = 1; tasks = { ... }; }
-  flake.nxr = lib.mapAttrs (
-    _system: cfg: taskDocument cfg.nxr.tasks
-  ) config.allSystems;
+  # `nxr.<system>` → { schema_version = 1; tasks = { ... }; apps? = { ... }; }
+  flake.nxr = lib.mapAttrs (_system: cfg: nxrDocument cfg) config.allSystems;
 }

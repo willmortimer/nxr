@@ -3,6 +3,7 @@
   pkgs,
   name,
   description,
+  category ? null,
   runtimeInputs ? [ ],
   text,
 }:
@@ -17,5 +18,7 @@ in
 {
   type = "app";
   program = "${drv}/bin/${name}";
-  meta = metadata.mkAppMeta { inherit description; };
+  meta = metadata.mkAppMeta (
+    { inherit description; } // lib.optionalAttrs (category != null) { inherit category; }
+  );
 }

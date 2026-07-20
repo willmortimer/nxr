@@ -51,7 +51,8 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr` | List apps (same as `nxr list`) |
 | `nxr list` | List apps (and tasks when present) for the current system |
 | `nxr list apps\|checks\|packages\|shells\|tasks` | List one catalog (default without kind: apps + tasks) |
-| `nxr list --category <name>` | Filter listed tasks by category |
+| `nxr list --category <name>` | Filter listed apps/tasks by category |
+| `nxr list --namespace <name>` | Filter by project namespace (`nxr.projects.json`) |
 | `nxr <app> [args…]` | Run a flake app |
 | `nxr <flake>#<app> [args…]` | Inline flake + app (like `nix run`) |
 | `nxr run <app> [-- args…]` | Explicit run form |
@@ -70,7 +71,8 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr cache clear` | Remove all discovery cache entries |
 | `nxr cache status` | Show discovery cache path and size |
 | `nxr inspect` | Overview of apps (+ tasks when present) |
-| `nxr inspect --category <name>` | Overview with tasks filtered by category |
+| `nxr inspect --category <name>` | Overview with apps/tasks filtered by category |
+| `nxr inspect --namespace <name>` | Overview filtered by project namespace |
 | `nxr inspect app <name>` | Single app details |
 | `nxr inspect task <name>` | Single task details |
 | `nxr task <name>… [args…]` | Run one or more task roots as a union DAG (shared deps run once); trailing args go to each **root** task app only |

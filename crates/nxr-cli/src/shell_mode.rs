@@ -60,9 +60,7 @@ pub fn effective_shell_wrap(requested: Option<&str>, mode: ShellMode) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ShellMode, effective_shell_wrap, should_wrap_shell_with_active,
-    };
+    use super::{ShellMode, effective_shell_wrap, should_wrap_shell_with_active};
 
     #[test]
     fn smart_mode_skips_wrap_when_marker_matches() {
@@ -80,7 +78,11 @@ mod tests {
             ShellMode::Smart,
             Some("backend")
         ));
-        assert!(should_wrap_shell_with_active("backend", ShellMode::Smart, None));
+        assert!(should_wrap_shell_with_active(
+            "backend",
+            ShellMode::Smart,
+            None
+        ));
     }
 
     #[test]

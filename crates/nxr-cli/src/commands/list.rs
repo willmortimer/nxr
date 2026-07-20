@@ -8,12 +8,13 @@ use nxr_completion::cache::{
     DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_workspace_with_cache,
 };
 use nxr_core::sanitize::sanitize_terminal_text;
-use nxr_core::{App, AppList, FlakeOutput, OutputList};
+use nxr_core::{App, AppList, FlakeOutput, OutputList, ProjectsError};
 use nxr_nix::{NixError, OptionalNixFlags, OutputTable, TaskDiscoveryError};
-use nxr_task::{TaskDefinition, TaskDocument, listable_tasks};
+use nxr_task::{TaskDefinition, TaskDocument};
 use serde::Serialize;
 
 use crate::commands::common::{PrepareError, build_adapter, current_invocation_directory};
+use crate::commands::views::ViewFilter;
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
 use crate::output::{JsonListError, write_human_list, write_json_list};
 use crate::runner_output::RunnerOutput;
@@ -47,6 +48,8 @@ pub enum ListError {
     #[error(transparent)]
     Tasks(#[from] TaskDiscoveryError),
     #[error(transparent)]
+    Projects(#[from] ProjectsError),
+    #[error(transparent)]
     Json(#[from] JsonListError),
     #[error(transparent)]
     Io(#[from] io::Error),
@@ -60,6 +63,7 @@ impl ListError {
             Self::Flake(error) => error.exit_code(),
             Self::Nix(error) => error.exit_code(),
             Self::Tasks(error) => error.exit_code(),
+            Self::Projects(error) => error.exit_code(),
             Self::Json(_) | Self::Io(_) => nxr_core::diagnostics::exit::EVALUATION,
         }
     }
@@ -81,11 +85,20 @@ pub fn run(
     nix_flags: &OptionalNixFlags,
     kind: Option<ListKind>,
     category: Option<&str>,
+    namespace: Option<&str>,
     runner: RunnerOutput,
 ) -> Result<(), ListError> {
     let invocation_cwd = current_invocation_directory()?;
     let flake = resolve_flake(flake_arg, &invocation_cwd)?;
     let adapter = build_adapter(nix_override)?;
+    let filter = ViewFilter::resolve(
+        flake
+            .local_root
+            .as_deref()
+            .map(camino::Utf8Path::as_std_path),
+        category,
+        namespace,
+    )?;
 
     match kind {
         None | Some(ListKind::Apps | ListKind::Tasks) => {
@@ -95,16 +108,16 @@ pub fn run(
                 .info(format!("discovering apps for {}", flake.display))
                 .map_err(ListError::Io)?;
             let workspace = discover_workspace(&flake, &adapter, refresh_discovery, nix_flags)?;
-            let apps = if include_apps {
-                workspace.apps
-            } else {
-                Vec::new()
-            };
             let task_doc = workspace
                 .tasks
                 .expect("list always discovers tasks with apps");
+            let apps = if include_apps {
+                filter.filter_apps(&workspace.apps, &task_doc)
+            } else {
+                Vec::new()
+            };
             let tasks = if include_tasks {
-                listable_tasks(&task_doc, category)
+                filter.filter_tasks(&task_doc)
             } else {
                 BTreeMap::new()
             };

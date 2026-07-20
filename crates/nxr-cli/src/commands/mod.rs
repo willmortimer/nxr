@@ -15,4 +15,5 @@ pub mod plan;
 pub mod run;
 pub mod select;
 pub mod task;
+pub mod views;
 pub mod watch;

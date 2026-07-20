@@ -4,7 +4,7 @@
 //! `nxr plan` when the name is not an app) resolve aliases to canonical task
 //! names. Bare `nxr <name>` remains **app-only** and does not consult tasks.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::schema::{TaskDefinition, TaskDocument};
@@ -88,18 +88,42 @@ pub fn resolve_task<'a>(
     Ok((canonical, task))
 }
 
-/// Tasks suitable for default listings: omit `hidden`, optionally filter `category`.
+/// Tasks suitable for default listings: omit `hidden`, optionally filter
+/// `category` and/or namespace membership.
 #[must_use]
 pub fn listable_tasks(
     doc: &TaskDocument,
     category: Option<&str>,
 ) -> BTreeMap<String, TaskDefinition> {
+    listable_tasks_filtered(doc, category, None)
+}
+
+/// Like [`listable_tasks`], with an optional namespace membership set.
+#[must_use]
+pub fn listable_tasks_filtered(
+    doc: &TaskDocument,
+    category: Option<&str>,
+    namespace_tasks: Option<&BTreeSet<String>>,
+) -> BTreeMap<String, TaskDefinition> {
     doc.tasks
         .iter()
         .filter(|(_, task)| !task.hidden)
         .filter(|(_, task)| category.is_none_or(|cat| task.category.as_deref() == Some(cat)))
+        .filter(|(name, _)| namespace_tasks.is_none_or(|members| members.contains(*name)))
         .map(|(name, task)| (name.clone(), task.clone()))
         .collect()
+}
+
+/// Copy listing metadata from `doc.apps` onto discovered flake apps.
+///
+/// Sets [`nxr_core::NXR_CATEGORY_KEY`] when the document provides a category.
+/// Does not invent apps: only enriches names already discovered from the flake.
+pub fn enrich_apps_with_listing_metadata(apps: &mut [nxr_core::App], doc: &TaskDocument) {
+    for app in apps {
+        if let Some(meta) = doc.apps.get(&app.name) {
+            nxr_core::set_app_category(app, meta.category.as_deref());
+        }
+    }
 }
 
 fn rank_task_suggestions(query: &str, doc: &TaskDocument) -> Vec<String> {

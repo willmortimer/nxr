@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/projects-v1.schema.json",
+  "title": "nxr projects document",
+  "description": "Optional non-authoritative project/namespace views for list/inspect. Does not define flake apps or tasks; members must already exist as flake outputs. File: nxr.projects.json at the flake root.",
+  "type": "object",
+  "required": ["schema_version"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Major schema version. Unsupported majors must be rejected."
+    },
+    "projects": {
+      "type": "object",
+      "description": "Map of namespace id to project definition.",
+      "additionalProperties": {
+        "$ref": "#/$defs/project"
+      }
+    }
+  },
+  "$defs": {
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Optional short description for humans."
+        },
+        "category": {
+          "type": "string",
+          "description": "Optional category label for documentation; filtering uses app/task categories and membership lists."
+        },
+        "apps": {
+          "type": "array",
+          "description": "Flake app leaf names belonging to this namespace.",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "tasks": {
+          "type": "array",
+          "description": "Task names belonging to this namespace.",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}
