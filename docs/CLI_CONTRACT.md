@@ -252,7 +252,7 @@ bypasses line-oriented event conversion so binary and interactive child I/O
 pass through unchanged. Multiplexed modes (`live` / `grouped` / `failures`)
 close caller stdin for supervised children.
 
-`--output summary` is reserved / not implemented in V2.0.
+`--output summary` prints a per-node status/duration table (shipped in 2.4).
 
 ## 8. App listing contract
 

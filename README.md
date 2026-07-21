@@ -84,7 +84,7 @@ nxr --flake ./path/to/flake hello
 
 Useful globals: `--flake`, `--cwd` / `--root`, `--shell <name>`,
 `--shell-mode smart|always|never`, `--clean-env`, `--refresh-discovery`,
-`--offline`, `--nix-arg`, `--output live|grouped|failures|raw`, `--events jsonl`.
+`--offline`, `--nix-arg`, `--output live|grouped|failures|summary|raw`, `--events jsonl`.
 
 Full index: [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md).
 
@@ -98,6 +98,7 @@ nxr task ci
 nxr task lint unit integration -j 8   # union DAG; shared deps run once
 nxr task ci --keep-going
 nxr --output grouped task ci
+nxr --output summary task ci
 nxr --output raw task dev             # single child inherits stdio
 nxr graph ci --format mermaid
 ```
@@ -107,6 +108,7 @@ Task fields worth knowing:
 - `workingDirectory` — `invocation` | `flake-root` | relative path (CLI `--cwd`/`--root` win)
 - `interactive = true` — exclusive TTY node; conflicts with multiplexed `--output` / `--events`
 - `paths` — optional roots for `nxr affected`
+- `timeout` / `terminationGracePeriod` — per-task wall-clock limits (e.g. `10m`, `5s`)
 - `category` / aliases — listing and resolution helpers
 
 Explicit commands (`task`, `graph`, `inspect task`, `watch`, task-side `plan`,
@@ -131,7 +133,8 @@ Smart mode reads `NXR_DEV_SHELL` from shell integration and skips redundant
 nxr watch test
 nxr watch ci --include 'src/**' --exclude '**/*.md' --clear
 nxr run test --watch
-nxr task ci --watch                   # single root only
+nxr task ci --watch
+nxr task lint unit --watch -j 4       # multi-root union + scheduler options
 ```
 
 Built-in ignores: `.git`, `target`, `result*`, `/nix/store`. Ctrl-C stops the
@@ -183,5 +186,5 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**2.4.0** — structured run results (`--output summary`, event statuses/durations),
-per-task timeouts, richer dynamic completion. History: [CHANGELOG.md](CHANGELOG.md).
+**2.4.1** — timeout module API, full summary/plan terminals, structured run
+metadata, and shell completion routing. History: [CHANGELOG.md](CHANGELOG.md).

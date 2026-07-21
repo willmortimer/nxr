@@ -106,6 +106,8 @@ Generated completion for:
 - Fish.
 
 Completion candidates are dynamic per flake and include descriptions.
+Shell hooks route by command position to `__complete` targets (`apps`, `tasks`,
+`packages`, `checks`, `shells`, `namespaces`, `categories`).
 
 ```bash
 nxr completion bash

@@ -56,6 +56,8 @@ perSystem = { ... }: {
 | `aliases` | no | Alternate names for explicit task commands (see below); default `[]` |
 | `interactive` | no | Exclusive terminal access (`stdin`/TTY inherited; runs alone; no multiplexed `--output`); default `false` |
 | `paths` | no | Repository-relative path roots/globs for `nxr affected`; default `[]` (empty → `unknown` classification unless a dependency forces `affected`) |
+| `timeout` | no | Wall-clock process timeout (e.g. `10m`, `30s`, `500ms`); exceeded nodes exit with `timed_out` |
+| `terminationGracePeriod` | no | Grace after timeout/interrupt before SIGKILL (e.g. `5s`); defaults to the runner grace when unset |
 
 Field names use the camelCase vocabulary (`dependsOn`, `workingDirectory`) that
 matches [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json) and the

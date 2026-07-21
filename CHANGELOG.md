@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-07-21
+
+Patch release: finish the 2.4 run model so timeouts, summaries, events, and
+shell completion match the documented surface.
+
+### Fixed
+
+- `CompleteTarget` unit test covers all seven completion targets.
+- Simultaneous task timeouts under fail-fast no longer double-complete a peer
+  that was already shut down; keep-going skips nodes no longer running.
+- `--output summary` prints the documented header and includes skipped /
+  pre-launch-cancelled plan nodes (not only processes that started).
+- Structured event fields (`run_id`, `seq`, timestamps, run/node durations) are
+  populated via a `RunEventDecorator` around the event sink.
+- Generated Bash/Zsh/Fish completion routes to `__complete` targets by command
+  position (tasks, packages, checks, shells, namespaces, categories).
+
+### Added
+
+- Flake-parts `timeout` and `terminationGracePeriod` task options (emitted into
+  `nxr.<system>`).
+- `fixtures/task-timeout` for timeout evaluation and dual-timeout runs.
+
+### Changed
+
+- Workspace and Nix package version **2.4.1**.
+- README / TASKS docs: multi-root watch, `--output summary`, timeout fields.
+
 ## [2.4.0] - 2026-07-20
 
 Feature release: structured run results, per-task timeouts, richer completion,
@@ -301,6 +329,7 @@ First taggable V1 prerelease: a standard Nix flake app runner through Phase 5 of
 - [Compatibility matrix](docs/COMPATIBILITY.md), [CLI reference](docs/CLI_REFERENCE.md), and [telemetry decision](docs/TELEMETRY.md) (default: none).
 - Tag-triggered [release workflow](.github/workflows/release.yml) (quality gate only; no publish secrets).
 
+[2.4.1]: https://github.com/willmortimer/nxr/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/willmortimer/nxr/compare/v2.3.3...v2.4.0
 [2.3.3]: https://github.com/willmortimer/nxr/compare/v2.3.2...v2.3.3
 [2.3.2]: https://github.com/willmortimer/nxr/compare/v2.3.1...v2.3.2
