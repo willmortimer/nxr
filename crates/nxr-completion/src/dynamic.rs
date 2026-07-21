@@ -100,8 +100,65 @@ mod tests {
     use nxr_core::App;
 
     #[test]
-    fn complete_target_variants_include_apps() {
-        assert_eq!(CompleteTarget::value_variants(), &[CompleteTarget::Apps]);
+    fn complete_target_variants_match_cli_spellings() {
+        assert_eq!(
+            CompleteTarget::value_variants(),
+            &[
+                CompleteTarget::Apps,
+                CompleteTarget::Tasks,
+                CompleteTarget::Packages,
+                CompleteTarget::Checks,
+                CompleteTarget::Shells,
+                CompleteTarget::Namespaces,
+                CompleteTarget::Categories,
+            ]
+        );
+        assert_eq!(
+            CompleteTarget::Apps.to_possible_value().unwrap().get_name(),
+            "apps"
+        );
+        assert_eq!(
+            CompleteTarget::Tasks
+                .to_possible_value()
+                .unwrap()
+                .get_name(),
+            "tasks"
+        );
+        assert_eq!(
+            CompleteTarget::Packages
+                .to_possible_value()
+                .unwrap()
+                .get_name(),
+            "packages"
+        );
+        assert_eq!(
+            CompleteTarget::Checks
+                .to_possible_value()
+                .unwrap()
+                .get_name(),
+            "checks"
+        );
+        assert_eq!(
+            CompleteTarget::Shells
+                .to_possible_value()
+                .unwrap()
+                .get_name(),
+            "shells"
+        );
+        assert_eq!(
+            CompleteTarget::Namespaces
+                .to_possible_value()
+                .unwrap()
+                .get_name(),
+            "namespaces"
+        );
+        assert_eq!(
+            CompleteTarget::Categories
+                .to_possible_value()
+                .unwrap()
+                .get_name(),
+            "categories"
+        );
     }
 
     #[test]
