@@ -403,10 +403,12 @@ impl EventSink for TaskOutputRenderer<'_> {
             Event::Diagnostic { message } => {
                 let _ = writeln!(self.stderr, "{message}");
             }
-            Event::PlanCreated { .. }
-            | Event::NodeQueued { .. }
-            | Event::NodeStarted { .. }
-            | Event::RunCompleted { .. } => {}
+            Event::PlanCreated { .. } => {
+                if matches!(self.mode, TaskOutputMode::Summary) {
+                    let _ = writeln!(self.stdout, "{:<24} {:<10} DURATION", "TASK", "STATUS");
+                }
+            }
+            Event::NodeQueued { .. } | Event::NodeStarted { .. } | Event::RunCompleted { .. } => {}
         }
     }
 }
@@ -818,6 +820,64 @@ mod tests {
     fn raw_mode_is_not_multiplexed() {
         assert!(!TaskOutputMode::Raw.is_multiplexed());
         assert!(TaskOutputMode::Live.is_multiplexed());
+    }
+
+    #[test]
+    fn summary_mode_prints_header_and_all_outcomes() {
+        let events = vec![
+            Event::plan_created("root", None, 3),
+            Event::NodeExited {
+                node: "test".to_owned(),
+                code: Some(1),
+                status: Some(nxr_task::NodeOutcome::Failed),
+                duration_ms: Some(19_400),
+                started_at: None,
+                finished_at: None,
+                reason: None,
+                seq: None,
+            },
+            Event::NodeExited {
+                node: "package".to_owned(),
+                code: None,
+                status: Some(nxr_task::NodeOutcome::Skipped),
+                duration_ms: None,
+                started_at: None,
+                finished_at: None,
+                reason: Some("dependency_failed".to_owned()),
+                seq: None,
+            },
+            Event::NodeExited {
+                node: "deploy".to_owned(),
+                code: None,
+                status: Some(nxr_task::NodeOutcome::Cancelled),
+                duration_ms: None,
+                started_at: None,
+                finished_at: None,
+                reason: Some("fail_fast".to_owned()),
+                seq: None,
+            },
+        ];
+        let (stdout, _) = render_output(TaskOutputMode::Summary, &events);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(
+            lines[0],
+            format!("{:<24} {:<10} DURATION", "TASK", "STATUS")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("test") && line.contains("failed"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("package") && line.contains("skipped"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("deploy") && line.contains("cancelled"))
+        );
     }
 
     #[test]

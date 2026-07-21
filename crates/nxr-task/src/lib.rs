@@ -13,6 +13,7 @@ pub mod graph;
 pub mod plan_exec;
 pub mod planner;
 pub mod resolve;
+pub mod run_events;
 pub mod scheduler;
 pub mod schema;
 
@@ -31,6 +32,7 @@ pub use resolve::{
     ResolveTaskError, enrich_apps_with_listing_metadata, listable_tasks, listable_tasks_filtered,
     resolve_task, resolve_task_name,
 };
+pub use run_events::{RunEventDecorator, format_rfc3339_utc};
 pub use scheduler::{NodeState, ScheduleOutcome, Scheduler, SchedulerError};
 pub use schema::{
     AppListingMetadata, SCHEMA_VERSION, SchemaError, TaskDefinition, TaskDocument,

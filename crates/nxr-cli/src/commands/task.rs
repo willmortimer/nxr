@@ -11,8 +11,8 @@ use nxr_core::diagnostics::exit;
 use nxr_nix::{NixError, OptionalNixFlags, TaskDiscoveryError};
 use nxr_process::{InterruptFlags, Supervisor};
 use nxr_task::{
-    Event, EventSink, ExecutionPlan, FailurePolicy, OutputPayload, PlanError, Scheduler,
-    SchedulerError, build_execution_plan_roots, resolve_task_name,
+    Event, EventSink, ExecutionPlan, FailurePolicy, OutputPayload, PlanError, RunEventDecorator,
+    Scheduler, SchedulerError, build_execution_plan_roots, resolve_task_name,
 };
 
 use crate::commands::common::{PrepareError, PreparedTaskNode, WorkspaceSnapshot};
@@ -267,12 +267,12 @@ pub fn execute_with_control(
     if pipe_stdio {
         let mut stdout = io::stdout().lock();
         let mut stderr = io::stderr().lock();
-        let mut sink = build_task_event_sink(
+        let mut sink = RunEventDecorator::new(build_task_event_sink(
             effective_output,
             request.events_format,
             &mut stdout,
             &mut stderr,
-        );
+        ));
         sink.emit(Event::plan_created(
             plan.root.clone(),
             if plan.roots.is_empty() {
@@ -285,7 +285,7 @@ pub fn execute_with_control(
         run_plan(request, &plan, &prepared_nodes, &mut sink, runner, control)
     } else {
         // Inherit stdio for interactivity / --output raw: do not hold stdout/stderr locks.
-        let mut sink = nxr_task::NullSink;
+        let mut sink = RunEventDecorator::new(nxr_task::NullSink);
         run_plan(request, &plan, &prepared_nodes, &mut sink, runner, control)
     }
 }
@@ -544,14 +544,21 @@ fn run_plan(
             })
             .collect();
         for id in timed_out {
+            // A peer timeout under fail-fast may have already shut this node down.
+            if !started_at.contains_key(&id) {
+                continue;
+            }
             let grace = prepared_nodes
                 .get(&id)
                 .and_then(|node| node.termination_grace)
                 .unwrap_or(SHUTDOWN_GRACE);
-            let code = supervisor
+            let Some(code) = supervisor
                 .shutdown_one(&id, grace)
                 .map_err(TaskError::Supervision)?
-                .unwrap_or(124);
+            else {
+                started_at.remove(&id);
+                continue;
+            };
             sink.emit(Event::NodeExited {
                 node: id.clone(),
                 code: Some(code),
@@ -583,6 +590,8 @@ fn run_plan(
                     });
                     let _ = scheduler.on_exit(&stopped_id, stopped_code);
                 }
+                // Do not re-process remaining timed-out peers that fail-fast just cancelled.
+                break;
             }
         }
 
@@ -665,6 +674,33 @@ fn run_plan(
     drain_io_chunks(&io_rx, sink, Duration::ZERO);
 
     let outcome = scheduler.outcome();
+    // Emit exactly one terminal event for nodes that never started (skipped /
+    // fail-fast cancelled). Running nodes already emitted NodeExited above.
+    for id in &outcome.skipped_nodes {
+        sink.emit(Event::NodeExited {
+            node: id.clone(),
+            code: None,
+            status: Some(nxr_task::NodeOutcome::Skipped),
+            duration_ms: None,
+            started_at: None,
+            finished_at: None,
+            reason: Some("dependency_failed".to_owned()),
+            seq: None,
+        });
+    }
+    for id in &outcome.cancelled_nodes {
+        sink.emit(Event::NodeExited {
+            node: id.clone(),
+            code: None,
+            status: Some(nxr_task::NodeOutcome::Cancelled),
+            duration_ms: None,
+            started_at: None,
+            finished_at: None,
+            reason: Some("fail_fast".to_owned()),
+            seq: None,
+        });
+    }
+
     let success = !interrupted && !restarted && outcome.success;
     let run_status = if interrupted {
         Some(nxr_task::RunOutcome::Cancelled)
