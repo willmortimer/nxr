@@ -84,6 +84,25 @@ let
           (and its dependents) as affected.
         '';
       };
+
+      timeout = lib.mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          Optional wall-clock timeout for this task's process (e.g. `10m`,
+          `30s`, `500ms`). When exceeded, nxr terminates the node and records
+          a `timed_out` outcome.
+        '';
+      };
+
+      terminationGracePeriod = lib.mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          Optional grace period after timeout or interrupt before SIGKILL
+          (e.g. `5s`). Defaults to the runner's built-in grace when unset.
+        '';
+      };
     };
   };
 in

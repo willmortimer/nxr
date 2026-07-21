@@ -35,6 +35,12 @@ let
     }
     // lib.optionalAttrs (task.paths != [ ]) {
       paths = task.paths;
+    }
+    // lib.optionalAttrs (task.timeout != null) {
+      timeout = task.timeout;
+    }
+    // lib.optionalAttrs (task.terminationGracePeriod != null) {
+      terminationGracePeriod = task.terminationGracePeriod;
     };
 
   appListingToJson =

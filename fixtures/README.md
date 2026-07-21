@@ -17,6 +17,7 @@ valid under pure `path:` flake refs (Nix 2.18+).
 | [standard-outputs](standard-outputs/) | Packages, checks, apps, and named `devShells` for list/build/check/shell |
 | [shell-integration](shell-integration/) | Dev shell with stub `nxr` on PATH (module wiring covered by root flake) |
 | [task-dag](task-dag/) | Small task DAG (`fmt` → `test` → `ci`) via inline `nxr.<system>` |
+| [task-timeout](task-timeout/) | Per-task `timeout` / `terminationGracePeriod` and parallel timeout peers |
 | [namespaced-monorepo](namespaced-monorepo/) | Multi-package categories + optional `nxr.projects.json` namespaces |
 | [task-working-directory](task-working-directory/) | Per-task `workingDirectory` tokens and relative paths |
 | [parallel-group](parallel-group/) | Diamond DAG (`a` → `left`||`right` → `join`) for `-j` |
