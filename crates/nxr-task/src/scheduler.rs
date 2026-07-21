@@ -44,8 +44,10 @@ pub enum NodeState {
     Succeeded,
     /// Exited with a non-zero code.
     Failed,
-    /// Never started: fail-fast cancellation, or blocked by a failed dependency.
+    /// Never started: fail-fast cancellation (or interrupt) before launch.
     Cancelled,
+    /// Never started: blocked because a required dependency failed (keep-going).
+    Skipped,
 }
 
 impl NodeState {
@@ -54,7 +56,7 @@ impl NodeState {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            NodeState::Succeeded | NodeState::Failed | NodeState::Cancelled
+            NodeState::Succeeded | NodeState::Failed | NodeState::Cancelled | NodeState::Skipped
         )
     }
 }
@@ -68,8 +70,10 @@ pub struct ScheduleOutcome {
     pub cancelled: bool,
     /// Nodes that failed (non-zero exit).
     pub failed: Vec<String>,
-    /// Nodes cancelled without running.
+    /// Nodes cancelled without running (fail-fast / interrupt before launch).
     pub cancelled_nodes: Vec<String>,
+    /// Nodes skipped because a required dependency failed (keep-going).
+    pub skipped_nodes: Vec<String>,
 }
 
 /// Ready-queue scheduler with a global in-flight job limit.
@@ -320,6 +324,7 @@ impl Scheduler {
     pub fn outcome(&self) -> ScheduleOutcome {
         let mut failed = Vec::new();
         let mut cancelled_nodes = Vec::new();
+        let mut skipped_nodes = Vec::new();
         let mut all_succeeded = true;
 
         for (id, state) in &self.states {
@@ -333,6 +338,10 @@ impl Scheduler {
                     all_succeeded = false;
                     cancelled_nodes.push(id.clone());
                 }
+                NodeState::Skipped => {
+                    all_succeeded = false;
+                    skipped_nodes.push(id.clone());
+                }
                 NodeState::Pending | NodeState::Ready | NodeState::Running => {
                     all_succeeded = false;
                 }
@@ -344,6 +353,7 @@ impl Scheduler {
             cancelled: self.fail_fast_tripped,
             failed,
             cancelled_nodes,
+            skipped_nodes,
         }
     }
 
@@ -403,16 +413,17 @@ impl Scheduler {
             match state {
                 NodeState::Pending | NodeState::Ready => {
                     self.ready.remove(&id);
-                    self.states.insert(id.clone(), NodeState::Cancelled);
+                    self.states.insert(id.clone(), NodeState::Skipped);
                     if let Some(children) = self.dependents.get(&id) {
                         stack.extend(children.iter().cloned());
                     }
                 }
-                // Running/Succeeded/Failed/Cancelled: do not retroactively cancel.
+                // Running/Succeeded/Failed/Cancelled/Skipped: do not retroactively cancel.
                 NodeState::Running
                 | NodeState::Succeeded
                 | NodeState::Failed
-                | NodeState::Cancelled => {}
+                | NodeState::Cancelled
+                | NodeState::Skipped => {}
             }
         }
     }
@@ -658,12 +669,12 @@ mod tests {
         assert_eq!(sched.schedule_ready(), vec!["a".to_owned()]);
         assert_eq!(sched.complete("a", 0).expect("a"), vec!["b".to_owned()]);
 
-        // b fails; d (depends on b) is cancelled, but c can still run.
+        // b fails; d (depends on b) is skipped, but c can still run.
         assert_eq!(
             sched.complete("b", 1).expect("b fail"),
             vec!["c".to_owned()]
         );
-        assert_eq!(sched.state("d"), Some(NodeState::Cancelled));
+        assert_eq!(sched.state("d"), Some(NodeState::Skipped));
         assert!(!sched.is_cancelled());
 
         assert!(sched.complete("c", 0).expect("c").is_empty());
@@ -673,7 +684,8 @@ mod tests {
         assert!(!outcome.success);
         assert!(!outcome.cancelled);
         assert_eq!(outcome.failed, vec!["b".to_owned()]);
-        assert_eq!(outcome.cancelled_nodes, vec!["d".to_owned()]);
+        assert!(outcome.cancelled_nodes.is_empty());
+        assert_eq!(outcome.skipped_nodes, vec!["d".to_owned()]);
     }
 
     #[test]
@@ -686,11 +698,11 @@ mod tests {
         sched.complete("a", 0).expect("a");
         // b and c both running
         assert!(sched.complete("b", 1).expect("b fail").is_empty());
-        assert_eq!(sched.state("d"), Some(NodeState::Cancelled));
-        // c still finishes; d stays cancelled
+        assert_eq!(sched.state("d"), Some(NodeState::Skipped));
+        // c still finishes; d stays skipped
         assert!(sched.complete("c", 0).expect("c").is_empty());
         assert!(sched.is_finished());
-        assert_eq!(sched.state("d"), Some(NodeState::Cancelled));
+        assert_eq!(sched.state("d"), Some(NodeState::Skipped));
     }
 
     #[test]
