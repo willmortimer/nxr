@@ -924,7 +924,12 @@ fn completion_bash_emits_script() {
         .assert()
         .success()
         .stdout(predicate::str::contains("nxr"))
-        .stdout(predicate::str::contains("_nxr_complete_apps"));
+        .stdout(predicate::str::contains("_nxr_complete_apps"))
+        .stdout(predicate::str::contains("_nxr_complete_target"))
+        .stdout(predicate::str::contains("__complete \"$1\""))
+        .stdout(predicate::str::contains("tasks"))
+        .stdout(predicate::str::contains("packages"))
+        .stdout(predicate::str::contains("namespaces"));
 }
 
 #[test]
@@ -935,7 +940,10 @@ fn completion_zsh_emits_script() {
         .assert()
         .success()
         .stdout(predicate::str::contains("#compdef nxr"))
-        .stdout(predicate::str::contains("_nxr_complete_apps"));
+        .stdout(predicate::str::contains("_nxr_complete_apps"))
+        .stdout(predicate::str::contains("_nxr_complete_target"))
+        .stdout(predicate::str::contains("__complete \"$target\""))
+        .stdout(predicate::str::contains("categories"));
 }
 
 #[test]
@@ -946,7 +954,13 @@ fn completion_fish_emits_script() {
         .assert()
         .success()
         .stdout(predicate::str::contains("complete -c nxr"))
-        .stdout(predicate::str::contains("__nxr_complete_apps"));
+        .stdout(predicate::str::contains("__nxr_complete_apps"))
+        .stdout(predicate::str::contains("__nxr_complete_tasks"))
+        .stdout(predicate::str::contains("__nxr_complete_packages"))
+        .stdout(predicate::str::contains("__nxr_complete_checks"))
+        .stdout(predicate::str::contains("__nxr_complete_shells"))
+        .stdout(predicate::str::contains("__nxr_complete_namespaces"))
+        .stdout(predicate::str::contains("__nxr_complete_categories"));
 }
 
 #[test]
@@ -2878,4 +2892,283 @@ fn affected_no_strict_omits_unknown_from_lists() {
     assert_eq!(value["strict"], false);
     let apps = value["apps"].as_array().expect("apps array");
     assert!(apps.is_empty());
+}
+
+#[test]
+fn task_timeout_fixture_emits_timeout_fields_in_nxr_document() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let system = std::process::Command::new("nix")
+        .args([
+            "eval",
+            "--impure",
+            "--raw",
+            "--expr",
+            "builtins.currentSystem",
+        ])
+        .output()
+        .expect("currentSystem");
+    assert!(
+        system.status.success(),
+        "currentSystem failed: {}",
+        String::from_utf8_lossy(&system.stderr)
+    );
+    let system = String::from_utf8(system.stdout).expect("utf-8 system");
+    let attr = format!("./fixtures/task-timeout#nxr.{}.tasks.hang", system.trim());
+    let output = std::process::Command::new("nix")
+        .current_dir(&repo_root)
+        .args(["eval", "--json", &attr])
+        .output()
+        .expect("nix eval");
+    assert!(
+        output.status.success(),
+        "nix eval failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("parse hang task");
+    assert_eq!(value["timeout"], "200ms");
+    assert_eq!(value["terminationGracePeriod"], "100ms");
+}
+
+#[test]
+fn task_timeout_hang_emits_timed_out_status() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/task-timeout",
+            "--events",
+            "jsonl",
+            "task",
+            "hang",
+        ])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8 stderr");
+    let events: Vec<serde_json::Value> = stderr
+        .lines()
+        .filter(|line| line.starts_with('{'))
+        .map(|line| serde_json::from_str(line).expect("jsonl event"))
+        .collect();
+
+    let hang_exit = events
+        .iter()
+        .find(|e| e["type"] == "node_exited" && e["node"] == "hang" && e["status"] == "timed_out");
+    assert!(
+        hang_exit.is_some(),
+        "expected hang timed_out event:\n{stderr}"
+    );
+
+    let completed = events
+        .iter()
+        .find(|e| e["type"] == "run_completed")
+        .expect("run_completed");
+    assert!(completed["run_id"].as_str().is_some());
+    assert!(completed["duration_ms"].as_u64().is_some());
+    assert!(completed["started_at"].as_str().is_some());
+    assert!(completed["finished_at"].as_str().is_some());
+}
+
+#[test]
+fn task_parallel_timeouts_fail_fast_do_not_double_complete() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/task-timeout",
+            "--events",
+            "jsonl",
+            "task",
+            "both",
+            "-j",
+            "2",
+        ])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8 stderr");
+    let events: Vec<serde_json::Value> = stderr
+        .lines()
+        .filter(|line| line.starts_with('{'))
+        .map(|line| serde_json::from_str(line).expect("jsonl event"))
+        .collect();
+
+    let timed_out: Vec<_> = events
+        .iter()
+        .filter(|e| e["type"] == "node_exited" && e["status"] == "timed_out")
+        .collect();
+    assert!(
+        !timed_out.is_empty(),
+        "expected at least one timed_out peer:\n{stderr}"
+    );
+
+    // Each node gets exactly one terminal exit event.
+    for node in ["slow_a", "slow_b", "both"] {
+        let exits = events
+            .iter()
+            .filter(|e| e["type"] == "node_exited" && e["node"] == node)
+            .count();
+        assert_eq!(exits, 1, "node {node} should exit once:\n{stderr}");
+    }
+
+    let both = events
+        .iter()
+        .find(|e| e["type"] == "node_exited" && e["node"] == "both")
+        .expect("both exit");
+    assert_eq!(both["status"], "cancelled");
+}
+
+#[test]
+fn task_timeout_keep_going_times_out_both_peers() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/task-timeout",
+            "--events",
+            "jsonl",
+            "task",
+            "both",
+            "-j",
+            "2",
+            "--keep-going",
+        ])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8 stderr");
+    let events: Vec<serde_json::Value> = stderr
+        .lines()
+        .filter(|line| line.starts_with('{'))
+        .map(|line| serde_json::from_str(line).expect("jsonl event"))
+        .collect();
+
+    for node in ["slow_a", "slow_b"] {
+        let exit = events
+            .iter()
+            .find(|e| e["type"] == "node_exited" && e["node"] == node)
+            .unwrap_or_else(|| panic!("missing exit for {node}:\n{stderr}"));
+        assert_eq!(exit["status"], "timed_out", "{node}:\n{stderr}");
+    }
+
+    let both = events
+        .iter()
+        .find(|e| e["type"] == "node_exited" && e["node"] == "both")
+        .expect("both exit");
+    assert_eq!(both["status"], "skipped");
+}
+
+#[test]
+fn task_summary_fail_fast_includes_cancelled_descendants() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/parallel-group",
+            "--output",
+            "summary",
+            "task",
+            "gate",
+        ])
+        .assert()
+        .failure();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("TASK") && stdout.contains("STATUS") && stdout.contains("DURATION"),
+        "expected summary header:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("boom") && stdout.contains("failed"),
+        "expected boom failed:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("gate") && stdout.contains("cancelled"),
+        "expected gate cancelled before launch:\n{stdout}"
+    );
+}
+
+#[test]
+fn task_summary_keep_going_includes_skipped_descendants() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/parallel-group",
+            "--output",
+            "summary",
+            "task",
+            "gate",
+            "--keep-going",
+        ])
+        .assert()
+        .failure();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("TASK") && stdout.contains("STATUS"),
+        "expected summary header:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("gate") && stdout.contains("skipped"),
+        "expected gate skipped:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("ok") && stdout.contains("succeeded"),
+        "expected ok succeeded under keep-going:\n{stdout}"
+    );
+}
+
+#[test]
+fn task_multi_root_dry_run_accepts_watch_compatible_union() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    // Watch generations reuse the normal multi-root task planner; dry-run proves
+    // the union path `task --watch` shares still accepts multiple roots.
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/diamond-dedupe",
+            "--dry-run",
+            "task",
+            "lint",
+            "unit",
+            "-j",
+            "2",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("lint") && stdout.contains("unit") && stdout.contains("shared"),
+        "expected multi-root union in dry-run:\n{stdout}"
+    );
 }
