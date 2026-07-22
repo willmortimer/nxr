@@ -6,6 +6,7 @@ Threat model, trust boundaries, and runner security requirements are documented 
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — §8 Security model
 - [docs/CONTRACT_SUMMARY.md](docs/CONTRACT_SUMMARY.md)
+- [docs/EXECUTION_CONTEXT.md](docs/EXECUTION_CONTEXT.md) — planned secret delivery, trust approvals, schema v2
 - [docs/adr/README.md](docs/adr/README.md) — security-related ADRs (e.g. metadata sanitization, secrets as references)
 
 ## V1 security checklist

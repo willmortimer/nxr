@@ -2,7 +2,9 @@
 
 ## 1. System purpose
 
-`nxr` is an execution and presentation layer over Nix flake apps.
+`nxr` is an execution-context and orchestration layer over standard Nix flake
+outputs (primarily apps; also packages, checks, shells, and planned
+configuration/artifact catalogs).
 
 Its V1 responsibilities are:
 
@@ -24,7 +26,12 @@ Its V2 responsibilities extend to orchestration:
 6. run and restart watched tasks;
 7. optionally execute nodes within named development shells.
 
-`nxr` does not replace Nix evaluation or realization. The Nix CLI remains the execution backend in V1.
+Planned expansion (contexts, secret delivery, Home Manager, process nodes) is
+specified in [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) and scheduled in
+[ROADMAP.md](ROADMAP.md). `nxr` does not replace Nix evaluation, direnv, devenv,
+Home Manager, or secret stores.
+
+The Nix CLI remains the execution backend.
 
 ## 2. Layer model
 

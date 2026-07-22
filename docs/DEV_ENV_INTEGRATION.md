@@ -7,11 +7,14 @@
 ```text
 flake apps       executable project operations
 dev shell        interactive development environment
-direnv           automatic shell activation
-DevPod           remote workspace placement
-devcontainer     editor/container workspace contract
-nxr              operation discovery and invocation
+direnv           automatic shell activation (nix-direnv caches)
+devenv/devshell  optional richer shell authoring (not required)
+Home Manager     user install, hooks, trust, secret bindings (planned)
+SOPS/sops-nix    secret encryption and provisioning (not nxr)
+nxr              discovery, invocation, execution contexts, supervision
 ```
+
+Full expansion design: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).
 
 ## 2. Development shells
 
@@ -21,7 +24,9 @@ nxr              operation discovery and invocation
 nxr test
 ```
 
-should work when the app is self-contained.
+should work when the app is self-contained. Prefer putting heavy deploy tools
+(wrangler, terraform, …) in the **app closure** when the operation is a named
+command; keep named shells for interactive toolkits.
 
 ### Inside a shell
 
@@ -41,15 +46,30 @@ devShells.default
 devShells.backend
 devShells.frontend
 devShells.ci
+devShells.site      # e.g. wrangler / ops CLIs kept out of the daily shell
 ```
 
-V2 supports:
+Shipped:
 
 ```bash
 nxr --shell backend test
+nxr shell backend
+```
+
+Planned ergonomic form (same semantics; 2.6):
+
+```bash
+nxr in backend test
+nxr in backend task integration
 ```
 
 This is an explicit execution policy, not an automatic assumption.
+
+**Do not** allow `nxr test --shell backend` — after the app name, arguments belong
+to the app.
+
+Planned task association (schema v2): `tasks.<name>.shell` and reusable
+`contexts.<name>` — see [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) §1.
 
 ## 3. direnv and nix-direnv
 
@@ -100,6 +120,14 @@ direnv-loaded shell
        └── nix run .#test
             └── app executable
 ```
+
+### Planned: `nxr envrc` and `nxr doctor env`
+
+`nxr` will generate `.envrc` content (`use flake` / `use flake .#backend`) and
+diagnose direnv / nix-direnv / fallback / integration state. It will **not**
+replace nix-direnv activation or decrypt secrets into `.envrc`.
+
+See [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) §2.
 
 ## 4. Automatic completion through the dev shell
 
@@ -336,6 +364,11 @@ environment = {
 ```
 
 Secrets should be referenced by variable name, never serialized into public plans.
+
+Planned expansion: named **execution contexts** with secret references, provider
+bindings (Home Manager / user config), delivery modes (`env` / `file` / `stdin`),
+and a project trust boundary. See [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) §3.
+Schema v2 is required so older runners cannot silently ignore security fields.
 
 ## 11. Shell nesting
 

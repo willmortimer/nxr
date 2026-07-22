@@ -35,6 +35,17 @@ Benefits:
 - direct `nix run` compatibility;
 - correct argument forwarding.
 
+### Ops / deploy tools
+
+Prefer putting heavy CLIs (wrangler, terraform, ansible, …) in the **app’s**
+`runtimeInputs` when the operation is a named flake app. Use a separate
+`devShells.<name>` when you need an interactive ops toolkit. Do not make the
+daily development shell carry every deploy dependency.
+
+Secrets: wrap inside the app (`sops exec-env … -- real-command`) or, later, use
+nxr execution contexts ([EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md))—never bake
+secret values into the Nix store.
+
 ## 2. Use `exec`
 
 The final command should normally use `exec`:

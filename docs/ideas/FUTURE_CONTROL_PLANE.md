@@ -1,10 +1,14 @@
 # Future control plane (ideas only)
 
-This document preserves earlier V3 design prose. It is **not** committed roadmap work.
+This document preserves earlier speculative V3 design prose (projects, CAS,
+daemon, remote workers, IDE fabric). It is **not** the active delivery plan.
 
-Active delivery is limited to [ROADMAP.md](../ROADMAP.md) (2.1 Trustworthiness, 2.2 Flake UX, 2.3 Monorepo ergonomics). Revisit these ideas only after the 2.x line is trustworthy on real flakes.
+**Committed expansion** (contexts, secrets delivery, Home Manager, processes)
+lives in [EXECUTION_CONTEXT.md](../EXECUTION_CONTEXT.md) and is scheduled in
+[ROADMAP.md](../ROADMAP.md) as **2.5 → 2.6 → 3.0 → 3.1**. Revisit *this* file’s
+control-plane ideas only after that line is trustworthy on real flakes.
 
-See also [FEATURES.md](../FEATURES.md) §3 for explicitly uncommitted post-V2 extensions.
+See also [FEATURES.md](../FEATURES.md) §3.
 
 # V3 workspace control plane
 

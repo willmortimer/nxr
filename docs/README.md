@@ -41,7 +41,12 @@ nxr test
 nxr task ci
 ```
 
-Each higher layer is optional, and each leaf operation remains an ordinary flake app. Speculative control-plane steps (affected analysis, CI plans, remote workers) are documented as ideas only in [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md), not committed roadmap work.
+Each higher layer is optional, and each leaf operation remains an ordinary flake app.
+
+Post-2.4 expansion (contexts, secrets, Home Manager, processes) is the committed
+roadmap in [ROADMAP.md](ROADMAP.md) / [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).
+Speculative control-plane steps beyond that remain ideas-only in
+[ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md).
 
 ## Why nxr exists
 

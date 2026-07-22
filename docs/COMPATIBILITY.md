@@ -115,9 +115,14 @@ for the V2.0 release line:
 
 Policy for V2.x:
 
-- **Additive** optional fields on existing envelopes are allowed when older
-  consumers can ignore them (for example `argument_forwarding` on execution
-  plans).
+- **Additive** optional **listing** fields on existing envelopes are allowed when
+  older consumers can ignore them (for example `argument_forwarding` on
+  execution plans).
+- **Execution-affecting or security fields** (contexts, secrets, task I/O,
+  dependency states, confirmation) must **not** be added to schema v1: unknown
+  fields are ignored today, which would silently drop policy. Those belong in
+  **task document schema v2** (planned 3.0) with strict rejection of unknown
+  execution/security metadata — see [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).
 - **Breaking** shape or semantics changes require a new major `schema_version`
   and a new schema file; unsupported majors are rejected at load time.
 - The `plan-v1` and `list-v1` CLI output schemas follow the same additive-only

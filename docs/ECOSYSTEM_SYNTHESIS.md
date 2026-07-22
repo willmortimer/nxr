@@ -113,7 +113,8 @@ Add an `nxr` worker protocol only for workspace-style actions that cannot natura
 - invalidation when relevant flake files change;
 - session-local environment changes;
 - compatibility with nested project directories;
-- no mutation of global shell configuration.
+- no mutation of global shell configuration;
+- GC roots and fallback to the previous working shell on evaluation failure (nix-direnv).
 
 The intended experience is:
 
@@ -127,6 +128,14 @@ nxr test
 A configured development shell should be able to install `nxr` and activate its completion integration automatically.
 
 `nxr` must still function when direnv is absent.
+
+**Do not absorb nix-direnv’s job.** Planned helpers are a generator (`nxr envrc`) and
+diagnostics (`nxr doctor env`), not a proprietary activation mechanism. See
+[EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) §2.
+
+**Do not decrypt secrets from `.envrc`.** Once exported into the shell, secrets
+reach editors, LSPs, and every DAG node. Use nxr execution contexts for
+secret-bearing launches.
 
 ## 5. What to inherit from just
 
@@ -181,17 +190,35 @@ Mission-control-style shell UX should become one presentation mode, not the exec
 ## 8. What to inherit from devenv
 
 - tasks and long-running processes in one dependency model;
-- dependency states such as completion and readiness;
-- status checks that skip unnecessary setup;
+- dependency states such as completion and readiness (`name@ready`, `@succeeded`, `@completed`);
+- structured task inputs and outputs (artifacts vs env exports);
+- status / freshness checks that skip unnecessary setup;
 - process readiness and restart policies;
-- service integration;
+- service integration via flake apps (not a built-in service module zoo);
 - process/task introspection;
 - watch behavior;
-- a programmatic protocol for external consumers.
+- a programmatic protocol for external consumers;
+- SecretSpec-style separation of logical secret requirements from provider bindings
+  (structurally compatible; SecretSpec is not a mandatory dependency).
 
 Do not require replacing an existing flake architecture with a separate environment framework.
 
+Do not adopt devenv-style implicit hostname/username profiles in public flake
+metadata—use explicit named contexts; machine defaults belong in Home Manager.
+
 `nxr` should interoperate with devenv projects and consider adapters where they preserve normal flake outputs.
+
+Detail: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) §2 (devenv) and §3 (secrets).
+
+## 8a. What to inherit from numtide/devshell
+
+- optional shell-entry command menu;
+- descriptions and categories for named shells;
+- concise “available project commands” display;
+- shell lifecycle metadata.
+
+Do **not** copy devshell’s environment or service-definition system. The command
+catalog is already nxr’s strength; shell authoring remains someone else’s job.
 
 ## 9. What to inherit from Taskfile and Make
 
@@ -338,10 +365,12 @@ Comparable monorepo and CI capability to the strongest dedicated platforms, but 
 - a proprietary cloud requirement;
 - a JavaScript-only monorepo system;
 - a new Nix evaluator;
-- a secrets vault;
-- a container runtime;
-- a Kubernetes replacement;
-- an infrastructure state engine;
+- a secrets vault or encryption system (delivery only; SOPS/sops-nix/SecretSpec store);
+- a direnv / devenv / Home Manager replacement;
+- a container or VM runtime;
+- a Kubernetes / infrastructure state engine;
+- a host activator (`nixos-rebuild` / `darwin-rebuild` / `home-manager switch`);
 - a task DSL so powerful that apps become incidental.
 
 The system wins only if it makes the way Nix developers already work more coherent.
+Detail: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).

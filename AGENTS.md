@@ -17,8 +17,11 @@ Do not contradict [docs/CONTRACT_SUMMARY.md](docs/CONTRACT_SUMMARY.md). In short
 - V2 tasks coordinate apps; they do not replace them.
 - Preserve direct `nix run` compatibility as an escape hatch.
 - Version machine-readable schemas; sanitize untrusted metadata for terminals.
+- nxr is an execution-context layer—not a replacement for direnv, devenv, Home Manager, or secret stores ([docs/EXECUTION_CONTEXT.md](docs/EXECUTION_CONTEXT.md)).
+- Secret values never appear in plans/events; execution-affecting schema fields must not be silently ignored (schema v2).
 
 Accepted foundational ADRs are listed in [docs/adr/README.md](docs/adr/README.md).
+Active roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) (2.5 → 3.1).
 
 ## Working agreements
 

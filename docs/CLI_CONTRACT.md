@@ -445,3 +445,46 @@ The following should be considered stable after V1:
 - completion command names.
 
 New fields may be added to JSON objects. Existing fields should not change meaning within a schema major version.
+
+## 14. Planned command surface (not yet shipped)
+
+Design authority: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) and [ROADMAP.md](ROADMAP.md).
+Do not treat these as stable until the named release ships.
+
+### 2.6 ecosystem ergonomics
+
+```bash
+nxr in <shell> <app|task|…>     # ergonomic alias of --shell; never after app name
+nxr fmt [PATH…]                 # thin nix fmt / flake formatter
+nxr envrc [--shell NAME] [--write] [--force]
+nxr doctor env
+nxr doctor cache
+nxr doctor builders
+nxr build <flake#installable>   # generic installable escape hatch
+nxr build --attr <attr-path>
+nxr list configurations
+nxr inspect configuration <name>
+nxr build configuration <name>  # build only; never switch/activate
+```
+
+Parsing invariant preserved: runner options stay before the target name
+(`nxr --shell backend test` / `nxr in backend test`). Reject forms that place
+`--shell` after the app.
+
+### 3.0 execution contexts
+
+```bash
+nxr context <name> <app|task …>
+```
+
+Contexts, secret references, task I/O, and dependency states require **task
+document schema v2**. Plans may show secret refs with `"value": "<runtime>"`
+only—never plaintext.
+
+### 3.1 processes
+
+```bash
+nxr up [name…]
+nxr status
+nxr logs <name>
+```

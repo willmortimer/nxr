@@ -132,7 +132,10 @@ Use this rule:
 
 > The development shell is for humans. The app closure is for the app.
 
-The app should include its executable runtime dependencies.
+The app should include its executable runtime dependencies—including heavy
+ops tools for named commands (wrangler, terraform, ansible) when those commands
+are flake apps. Keep named development shells for interactive toolkits and
+rapid CLI exploration, not as the only way to run a stable operation.
 
 The development shell should include:
 
@@ -143,7 +146,10 @@ The development shell should include:
 - `nxr`;
 - shell completion integration;
 - optional local service helpers;
-- environment initialization.
+- environment initialization (non-secret).
+
+Planned execution contexts, `nxr in`, and secret delivery:
+[EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).
 
 ### 4.3 Environment inheritance
 
@@ -478,18 +484,19 @@ Rules:
 
 Therefore dangerous-operation metadata is a convenience guardrail, not a security boundary.
 
-## 14. Decisions intentionally deferred
+## 14. Decisions intentionally deferred / scheduled elsewhere
 
-The following are not V1 concerns:
+Not V1 concerns (see [ROADMAP.md](ROADMAP.md) / [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md)
+for what *is* now scheduled):
 
 - a custom remote execution protocol;
-- task result caching;
+- general task result caching / CAS;
 - distributed scheduling;
 - a daemon;
 - graphical UI;
-- secrets storage;
-- deployment state management;
+- **secrets storage** (delivery via providers is planned; vaults remain SOPS/etc.);
+- deployment state management / host activation;
 - workflow marketplace;
 - container lifecycle management.
 
-These can be revisited only if concrete demand appears.
+Speculative control-plane prose: [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md).

@@ -305,6 +305,13 @@ nxr --shell backend task integration
 nxr shell backend
 ```
 
+Planned (2.6):
+
+```bash
+nxr in backend test
+nxr in backend task integration
+```
+
 Conceptually:
 
 ```bash
@@ -313,12 +320,18 @@ nix develop .#backend -c ...
 
 This is for operations that intentionally require the shell environment. It should not be the default for well-authored apps.
 
+Do not accept runner flags after the app name (`nxr test --shell backend`).
+
 Policies:
 
 - `inherit` — use caller environment;
 - `clean` — use reduced environment;
 - `devShell` — execute in a selected development shell;
 - `explicit` — pass only configured variables.
+
+Planned: reusable named **contexts** (shell + env + secrets + confirm), task-level
+`shell` / `context`, one-shell DAG optimization, and schema v2. See
+[EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).
 
 ### 2.6 Automatic shell integration from dev shells
 
@@ -444,23 +457,16 @@ nxr inspect shell default
 
 The command reports normalized configuration after defaults and capability resolution.
 
-## 3. Possible post-V2 extensions
+## 3. Planned expansion (committed roadmap)
 
-These are explicitly not committed roadmap items. Preserved V3 design prose lives in [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md).
+Scheduled work is in [ROADMAP.md](ROADMAP.md) (2.5 → 3.1) with full design in
+[EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md):
 
-- readiness probes for long-running services;
-- task matrices;
-- remote execution adapters;
-- daemon-backed warm evaluation;
-- editor protocol;
-- graphical process dashboard;
-- Nix check/app linkage metadata;
-- reproducible ephemeral service environments;
-- CI workflow generation;
-- policy plugins;
-- first-class projects and affected analysis;
-- action contracts, artifact caches, and result replay;
-- provider-independent CI plans and test intelligence;
-- optional local daemon and remote worker fabric.
+- **2.5** affected execution;
+- **2.6** Home Manager module, `nxr fmt`, `nxr in`, `nxr envrc`, doctor env/cache,
+  generic installables, configuration adapters, shell-entry menu;
+- **3.0** execution-context schema v2 (contexts, secrets, task I/O, dependency states);
+- **3.1** process nodes / `up` / `status` / `logs`.
 
-Each should require evidence that it belongs in `nxr` rather than another layer.
+Speculative control-plane ideas beyond that remain in
+[ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md) only.

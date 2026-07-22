@@ -4,7 +4,9 @@
 
 This index lists decisions that should be captured as individual Architecture Decision Records as implementation proceeds.
 
-V3-era ADRs (0201–0412) are **Deferred** and parked with [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md). They are not active roadmap commitments. Active delivery follows [ROADMAP.md](../ROADMAP.md) (2.1–2.3).
+V3-era ADRs (0201–0412) remain **Deferred** unless pulled forward by
+[ROADMAP.md](../ROADMAP.md). Active delivery follows that roadmap (2.5 → 3.1).
+Execution-context design: [EXECUTION_CONTEXT.md](../EXECUTION_CONTEXT.md).
 
 An ADR is required when a decision:
 
@@ -72,6 +74,18 @@ Rejected   considered and explicitly not chosen
 | ADR-0118 | Keep output rendering replaceable and independent from scheduling | Proposed | V2 |
 | ADR-0119 | Make dangerous-operation metadata a guardrail, not a security boundary | Accepted | V2 |
 | ADR-0120 | Define schema migration and unknown-field compatibility policy | Proposed | V2 |
+| ADR-0121 | Execution contexts compose shell, env, secrets, and confirm | Proposed | 3.0 |
+| ADR-0122 | Task schema v2 rejects unknown execution/security fields | Proposed | 3.0 |
+| ADR-0123 | Secret references in project; provider bindings in user/HM config | Proposed | 3.0 |
+| ADR-0124 | Project trust boundary before secret binding delivery | Proposed | 3.0 |
+| ADR-0125 | Prefer file delivery for high-sensitivity secrets | Proposed | 3.0 |
+| ADR-0126 | `nxr in` is ergonomic alias of `--shell`; never post-app flags | Proposed | 2.6 |
+| ADR-0127 | Export Home Manager module; do not ship homeConfigurations | Proposed | 2.6 |
+| ADR-0128 | direnv remains activation authority; nxr only generates/diagnoses | Proposed | 2.6 |
+| ADR-0129 | One-shell DAG optimization when all nodes share a context | Proposed | 3.0 |
+| ADR-0130 | Do not reconstruct shells via print-dev-env | Proposed | 3.0 |
+| ADR-0131 | Configuration adapters inspect/build only; never switch/activate | Proposed | 2.6 |
+| ADR-0132 | Process nodes after task I/O; no built-in service module zoo | Proposed | 3.1 |
 
 ## 4. V3 monorepo and action ADRs (deferred)
 
@@ -133,8 +147,8 @@ Parked with [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md). N
 | ADR-0402 | Define graph and run subscription protocols | Deferred | V3.5 |
 | ADR-0403 | Map run events to OpenTelemetry traces and logs | Deferred | V3.5 |
 | ADR-0404 | Define capability-based execution policy | Deferred | V3.5 |
-| ADR-0405 | Represent secrets as references, never serialized plan values | Accepted | V3.5 |
-| ADR-0406 | Define approvals and non-interactive authorization | Deferred | V3.5 |
+| ADR-0405 | Represent secrets as references, never serialized plan values | Accepted | 3.0 / V3.5 |
+| ADR-0406 | Define approvals and non-interactive authorization | Deferred | 3.0 / V3.5 |
 | ADR-0407 | Define organization policy layering and repository overrides | Deferred | V3.5 |
 | ADR-0408 | Keep deployment orchestration separate from infrastructure reconciliation | Accepted | V3.5 |
 | ADR-0409 | Define release artifact promotion and provenance | Deferred | V3.5 |
@@ -148,8 +162,8 @@ The first implementation ADRs should be written in this order:
 
 1. ADR-0001 through ADR-0013 before the CLI contract is considered stable.
 2. ADR-0101 through ADR-0110 before V2 task execution begins.
-3. ADR-0111 through ADR-0120 before V2 schema freeze.
-4. V3 ADRs (0201–0412) only if a future control-plane effort is explicitly scheduled — see [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md).
+3. ADR-0111 through ADR-0132 before schema v2 / Home Manager / process freezes.
+4. Remaining V3 ADRs (0201–0412) only if a future control-plane effort is explicitly scheduled — see [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md) and [EXECUTION_CONTEXT.md](../EXECUTION_CONTEXT.md).
 
 ## 8. Repository location
 

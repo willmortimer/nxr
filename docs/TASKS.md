@@ -220,12 +220,23 @@ execution-event vocabulary are **frozen** for the V2.0 release:
 | Execution plan | [`schemas/execution-plan-v1.schema.json`](../schemas/execution-plan-v1.schema.json) | Built for `nxr plan <task>` and the task scheduler |
 | Events | [`schemas/events-v1.schema.json`](../schemas/events-v1.schema.json) | Matches Rust `Event` in `nxr-task` (`type`-tagged JSON) |
 
-Additive optional fields may appear within major version 1. Breaking changes
-require a new major `schema_version`. See [COMPATIBILITY.md](COMPATIBILITY.md).
+Additive optional **listing** fields may appear within major version 1. Breaking
+changes require a new major `schema_version`. See [COMPATIBILITY.md](COMPATIBILITY.md).
+
+### Schema v2 (planned — execution contexts)
+
+Do **not** add execution-affecting fields (`context`, `shell` on tasks, secrets,
+inputs/outputs, dependency states, confirmation) to schema v1. Unknown fields are
+currently ignored; an older runner would silently drop security policy.
+
+Schema **v2** will carry those fields and **reject** unknown execution/security
+metadata. Detail: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) §3 (schema
+versioning) and [ROADMAP.md](ROADMAP.md) §3.0.
 
 ## Related
 
 - Schema: [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json)
+- Execution contexts (planned): [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md)
 - App authoring: [APP_AUTHORING.md](APP_AUTHORING.md)
 - Architecture (task model): [ARCHITECTURE.md](ARCHITECTURE.md) §6
 - Fixture: [`fixtures/task-dag/`](../fixtures/task-dag/)

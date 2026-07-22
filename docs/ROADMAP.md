@@ -9,7 +9,8 @@
 5. Add orchestration only after foreground app execution is excellent.
 6. Treat adjacent tools as design inputs, but express the resulting workflow through Nix-native primitives.
 7. Keep local development and CI on the same inspectable execution graph.
-8. Defer control-plane features (daemon, CAS, remote workers, dashboards) until the 2.x line is trustworthy on real flakes.
+8. Expand as an **execution-context layer** for flake outputs—not a replacement for direnv, devenv, Home Manager, or secret stores (see [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md)).
+9. Defer control-plane features (daemon, CAS, remote workers, dashboards) until the runner, context schema, and process model are trustworthy on real flakes.
 
 ## Shipped releases
 
@@ -29,14 +30,74 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 
 ## Active roadmap
 
-**2.5** is next: affected execution (`task --affected` / `plan --affected`).
-Read-only adapter intelligence follows as **2.6**. Speculative platform work —
-daemon, CAS, remote workers, dashboards — lives in
+Design detail for everything below lives in [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).
+
+### 2.5 — Affected execution
+
+Keep the current plan: `task --affected` / `plan --affected`, coherent with existing
+affected analysis.
+
+### 2.6 — Ecosystem ergonomics
+
+Low-risk, non-schema-breaking work:
+
+- `homeManagerModules.default` (install, completion, hooks, user config; no secret values);
+- `nxr fmt` (thin `nix fmt` / flake formatter wrapper);
+- `nxr in <shell> <target>` (ergonomic alias of `--shell`; keep low-level flag);
+- `nxr envrc` / `nxr envrc --write` (generator only; never overwrite without force);
+- `nxr doctor env` and `nxr doctor cache` / `doctor builders`;
+- generic `nxr build` installables / `--attr` escape hatch;
+- read-only configuration / devenv / devshell adapters (`list`/`inspect`/`build`, not activate);
+- shell descriptions and optional shell-entry command menu;
+- treefmt / git-hooks recognition via standard flake outputs and checks.
+
+### 3.0 — Execution-context schema
+
+Major release: **task document schema v2**. Old runners must not silently ignore
+security or execution semantics.
+
+Schema v2 covers:
+
+- named contexts (`perSystem.nxr.contexts`);
+- `task.context` / `task.shell`;
+- environment requirements;
+- secret **references** + provider bindings (user/HM side);
+- confirmation policy;
+- structured task inputs / outputs;
+- dependency states (`name@ready`, `@succeeded`, `@completed`);
+- strict rejection of unknown execution-affecting fields;
+
+Plus runtime: secret delivery (`env` / `file` / `stdin`), project trust approvals,
+one-shell DAG optimization when all nodes share a context, and
+`nxr context <name> …`.
+
+### 3.1 — Process workflows
+
+After task I/O stabilizes:
+
+- process nodes and readiness probes;
+- restart policies;
+- `nxr up` / `status` / `logs`;
+- task ↔ process dependency states;
+- port and lifecycle metadata;
+
+Services remain flake apps (or devenv-authored). No built-in Postgres/Redis module zoo.
+
+### Later
+
+Only after the above stabilize:
+
+- artifact restoration;
+- task result caching;
+- remote workspace execution;
+- daemon / control plane.
+
+Speculative platform prose remains in
 [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md) for discussion only.
 
 ## Invariants
 
-The following remain true for all planned 2.x work:
+The following remain true for all planned work:
 
 1. A standard flake app is always a valid leaf operation.
 2. `nix run` remains a supported escape hatch.
@@ -44,5 +105,6 @@ The following remain true for all planned 2.x work:
 4. Development shells remain normal Nix outputs and integrate naturally with direnv.
 5. Simple repositories do not need projects, actions, a daemon, a cache server, or workers.
 6. Local and CI behavior derive from one inspectable graph.
-7. Advanced metadata is versioned and additive.
-8. Secrets are referenced, never embedded in store paths, plans, or public metadata.
+7. Advanced metadata is versioned; **execution/security fields must not be silently ignored**.
+8. Secrets are referenced and delivered at process spawn—never embedded in store paths, plans, events, or public metadata.
+9. nxr does not replace direnv, devenv, Home Manager, sops/sops-nix, or system activation tools.
