@@ -1053,25 +1053,31 @@ fn legacy_refresh_flag_is_not_registered() {
         .stderr(predicate::str::contains("unexpected argument '--refresh'"));
 }
 
+fn isolated_cache_command() -> (tempfile::TempDir, assert_cmd::Command) {
+    let home = tempfile::TempDir::new().expect("temporary cache home");
+    let mut command = cargo_bin_cmd!("nxr");
+    command
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"));
+    (home, command)
+}
+
 #[test]
 fn cache_status_succeeds() {
-    cargo_bin_cmd!("nxr")
-        .args(["cache", "status"])
-        .assert()
-        .success();
+    let (_home, mut command) = isolated_cache_command();
+    command.args(["cache", "status"]).assert().success();
 }
 
 #[test]
 fn cache_clear_succeeds() {
-    cargo_bin_cmd!("nxr")
-        .args(["cache", "clear"])
-        .assert()
-        .success();
+    let (_home, mut command) = isolated_cache_command();
+    command.args(["cache", "clear"]).assert().success();
 }
 
 #[test]
 fn cache_status_json_emits_path_and_entries() {
-    cargo_bin_cmd!("nxr")
+    let (_home, mut command) = isolated_cache_command();
+    command
         .args(["cache", "status", "--json"])
         .assert()
         .success()

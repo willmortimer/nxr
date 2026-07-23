@@ -862,18 +862,9 @@ mod tests {
     fn resolve_task_execution_directory_rejects_parent_traversal() {
         let temp = tempfile::TempDir::new().expect("tempdir");
         let flake_root =
-            camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
-        std::fs::create_dir(flake_root.join("crates")).expect("crates dir");
-        let outside = temp
-            .path()
-            .parent()
-            .expect("parent")
-            .join(format!("nxr-outside-{}", std::process::id()));
-        match std::fs::create_dir(&outside) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => panic!("outside dir: {error}"),
-        }
+            camino::Utf8PathBuf::from_path_buf(temp.path().join("flake")).expect("utf8 temp path");
+        std::fs::create_dir_all(flake_root.join("crates")).expect("crates dir");
+        std::fs::create_dir(temp.path().join("outside")).expect("outside dir");
 
         let flake = FlakeSelection {
             display: flake_root.as_str().to_owned(),

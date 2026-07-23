@@ -10,7 +10,6 @@ let
     url = "https://github.com/RustSec/advisory-db";
     rev = "b5fc89b8be99e96f79194d8a6f11e9b4143b99f0";
     hash = "sha256-BOqD2VjHKAjJB8uAltrYfjhci1JoiusWsHryUTup9FM=";
-    leaveDotGit = true;
   };
 
   denyCheckConfig = pkgs.writeText "deny-ci.toml.in" ''
@@ -23,7 +22,7 @@ let
     db-urls = ["https://github.com/RustSec/advisory-db"]
 
     [licenses]
-    allow = ["MIT", "Apache-2.0", "Unicode-3.0", "MPL-2.0", "ISC", "CC0-1.0"]
+    allow = ["MIT", "Apache-2.0", "Unicode-3.0", "MPL-2.0", "ISC", "CC0-1.0", "BSD-2-Clause"]
     confidence-threshold = 0.8
 
     [bans]
@@ -81,10 +80,12 @@ in
     name = "test";
     extraNativeBuildInputs = with pkgs; [
       cargo-nextest
+      git
       nix
     ];
     command = ''
-      export NIX_CONFIG="experimental-features = nix-command flakes"
+      export NXR_SKIP_NIX_INTEGRATION=1
+      export NXR_SKIP_WATCH_INTEGRATION=1
       cargo nextest run --workspace
     '';
   };

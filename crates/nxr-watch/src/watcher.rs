@@ -204,6 +204,11 @@ mod tests {
 
     #[test]
     fn watch_session_sees_file_create() {
+        if std::env::var_os("NXR_SKIP_WATCH_INTEGRATION").is_some() {
+            eprintln!("skipping watch integration test: platform integration is disabled");
+            return;
+        }
+
         let dir = tempdir().expect("tempdir");
         let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8");
         let mut session = WatchSession::start(&WatchConfig {

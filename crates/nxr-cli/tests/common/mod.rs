@@ -10,11 +10,17 @@ pub fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Skip the current test when `nix` is not on `PATH`.
+/// Skip the current test when Nix integration is disabled or `nix` is not on
+/// `PATH`.
 ///
 /// Integration tests call Nix and are expected to run in CI and dev shells that
 /// provide it. Local `cargo test` without Nix stays green via this soft skip.
 pub fn require_nix() -> Option<()> {
+    if std::env::var_os("NXR_SKIP_NIX_INTEGRATION").is_some() {
+        eprintln!("skipping integration test: Nix integration is disabled");
+        return None;
+    }
+
     if which::which("nix").is_ok() {
         return Some(());
     }

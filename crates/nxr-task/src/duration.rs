@@ -90,8 +90,8 @@ mod tests {
     #[test]
     fn parses_common_suffixes() {
         assert_eq!(parse_duration("5s").unwrap(), Duration::from_secs(5));
-        assert_eq!(parse_duration("10m").unwrap(), Duration::from_secs(600));
-        assert_eq!(parse_duration("1h").unwrap(), Duration::from_secs(3600));
+        assert_eq!(parse_duration("10m").unwrap(), Duration::from_mins(10));
+        assert_eq!(parse_duration("1h").unwrap(), Duration::from_hours(1));
         assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
         assert_eq!(parse_duration("30").unwrap(), Duration::from_secs(30));
     }
