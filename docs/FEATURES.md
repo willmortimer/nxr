@@ -302,14 +302,9 @@ V2 supports explicit execution inside a named shell:
 ```bash
 nxr --shell default test
 nxr --shell backend task integration
-nxr shell backend
-```
-
-Planned (2.6):
-
-```bash
 nxr in backend test
 nxr in backend task integration
+nxr shell backend
 ```
 
 Conceptually:
@@ -462,8 +457,18 @@ The command reports normalized configuration after defaults and capability resol
 Scheduled work is in [ROADMAP.md](ROADMAP.md) (2.6 → 3.1) with full design in
 [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md):
 
-- **2.6** Home Manager module, `nxr fmt`, `nxr in`, `nxr envrc`, doctor env/cache,
-  generic installables, configuration adapters, shell-entry menu;
+Shipped in **2.6** (see [ROADMAP.md](ROADMAP.md)):
+
+- Home Manager module (`homeManagerModules.default`);
+- `nxr fmt`, `nxr in`, `nxr envrc`, `nxr doctor env` / `cache` / `builders`;
+- generic `nxr build` installables / `--attr`;
+- read-only configuration adapters (`list` / `inspect` / `build`).
+
+Still planned for a later 2.6.x cut:
+
+- shell-entry command menu; treefmt / git-hooks recognition in inspect/doctor.
+
+Upcoming major releases:
 - **3.0** execution-context schema v2 (contexts, secrets, task I/O, dependency states);
 - **3.1** process nodes / `up` / `status` / `logs`.
 

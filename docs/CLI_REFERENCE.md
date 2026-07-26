@@ -50,13 +50,15 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 |---|---|
 | `nxr` | List apps (same as `nxr list`) |
 | `nxr list` | List apps (and tasks when present) for the current system |
-| `nxr list apps\|checks\|packages\|shells\|tasks` | List one catalog (default without kind: apps + tasks) |
+| `nxr list apps\|checks\|packages\|shells\|tasks\|configurations` | List one catalog (default without kind: apps + tasks) |
 | `nxr list --category <name>` | Filter listed apps/tasks by category |
 | `nxr list --namespace <name>` | Filter by project namespace (`nxr.projects.json`) |
 | `nxr <app> [args…]` | Run a flake app |
 | `nxr <flake>#<app> [args…]` | Inline flake + app (like `nix run`) |
 | `nxr run <app> [-- args…]` | Explicit run form |
-| `nxr build [name]` | `nix build` for `packages.<system>.<name>` (default package when omitted) |
+| `nxr build [installable]` | `nix build` for `packages.<system>.<name>`, explicit `.#attr`, or default package |
+| `nxr build --attr <path>` | `nix build` for `flake#<attr-path>` |
+| `nxr build configuration <name>` | Build a `nixosConfigurations` / `darwinConfigurations` / `homeConfigurations` target (no switch) |
 | `nxr check [name]` | Build `checks.<system>.<name>`, or `nix flake check` when omitted |
 | `nxr shell [name]` | Interactive `nix develop` for `devShells.<system>.<name>` (default when omitted) |
 | `nxr plan <app\|task> [-- args…]` | Show app or task execution plan (apps win when both exist) |
@@ -66,6 +68,12 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr doctor --all` | Extra non-destructive findings (descriptions, naming, cache) |
 | `nxr doctor --clean-env [app]` | Clean-environment validation |
 | `nxr doctor determinate [--all] [--refresh]` | Determinate Nix distribution and integration diagnostics (N/A on upstream/Lix) |
+| `nxr doctor env` | Direnv, `.envrc`, and nxr shell-integration diagnostics (informational) |
+| `nxr doctor cache` | Nix substituters/trusted keys and nxr discovery/capability cache diagnostics |
+| `nxr doctor builders` | Remote builders and Determinate nixd diagnostics (read-only) |
+| `nxr fmt [PATH…]` | Thin `nix fmt` / flake formatter wrapper (not `apps.fmt`) |
+| `nxr envrc [--write] [--force]` | Print or write direnv `.envrc` (`use flake` / `use flake .#<shell>` via global `--shell`) |
+| `nxr in <shell> <app\|run\|plan\|task\|watch\|explain> …` | Ergonomic `--shell` prefix (ADR-0126) |
 | `nxr explain <app\|task> [-- args…]` | Explain resolution and exact Nix invocation (apps win when both exist) |
 | `nxr explain app <name> [-- args…]` | Explain a single app |
 | `nxr explain task <name> [-- args…]` | Explain a task DAG node plans and dependency path |
@@ -78,6 +86,7 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr inspect --namespace <name>` | Overview filtered by project namespace |
 | `nxr inspect app <name>` | Single app details |
 | `nxr inspect task <name>` | Single task details |
+| `nxr inspect configuration <name>` | Single flake configuration (read-only metadata) |
 | `nxr task <name>… [args…]` | Run one or more task roots as a union DAG (shared deps run once); trailing args go to each **root** task app only |
 | `nxr task --affected [--base\|--working-tree\|--all-changes\|--path…] [name…]` | Run the union DAG of affected tasks (optional names intersect); empty set exits 0 |
 | `nxr graph <name>` | Print task plan (text) |
@@ -98,6 +107,15 @@ nxr list --json
 nxr list packages
 nxr list shells --json
 nxr build marker --dry-run
+nxr build --attr packages.x86_64-linux.marker --dry-run
+nxr build configuration dev --dry-run
+nxr fmt --dry-run
+nxr --shell backend envrc
+nxr in default test
+nxr doctor env --json
+nxr doctor cache --json
+nxr list configurations
+nxr inspect configuration dev --json
 nxr check ok --dry-run
 nxr shell backend --dry-run
 nxr test
