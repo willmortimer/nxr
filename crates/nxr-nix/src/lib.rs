@@ -4,6 +4,7 @@ pub mod adapter;
 pub mod capabilities;
 pub mod command;
 pub mod discovery;
+pub mod inventory;
 pub mod resolve;
 pub mod suggest;
 pub mod tasks;
@@ -25,6 +26,10 @@ pub use command::{
 pub use discovery::{
     OutputTable, discover_apps, discover_outputs_with_args, parse_apps_from_flake_show,
     parse_outputs_from_flake_show,
+};
+pub use inventory::{
+    FlakeInventory, InventoryNode, StandardOutputKind, StandardOutputEntry,
+    list_standard_outputs, parse_flake_inventory,
 };
 pub use resolve::{
     AppNotFoundError, OutputNotFoundError, resolve_app_by_name, resolve_output_by_name,
