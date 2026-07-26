@@ -18,11 +18,13 @@ use clap::Parser;
 use nxr_core::diagnostics::exit;
 use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
 
-use crate::cli::{CacheSubcommand, Cli, Command, ExplainSubcommand, InspectSubcommand};
+use crate::cli::{
+    CacheSubcommand, Cli, Command, DoctorSubcommand, ExplainSubcommand, InspectSubcommand,
+};
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
-    affected, cache, complete, completion, doctor, explain, graph, inspect, list, manpage, nix_op,
-    plan, run, select, task, watch,
+    affected, cache, complete, completion, doctor, doctor_determinate, explain, graph, inspect,
+    list, manpage, nix_op, plan, run, select, task, watch,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -62,6 +64,8 @@ enum RunError {
     #[error(transparent)]
     Doctor(#[from] doctor::DoctorError),
     #[error(transparent)]
+    DoctorDeterminate(#[from] doctor_determinate::DoctorDeterminateError),
+    #[error(transparent)]
     Explain(#[from] explain::ExplainError),
     #[error("missing app name")]
     MissingAppName,
@@ -97,6 +101,7 @@ impl RunError {
             Self::Task(error) => error.exit_code(),
             Self::Select(error) => error.exit_code(),
             Self::Doctor(error) => error.exit_code(),
+            Self::DoctorDeterminate(error) => error.exit_code(),
             Self::Explain(error) => error.exit_code(),
             Self::Completion(_) => completion::CompletionError::exit_code(),
             Self::Complete(_) => exit::SUCCESS,
@@ -233,10 +238,21 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             }
         }
         Some(Command::Doctor {
+            target,
             clean_env,
             all,
             app,
-        }) => dispatch_doctor(cli, *clean_env, *all, app.as_deref(), runner),
+        }) => {
+            if let Some(DoctorSubcommand::Determinate { all, refresh }) = target.as_ref() {
+                let request = doctor_determinate::DoctorDeterminateRequest {
+                    nix_override: cli.nix.as_deref(),
+                    all: *all,
+                    refresh: *refresh,
+                };
+                return doctor_determinate::run(request, cli.json, runner).map_err(RunError::from);
+            }
+            dispatch_doctor(cli, *clean_env, *all, app.as_deref(), runner)
+        }
         Some(Command::Explain { name, target, args }) => dispatch_explain(
             cli,
             &nix_flags,

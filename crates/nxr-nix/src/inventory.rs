@@ -387,9 +387,7 @@ mod tests {
     use serde_json::json;
 
     use super::OutputTable;
-    use super::{
-        StandardOutputKind, list_standard_outputs, parse_flake_inventory, what_kind,
-    };
+    use super::{StandardOutputKind, list_standard_outputs, parse_flake_inventory, what_kind};
 
     #[test]
     fn parse_preserves_unknown_output_tables() {

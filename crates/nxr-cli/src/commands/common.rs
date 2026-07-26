@@ -135,6 +135,18 @@ impl<'a> WorkspaceState<'a> {
         Ok(self.adapter.as_ref().expect("adapter cached after success"))
     }
 
+    /// Locate `nix` and run capability probes, optionally bypassing the cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixError`] when the executable cannot be located or probed.
+    pub fn adapter_refresh(&mut self, refresh: bool) -> Result<&NixAdapter, NixError> {
+        if refresh || self.adapter.is_none() {
+            self.adapter = Some(build_adapter_refresh(self.nix_override, refresh)?);
+        }
+        Ok(self.adapter.as_ref().expect("adapter cached after success"))
+    }
+
     /// Load or reuse a workspace snapshot for the current invocation.
     ///
     /// A tasks-inclusive snapshot satisfies apps-only callers.
@@ -580,13 +592,33 @@ pub fn current_invocation_directory() -> Result<Utf8PathBuf, PrepareError> {
 ///
 /// Returns [`NixError`] when the executable cannot be located or the system cannot be detected.
 pub fn build_adapter(nix_override: Option<&str>) -> Result<NixAdapter, NixError> {
+    build_adapter_refresh(nix_override, false)
+}
+
+/// Build a [`NixAdapter`], optionally bypassing the capability cache.
+///
+/// # Errors
+///
+/// Returns [`NixError`] when the executable cannot be located or the system cannot be detected.
+pub fn build_adapter_refresh(
+    nix_override: Option<&str>,
+    refresh: bool,
+) -> Result<NixAdapter, NixError> {
     match nix_override {
         Some(path) => {
             let nix = Utf8PathBuf::from(path);
             if !nix.is_file() {
                 return Err(NixError::NixNotFound { path: nix });
             }
-            NixAdapter::from_nix(nix)
+            if refresh {
+                NixAdapter::from_nix_refresh(nix)
+            } else {
+                NixAdapter::from_nix(nix)
+            }
+        }
+        None if refresh => {
+            let nix = nxr_nix::locate_nix()?;
+            NixAdapter::from_nix_refresh(nix)
         }
         None => NixAdapter::new(),
     }

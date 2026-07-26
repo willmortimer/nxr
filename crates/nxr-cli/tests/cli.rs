@@ -1094,7 +1094,53 @@ fn doctor_help_documents_clean_env_flag() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--clean-env"))
-        .stdout(predicate::str::contains("--all"));
+        .stdout(predicate::str::contains("--all"))
+        .stdout(predicate::str::contains("determinate"));
+}
+
+#[test]
+fn doctor_determinate_help_documents_flags() {
+    cargo_bin_cmd!("nxr")
+        .args(["doctor", "determinate", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--all"))
+        .stdout(predicate::str::contains("--refresh"));
+}
+
+#[test]
+fn doctor_determinate_json_reports_distribution_envelope() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--json", "doctor", "determinate"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse doctor json");
+    assert_eq!(value["schema_version"], 1);
+    assert!(value["distribution"].is_string());
+    assert!(value["findings"].is_array());
+    let codes: Vec<&str> = value["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .map(|finding| finding["code"].as_str().expect("code"))
+        .collect();
+    let distribution = value["distribution"].as_str().expect("distribution");
+    if distribution == "upstream" || distribution == "lix" {
+        assert!(codes.contains(&"determinate.distribution.na"));
+    } else if distribution == "determinate" {
+        assert!(codes.contains(&"determinate.distribution.detected"));
+    }
+    let rendered = stdout.to_ascii_lowercase();
+    assert!(!rendered.contains("bearer "));
+    assert!(!rendered.contains("api_key="));
 }
 
 #[test]
