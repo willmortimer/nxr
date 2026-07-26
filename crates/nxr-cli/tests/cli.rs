@@ -2579,6 +2579,105 @@ fn task_ci_uses_o1_discovery_not_per_node_flake_show() {
     );
 }
 
+#[test]
+fn doctor_all_does_not_double_capability_probes() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_NIX", &counter.wrapper)
+        .args([
+            "--flake",
+            "fixtures/basic-apps",
+            "--json",
+            "doctor",
+            "--all",
+        ])
+        .assert()
+        .success();
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(counter.count("eval"), 1, "single system probe; log={log}");
+    assert_eq!(
+        counter.count("version"),
+        1,
+        "single version probe; log={log}"
+    );
+    assert_eq!(counter.count("config"), 1, "single config probe; log={log}");
+}
+
+#[test]
+fn watch_app_does_not_double_workspace_init_on_first_generation() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    use assert_cmd::cargo::CommandCargoExt;
+
+    let counter = NixCallCounter::install();
+    let repo_root = repo_root();
+    let mut child = Command::cargo_bin("nxr")
+        .expect("nxr binary")
+        .current_dir(&repo_root)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "watch", "hello"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn watch");
+
+    let mut stdout = child.stdout.take().expect("stdout pipe");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut output = Vec::new();
+    let mut buf = [0_u8; 256];
+    loop {
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!(
+                "watch timed out before first generation; output={}",
+                String::from_utf8_lossy(&output)
+            );
+        }
+        match stdout.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                output.extend_from_slice(&buf[..n]);
+                if String::from_utf8_lossy(&output).contains("hello from basic-apps") {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => panic!("read watch stdout: {error}"),
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(
+        counter.count("version"),
+        1,
+        "resolve_target + prepare share one adapter; log={log}"
+    );
+    assert_eq!(counter.count("config"), 1, "single config probe; log={log}");
+    assert_eq!(
+        counter.count("run"),
+        1,
+        "first generation runs once; log={log}"
+    );
+}
+
 fn parse_dry_run_plans(stdout: &str) -> Vec<serde_json::Value> {
     let mut plans = Vec::new();
     let mut rest = stdout;

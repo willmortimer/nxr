@@ -15,7 +15,7 @@ use nxr_task::{
     Scheduler, SchedulerError, build_execution_plan_roots, resolve_task_name,
 };
 
-use crate::commands::common::{PrepareError, PreparedTaskNode, WorkspaceSnapshot};
+use crate::commands::common::{PrepareError, PreparedTaskNode, WorkspaceSnapshot, WorkspaceState};
 use crate::commands::plan::{PlanRenderError, write_plan};
 use crate::commands::run::RunError;
 use crate::flake::FlakeResolveError;
@@ -153,9 +153,14 @@ pub fn execute(
     json: bool,
     runner: RunnerOutput,
 ) -> Result<i32, TaskError> {
-    execute_with_control(request, dry_run, json, runner, &mut || {
-        Ok(RunControl::Continue)
-    })
+    execute_with_control(
+        request,
+        dry_run,
+        json,
+        runner,
+        &mut || Ok(RunControl::Continue),
+        None,
+    )
 }
 
 /// External control signals for watch-mode integration with the scheduler loop.
@@ -183,6 +188,7 @@ pub fn execute_with_control(
     json: bool,
     runner: RunnerOutput,
     control: &mut dyn FnMut() -> io::Result<RunControl>,
+    workspace: Option<&mut WorkspaceState<'_>>,
 ) -> Result<i32, TaskError> {
     if request.jobs == 0 {
         return Err(TaskError::InvalidJobs(0));
@@ -194,12 +200,19 @@ pub fn execute_with_control(
         return Err(TaskError::RawConflictsWithMultiplex);
     }
 
-    let snapshot = WorkspaceSnapshot::load(
-        request.flake_arg,
-        request.nix_override,
-        true,
-        request.nix_flags,
-    )?;
+    let owned_snapshot;
+    let snapshot = match workspace {
+        Some(state) => state.snapshot(true).map_err(TaskError::Prepare)?,
+        None => {
+            owned_snapshot = WorkspaceSnapshot::load(
+                request.flake_arg,
+                request.nix_override,
+                true,
+                request.nix_flags,
+            )?;
+            &owned_snapshot
+        }
+    };
     let document = snapshot
         .tasks
         .as_ref()
