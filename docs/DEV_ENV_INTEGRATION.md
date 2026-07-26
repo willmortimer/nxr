@@ -129,6 +129,48 @@ replace nix-direnv activation or decrypt secrets into `.envrc`.
 
 See [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) §2.
 
+## 3b. Home Manager (`homeManagerModules.default`)
+
+For permanent install outside a project flake, import the reusable module into
+**your** Home Manager configuration (nxr does not ship `homeConfigurations`):
+
+```nix
+{ inputs, pkgs, ... }:
+{
+  imports = [ inputs.nxr.homeManagerModules.default ];
+
+  programs.nxr = {
+    enable = true;
+    package = inputs.nxr.packages.${pkgs.system}.nxr;
+    settings = {
+      defaultJobs = 8;
+      shellMode = "smart";
+      output = "live";
+      color = "auto";
+    };
+    shellIntegration = {
+      bash = true;
+      zsh = true;
+      fish = true;
+    };
+    direnvIntegration = {
+      enable = true;
+      nixDirenv = true;
+    };
+  };
+}
+```
+
+The module:
+
+- adds nxr to `home.packages`;
+- installs Bash/Zsh/Fish completion hooks;
+- writes `$XDG_CONFIG_HOME/nxr/config.toml` with non-secret defaults;
+- optionally enables `programs.direnv` + nix-direnv;
+- accepts stub `trustedProjects` / `secretBindings` (path/ref only) for 3.0.
+
+Never put secret values in the module or generated config.
+
 ## 4. Automatic completion through the dev shell
 
 The `nxr` flake-parts module can install session-local shell integration into
