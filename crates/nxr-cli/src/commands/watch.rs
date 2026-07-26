@@ -13,8 +13,8 @@ use nxr_watch::{
 };
 
 use crate::commands::common::{
-    AppRequest, PrepareError, PreparedPlan, WorkspaceSnapshot, current_invocation_directory,
-    prepare_app_plan,
+    AppRequest, PrepareError, PreparedPlan, WorkspaceState, current_invocation_directory,
+    prepare_app_plan_in_state,
 };
 use crate::commands::task::{self, TaskError, TaskRequest, plan_exit_code};
 use crate::flake::{FlakeResolveError, resolve_flake};
@@ -176,7 +176,9 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
         .clone()
         .ok_or(WatchCommandError::RemoteFlake)?;
 
-    let target = resolve_target(request)?;
+    let mut workspace =
+        WorkspaceState::new(request.flake_arg, request.nix_override, request.nix_flags);
+    let target = resolve_target(request, &mut workspace)?;
 
     let filters = PathFilters::new(&request.options.include, &request.options.exclude)?;
     let mut session = WatchSession::start(&WatchConfig {
@@ -207,7 +209,14 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
 
         session.drain_events();
 
-        match run_generation(request, &target, &mut session, &interrupts, runner)? {
+        match run_generation(
+            request,
+            &target,
+            &mut workspace,
+            &mut session,
+            &interrupts,
+            runner,
+        )? {
             GenerationOutcome::Idle => loop {
                 if interrupts.take_pending() {
                     return Ok(exit::INTERRUPTED);
@@ -223,17 +232,15 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
     }
 }
 
-fn resolve_target(request: &WatchRequest<'_>) -> Result<WatchTarget, WatchCommandError> {
+fn resolve_target(
+    request: &WatchRequest<'_>,
+    workspace: &mut WorkspaceState<'_>,
+) -> Result<WatchTarget, WatchCommandError> {
     if request.task_settings.is_some() {
         return Ok(WatchTarget::Task);
     }
 
-    let snapshot = WorkspaceSnapshot::load(
-        request.flake_arg,
-        request.nix_override,
-        true,
-        request.nix_flags,
-    )?;
+    let snapshot = workspace.snapshot(true)?;
     let document = snapshot
         .tasks
         .as_ref()
@@ -253,6 +260,7 @@ fn resolve_target(request: &WatchRequest<'_>) -> Result<WatchTarget, WatchComman
 fn run_generation(
     request: &WatchRequest<'_>,
     target: &WatchTarget,
+    workspace: &mut WorkspaceState<'_>,
     session: &mut WatchSession,
     interrupts: &InterruptFlags,
     runner: RunnerOutput,
@@ -271,16 +279,17 @@ fn run_generation(
                 environment_policy: request.environment_policy.clone(),
                 nix_flags: request.nix_flags,
             };
-            let prepared = prepare_app_plan(&app_request)?;
+            let prepared = prepare_app_plan_in_state(&app_request, workspace)?;
             let supervisor = spawn_prepared(&prepared)?;
             wait_supervisor(supervisor, session, interrupts)
         }
-        WatchTarget::Task => run_task_generation(request, session, interrupts, runner),
+        WatchTarget::Task => run_task_generation(request, workspace, session, interrupts, runner),
     }
 }
 
 fn run_task_generation(
     request: &WatchRequest<'_>,
+    workspace: &mut WorkspaceState<'_>,
     session: &mut WatchSession,
     interrupts: &InterruptFlags,
     runner: RunnerOutput,
@@ -324,20 +333,27 @@ fn run_task_generation(
     };
 
     let mut restart_requested = false;
-    let code = task::execute_with_control(&task_request, false, false, runner, &mut || {
-        if interrupts.take_pending() {
-            return Ok(task::RunControl::Stop);
-        }
-        session.drain_events();
-        match session.poll_restart(Duration::ZERO) {
-            Ok(WatchPoll::Restart) => {
-                restart_requested = true;
-                Ok(task::RunControl::Restart)
+    let code = task::execute_with_control(
+        &task_request,
+        false,
+        false,
+        runner,
+        &mut || {
+            if interrupts.take_pending() {
+                return Ok(task::RunControl::Stop);
             }
-            Ok(WatchPoll::Timeout) => Ok(task::RunControl::Continue),
-            Err(error) => Err(io::Error::other(error)),
-        }
-    })?;
+            session.drain_events();
+            match session.poll_restart(Duration::ZERO) {
+                Ok(WatchPoll::Restart) => {
+                    restart_requested = true;
+                    Ok(task::RunControl::Restart)
+                }
+                Ok(WatchPoll::Timeout) => Ok(task::RunControl::Continue),
+                Err(error) => Err(io::Error::other(error)),
+            }
+        },
+        Some(workspace),
+    )?;
 
     if restart_requested {
         return Ok(GenerationOutcome::Restart);
