@@ -86,6 +86,24 @@ Rejected   considered and explicitly not chosen
 | ADR-0130 | Do not reconstruct shells via print-dev-env | Proposed | 3.0 |
 | ADR-0131 | Configuration adapters inspect/build only; never switch/activate | Proposed | 2.6 |
 | ADR-0132 | Process nodes after task I/O; no built-in service module zoo | Proposed | 3.1 |
+| ADR-0133 | Persist Nix capability detection | Proposed | 2.6 |
+| ADR-0134 | Use an incremental content-correct workspace fingerprint | Proposed | 2.6 |
+| ADR-0135 | Opt-in task result caching for declared workspace outputs | Proposed | Later (post-3.0) |
+| ADR-0136 | Export and consume custom flake schemas | Proposed | 2.6 |
+| ADR-0137 | Treat Determinate Nix as a negotiated capability provider | Proposed | 2.6 |
+| ADR-0138 | Task resource declarations and cooperative job control | Proposed | 3.0 |
+| ADR-0139 | Use one provider-neutral CI plan | Proposed | Later |
+| ADR-0140 | Delegate derivation execution placement to Nix | Proposed | Later |
+| ADR-0141 | Publish separate Nix-native and portable release artifacts | Proposed | 2.6 |
+| ADR-0142 | Generate and test user reference documentation | Proposed | 2.6 |
+
+Notes on ADR-0133–0142 (from the internal `nxr-next` plan, remapped to local `main` at **2.5.0**):
+
+- Package baseline was remote **2.4.1**; local already shipped **2.5.0** affected execution — do not re-plan that milestone.
+- Warm discovery already content-hashes Nix trees (cache v4 / BLAKE3); ADR-0134 is the *incremental index* follow-on, not first content correctness.
+- ADR-0135 **supersedes ADR-0117 for schema v2 only**; schema v1 keeps “no general task-result caching.” Runtime stays deferred until after 3.0 contexts/I/O land (local roadmap “Later”), not ahead of 3.1 process workflows.
+- ADR-0139 / ADR-0140 pull forward intent from deferred ADR-0214 / ADR-0215 / ADR-0304; they do not schedule the V3 control plane early.
+- Source packet (gitignored): `docs/internal/nxr-next-improvements/`.
 
 ## 4. V3 monorepo and action ADRs (deferred)
 
@@ -163,7 +181,10 @@ The first implementation ADRs should be written in this order:
 1. ADR-0001 through ADR-0013 before the CLI contract is considered stable.
 2. ADR-0101 through ADR-0110 before V2 task execution begins.
 3. ADR-0111 through ADR-0132 before schema v2 / Home Manager / process freezes.
-4. Remaining V3 ADRs (0201–0412) only if a future control-plane effort is explicitly scheduled — see [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md) and [EXECUTION_CONTEXT.md](../EXECUTION_CONTEXT.md).
+4. ADR-0133 through ADR-0137 / ADR-0141–0142 before or alongside 2.6 ecosystem ergonomics (latency, inventory schemas, Determinate doctor, distribution/docs).
+5. ADR-0138 with task schema v2 (3.0); ADR-0135 runtime only after declared inputs/outputs exist.
+6. ADR-0139 / ADR-0140 only when CI plan / remote placement is explicitly scheduled (still after 3.0–3.1 runner trustworthiness).
+7. Remaining V3 ADRs (0201–0412) only if a future control-plane effort is explicitly scheduled — see [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md) and [EXECUTION_CONTEXT.md](../EXECUTION_CONTEXT.md).
 
 ## 8. Repository location
 
