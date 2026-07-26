@@ -4,6 +4,7 @@ pub mod adapter;
 pub mod capabilities;
 pub mod capability_cache;
 pub mod command;
+pub mod determinate;
 pub mod discovery;
 pub mod inventory;
 pub mod resolve;
@@ -15,9 +16,10 @@ use nxr_core::sanitize::sanitize_terminal_text;
 
 pub use adapter::NixAdapter;
 pub use capabilities::{
-    CapabilityEvidence, CapabilityProvenance, FlagPolicy, NixCapabilities, NixFailureKind,
-    NixVersion, OptionalNixFlags, TESTED_NIX_SUPPORT_FLOOR, detect_capabilities, detect_system,
-    locate_nix, negotiate_capabilities, parse_nix_version_output, run_nix,
+    CapabilityEvidence, CapabilityProvenance, FlagPolicy, NixCapabilities, NixDistribution,
+    NixFailureKind, NixVersion, OptionalNixFlags, TESTED_NIX_SUPPORT_FLOOR, config_bool_setting,
+    detect_capabilities, detect_system, locate_nix, negotiate_capabilities, parse_nix_distribution,
+    parse_nix_version_output, probe_config_json, probe_version_banner, run_nix,
 };
 pub use capability_cache::{
     CAPABILITY_CACHE_ENV, CAPABILITY_CACHE_TTL_ENV, CapabilityCacheStatus, capability_cache_dir,
@@ -29,13 +31,17 @@ pub use command::{
     flake_show_args, nix_build_args, nix_develop_args, nix_develop_wrap_run_args,
     nix_flake_check_args, nix_run_args, package_installable,
 };
+pub use determinate::{
+    DeterminatePerformanceFeatures, LazyTreesState, NixdProbe, host_is_macos,
+    probe_distribution_context, probe_nixd, probe_performance_features, redact_sensitive_text,
+};
 pub use discovery::{
     OutputTable, discover_apps, discover_outputs_with_args, parse_apps_from_flake_show,
     parse_outputs_from_flake_show,
 };
 pub use inventory::{
-    FlakeInventory, InventoryNode, StandardOutputKind, StandardOutputEntry,
-    list_standard_outputs, parse_flake_inventory,
+    FlakeInventory, InventoryNode, StandardOutputEntry, StandardOutputKind, list_standard_outputs,
+    parse_flake_inventory,
 };
 pub use resolve::{
     AppNotFoundError, OutputNotFoundError, resolve_app_by_name, resolve_output_by_name,

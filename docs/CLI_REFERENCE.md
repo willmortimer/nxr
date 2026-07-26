@@ -65,6 +65,7 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr doctor [app]` | Diagnose environment and flake setup |
 | `nxr doctor --all` | Extra non-destructive findings (descriptions, naming, cache) |
 | `nxr doctor --clean-env [app]` | Clean-environment validation |
+| `nxr doctor determinate [--all] [--refresh]` | Determinate Nix distribution and integration diagnostics (N/A on upstream/Lix) |
 | `nxr explain <app\|task> [-- args…]` | Explain resolution and exact Nix invocation (apps win when both exist) |
 | `nxr explain app <name> [-- args…]` | Explain a single app |
 | `nxr explain task <name> [-- args…]` | Explain a task DAG node plans and dependency path |

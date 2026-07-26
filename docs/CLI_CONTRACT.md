@@ -21,6 +21,7 @@ nxr shell [devShell]
 nxr select
 nxr plan <app-or-task>
 nxr doctor [app]
+nxr doctor determinate [--all] [--refresh]
 nxr explain <app|task> [args...]
 nxr explain task <name> [args...]
 nxr completion <shell>
@@ -380,6 +381,8 @@ nxr doctor --all
 ```
 
 `doctor --all` adds non-destructive workspace findings: app description/naming quality, discovery cache status, invalidation key, and a structured `workspace` object in JSON (flake root, system, Nix capabilities, cache metadata).
+
+`nxr doctor determinate` reports read-only Determinate Nix integration findings (distribution, lazy trees / parallel evaluation when detectable, `determinate-nixd` presence, builder hints with `--all`). On upstream Nix or Lix it emits a single informational `determinate.distribution.na` finding. JSON output redacts token-like values from nixd status; secrets never appear in findings.
 
 `nxr explain` prints how nxr would resolve and invoke an app or task: flake root, system, Nix executable/version/capabilities, discovery cache hit/miss and invalidation key, attr path, execution directory, environment policy, requested/active dev shell, exact Nix argv, task dependency path, shell-wrap skip reason, and scheduler skip reasons for dependent task nodes.
 

@@ -47,6 +47,38 @@ pub enum FlagPolicy {
     BestEffortInternal,
 }
 
+/// Detected Nix distribution from the `nix --version` banner.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NixDistribution {
+    /// Upstream Nix (nixos/nix).
+    Upstream,
+    /// Determinate Nix with optional product version from the banner.
+    Determinate { product_version: Option<String> },
+    /// Lix.
+    Lix,
+    /// Banner did not match a known distribution label.
+    Unknown,
+}
+
+impl NixDistribution {
+    /// Stable label for doctor output and JSON diagnostics.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Upstream => "upstream",
+            Self::Determinate { .. } => "determinate",
+            Self::Lix => "lix",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Whether this host runs Determinate Nix.
+    #[must_use]
+    pub const fn is_determinate(&self) -> bool {
+        matches!(self, Self::Determinate { .. })
+    }
+}
+
 /// Parsed Nix CLI version (`major.minor.patch`).
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct NixVersion {
@@ -332,7 +364,7 @@ pub fn detect_capabilities_with_evidence(
 
     let mut evidence = vec![CapabilityEvidence::VersionBanner];
 
-    let config_json = probe_config_json(nix);
+    let config_json = probe_config_json_internal(nix);
     if config_json.is_some() {
         evidence.push(CapabilityEvidence::Config);
     }
@@ -433,6 +465,48 @@ fn help_indicates_flake_command(help: &str) -> bool {
         })
 }
 
+/// Read the `nix --version` banner.
+///
+/// # Errors
+///
+/// Returns [`NixError`] when `nix --version` cannot be executed.
+pub fn probe_version_banner(nix: &Utf8Path) -> Result<String, NixError> {
+    run_nix_capture(nix, &["--version".to_owned()])
+}
+
+/// Classify the Nix distribution from a `nix --version` banner.
+#[must_use]
+pub fn parse_nix_distribution(version_output: &str) -> NixDistribution {
+    let line = version_output
+        .lines()
+        .next()
+        .unwrap_or(version_output)
+        .trim();
+    if line.contains("Determinate Nix") {
+        return NixDistribution::Determinate {
+            product_version: parse_determinate_product_version(line),
+        };
+    }
+    if line.contains("Lix") {
+        return NixDistribution::Lix;
+    }
+    if line.contains("(Nix)") {
+        return NixDistribution::Upstream;
+    }
+    NixDistribution::Unknown
+}
+
+fn parse_determinate_product_version(banner: &str) -> Option<String> {
+    let marker = "Determinate Nix ";
+    let rest = banner.split(marker).nth(1)?;
+    let version = rest.split(')').next()?.trim();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_owned())
+    }
+}
+
 /// Parse `nix --version` stdout into a [`NixVersion`].
 #[must_use]
 pub fn parse_nix_version_output(output: &str) -> Option<NixVersion> {
@@ -497,7 +571,7 @@ fn run_nix_capture(nix: &Utf8Path, args: &[String]) -> Result<String, NixError> 
     String::from_utf8(stdout).map_err(|_| NixError::InvalidVersionOutput)
 }
 
-fn probe_config_json(nix: &Utf8Path) -> Option<String> {
+fn probe_config_json_internal(nix: &Utf8Path) -> Option<String> {
     for args in [
         vec!["config".to_owned(), "show".to_owned(), "--json".to_owned()],
         vec!["show-config".to_owned(), "--json".to_owned()],
@@ -509,6 +583,12 @@ fn probe_config_json(nix: &Utf8Path) -> Option<String> {
         }
     }
     None
+}
+
+/// Probe `nix config show --json` when available.
+#[must_use]
+pub fn probe_config_json(nix: &Utf8Path) -> Option<String> {
+    probe_config_json_internal(nix)
 }
 
 fn probe_help_text(nix: &Utf8Path) -> Option<String> {
@@ -559,6 +639,24 @@ fn config_has_setting(config_json: Option<&str>, key: &str) -> bool {
         .is_some_and(|value| value.get(key).is_some())
 }
 
+/// Read a boolean Nix config setting from `nix config show --json` output.
+#[must_use]
+pub fn config_bool_setting(config_json: Option<&str>, key: &str) -> Option<bool> {
+    let raw = config_json?;
+    let value: JsonValue = serde_json::from_str(raw).ok()?;
+    let setting = value.get(key)?;
+    let setting_value = setting.get("value").unwrap_or(setting);
+    match setting_value {
+        JsonValue::Bool(enabled) => Some(*enabled),
+        JsonValue::String(text) => match text.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => Some(true),
+            "false" | "0" | "no" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn help_mentions(help: &str, flag: &str) -> bool {
     help.split_whitespace().any(|token| token == flag)
         || help.contains(&format!(" {flag} "))
@@ -573,8 +671,9 @@ fn help_mentions_log_format_json(help: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        FEATURE_FLOOR, NixCapabilities, NixVersion, OptionalNixFlags, TESTED_NIX_SUPPORT_FLOOR,
-        detect_system, locate_nix, negotiate_capabilities, parse_nix_version_output,
+        FEATURE_FLOOR, NixCapabilities, NixDistribution, NixVersion, OptionalNixFlags,
+        TESTED_NIX_SUPPORT_FLOOR, detect_system, locate_nix, negotiate_capabilities,
+        parse_nix_distribution, parse_nix_version_output,
     };
     use crate::NixError;
 
@@ -616,6 +715,28 @@ mod tests {
             Some(NixVersion::new(2, 34, 8))
         );
         assert_eq!(parse_nix_version_output("not-a-version"), None);
+    }
+
+    #[test]
+    fn parse_nix_distribution_from_common_banners() {
+        assert_eq!(
+            parse_nix_distribution("nix (Nix) 2.34.7\n"),
+            NixDistribution::Upstream
+        );
+        assert_eq!(
+            parse_nix_distribution("nix (Lix, like Nix) 2.91.0"),
+            NixDistribution::Lix
+        );
+        assert_eq!(
+            parse_nix_distribution("nix (Determinate Nix 3.21.7) 2.34.8\n"),
+            NixDistribution::Determinate {
+                product_version: Some("3.21.7".to_owned()),
+            }
+        );
+        assert_eq!(
+            parse_nix_distribution("nix custom build 1.0.0"),
+            NixDistribution::Unknown
+        );
     }
 
     #[test]
