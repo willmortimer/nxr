@@ -450,8 +450,8 @@ pub enum Command {
 /// `nxr cache` subcommands.
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 pub enum CacheSubcommand {
-    /// Remove all discovery cache entries
+    /// Remove discovery and capability cache entries
     Clear,
-    /// Show discovery cache location and size
+    /// Show discovery and capability cache locations and sizes
     Status,
 }
