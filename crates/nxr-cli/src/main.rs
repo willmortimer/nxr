@@ -19,12 +19,14 @@ use nxr_core::diagnostics::exit;
 use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
 
 use crate::cli::{
-    CacheSubcommand, Cli, Command, DoctorSubcommand, ExplainSubcommand, InspectSubcommand,
+    BuildSubcommand, CacheSubcommand, Cli, Command, DoctorSubcommand, ExplainSubcommand,
+    InspectSubcommand,
 };
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
-    affected, cache, complete, completion, doctor, doctor_determinate, explain, graph, inspect,
-    list, manpage, nix_op, plan, run, select, task, watch,
+    affected, cache, complete, completion, configurations, doctor, doctor_builders, doctor_cache,
+    doctor_determinate, doctor_env, envrc, explain, fmt, graph, inspect, list, manpage, nix_op,
+    plan, run, select, task, watch,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -66,6 +68,18 @@ enum RunError {
     #[error(transparent)]
     DoctorDeterminate(#[from] doctor_determinate::DoctorDeterminateError),
     #[error(transparent)]
+    DoctorEnv(#[from] doctor_env::DoctorEnvError),
+    #[error(transparent)]
+    DoctorCache(#[from] doctor_cache::DoctorCacheError),
+    #[error(transparent)]
+    DoctorBuilders(#[from] doctor_builders::DoctorBuildersError),
+    #[error(transparent)]
+    Fmt(#[from] fmt::FmtError),
+    #[error(transparent)]
+    Envrc(#[from] envrc::EnvrcError),
+    #[error(transparent)]
+    Configuration(#[from] configurations::ConfigurationError),
+    #[error(transparent)]
     Explain(#[from] explain::ExplainError),
     #[error("missing app name")]
     MissingAppName,
@@ -102,6 +116,12 @@ impl RunError {
             Self::Select(error) => error.exit_code(),
             Self::Doctor(error) => error.exit_code(),
             Self::DoctorDeterminate(error) => error.exit_code(),
+            Self::DoctorEnv(error) => error.exit_code(),
+            Self::DoctorCache(error) => error.exit_code(),
+            Self::DoctorBuilders(error) => error.exit_code(),
+            Self::Fmt(error) => error.exit_code(),
+            Self::Envrc(error) => error.exit_code(),
+            Self::Configuration(error) => error.exit_code(),
             Self::Explain(error) => error.exit_code(),
             Self::Completion(_) => completion::CompletionError::exit_code(),
             Self::Complete(_) => exit::SUCCESS,
@@ -152,9 +172,18 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             debounce,
             args,
         }) => dispatch_run_command(cli, &nix_flags, app, *watch, *debounce, args, runner),
-        Some(Command::Build { name }) => {
-            dispatch_nix_op(cli, &nix_flags, name.as_deref(), NixOp::Build, runner)
-        }
+        Some(Command::Build {
+            target,
+            installable,
+            attr,
+        }) => dispatch_build(
+            cli,
+            &nix_flags,
+            target.as_ref(),
+            installable.as_deref(),
+            attr.as_deref(),
+            runner,
+        ),
         Some(Command::Check { name }) => {
             dispatch_nix_op(cli, &nix_flags, name.as_deref(), NixOp::Check, runner)
         }
@@ -243,13 +272,8 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             all,
             app,
         }) => {
-            if let Some(DoctorSubcommand::Determinate { all, refresh }) = target.as_ref() {
-                let request = doctor_determinate::DoctorDeterminateRequest {
-                    nix_override: cli.nix.as_deref(),
-                    all: *all,
-                    refresh: *refresh,
-                };
-                return doctor_determinate::run(request, cli.json, runner).map_err(RunError::from);
+            if let Some(sub) = target.as_ref() {
+                return dispatch_doctor_subcommand(cli, sub, runner);
             }
             dispatch_doctor(cli, *clean_env, *all, app.as_deref(), runner)
         }
@@ -347,6 +371,29 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             )?;
             Ok(exit::SUCCESS)
         }
+        Some(Command::Fmt { paths }) => {
+            let request = fmt::FmtRequest {
+                flake_arg: cli.flake.as_deref(),
+                nix_override: cli.nix.as_deref(),
+                paths,
+                dry_run: cli.dry_run,
+                json: cli.json,
+                nix_flags: &nix_flags,
+            };
+            fmt::run(request, runner).map_err(RunError::from)
+        }
+        Some(Command::Envrc { write, force }) => {
+            let request = envrc::EnvrcRequest {
+                flake_arg: cli.flake.as_deref(),
+                shell: cli.dev_shell.as_deref(),
+                write: *write,
+                force: *force,
+            };
+            envrc::run(request, runner).map_err(RunError::from)
+        }
+        Some(Command::In { shell, verb, rest }) => {
+            dispatch_in(cli, &nix_flags, shell, verb, rest, runner)
+        }
     }
 }
 
@@ -433,9 +480,280 @@ fn dispatch_task_affected(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NixOp {
-    Build,
     Check,
     Shell,
+}
+
+fn dispatch_build(
+    cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
+    target: Option<&BuildSubcommand>,
+    installable: Option<&str>,
+    attr: Option<&str>,
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    let environment = environment_policy_from_cli(cli)?;
+    let request = nix_op::NixOpRequest {
+        flake_arg: cli.flake.as_deref(),
+        nix_override: cli.nix.as_deref(),
+        name: installable,
+        attr,
+        dry_run: cli.dry_run,
+        json: cli.json,
+        nix_flags,
+        environment: &environment,
+    };
+
+    if let Some(BuildSubcommand::Configuration { name }) = target {
+        if installable.is_some() || attr.is_some() {
+            return Err(RunError::Usage(
+                "cannot combine `build configuration` with an installable or --attr".to_owned(),
+            ));
+        }
+        return nix_op::execute_build_configuration(&request, name, runner).map_err(RunError::from);
+    }
+
+    if target.is_some() {
+        return Err(RunError::Usage("unknown build subcommand".to_owned()));
+    }
+
+    nix_op::execute_build(&request, runner).map_err(RunError::from)
+}
+
+fn dispatch_doctor_subcommand(
+    cli: &Cli,
+    sub: &DoctorSubcommand,
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    match sub {
+        DoctorSubcommand::Determinate { all, refresh } => {
+            let request = doctor_determinate::DoctorDeterminateRequest {
+                nix_override: cli.nix.as_deref(),
+                all: *all,
+                refresh: *refresh,
+            };
+            doctor_determinate::run(request, cli.json, runner).map_err(RunError::from)
+        }
+        DoctorSubcommand::Env => {
+            let request = doctor_env::DoctorEnvRequest {
+                flake_arg: cli.flake.as_deref(),
+            };
+            doctor_env::run(request, cli.json, runner).map_err(RunError::from)
+        }
+        DoctorSubcommand::Cache => {
+            let request = doctor_cache::DoctorCacheRequest {
+                flake_arg: cli.flake.as_deref(),
+                nix_override: cli.nix.as_deref(),
+            };
+            doctor_cache::run(request, cli.json, runner).map_err(RunError::from)
+        }
+        DoctorSubcommand::Builders => {
+            let request = doctor_builders::DoctorBuildersRequest {
+                nix_override: cli.nix.as_deref(),
+            };
+            doctor_builders::run(request, cli.json, runner).map_err(RunError::from)
+        }
+    }
+}
+
+fn dispatch_in(
+    cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
+    shell: &str,
+    verb: &str,
+    rest: &[String],
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    match verb {
+        "run" => {
+            let app = rest.first().ok_or_else(|| {
+                RunError::Usage("missing app name after `in <shell> run`".to_owned())
+            })?;
+            let args = &rest[1..];
+            dispatch_run_command_in_shell(cli, nix_flags, shell, app, false, None, args, runner)
+        }
+        "plan" => {
+            let app = rest.first().ok_or_else(|| {
+                RunError::Usage("missing app or task name after `in <shell> plan`".to_owned())
+            })?;
+            let args = &rest[1..];
+            dispatch_plan_in_shell(cli, nix_flags, shell, app, args, runner)
+        }
+        "task" => {
+            if rest.is_empty() {
+                return Err(RunError::Usage(
+                    "missing task name after `in <shell> task`".to_owned(),
+                ));
+            }
+            let request =
+                task_request_in_shell(cli, nix_flags, shell, rest.to_vec(), &[], 1, false)?;
+            task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+        }
+        "watch" => {
+            let name = rest.first().ok_or_else(|| {
+                RunError::Usage("missing name after `in <shell> watch`".to_owned())
+            })?;
+            let args = &rest[1..];
+            let request = watch_request_in_shell(
+                cli,
+                nix_flags,
+                shell,
+                name,
+                args,
+                watch::WatchOptions::default(),
+            )?;
+            watch::run(&request, runner).map_err(RunError::from)
+        }
+        "explain" => {
+            let name = rest.first().ok_or_else(|| {
+                RunError::Usage("missing name after `in <shell> explain`".to_owned())
+            })?;
+            let args = &rest[1..];
+            dispatch_explain_in_shell(cli, nix_flags, shell, name, args, runner)
+        }
+        app => dispatch_run_command_in_shell(cli, nix_flags, shell, app, false, None, rest, runner),
+    }
+}
+
+fn dispatch_run_command_in_shell(
+    cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
+    shell: &str,
+    app: &str,
+    watch: bool,
+    debounce: Option<u64>,
+    args: &[String],
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    if watch {
+        let request = watch_request_in_shell(
+            cli,
+            nix_flags,
+            shell,
+            app,
+            args,
+            watch_options_from_debounce(debounce),
+        )?;
+        return watch::run(&request, runner).map_err(RunError::from);
+    }
+    let request = app_request_in_shell(cli, nix_flags, shell, app, args)?;
+    run::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+}
+
+fn dispatch_plan_in_shell(
+    cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
+    shell: &str,
+    app: &str,
+    args: &[String],
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    let request = app_request_in_shell(cli, nix_flags, shell, app, args)?;
+    plan::run(&request, cli.json, runner)?;
+    Ok(exit::SUCCESS)
+}
+
+fn dispatch_explain_in_shell(
+    cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
+    shell: &str,
+    name: &str,
+    args: &[String],
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    let request = explain::ExplainRequest {
+        flake_arg: cli.flake.as_deref(),
+        nix_override: cli.nix.as_deref(),
+        name,
+        kind: None,
+        args,
+        root: cli.root,
+        cwd: cli.cwd.as_deref(),
+        shell: Some(shell),
+        shell_mode: cli.shell_mode,
+        environment_policy: environment_policy_from_cli(cli)?,
+        jobs: 1,
+        output_mode: cli.output,
+        events_format: cli.events,
+        nix_flags,
+    };
+    explain::run(&request, cli.json, runner)?;
+    Ok(exit::SUCCESS)
+}
+
+fn app_request_in_shell<'a>(
+    cli: &'a Cli,
+    nix_flags: &'a nxr_nix::OptionalNixFlags,
+    shell: &'a str,
+    app: &'a str,
+    args: &'a [String],
+) -> Result<AppRequest<'a>, RunError> {
+    let target = resolve_app_target(cli, app)?;
+    Ok(AppRequest {
+        flake_arg: target.flake_arg,
+        nix_override: cli.nix.as_deref(),
+        app: target.app,
+        args,
+        root: cli.root,
+        cwd: cli.cwd.as_deref(),
+        shell: Some(shell),
+        shell_mode: cli.shell_mode,
+        environment_policy: environment_policy_from_cli(cli)?,
+        nix_flags,
+    })
+}
+
+fn task_request_in_shell<'a>(
+    cli: &'a Cli,
+    nix_flags: &'a nxr_nix::OptionalNixFlags,
+    shell: &'a str,
+    tasks: Vec<String>,
+    args: &'a [String],
+    jobs: usize,
+    keep_going: bool,
+) -> Result<task::TaskRequest<'a>, RunError> {
+    Ok(task::TaskRequest {
+        flake_arg: cli.flake.as_deref(),
+        nix_override: cli.nix.as_deref(),
+        tasks,
+        args,
+        root: cli.root,
+        cwd: cli.cwd.as_deref(),
+        shell: Some(shell),
+        shell_mode: cli.shell_mode,
+        environment_policy: environment_policy_from_cli(cli)?,
+        jobs,
+        keep_going,
+        output_mode: cli.output,
+        events_format: cli.events,
+        nix_flags,
+    })
+}
+
+fn watch_request_in_shell<'a>(
+    cli: &'a Cli,
+    nix_flags: &'a nxr_nix::OptionalNixFlags,
+    shell: &'a str,
+    name: &'a str,
+    args: &'a [String],
+    options: watch::WatchOptions,
+) -> Result<watch::WatchRequest<'a>, RunError> {
+    Ok(watch::WatchRequest {
+        flake_arg: cli.flake.as_deref(),
+        nix_override: cli.nix.as_deref(),
+        name,
+        args,
+        root: cli.root,
+        cwd: cli.cwd.as_deref(),
+        shell: Some(shell),
+        shell_mode: cli.shell_mode,
+        environment_policy: environment_policy_from_cli(cli)?,
+        options,
+        output_mode: cli.output,
+        events_format: cli.events,
+        task_settings: None,
+        nix_flags,
+    })
 }
 
 fn dispatch_nix_op(
@@ -450,13 +768,13 @@ fn dispatch_nix_op(
         flake_arg: cli.flake.as_deref(),
         nix_override: cli.nix.as_deref(),
         name,
+        attr: None,
         dry_run: cli.dry_run,
         json: cli.json,
         nix_flags,
         environment: &environment,
     };
     match op {
-        NixOp::Build => nix_op::execute_build(&request, runner).map_err(RunError::from),
         NixOp::Check => nix_op::execute_check(&request, runner).map_err(RunError::from),
         NixOp::Shell => nix_op::execute_shell(&request, runner).map_err(RunError::from),
     }
@@ -514,6 +832,17 @@ fn run_inspect(
         Some(InspectSubcommand::App { name }) => inspect::InspectTarget::App { name: name.clone() },
         Some(InspectSubcommand::Task { name }) => {
             inspect::InspectTarget::Task { name: name.clone() }
+        }
+        Some(InspectSubcommand::Configuration { name }) => {
+            configurations::inspect(
+                cli.flake.as_deref(),
+                cli.nix.as_deref(),
+                name,
+                cli.json,
+                &nix_flags,
+                runner,
+            )?;
+            return Ok(exit::SUCCESS);
         }
     };
     inspect::run(

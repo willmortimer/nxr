@@ -94,7 +94,7 @@ _nxr_dynamic_target() {
             fi
             return 1
             ;;
-        plan|select|doctor|cache)
+        plan|select|doctor|cache|fmt|envrc|in)
             return 1
             ;;
         ""|-*|--*)

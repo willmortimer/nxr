@@ -3708,3 +3708,267 @@ fn task_multi_root_dry_run_accepts_watch_compatible_union() {
         "expected multi-root union in dry-run:\n{stdout}"
     );
 }
+
+#[test]
+fn fmt_dry_run_invokes_nix_fmt() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/standard-outputs",
+            "--dry-run",
+            "fmt",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fmt"));
+}
+
+#[test]
+fn envrc_prints_use_flake_default() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args(["--flake", "fixtures/standard-outputs", "envrc"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("use flake\n"))
+        .stdout(predicate::str::contains("completions"));
+}
+
+#[test]
+fn envrc_named_shell_uses_flake_fragment() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/standard-outputs",
+            "--shell",
+            "backend",
+            "envrc",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("use flake .#backend"));
+}
+
+#[test]
+fn envrc_write_refuses_existing_without_force() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !repo_root.join(".envrc").is_file() {
+        return;
+    }
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["envrc", "--write"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(".envrc already exists"));
+}
+
+#[test]
+fn doctor_env_json_reports_envelope() {
+    cargo_bin_cmd!("nxr")
+        .args(["--json", "doctor", "env", "--flake", "fixtures/basic-apps"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"schema_version\": 1"))
+        .stdout(predicate::str::contains("env."));
+}
+
+#[test]
+fn doctor_cache_json_reports_envelope() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/basic-apps",
+            "--json",
+            "doctor",
+            "cache",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"schema_version\": 1"))
+        .stdout(predicate::str::contains("cache."));
+}
+
+#[test]
+fn doctor_builders_json_reports_envelope() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .args(["--json", "doctor", "builders"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"schema_version\": 1"))
+        .stdout(predicate::str::contains("builders."));
+}
+
+#[test]
+fn in_runs_app_inside_named_dev_shell() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/named-dev-shells",
+            "in",
+            "default",
+            "shell-marker",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("inside-default-shell"));
+}
+
+#[test]
+fn in_plan_subcommand_sets_shell_in_json() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/named-dev-shells",
+            "--json",
+            "in",
+            "default",
+            "plan",
+            "shell-marker",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse plan json");
+    assert_eq!(value["shell"], "default");
+}
+
+#[test]
+fn build_attr_dry_run_uses_explicit_installable() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/standard-outputs",
+            "--dry-run",
+            "build",
+            "--attr",
+            "packages.x86_64-linux.marker",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("build"))
+        .stdout(predicate::str::contains("#packages."));
+}
+
+#[test]
+fn build_explicit_installable_dry_run() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/standard-outputs",
+            "--dry-run",
+            "build",
+            ".#packages.x86_64-linux.marker",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".#packages."));
+}
+
+#[test]
+fn list_configurations_fixture() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args(["--flake", "fixtures/configurations", "list", "configurations"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("dev"))
+        .stdout(predicate::str::contains("nixos"));
+}
+
+#[test]
+fn build_configuration_dry_run() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/configurations",
+            "--dry-run",
+            "build",
+            "configuration",
+            "dev",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("nixosConfigurations.dev"));
+}
+
+#[test]
+fn inspect_configuration_json() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/configurations",
+            "--json",
+            "inspect",
+            "configuration",
+            "dev",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"name\": \"dev\""))
+        .stdout(predicate::str::contains("nixosConfigurations.dev"));
+}
