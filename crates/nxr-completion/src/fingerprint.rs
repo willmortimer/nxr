@@ -1,12 +1,17 @@
 //! Recursive `.nix` tree fingerprint for discovery cache invalidation.
 
-use std::fs;
-use std::io;
-use std::path::{Component, Path};
+use std::collections::BTreeMap;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Component, Path, PathBuf};
+use std::time::SystemTime;
 
-use blake3::Hasher;
+use blake3::{Hash, Hasher};
 use camino::{Utf8Path, Utf8PathBuf};
+use fs2::FileExt;
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use serde::{Deserialize, Serialize};
+
 use nxr_core::{normalize_repo_relative_path, validate_repo_relative_path};
 
 /// Environment variable with colon-separated glob patterns excluded from fingerprinting.
@@ -14,12 +19,17 @@ use nxr_core::{normalize_repo_relative_path, validate_repo_relative_path};
 /// Use this to skip huge vendored `.nix` trees that rarely affect discovery.
 pub const FINGERPRINT_IGNORE_ENV: &str = "NXR_CACHE_FINGERPRINT_IGNORE";
 
+const FINGERPRINT_INDEX_SCHEMA_VERSION: u32 = 1;
+const BUILTIN_IGNORE_POLICY_VERSION: &str = "v1";
+
 /// Content digest of all `.nix` files under `flake_root` (hex-encoded BLAKE3).
 ///
 /// Built-in directory ignores match common Nix/Rust artifacts (`.git`, `result`,
 /// `target`, …). Additional subtrees may be excluded via [`FINGERPRINT_IGNORE_ENV`].
 /// `flake.lock` content is included when present. Non-`.nix` sources are not hashed
 /// here; declare extras via `perSystem.nxr.discoveryInputs`.
+///
+/// Uses a persisted per-file index so unchanged files are not re-read on warm paths.
 ///
 /// # Errors
 ///
@@ -35,20 +45,22 @@ pub(crate) fn nix_tree_fingerprint_with_ignore(
     extra_ignore: &GlobSet,
 ) -> io::Result<String> {
     let root = canonical_flake_root(flake_root);
-    let mut entries = Vec::new();
-    walk_nix_files(&root, &root, extra_ignore, &mut entries)?;
-    entries.sort();
+    let ignore_policy_hash = ignore_policy_hash(extra_ignore)?;
+    let index_path = fingerprint_index_path(&root);
 
-    let mut hasher = Hasher::new();
-    for relative in entries {
-        hasher.update(relative.as_bytes());
-        hasher.update(&[0]);
-        let bytes = fs::read(root.join(&relative))?;
-        hasher.update(&(bytes.len() as u64).to_le_bytes());
-        hasher.update(&bytes);
+    let loaded = match index_path.as_ref() {
+        Some(path) => load_fingerprint_index(path)?,
+        None => None,
+    };
+
+    let (fingerprint, index) =
+        compute_workspace_fingerprint(&root, extra_ignore, &ignore_policy_hash, loaded)?;
+
+    if let Some(path) = index_path {
+        store_fingerprint_index(&path, &index)?;
     }
-    hash_optional_lock_file(&root, &mut hasher)?;
-    Ok(hasher.finalize().to_hex().to_string())
+
+    Ok(fingerprint)
 }
 
 /// Content-hash sorted flake-root-relative discovery input paths (hex BLAKE3).
@@ -95,6 +107,418 @@ pub fn discovery_inputs_fingerprint(
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct WorkspaceFingerprintIndex {
+    schema_version: u32,
+    root: String,
+    ignore_policy_hash: String,
+    entries: BTreeMap<String, FingerprintEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lock_file: Option<LockFingerprintEntry>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct FileIdentity {
+    dev: u64,
+    ino: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct FingerprintEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_identity: Option<FileIdentity>,
+    size: u64,
+    modified_ns: u128,
+    content_hash: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct LockFingerprintEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_identity: Option<FileIdentity>,
+    size: u64,
+    modified_ns: u128,
+    content_hash: String,
+}
+
+fn compute_workspace_fingerprint(
+    root: &Utf8Path,
+    extra_ignore: &GlobSet,
+    ignore_policy_hash: &str,
+    loaded: Option<WorkspaceFingerprintIndex>,
+) -> io::Result<(String, WorkspaceFingerprintIndex)> {
+    let reuse_index = loaded
+        .as_ref()
+        .is_some_and(|index| index_is_compatible(index, root, ignore_policy_hash));
+
+    let prior = if reuse_index { loaded } else { None };
+
+    let mut entries = BTreeMap::new();
+    let mut nix_paths = Vec::new();
+    walk_nix_files(root, root, extra_ignore, &mut nix_paths)?;
+
+    for relative in nix_paths {
+        let absolute = root.join(&relative);
+        let metadata = fs::metadata(&absolute)?;
+        let prior_entry = prior
+            .as_ref()
+            .and_then(|index| index.entries.get(&relative));
+        let entry = fingerprint_entry_for_file(&absolute, &metadata, prior_entry)?;
+        entries.insert(relative, entry);
+    }
+
+    let lock_path = root.join("flake.lock");
+    let lock_file = match fs::metadata(&lock_path) {
+        Ok(metadata) if metadata.is_file() => {
+            let prior_lock = prior.as_ref().and_then(|index| index.lock_file.as_ref());
+            Some(fingerprint_lock_entry(&lock_path, &metadata, prior_lock)?)
+        }
+        Ok(_) => None,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+
+    let fingerprint = aggregate_fingerprint(&entries, lock_file.as_ref());
+    let index = WorkspaceFingerprintIndex {
+        schema_version: FINGERPRINT_INDEX_SCHEMA_VERSION,
+        root: root.as_str().to_owned(),
+        ignore_policy_hash: ignore_policy_hash.to_owned(),
+        entries,
+        lock_file,
+    };
+
+    Ok((fingerprint, index))
+}
+
+fn index_is_compatible(
+    index: &WorkspaceFingerprintIndex,
+    root: &Utf8Path,
+    ignore_hash: &str,
+) -> bool {
+    index.schema_version == FINGERPRINT_INDEX_SCHEMA_VERSION
+        && index.root == root.as_str()
+        && index.ignore_policy_hash == ignore_hash
+}
+
+fn aggregate_fingerprint(
+    entries: &BTreeMap<String, FingerprintEntry>,
+    lock_file: Option<&LockFingerprintEntry>,
+) -> String {
+    let mut hasher = Hasher::new();
+    for (path, entry) in entries {
+        hasher.update(path.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(entry.content_hash_bytes().as_ref());
+    }
+    if let Some(lock) = lock_file {
+        hasher.update(b"flake.lock");
+        hasher.update(&[0]);
+        hasher.update(lock.content_hash_bytes().as_ref());
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+fn fingerprint_entry_for_file(
+    path: &Utf8Path,
+    metadata: &fs::Metadata,
+    prior: Option<&FingerprintEntry>,
+) -> io::Result<FingerprintEntry> {
+    let file_identity = file_identity(metadata);
+    let size = metadata.len();
+    let modified_ns = modified_ns(metadata)?;
+
+    if let Some(prior) = prior
+        && prior.matches_metadata(file_identity, size, modified_ns)
+    {
+        return Ok(prior.clone());
+    }
+
+    let bytes = read_file_bytes(path)?;
+    Ok(FingerprintEntry {
+        file_identity,
+        size,
+        modified_ns,
+        content_hash: hash_bytes(&bytes).to_hex().to_string(),
+    })
+}
+
+fn fingerprint_lock_entry(
+    path: &Utf8Path,
+    metadata: &fs::Metadata,
+    prior: Option<&LockFingerprintEntry>,
+) -> io::Result<LockFingerprintEntry> {
+    let file_identity = file_identity(metadata);
+    let size = metadata.len();
+    let modified_ns = modified_ns(metadata)?;
+
+    if let Some(prior) = prior
+        && prior.matches_metadata(file_identity, size, modified_ns)
+    {
+        return Ok(prior.clone());
+    }
+
+    let bytes = read_file_bytes(path)?;
+    Ok(LockFingerprintEntry {
+        file_identity,
+        size,
+        modified_ns,
+        content_hash: hash_bytes(&bytes).to_hex().to_string(),
+    })
+}
+
+impl FingerprintEntry {
+    fn matches_metadata(
+        &self,
+        file_identity: Option<FileIdentity>,
+        size: u64,
+        modified_ns: u128,
+    ) -> bool {
+        self.file_identity == file_identity && self.size == size && self.modified_ns == modified_ns
+    }
+
+    fn content_hash_bytes(&self) -> [u8; 32] {
+        decode_hash_hex(&self.content_hash).unwrap_or([0u8; 32])
+    }
+}
+
+impl LockFingerprintEntry {
+    fn matches_metadata(
+        &self,
+        file_identity: Option<FileIdentity>,
+        size: u64,
+        modified_ns: u128,
+    ) -> bool {
+        self.file_identity == file_identity && self.size == size && self.modified_ns == modified_ns
+    }
+
+    fn content_hash_bytes(&self) -> [u8; 32] {
+        decode_hash_hex(&self.content_hash).unwrap_or([0u8; 32])
+    }
+}
+
+fn decode_hash_hex(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (index, chunk) in hex.as_bytes().chunks(2).enumerate() {
+        let hi = hex_nibble(chunk[0])?;
+        let lo = hex_nibble(chunk[1])?;
+        out[index] = (hi << 4) | lo;
+    }
+    Some(out)
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn hash_bytes(bytes: &[u8]) -> Hash {
+    blake3::hash(bytes)
+}
+
+fn file_identity(metadata: &fs::Metadata) -> Option<FileIdentity> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(FileIdentity {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
+fn modified_ns(metadata: &fs::Metadata) -> io::Result<u128> {
+    let modified = metadata.modified()?;
+    let duration = modified
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    Ok(duration.as_nanos())
+}
+
+fn ignore_policy_hash(extra_ignore: &GlobSet) -> io::Result<String> {
+    let mut hasher = Hasher::new();
+    hasher.update(BUILTIN_IGNORE_POLICY_VERSION.as_bytes());
+    hasher.update(&[0]);
+    if let Some(raw) = std::env::var_os(FINGERPRINT_IGNORE_ENV) {
+        hasher.update(raw.as_encoded_bytes());
+    }
+    hasher.update(&[0]);
+    hasher.update(&(extra_ignore.is_empty() as u8).to_le_bytes());
+    // GlobSet does not expose its patterns; env + emptiness still invalidates policy changes.
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn fingerprint_index_root() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(root) = TEST_FINGERPRINT_INDEX_ROOT.with(|cell| cell.borrow().clone()) {
+        return Some(root);
+    }
+
+    #[cfg(test)]
+    if let Ok(guard) = CONCURRENT_TEST_FINGERPRINT_INDEX_ROOT.lock()
+        && let Some(root) = guard.clone()
+    {
+        return Some(root);
+    }
+
+    directories::ProjectDirs::from("dev", "nxr", "nxr")
+        .map(|dirs| dirs.cache_dir().join("discovery").join("fingerprint-index"))
+}
+
+fn fingerprint_index_path(root: &Utf8Path) -> Option<PathBuf> {
+    let index_root = fingerprint_index_root()?;
+    let mut hasher = Hasher::new();
+    hasher.update(root.as_str().as_bytes());
+    Some(index_root.join(format!("{}.json", hasher.finalize().to_hex())))
+}
+
+fn load_fingerprint_index(path: &Path) -> io::Result<Option<WorkspaceFingerprintIndex>> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+
+    let index: WorkspaceFingerprintIndex = match serde_json::from_str(&contents) {
+        Ok(index) => index,
+        Err(_) => return Ok(None),
+    };
+
+    if index.schema_version != FINGERPRINT_INDEX_SCHEMA_VERSION {
+        return Ok(None);
+    }
+
+    if index
+        .entries
+        .values()
+        .any(|entry| decode_hash_hex(&entry.content_hash).is_none())
+        || index
+            .lock_file
+            .as_ref()
+            .is_some_and(|lock| decode_hash_hex(&lock.content_hash).is_none())
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(index))
+}
+
+fn store_fingerprint_index(path: &Path, index: &WorkspaceFingerprintIndex) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "missing parent directory"))?;
+    fs::create_dir_all(parent)?;
+
+    let serialized = serde_json::to_vec_pretty(index)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    write_atomically(path, &serialized)
+}
+
+fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "missing parent directory"))?;
+    fs::create_dir_all(parent)?;
+
+    let lock_path = parent.join(format!(
+        ".{}.lock",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("fingerprint-index")
+    ));
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    lock_file.lock_exclusive()?;
+
+    let temp_path = parent.join(format!(
+        ".{}.{}.{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("fingerprint-index"),
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+
+    let write_result = (|| {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temp_path)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp_path, path)?;
+        Ok(())
+    })();
+
+    let _ = fs::remove_file(&temp_path);
+    lock_file.unlock()?;
+    write_result
+}
+
+fn read_file_bytes(path: &Utf8Path) -> io::Result<Vec<u8>> {
+    record_file_read();
+    fs::read(path)
+}
+
+fn record_file_read() {
+    #[cfg(test)]
+    FILE_BYTES_READS.with(|counter| {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+}
+
+#[cfg(test)]
+static CONCURRENT_TEST_FINGERPRINT_INDEX_ROOT: std::sync::Mutex<Option<PathBuf>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+thread_local! {
+    static TEST_FINGERPRINT_INDEX_ROOT: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+    static FILE_BYTES_READS: std::sync::atomic::AtomicUsize =
+        const { std::sync::atomic::AtomicUsize::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_fingerprint_index_root(root: Option<PathBuf>) {
+    TEST_FINGERPRINT_INDEX_ROOT.with(|cell| {
+        *cell.borrow_mut() = root;
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn set_concurrent_test_fingerprint_index_root(root: Option<PathBuf>) {
+    let mut guard = CONCURRENT_TEST_FINGERPRINT_INDEX_ROOT
+        .lock()
+        .expect("concurrent fingerprint index lock");
+    *guard = root;
+}
+
+#[cfg(test)]
+fn reset_file_read_counter() -> usize {
+    FILE_BYTES_READS.with(|counter| counter.swap(0, std::sync::atomic::Ordering::SeqCst))
+}
+
 fn read_contained_input(root: &Utf8Path, relative: &str) -> io::Result<Vec<u8>> {
     let joined = root.join(relative);
     let canonical = match joined.canonicalize_utf8() {
@@ -124,21 +548,6 @@ fn relative_escapes(relative: &str) -> bool {
     Path::new(relative)
         .components()
         .any(|component| matches!(component, Component::ParentDir | Component::RootDir))
-}
-
-fn hash_optional_lock_file(root: &Utf8Path, hasher: &mut Hasher) -> io::Result<()> {
-    let lock = root.join("flake.lock");
-    match fs::read(&lock) {
-        Ok(bytes) => {
-            hasher.update(b"flake.lock");
-            hasher.update(&[0]);
-            hasher.update(&(bytes.len() as u64).to_le_bytes());
-            hasher.update(&bytes);
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    Ok(())
 }
 
 fn configured_ignore_globs() -> io::Result<GlobSet> {
@@ -207,6 +616,7 @@ fn walk_nix_files(
         }
     }
 
+    entries.sort();
     Ok(())
 }
 
@@ -255,6 +665,7 @@ mod tests {
 
     use super::{
         discovery_inputs_fingerprint, nix_tree_fingerprint, nix_tree_fingerprint_with_ignore,
+        reset_file_read_counter, set_test_fingerprint_index_root,
     };
     use globset::{Glob, GlobSetBuilder};
 
@@ -262,96 +673,192 @@ mod tests {
         camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path")
     }
 
+    fn with_fingerprint_index_dir<T>(temp: &TempDir, f: impl FnOnce() -> T) -> T {
+        let index_root = temp.path().join("fingerprint-index");
+        fs::create_dir_all(&index_root).expect("fingerprint index dir");
+        set_test_fingerprint_index_root(Some(index_root));
+        let result = f();
+        set_test_fingerprint_index_root(None);
+        result
+    }
+
     #[test]
     fn imported_nix_change_invalidates_fingerprint() {
         let temp = TempDir::new().expect("tempdir");
         let root = utf8_root(&temp);
-        fs::write(root.join("flake.nix"), "{ outputs = {}; }\n").expect("write flake");
-        fs::create_dir_all(root.join("nix")).expect("mkdir");
-        fs::write(root.join("nix/apps.nix"), "1\n").expect("write apps");
-        let initial = nix_tree_fingerprint(&root).expect("fingerprint");
-        fs::write(root.join("nix/apps.nix"), "2\n").expect("edit apps");
-        let updated = nix_tree_fingerprint(&root).expect("fingerprint after edit");
-        assert_ne!(initial, updated);
+        with_fingerprint_index_dir(&temp, || {
+            fs::write(root.join("flake.nix"), "{ outputs = {}; }\n").expect("write flake");
+            fs::create_dir_all(root.join("nix")).expect("mkdir");
+            fs::write(root.join("nix/apps.nix"), "1\n").expect("write apps");
+            let initial = nix_tree_fingerprint(&root).expect("fingerprint");
+            fs::write(root.join("nix/apps.nix"), "2\n").expect("edit apps");
+            let updated = nix_tree_fingerprint(&root).expect("fingerprint after edit");
+            assert_ne!(initial, updated);
+        });
     }
 
     #[test]
     fn content_change_same_length_invalidates_fingerprint() {
         let temp = TempDir::new().expect("tempdir");
         let root = utf8_root(&temp);
-        fs::write(root.join("flake.nix"), "{ outputs = {}; }\n").expect("write flake");
-        fs::write(root.join("a.nix"), "aaaa\n").expect("write");
-        let initial = nix_tree_fingerprint(&root).expect("fingerprint");
-        // Same byte length, different contents (mtime-only fingerprints would miss this
-        // when clocks are coarse).
-        fs::write(root.join("a.nix"), "bbbb\n").expect("rewrite");
-        let updated = nix_tree_fingerprint(&root).expect("fingerprint after edit");
-        assert_ne!(initial, updated);
+        with_fingerprint_index_dir(&temp, || {
+            fs::write(root.join("flake.nix"), "{ outputs = {}; }\n").expect("write flake");
+            fs::write(root.join("a.nix"), "aaaa\n").expect("write");
+            let initial = nix_tree_fingerprint(&root).expect("fingerprint");
+            fs::write(root.join("a.nix"), "bbbb\n").expect("rewrite");
+            let updated = nix_tree_fingerprint(&root).expect("fingerprint after edit");
+            assert_ne!(initial, updated);
+        });
+    }
+
+    #[test]
+    fn incremental_index_rehashes_only_changed_file() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            fs::create_dir_all(root.join("nix")).expect("mkdir");
+            fs::write(root.join("nix/a.nix"), "a\n").expect("a");
+            fs::write(root.join("nix/b.nix"), "b\n").expect("b");
+
+            reset_file_read_counter();
+            let _ = nix_tree_fingerprint(&root).expect("initial");
+            assert_eq!(reset_file_read_counter(), 3);
+
+            reset_file_read_counter();
+            let baseline = nix_tree_fingerprint(&root).expect("warm");
+            assert_eq!(
+                reset_file_read_counter(),
+                0,
+                "unchanged warm path reads no files"
+            );
+
+            fs::write(root.join("nix/b.nix"), "changed\n").expect("edit b");
+            reset_file_read_counter();
+            let updated = nix_tree_fingerprint(&root).expect("after edit");
+            assert_ne!(baseline, updated);
+            assert_eq!(
+                reset_file_read_counter(),
+                1,
+                "only the edited file should be re-read"
+            );
+        });
+    }
+
+    #[test]
+    fn warm_load_skips_unchanged_file_bytes() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            for index in 0..8 {
+                fs::write(root.join(format!("pkg-{index}.nix")), format!("{index}\n"))
+                    .expect("write pkg");
+            }
+
+            reset_file_read_counter();
+            let _ = nix_tree_fingerprint(&root).expect("cold");
+            assert_eq!(reset_file_read_counter(), 9);
+
+            reset_file_read_counter();
+            let _ = nix_tree_fingerprint(&root).expect("warm");
+            assert_eq!(reset_file_read_counter(), 0);
+        });
+    }
+
+    #[test]
+    fn corrupt_index_rebuilds_from_disk() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            let first = nix_tree_fingerprint(&root).expect("first");
+
+            let index_root = temp.path().join("fingerprint-index");
+            let index_file = fs::read_dir(&index_root)
+                .expect("read index dir")
+                .map(|entry| entry.expect("entry").path())
+                .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .expect("index json file");
+            fs::write(&index_file, "{not-json").expect("corrupt index");
+
+            reset_file_read_counter();
+            let second = nix_tree_fingerprint(&root).expect("rebuild");
+            assert_eq!(first, second);
+            assert_eq!(reset_file_read_counter(), 1);
+        });
     }
 
     #[test]
     fn fingerprint_ignore_env_skips_matching_subtree() {
         let temp = TempDir::new().expect("tempdir");
         let root = utf8_root(&temp);
-        fs::write(root.join("flake.nix"), "{}\n").expect("write flake");
-        fs::create_dir_all(root.join("vendor")).expect("mkdir");
-        fs::write(root.join("vendor/x.nix"), "1\n").expect("write vendor");
-        let with_vendor = nix_tree_fingerprint(&root).expect("fingerprint with vendor");
+        with_fingerprint_index_dir(&temp, || {
+            fs::write(root.join("flake.nix"), "{}\n").expect("write flake");
+            fs::create_dir_all(root.join("vendor")).expect("mkdir");
+            fs::write(root.join("vendor/x.nix"), "1\n").expect("write vendor");
+            let with_vendor = nix_tree_fingerprint(&root).expect("fingerprint with vendor");
 
-        let mut builder = GlobSetBuilder::new();
-        builder.add(Glob::new("vendor/**").expect("glob"));
-        let ignore = builder.build().expect("build");
-        let without_vendor =
-            nix_tree_fingerprint_with_ignore(&root, &ignore).expect("fingerprint ignoring vendor");
-        assert_ne!(with_vendor, without_vendor);
+            let mut builder = GlobSetBuilder::new();
+            builder.add(Glob::new("vendor/**").expect("glob"));
+            let ignore = builder.build().expect("build");
+            let without_vendor = nix_tree_fingerprint_with_ignore(&root, &ignore)
+                .expect("fingerprint ignoring vendor");
+            assert_ne!(with_vendor, without_vendor);
+        });
     }
 
     #[test]
     fn symlink_flake_root_matches_canonical_fingerprint() {
         let temp = TempDir::new().expect("tempdir");
         let root = utf8_root(&temp);
-        fs::write(root.join("flake.nix"), "{}\n").expect("write flake");
-        let link = temp.path().join("link");
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(temp.path(), &link).expect("symlink");
-        }
-        #[cfg(not(unix))]
-        {
-            return;
-        }
-        let canonical = nix_tree_fingerprint(&root).expect("canonical fingerprint");
-        let linked =
-            nix_tree_fingerprint(&camino::Utf8PathBuf::from_path_buf(link).expect("utf8 link"))
-                .expect("symlink fingerprint");
-        assert_eq!(canonical, linked);
+        with_fingerprint_index_dir(&temp, || {
+            fs::write(root.join("flake.nix"), "{}\n").expect("write flake");
+            let link = temp.path().join("link");
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(temp.path(), &link).expect("symlink");
+            }
+            #[cfg(not(unix))]
+            {
+                return;
+            }
+            let canonical = nix_tree_fingerprint(&root).expect("canonical fingerprint");
+            let linked =
+                nix_tree_fingerprint(&camino::Utf8PathBuf::from_path_buf(link).expect("utf8 link"))
+                    .expect("symlink fingerprint");
+            assert_eq!(canonical, linked);
+        });
     }
 
     #[test]
     fn flake_lock_change_invalidates_fingerprint() {
         let temp = TempDir::new().expect("tempdir");
         let root = utf8_root(&temp);
-        fs::write(root.join("flake.nix"), "{}\n").expect("write flake");
-        let baseline = nix_tree_fingerprint(&root).expect("baseline");
-        fs::write(root.join("flake.lock"), "{}\n").expect("write lock");
-        let changed = nix_tree_fingerprint(&root).expect("changed");
-        assert_ne!(baseline, changed);
+        with_fingerprint_index_dir(&temp, || {
+            fs::write(root.join("flake.nix"), "{}\n").expect("write flake");
+            let baseline = nix_tree_fingerprint(&root).expect("baseline");
+            fs::write(root.join("flake.lock"), "{}\n").expect("write lock");
+            let changed = nix_tree_fingerprint(&root).expect("changed");
+            assert_ne!(baseline, changed);
+        });
     }
 
     #[test]
     fn flake_lock_atomic_replace_changes_fingerprint() {
         let temp = TempDir::new().expect("tempdir");
         let root = utf8_root(&temp);
-        fs::write(root.join("flake.nix"), "{}\n").expect("write flake");
-        fs::write(root.join("flake.lock"), "v1\n").expect("write lock");
-        let initial = nix_tree_fingerprint(&root).expect("initial fingerprint");
-        // Brief pause so coarse filesystems still observe a distinct write.
-        thread::sleep(Duration::from_millis(5));
-        let lock_tmp = root.join("flake.lock.tmp");
-        fs::write(&lock_tmp, "v2\n").expect("write tmp");
-        fs::rename(&lock_tmp, root.join("flake.lock")).expect("rename");
-        let updated = nix_tree_fingerprint(&root).expect("updated fingerprint");
-        assert_ne!(initial, updated);
+        with_fingerprint_index_dir(&temp, || {
+            fs::write(root.join("flake.nix"), "{}\n").expect("write flake");
+            fs::write(root.join("flake.lock"), "v1\n").expect("write lock");
+            let initial = nix_tree_fingerprint(&root).expect("initial fingerprint");
+            thread::sleep(Duration::from_millis(5));
+            let lock_tmp = root.join("flake.lock.tmp");
+            fs::write(&lock_tmp, "v2\n").expect("write tmp");
+            fs::rename(&lock_tmp, root.join("flake.lock")).expect("rename");
+            let updated = nix_tree_fingerprint(&root).expect("updated fingerprint");
+            assert_ne!(initial, updated);
+        });
     }
 
     #[test]
