@@ -4,7 +4,7 @@ use std::fmt;
 use std::process::Command;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use crate::NixError;
@@ -81,8 +81,68 @@ impl Serialize for NixVersion {
     }
 }
 
+impl<'de> Deserialize<'de> for NixVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(text) => parse_nix_version_token(&text)
+                .ok_or_else(|| serde::de::Error::custom("invalid Nix version string")),
+            serde_json::Value::Object(map) => {
+                let major = map
+                    .get("major")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| serde::de::Error::custom("missing major"))?;
+                let minor = map
+                    .get("minor")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| serde::de::Error::custom("missing minor"))?;
+                let patch = map
+                    .get("patch")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                Ok(Self {
+                    major,
+                    minor,
+                    patch,
+                })
+            }
+            _ => Err(serde::de::Error::custom(
+                "expected Nix version string or object",
+            )),
+        }
+    }
+}
+
+/// How a negotiated capability was established.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityEvidence {
+    /// Assumed from the tested support floor without probing.
+    VersionFloor,
+    /// Derived from the `nix --version` banner.
+    VersionBanner,
+    /// Read from `nix config show` / `show-config` JSON.
+    Config,
+    /// Inferred from `nix --help` / subcommand help output.
+    HelpProbe,
+    /// Confirmed by a positive command probe (for example `nix flake --help`).
+    PositiveCommandProbe,
+    /// Restored from the on-disk capability cache.
+    Cache,
+}
+
+/// Provenance for negotiated Nix capabilities.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CapabilityProvenance {
+    pub from_cache: bool,
+    pub evidence: Vec<CapabilityEvidence>,
+}
+
 /// Negotiated Nix CLI capabilities for the current host.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[allow(clippy::struct_excessive_bools)] // capability bitfield matches the negotiated feature set
 pub struct NixCapabilities {
     pub version: NixVersion,
@@ -255,19 +315,64 @@ pub fn detect_system(nix: &Utf8Path) -> Result<String, NixError> {
 ///
 /// Returns [`NixError`] when version detection fails.
 pub fn detect_capabilities(nix: &Utf8Path) -> Result<NixCapabilities, NixError> {
+    detect_capabilities_with_evidence(nix).map(|(capabilities, _)| capabilities)
+}
+
+/// Probe capabilities and return how each input was established.
+///
+/// # Errors
+///
+/// Returns [`NixError`] when version detection fails.
+pub fn detect_capabilities_with_evidence(
+    nix: &Utf8Path,
+) -> Result<(NixCapabilities, Vec<CapabilityEvidence>), NixError> {
     let version_output = run_nix_capture(nix, &["--version".to_owned()])?;
     let version =
         parse_nix_version_output(&version_output).ok_or(NixError::InvalidVersionOutput)?;
 
-    let config_json = probe_config_json(nix);
-    let help_text = probe_help_text(nix);
+    let mut evidence = vec![CapabilityEvidence::VersionBanner];
 
-    Ok(negotiate_capabilities(
+    let config_json = probe_config_json(nix);
+    if config_json.is_some() {
+        evidence.push(CapabilityEvidence::Config);
+    }
+
+    let skip_help = should_skip_help_probes(version, &version_output, config_json.as_deref());
+    let help_text = if skip_help {
+        None
+    } else {
+        let help = probe_help_text(nix);
+        if help.is_some() {
+            evidence.push(CapabilityEvidence::HelpProbe);
+        }
+        help
+    };
+
+    let capabilities = negotiate_capabilities(
         version,
         &version_output,
         config_json.as_deref(),
         help_text.as_deref(),
-    ))
+    );
+    if capabilities.version >= FEATURE_FLOOR {
+        evidence.push(CapabilityEvidence::VersionFloor);
+    }
+
+    Ok((capabilities, evidence))
+}
+
+fn should_skip_help_probes(
+    version: NixVersion,
+    version_output: &str,
+    config_json: Option<&str>,
+) -> bool {
+    if version_output.contains("Determinate") {
+        return true;
+    }
+    if config_json.is_some() && version >= FEATURE_FLOOR {
+        return true;
+    }
+    version >= TESTED_NIX_SUPPORT_FLOOR
 }
 
 /// Build [`NixCapabilities`] from already-captured Nix outputs (unit-test seam).

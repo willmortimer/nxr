@@ -2,6 +2,7 @@
 
 pub mod adapter;
 pub mod capabilities;
+pub mod capability_cache;
 pub mod command;
 pub mod discovery;
 pub mod inventory;
@@ -14,9 +15,14 @@ use nxr_core::sanitize::sanitize_terminal_text;
 
 pub use adapter::NixAdapter;
 pub use capabilities::{
-    FlagPolicy, NixCapabilities, NixFailureKind, NixVersion, OptionalNixFlags,
-    TESTED_NIX_SUPPORT_FLOOR, detect_capabilities, detect_system, locate_nix,
-    negotiate_capabilities, parse_nix_version_output, run_nix,
+    CapabilityEvidence, CapabilityProvenance, FlagPolicy, NixCapabilities, NixFailureKind,
+    NixVersion, OptionalNixFlags, TESTED_NIX_SUPPORT_FLOOR, detect_capabilities, detect_system,
+    locate_nix, negotiate_capabilities, parse_nix_version_output, run_nix,
+};
+pub use capability_cache::{
+    CAPABILITY_CACHE_ENV, CAPABILITY_CACHE_TTL_ENV, CapabilityCacheStatus, capability_cache_dir,
+    capability_cache_enabled, capability_cache_status, clear_capability_cache,
+    detect_nix_environment,
 };
 pub use command::{
     NIX_EXECUTABLE_ENV, check_installable, current_system_args, flake_eval_json_args,

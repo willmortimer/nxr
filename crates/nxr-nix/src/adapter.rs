@@ -3,9 +3,8 @@
 use camino::Utf8PathBuf;
 
 use crate::NixError;
-use crate::capabilities::{
-    NixCapabilities, OptionalNixFlags, detect_capabilities, detect_system, locate_nix,
-};
+use crate::capabilities::{CapabilityProvenance, NixCapabilities, OptionalNixFlags, locate_nix};
+use crate::capability_cache::detect_nix_environment;
 use crate::command;
 use crate::discovery;
 use crate::tasks::{self, TaskDiscoveryError};
@@ -21,6 +20,8 @@ pub struct NixAdapter {
     pub system: String,
     /// Negotiated CLI capabilities (detected once at construction).
     pub capabilities: NixCapabilities,
+    /// How capabilities were established (cache hit, probes, version floor, …).
+    pub capability_provenance: CapabilityProvenance,
 }
 
 impl NixAdapter {
@@ -41,26 +42,41 @@ impl NixAdapter {
     ///
     /// Returns [`NixError`] when system or capability detection fails.
     pub fn from_nix(nix: Utf8PathBuf) -> Result<Self, NixError> {
-        let system = detect_system(&nix)?;
-        let capabilities = detect_capabilities(&nix)?;
+        let environment = detect_nix_environment(&nix, false)?;
         Ok(Self {
             nix,
-            system,
-            capabilities,
+            system: environment.system,
+            capabilities: environment.capabilities,
+            capability_provenance: environment.provenance,
+        })
+    }
+
+    /// Build an adapter for an explicit `nix` executable path, bypassing cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixError`] when system or capability detection fails.
+    pub fn from_nix_refresh(nix: Utf8PathBuf) -> Result<Self, NixError> {
+        let environment = detect_nix_environment(&nix, true)?;
+        Ok(Self {
+            nix,
+            system: environment.system,
+            capabilities: environment.capabilities,
+            capability_provenance: environment.provenance,
         })
     }
 
     /// Construct an adapter from known parts (primarily for tests).
     #[must_use]
-    pub const fn with_parts(
-        nix: Utf8PathBuf,
-        system: String,
-        capabilities: NixCapabilities,
-    ) -> Self {
+    pub fn with_parts(nix: Utf8PathBuf, system: String, capabilities: NixCapabilities) -> Self {
         Self {
             nix,
             system,
             capabilities,
+            capability_provenance: CapabilityProvenance {
+                from_cache: false,
+                evidence: Vec::new(),
+            },
         }
     }
 

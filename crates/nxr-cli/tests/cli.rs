@@ -1081,6 +1081,8 @@ fn cache_status_json_emits_path_and_entries() {
         .args(["cache", "status", "--json"])
         .assert()
         .success()
+        .stdout(predicate::str::contains("\"discovery\""))
+        .stdout(predicate::str::contains("\"capabilities\""))
         .stdout(predicate::str::contains("\"entries\""))
         .stdout(predicate::str::contains("\"path\""));
 }
@@ -2481,6 +2483,55 @@ fn task_keep_going_runs_unrelated_after_failure() {
         !started.iter().any(|n| n == "gate"),
         "gate depends on boom and must not start:\n{stderr}"
     );
+}
+
+#[test]
+fn warm_list_reuses_capability_cache_without_reprobing() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let home = tempfile::TempDir::new().expect("cache home");
+    let repo_root = repo_root();
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "list"])
+        .assert()
+        .success();
+
+    let cold_log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    let cold_version = counter.count("version");
+    let cold_config = counter.count("config");
+    let cold_help = counter.count("help");
+    assert!(
+        cold_version >= 1,
+        "cold list should probe nix version at least once; log={cold_log}"
+    );
+
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "list"])
+        .assert()
+        .success();
+
+    let warm_log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(
+        counter.count("version"),
+        0,
+        "warm list should not re-probe version; cold version={cold_version} config={cold_config} help={cold_help}; log={warm_log}"
+    );
+    assert_eq!(counter.count("config"), 0, "log={warm_log}");
+    assert_eq!(counter.count("help"), 0, "log={warm_log}");
 }
 
 #[test]
