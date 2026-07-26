@@ -2775,6 +2775,180 @@ fn watch_app_does_not_double_workspace_init_on_first_generation() {
     );
 }
 
+fn start_watch_stdout_reader(
+    stdout: impl std::io::Read + Send + 'static,
+) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    use std::sync::mpsc;
+    use std::thread;
+
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut stdout = stdout;
+        let mut buf = [0_u8; 256];
+        loop {
+            match std::io::Read::read(&mut stdout, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    rx
+}
+
+fn wait_for_watch_occurrences(
+    rx: &std::sync::mpsc::Receiver<Vec<u8>>,
+    output: &mut Vec<u8>,
+    needle: &str,
+    occurrences: usize,
+    deadline: std::time::Instant,
+) {
+    use std::sync::mpsc::RecvTimeoutError;
+
+    while std::time::Instant::now() < deadline {
+        if String::from_utf8_lossy(output).matches(needle).count() >= occurrences {
+            return;
+        }
+        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(chunk) => output.extend_from_slice(&chunk),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    panic!(
+        "watch timed out waiting for {occurrences}x {needle:?}; output={}",
+        String::from_utf8_lossy(output)
+    );
+}
+
+fn spawn_basic_apps_watch(
+    counter: &common::NixCallCounter,
+    extra_args: &[&str],
+) -> (std::process::Child, std::process::ChildStdout) {
+    use assert_cmd::cargo::CommandCargoExt;
+    use std::process::{Command, Stdio};
+
+    let repo_root = repo_root();
+    let mut args = vec![
+        "--flake",
+        "fixtures/basic-apps",
+        "watch",
+        "hello",
+        "--debounce",
+        "100",
+    ];
+    args.extend(extra_args);
+    let mut child = Command::cargo_bin("nxr")
+        .expect("nxr binary")
+        .current_dir(&repo_root)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn watch");
+    let stdout = child.stdout.take().expect("stdout pipe");
+    (child, stdout)
+}
+
+#[test]
+fn watch_source_restart_skips_discovery_nix_calls() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    use std::time::{Duration, Instant};
+
+    let counter = NixCallCounter::install();
+    let (mut child, stdout) = spawn_basic_apps_watch(&counter, &[]);
+    let rx = start_watch_stdout_reader(stdout);
+    let mut output = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(90);
+    wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 1, deadline);
+
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    let trigger = repo_root().join("fixtures/basic-apps/.watch-source-trigger");
+    std::fs::write(&trigger, b"touch").expect("write trigger");
+    wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 2, deadline);
+    let _ = std::fs::remove_file(trigger);
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(
+        counter.count("flake-show"),
+        0,
+        "source-only restart must reuse snapshot; log={log}"
+    );
+    assert_eq!(
+        counter.count("eval"),
+        0,
+        "source-only restart must not re-eval tasks; log={log}"
+    );
+    assert!(
+        counter.count("run") >= 1,
+        "expected at least one rerun; log={log}"
+    );
+}
+
+#[test]
+fn watch_metadata_restart_rediscovers_apps() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    use std::time::{Duration, Instant};
+
+    struct RestoreFile {
+        path: std::path::PathBuf,
+        original: Vec<u8>,
+    }
+
+    impl Drop for RestoreFile {
+        fn drop(&mut self) {
+            let _ = std::fs::write(&self.path, &self.original);
+        }
+    }
+
+    let flake_path = repo_root().join("fixtures/basic-apps/flake.nix");
+    let original = std::fs::read(&flake_path).expect("read flake.nix");
+    let _restore = RestoreFile {
+        path: flake_path.clone(),
+        original: original.clone(),
+    };
+
+    let counter = NixCallCounter::install();
+    let (mut child, stdout) = spawn_basic_apps_watch(&counter, &[]);
+    let rx = start_watch_stdout_reader(stdout);
+    let mut output = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(90);
+    wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 1, deadline);
+
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    let mut edited = original;
+    edited.push(b'\n');
+    std::fs::write(&flake_path, &edited).expect("touch flake.nix");
+
+    wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 2, deadline);
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert!(
+        counter.count("flake-show") >= 1,
+        "metadata restart must rediscover apps; log={log}"
+    );
+}
+
 fn parse_dry_run_plans(stdout: &str) -> Vec<serde_json::Value> {
     let mut plans = Vec::new();
     let mut rest = stdout;

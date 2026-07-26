@@ -692,6 +692,7 @@ dependencies = [
  "camino",
  "globset",
  "notify",
+ "nxr-affected",
  "nxr-core",
  "tempfile",
  "thiserror",

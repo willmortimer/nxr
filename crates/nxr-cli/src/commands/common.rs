@@ -192,6 +192,14 @@ impl<'a> WorkspaceState<'a> {
             .as_ref()
             .expect("snapshot cached after success"))
     }
+
+    /// Drop cached snapshots so the next [`Self::snapshot`] call rediscovers.
+    ///
+    /// The Nix adapter (capability probes) is retained.
+    pub fn invalidate_snapshots(&mut self) {
+        self.snapshot_apps = None;
+        self.snapshot_tasks = None;
+    }
 }
 
 /// Errors while preparing an app plan.

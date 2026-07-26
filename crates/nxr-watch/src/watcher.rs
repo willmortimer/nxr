@@ -1,5 +1,6 @@
 //! Filesystem watch sessions with debounce for nxr generations.
 
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -60,8 +61,9 @@ pub enum WatchPoll {
 /// Active recursive watch over a project root.
 pub struct WatchSession {
     _watcher: RecommendedWatcher,
-    events: Receiver<()>,
+    events: Receiver<PathBuf>,
     debouncer: Debouncer,
+    pending_paths: Vec<Utf8PathBuf>,
 }
 
 impl WatchSession {
@@ -83,14 +85,12 @@ impl WatchSession {
                 if !is_interesting_event(event.kind) {
                     return;
                 }
-                if event
-                    .paths
-                    .iter()
-                    .any(|path| should_ignore_path(&root, path, &filters))
-                {
-                    return;
+                for path in event.paths {
+                    if should_ignore_path(&root, &path, &filters) {
+                        continue;
+                    }
+                    let _ = tx.send(path);
                 }
-                let _ = tx.send(());
             })?;
 
         watcher.watch(config.root.as_std_path(), RecursiveMode::Recursive)?;
@@ -99,13 +99,28 @@ impl WatchSession {
             _watcher: watcher,
             events: rx,
             debouncer: Debouncer::new(config.debounce),
+            pending_paths: Vec::new(),
         })
+    }
+
+    /// Paths accumulated since the last [`Self::take_pending_changes`].
+    #[must_use]
+    pub fn pending_change_count(&self) -> usize {
+        self.pending_paths.len()
+    }
+
+    /// Drain and return paths that triggered the current restart window.
+    pub fn take_pending_changes(&mut self) -> Vec<Utf8PathBuf> {
+        std::mem::take(&mut self.pending_paths)
     }
 
     /// Drain pending FS events into the debouncer (non-blocking).
     pub fn drain_events(&mut self) {
-        while self.events.try_recv().is_ok() {
+        while let Ok(path) = self.events.try_recv() {
             self.debouncer.mark_dirty();
+            if let Ok(utf8) = Utf8PathBuf::from_path_buf(path) {
+                self.pending_paths.push(utf8);
+            }
         }
     }
 
@@ -134,8 +149,11 @@ impl WatchSession {
                 .map_or(remaining, |until| remaining.min(until));
 
             match self.events.recv_timeout(wait) {
-                Ok(()) => {
+                Ok(path) => {
                     self.debouncer.mark_dirty();
+                    if let Ok(utf8) = Utf8PathBuf::from_path_buf(path) {
+                        self.pending_paths.push(utf8);
+                    }
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     self.drain_events();
