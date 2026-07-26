@@ -29,6 +29,8 @@
           inherit metadata;
         };
 
+        exportedSchemas.nxr = import ./nix/schemas/nxr.nix;
+
         flakeModules.default = import ./nix/modules/flake-parts.nix;
 
         overlays.default = import ./nix/overlays/default.nix;
@@ -67,6 +69,10 @@
 
           qualityChecks = import ./nix/checks/quality.nix {
             inherit pkgs src;
+          };
+
+          flakeSchemaCheck = import ./nix/checks/flake-schema.nix {
+            inherit pkgs;
           };
 
           nxrApp = {
@@ -149,6 +155,7 @@
 
           checks = {
             inherit nxr;
+            flake-schema = flakeSchemaCheck;
           } // qualityChecks;
 
           formatter = pkgs.nixpkgs-fmt;

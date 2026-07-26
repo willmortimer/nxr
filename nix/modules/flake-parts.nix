@@ -68,6 +68,10 @@ let
     };
 in
 {
+  imports = [
+    ./schema.nix
+  ];
+
   perSystem = {
     imports = [
       ./apps.nix
