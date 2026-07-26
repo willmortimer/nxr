@@ -404,7 +404,7 @@ fn collect_workspace_context(
         );
     }
 
-    match workspace_context_from_snapshot(&snapshot, &EnvironmentPolicy::Inherit, None) {
+    match workspace_context_from_snapshot(snapshot, &EnvironmentPolicy::Inherit, None) {
         Ok(workspace) => Some(workspace),
         Err(error) => {
             push_finding(

@@ -258,7 +258,7 @@ fn parse_inventory_v2(show: &JsonValue) -> FlakeInventory {
     let version = show
         .get("version")
         .and_then(JsonValue::as_u64)
-        .map(|v| v as u32);
+        .and_then(|v| u32::try_from(v).ok());
     let inventory = show
         .get("inventory")
         .and_then(JsonValue::as_object)
@@ -364,9 +364,8 @@ fn node_matches_kind(node: &InventoryNode, kind: StandardOutputKind, table: Outp
     }
 
     match node.what.as_deref().map(what_kind) {
-        None => true,
         Some(Some(node_kind)) => node_kind == kind,
-        Some(None) => true,
+        None | Some(None) => true,
     }
 }
 

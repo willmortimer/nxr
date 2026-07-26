@@ -45,7 +45,7 @@ pub(crate) fn nix_tree_fingerprint_with_ignore(
     extra_ignore: &GlobSet,
 ) -> io::Result<String> {
     let root = canonical_flake_root(flake_root);
-    let ignore_policy_hash = ignore_policy_hash(extra_ignore)?;
+    let ignore_policy_hash = ignore_policy_hash(extra_ignore);
     let index_path = fingerprint_index_path(&root);
 
     let loaded = match index_path.as_ref() {
@@ -322,6 +322,8 @@ fn hash_bytes(bytes: &[u8]) -> Hash {
     blake3::hash(bytes)
 }
 
+// Returns `None` on non-Unix targets where durable file identity is unavailable.
+#[allow(clippy::unnecessary_wraps)]
 fn file_identity(metadata: &fs::Metadata) -> Option<FileIdentity> {
     #[cfg(unix)]
     {
@@ -346,7 +348,7 @@ fn modified_ns(metadata: &fs::Metadata) -> io::Result<u128> {
     Ok(duration.as_nanos())
 }
 
-fn ignore_policy_hash(extra_ignore: &GlobSet) -> io::Result<String> {
+fn ignore_policy_hash(extra_ignore: &GlobSet) -> String {
     let mut hasher = Hasher::new();
     hasher.update(BUILTIN_IGNORE_POLICY_VERSION.as_bytes());
     hasher.update(&[0]);
@@ -354,9 +356,9 @@ fn ignore_policy_hash(extra_ignore: &GlobSet) -> io::Result<String> {
         hasher.update(raw.as_encoded_bytes());
     }
     hasher.update(&[0]);
-    hasher.update(&(extra_ignore.is_empty() as u8).to_le_bytes());
+    hasher.update(&u8::from(extra_ignore.is_empty()).to_le_bytes());
     // GlobSet does not expose its patterns; env + emptiness still invalidates policy changes.
-    Ok(hasher.finalize().to_hex().to_string())
+    hasher.finalize().to_hex().to_string()
 }
 
 fn fingerprint_index_root() -> Option<PathBuf> {

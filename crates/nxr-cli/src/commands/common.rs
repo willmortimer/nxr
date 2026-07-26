@@ -155,42 +155,47 @@ impl<'a> WorkspaceState<'a> {
     ///
     /// Returns [`PrepareError`] when directories, flake selection, Nix, or discovery fail.
     pub fn snapshot(&mut self, load_tasks: bool) -> Result<&WorkspaceSnapshot, PrepareError> {
+        self.ensure_snapshot(load_tasks)?;
+        if load_tasks {
+            return Ok(self
+                .snapshot_tasks
+                .as_ref()
+                .expect("tasks snapshot ensured"));
+        }
+        if let Some(snapshot) = self.snapshot_tasks.as_ref() {
+            return Ok(snapshot);
+        }
+        Ok(self.snapshot_apps.as_ref().expect("apps snapshot ensured"))
+    }
+
+    fn ensure_snapshot(&mut self, load_tasks: bool) -> Result<(), PrepareError> {
         if load_tasks {
             if self.snapshot_tasks.is_none() {
                 let adapter = self.adapter().map_err(PrepareError::Nix)?.clone();
                 self.snapshot_tasks = Some(WorkspaceSnapshot::build(
                     self.flake_arg,
-                    load_tasks,
+                    true,
                     self.nix_flags,
                     adapter,
                 )?);
             }
-            return Ok(self
-                .snapshot_tasks
-                .as_ref()
-                .expect("snapshot cached after success"));
+            return Ok(());
         }
 
         if self.snapshot_tasks.is_some() {
-            return Ok(self
-                .snapshot_tasks
-                .as_ref()
-                .expect("tasks snapshot satisfies apps-only"));
+            return Ok(());
         }
 
         if self.snapshot_apps.is_none() {
             let adapter = self.adapter().map_err(PrepareError::Nix)?.clone();
             self.snapshot_apps = Some(WorkspaceSnapshot::build(
                 self.flake_arg,
-                load_tasks,
+                false,
                 self.nix_flags,
                 adapter,
             )?);
         }
-        Ok(self
-            .snapshot_apps
-            .as_ref()
-            .expect("snapshot cached after success"))
+        Ok(())
     }
 
     /// Drop cached snapshots so the next [`Self::snapshot`] call rediscovers.

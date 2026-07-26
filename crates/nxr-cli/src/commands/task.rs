@@ -193,6 +193,7 @@ pub struct PreparedTaskGeneration {
 /// # Errors
 ///
 /// Same as [`execute`]. Control-poll I/O errors map to [`TaskError::Supervision`].
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn execute_with_control(
     request: &TaskRequest<'_>,
     dry_run: bool,
@@ -225,17 +226,16 @@ pub fn execute_with_control(
             })?
     } else {
         let owned_snapshot;
-        let snapshot = match workspace {
-            Some(state) => state.snapshot(true).map_err(TaskError::Prepare)?,
-            None => {
-                owned_snapshot = WorkspaceSnapshot::load(
-                    request.flake_arg,
-                    request.nix_override,
-                    true,
-                    request.nix_flags,
-                )?;
-                &owned_snapshot
-            }
+        let snapshot = if let Some(state) = workspace {
+            state.snapshot(true).map_err(TaskError::Prepare)?
+        } else {
+            owned_snapshot = WorkspaceSnapshot::load(
+                request.flake_arg,
+                request.nix_override,
+                true,
+                request.nix_flags,
+            )?;
+            &owned_snapshot
         };
         let document = snapshot
             .tasks

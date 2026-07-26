@@ -318,8 +318,7 @@ fn apply_restart_classification(
     for (path, class) in &labeled {
         let relative = path
             .strip_prefix(watch_root)
-            .map(camino::Utf8Path::as_str)
-            .unwrap_or(path.as_str());
+            .map_or(path.as_str(), camino::Utf8Path::as_str);
         runner
             .verbose(format!(
                 "change: {relative}\nclassification: {}\nsnapshot: {snapshot_label}\nplan: {plan_label}\ngeneration: restarted",
@@ -345,6 +344,7 @@ fn change_class_label(class: ChangeClass) -> &'static str {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_generation(
     request: &WatchRequest<'_>,
     target: &WatchTarget,

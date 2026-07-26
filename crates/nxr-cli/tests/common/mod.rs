@@ -41,7 +41,7 @@ pub fn classify_nix_argv(args: &[&str]) -> &'static str {
     if matches!(args, ["config", "show", ..]) || args.first() == Some(&"show-config") {
         return "config";
     }
-    if args.iter().any(|arg| *arg == "--help") {
+    if args.contains(&"--help") {
         return "help";
     }
     match args.first().copied() {

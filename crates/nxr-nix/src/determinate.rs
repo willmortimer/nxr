@@ -37,17 +37,16 @@ pub struct NixdProbe {
 pub fn redact_sensitive_text(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     for line in input.lines() {
-        if let Some(redacted) = redact_sensitive_line(line) {
-            if !output.is_empty() {
-                output.push('\n');
-            }
-            output.push_str(&redacted);
+        let redacted = redact_sensitive_line(line);
+        if !output.is_empty() {
+            output.push('\n');
         }
+        output.push_str(&redacted);
     }
     output
 }
 
-fn redact_sensitive_line(line: &str) -> Option<String> {
+fn redact_sensitive_line(line: &str) -> String {
     let lower = line.to_ascii_lowercase();
     if lower.contains("token")
         || lower.contains("secret")
@@ -56,17 +55,17 @@ fn redact_sensitive_line(line: &str) -> Option<String> {
         || lower.contains("api_key")
         || lower.contains("bearer")
     {
-        return Some(redact_key_value_line(line));
+        return redact_key_value_line(line);
     }
 
-    if line.chars().filter(|ch| ch.is_ascii_hexdigit()).count() >= 32
+    if line.chars().filter(char::is_ascii_hexdigit).count() >= 32
         && line.contains(':')
         && looks_like_credential_assignment(line)
     {
-        return Some(redact_key_value_line(line));
+        return redact_key_value_line(line);
     }
 
-    Some(line.to_owned())
+    line.to_owned()
 }
 
 fn looks_like_credential_assignment(line: &str) -> bool {

@@ -2709,15 +2709,15 @@ fn doctor_all_does_not_double_capability_probes() {
 
 #[test]
 fn watch_app_does_not_double_workspace_init_on_first_generation() {
-    let Some(()) = require_nix() else {
-        return;
-    };
-
     use std::io::Read;
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
     use assert_cmd::cargo::CommandCargoExt;
+
+    let Some(()) = require_nix() else {
+        return;
+    };
 
     let counter = NixCallCounter::install();
     let repo_root = repo_root();
@@ -2787,13 +2787,12 @@ fn start_watch_stdout_reader(
         let mut buf = [0_u8; 256];
         loop {
             match std::io::Read::read(&mut stdout, &mut buf) {
-                Ok(0) => break,
+                Ok(0) | Err(_) => break,
                 Ok(n) => {
                     if tx.send(buf[..n].to_vec()).is_err() {
                         break;
                     }
                 }
-                Err(_) => break,
             }
         }
     });
@@ -2830,8 +2829,9 @@ fn spawn_basic_apps_watch(
     counter: &common::NixCallCounter,
     extra_args: &[&str],
 ) -> (std::process::Child, std::process::ChildStdout) {
-    use assert_cmd::cargo::CommandCargoExt;
     use std::process::{Command, Stdio};
+
+    use assert_cmd::cargo::CommandCargoExt;
 
     let repo_root = repo_root();
     let mut args = vec![
@@ -2858,11 +2858,11 @@ fn spawn_basic_apps_watch(
 
 #[test]
 fn watch_source_restart_skips_discovery_nix_calls() {
+    use std::time::{Duration, Instant};
+
     let Some(()) = require_nix() else {
         return;
     };
-
-    use std::time::{Duration, Instant};
 
     let counter = NixCallCounter::install();
     let (mut child, stdout) = spawn_basic_apps_watch(&counter, &[]);
@@ -2900,10 +2900,6 @@ fn watch_source_restart_skips_discovery_nix_calls() {
 
 #[test]
 fn watch_metadata_restart_rediscovers_apps() {
-    let Some(()) = require_nix() else {
-        return;
-    };
-
     use std::time::{Duration, Instant};
 
     struct RestoreFile {
@@ -2916,6 +2912,10 @@ fn watch_metadata_restart_rediscovers_apps() {
             let _ = std::fs::write(&self.path, &self.original);
         }
     }
+
+    let Some(()) = require_nix() else {
+        return;
+    };
 
     let flake_path = repo_root().join("fixtures/basic-apps/flake.nix");
     let original = std::fs::read(&flake_path).expect("read flake.nix");

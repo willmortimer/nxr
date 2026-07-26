@@ -114,17 +114,18 @@ pub fn capability_cache_dir() -> Option<PathBuf> {
 pub fn detect_nix_environment(nix: &Utf8Path, refresh: bool) -> Result<NixEnvironment, NixError> {
     let executable = executable_identity(nix)?;
 
-    if capability_cache_enabled() && !refresh {
-        if let Some(entry) = load_cached_entry(&executable)? {
-            return Ok(NixEnvironment {
-                system: entry.current_system,
-                capabilities: entry.capabilities,
-                provenance: CapabilityProvenance {
-                    from_cache: true,
-                    evidence: vec![CapabilityEvidence::Cache],
-                },
-            });
-        }
+    if capability_cache_enabled()
+        && !refresh
+        && let Some(entry) = load_cached_entry(&executable)
+    {
+        return Ok(NixEnvironment {
+            system: entry.current_system,
+            capabilities: entry.capabilities,
+            provenance: CapabilityProvenance {
+                from_cache: true,
+                evidence: vec![CapabilityEvidence::Cache],
+            },
+        });
     }
 
     let system = detect_system(nix)?;
@@ -267,40 +268,31 @@ fn system_time_to_parts(time: SystemTime) -> Option<(u64, u32)> {
     Some((duration.as_secs(), duration.subsec_nanos()))
 }
 
-fn load_cached_entry(executable: &ExecutableIdentity) -> Result<Option<CachedEntry>, NixError> {
-    let path = match cache_file_path(executable) {
-        Some(path) => path,
-        None => return Ok(None),
-    };
+fn load_cached_entry(executable: &ExecutableIdentity) -> Option<CachedEntry> {
+    let path = cache_file_path(executable)?;
     if !path.is_file() {
-        return Ok(None);
+        return None;
     }
 
-    let contents = match fs::read_to_string(&path) {
-        Ok(contents) => contents,
-        Err(_) => return Ok(None),
-    };
-    let cached: CachedEntry = match serde_json::from_str(&contents) {
-        Ok(cached) => cached,
-        Err(_) => return Ok(None),
-    };
+    let contents = fs::read_to_string(&path).ok()?;
+    let cached: CachedEntry = serde_json::from_str(&contents).ok()?;
 
     if cached.schema_version != CACHE_SCHEMA_VERSION {
-        return Ok(None);
+        return None;
     }
     if cached.identity.canonical_path != executable.canonical_path {
-        return Ok(None);
+        return None;
     }
     if cached.identity.file != executable.file {
-        return Ok(None);
+        return None;
     }
     if let Some(ttl) = cache_ttl_secs()
         && unix_now_secs().saturating_sub(cached.recorded_at) > ttl
     {
-        return Ok(None);
+        return None;
     }
 
-    Ok(Some(cached))
+    Some(cached)
 }
 
 fn store_cached_entry(executable: &ExecutableIdentity, entry: &CachedEntry) -> io::Result<()> {
@@ -367,11 +359,6 @@ fn cache_root() -> Option<PathBuf> {
 }
 
 fn cache_ttl_secs() -> Option<u64> {
-    #[cfg(test)]
-    if let Some(ttl) = TEST_CACHE_TTL_SECS.with(|cell| *cell.borrow()) {
-        return ttl;
-    }
-
     match std::env::var(CAPABILITY_CACHE_TTL_ENV) {
         Ok(raw) => raw.parse().ok(),
         Err(_) => Some(DEFAULT_CACHE_TTL_SECS),
@@ -382,12 +369,6 @@ fn unix_now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
-}
-
-#[cfg(test)]
-thread_local! {
-    static TEST_CACHE_TTL_SECS: std::cell::RefCell<Option<Option<u64>>> =
-        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -488,9 +469,7 @@ mod tests {
             assert!(!env.provenance.from_cache);
 
             let executable = sample_executable(&nix);
-            let cached = load_cached_entry(&executable)
-                .expect("load")
-                .expect("cache entry");
+            let cached = load_cached_entry(&executable).expect("cache entry");
             assert_eq!(cached.current_system, env.system);
             assert_eq!(cached.capabilities.version, env.capabilities.version);
         });
@@ -514,7 +493,7 @@ mod tests {
             store_cached_entry(&executable, &stale).expect("store stale");
 
             assert!(
-                load_cached_entry(&executable).expect("load").is_none(),
+                load_cached_entry(&executable).is_none(),
                 "stale file identity should miss"
             );
         });
@@ -556,7 +535,7 @@ mod tests {
             store_cached_entry(&executable, &sample_entry(&executable)).expect("seed");
             let removed = clear_capability_cache().expect("clear");
             assert_eq!(removed, 1);
-            assert!(load_cached_entry(&executable).expect("load").is_none());
+            assert!(load_cached_entry(&executable).is_none());
         });
     }
 
