@@ -227,8 +227,49 @@ pub enum Command {
     },
     /// Show execution plan
     Plan {
-        /// App or task name (apps win when both exist)
-        app: String,
+        /// App or task name (apps win when both exist); optional with `--affected`
+        #[arg(required_unless_present = "affected")]
+        app: Option<String>,
+        /// Plan the union DAG of affected tasks (requires a path source)
+        #[arg(long = "affected")]
+        affected: bool,
+        /// Collect changed paths from `git diff --name-only <base>...HEAD`
+        #[arg(
+            long = "base",
+            value_name = "REF",
+            requires = "affected",
+            conflicts_with = "all_changes"
+        )]
+        base: Option<String>,
+        /// Include unstaged, staged, and untracked working-tree paths
+        #[arg(
+            long = "working-tree",
+            requires = "affected",
+            conflicts_with = "all_changes"
+        )]
+        working_tree: bool,
+        /// Union of `--base <ref>` range and `--working-tree`
+        #[arg(
+            long = "all-changes",
+            value_name = "REF",
+            requires = "affected",
+            conflicts_with_all = ["base", "working_tree"]
+        )]
+        all_changes: Option<String>,
+        /// Include unknown tasks in the affected set (default unless `--no-strict`)
+        #[arg(long = "strict", action = ArgAction::SetTrue, requires = "affected")]
+        strict: bool,
+        /// Omit unknown tasks from the affected set
+        #[arg(
+            long = "no-strict",
+            action = ArgAction::SetTrue,
+            requires = "affected",
+            conflicts_with = "strict"
+        )]
+        no_strict: bool,
+        /// Explicit repository-relative changed paths (`--affected` only)
+        #[arg(long = "path", value_name = "PATH", requires = "affected")]
+        paths: Vec<String>,
         /// Arguments included in the plan (pass after `--`)
         #[arg(last = true)]
         args: Vec<String>,
@@ -291,13 +332,53 @@ pub enum Command {
         #[arg(long = "keep-going")]
         keep_going: bool,
         /// Watch flake root and rerun on changes
-        #[arg(long = "watch")]
+        #[arg(long = "watch", conflicts_with = "affected")]
         watch: bool,
         /// Debounce window in milliseconds (`--watch` only)
         #[arg(long = "debounce", requires = "watch")]
         debounce: Option<u64>,
-        /// Task names (union DAG; shared dependencies run once)
-        #[arg(required = true)]
+        /// Run the union DAG of affected tasks (requires a path source)
+        #[arg(long = "affected")]
+        affected: bool,
+        /// Collect changed paths from `git diff --name-only <base>...HEAD`
+        #[arg(
+            long = "base",
+            value_name = "REF",
+            requires = "affected",
+            conflicts_with = "all_changes"
+        )]
+        base: Option<String>,
+        /// Include unstaged, staged, and untracked working-tree paths
+        #[arg(
+            long = "working-tree",
+            requires = "affected",
+            conflicts_with = "all_changes"
+        )]
+        working_tree: bool,
+        /// Union of `--base <ref>` range and `--working-tree`
+        #[arg(
+            long = "all-changes",
+            value_name = "REF",
+            requires = "affected",
+            conflicts_with_all = ["base", "working_tree"]
+        )]
+        all_changes: Option<String>,
+        /// Include unknown tasks in the affected set (default unless `--no-strict`)
+        #[arg(long = "strict", action = ArgAction::SetTrue, requires = "affected")]
+        strict: bool,
+        /// Omit unknown tasks from the affected set
+        #[arg(
+            long = "no-strict",
+            action = ArgAction::SetTrue,
+            requires = "affected",
+            conflicts_with = "strict"
+        )]
+        no_strict: bool,
+        /// Explicit repository-relative changed paths (`--affected` only)
+        #[arg(long = "path", value_name = "PATH", requires = "affected")]
+        paths: Vec<String>,
+        /// Task names (union DAG; shared dependencies run once). Optional with `--affected`.
+        #[arg(required_unless_present = "affected")]
         tasks: Vec<String>,
         /// Arguments forwarded to each root task's app only (MVP)
         #[arg(last = true, allow_hyphen_values = true)]

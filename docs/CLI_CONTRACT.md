@@ -419,6 +419,8 @@ Dynamic completion must:
 ```bash
 nxr task ci
 nxr task ci --jobs 4
+nxr task --affected [--base REF | --working-tree | --all-changes REF | --path PATH…] [name…]
+nxr plan --affected [--base REF | --working-tree | --all-changes REF | --path PATH…] [name…]
 nxr graph ci
 nxr watch dev
 ```
@@ -426,6 +428,13 @@ nxr watch dev
 Trailing arguments after the task name are forwarded to the **root task app only**
 (`argument_forwarding: root`). Dependency nodes always receive an empty argument
 list. Richer per-node forwarding is deferred.
+
+`--affected` uses the same path sources and strict policy as `nxr affected`
+(default strict). Without task names, roots are the union of all affected tasks;
+with names, roots are the intersection (unaffected named tasks are skipped). An
+empty affected set is a successful no-op (exit 0). `task --affected` conflicts
+with `--watch`. Prefer `--path` on these commands (not positional paths) so task
+names stay unambiguous.
 
 Stdin: serial interactive runs and `--output raw` (`-j 1`, no `--events`) inherit
 caller stdin; parallel or multiplex (`live` / `grouped` / `failures` / `--events`)

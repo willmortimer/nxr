@@ -12,7 +12,7 @@ Product and architecture contract for `nxr`. Prefer these docs over inventing st
 | [CONTRACT_SUMMARY.md](CONTRACT_SUMMARY.md) | Locked decisions that must not drift |
 | [TECH_STACK_AND_REPO_SHAPE.md](TECH_STACK_AND_REPO_SHAPE.md) | Languages, crates, and repository layout |
 | [RELEASE.md](RELEASE.md) | Tag releases, artifacts, checksums, and SBOM |
-| [ROADMAP.md](ROADMAP.md) | Shipped releases and active 2.5 → 3.1 plan |
+| [ROADMAP.md](ROADMAP.md) | Shipped releases and active 2.6 → 3.1 plan |
 | [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) | Post-2.5 expansion: contexts, secrets, HM, processes |
 | [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md) | Deferred control-plane ideas (not scheduled) |
 

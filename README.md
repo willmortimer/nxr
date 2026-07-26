@@ -148,6 +148,8 @@ nxr list --namespace web
 nxr inspect --namespace api
 nxr affected shared/lib.txt --json
 nxr affected --base origin/main
+nxr task --affected --path shared/lib.txt
+nxr plan --affected --base origin/main --json
 ```
 
 Optional `nxr.projects.json` is **view-only**—flake apps remain the operation
@@ -175,7 +177,7 @@ Coming from `mise` / `just`? [docs/MIGRATE_FROM_MISE_JUST.md](docs/MIGRATE_FROM_
 | [docs/MONOREPO_VIEWS.md](docs/MONOREPO_VIEWS.md) | Categories, namespaces, projects file |
 | [docs/DEV_ENV_INTEGRATION.md](docs/DEV_ENV_INTEGRATION.md) | Dev shells, direnv, shellIntegration |
 | [docs/EXECUTION_CONTEXT.md](docs/EXECUTION_CONTEXT.md) | Contexts, secrets, Home Manager, processes (planned) |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Active 2.5 → 3.1 plan |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Active 2.6 → 3.1 plan |
 | [docs/ADAPTERS.md](docs/ADAPTERS.md) | Read-only ecosystem graph boundary |
 | [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | Platforms and schema freeze |
 | [docs/RELEASE.md](docs/RELEASE.md) | Release artifacts, checksums, SBOM |
@@ -188,5 +190,5 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**2.4.1** — timeout module API, full summary/plan terminals, structured run
-metadata, and shell completion routing. History: [CHANGELOG.md](CHANGELOG.md).
+**2.5.0** — `task --affected` / `plan --affected` using existing path analysis.
+History: [CHANGELOG.md](CHANGELOG.md).

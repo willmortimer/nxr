@@ -1,6 +1,6 @@
 # Execution context and ecosystem expansion
 
-**Status:** design contract for post-2.5 work. Not yet implemented.
+**Status:** design contract for post-2.5 work (2.6 → 3.1). Not yet implemented.
 **Companion:** [ROADMAP.md](ROADMAP.md) (scheduling), [CONTRACT_SUMMARY.md](CONTRACT_SUMMARY.md) (invariants), [ECOSYSTEM_SYNTHESIS.md](ECOSYSTEM_SYNTHESIS.md) (inheritance rules).
 
 ## Product identity
@@ -811,7 +811,7 @@ See [ROADMAP.md](ROADMAP.md) for the ordered release plan:
 
 | Release | Theme |
 |---|---|
-| **2.5** | Affected execution (already planned) |
+| **2.5** | Affected execution — shipped (`task --affected` / `plan --affected`) |
 | **2.6** | Ecosystem ergonomics (HM module, `fmt`, `in`, `envrc`, doctor env/cache, installables, adapters, shell menu) |
 | **3.0** | Execution-context schema v2 (contexts, secrets, I/O, dependency states, strict rejection) |
 | **3.1** | Process workflows (`up` / `status` / `logs`, readiness) |

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-07-26
+
+Feature release: affected execution for tasks and plans.
+
+### Added
+
+- `nxr task --affected` runs the union DAG of affected tasks (same path sources
+  and strict policy as `nxr affected`). Optional task names intersect the
+  affected set; an empty set is a successful no-op.
+- `nxr plan --affected` emits the multi-root execution plan for that set.
+- Path sources on both commands: `--base`, `--working-tree`, `--all-changes`,
+  and `--path` (repeatable). Conflicts with `task --watch`.
+
+### Changed
+
+- Workspace and Nix package version **2.5.0**.
+
 ## [2.4.1] - 2026-07-21
 
 Patch release: finish the 2.4 run model so timeouts, summaries, events, and
@@ -329,6 +346,7 @@ First taggable V1 prerelease: a standard Nix flake app runner through Phase 5 of
 - [Compatibility matrix](docs/COMPATIBILITY.md), [CLI reference](docs/CLI_REFERENCE.md), and [telemetry decision](docs/TELEMETRY.md) (default: none).
 - Tag-triggered [release workflow](.github/workflows/release.yml) (quality gate only; no publish secrets).
 
+[2.5.0]: https://github.com/willmortimer/nxr/compare/v2.4.1...v2.5.0
 [2.4.1]: https://github.com/willmortimer/nxr/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/willmortimer/nxr/compare/v2.3.3...v2.4.0
 [2.3.3]: https://github.com/willmortimer/nxr/compare/v2.3.2...v2.3.3

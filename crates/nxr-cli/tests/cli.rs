@@ -2901,6 +2901,151 @@ fn affected_no_strict_omits_unknown_from_lists() {
 }
 
 #[test]
+fn task_affected_runs_union_of_affected_tasks() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/affected-deps",
+            "--dry-run",
+            "task",
+            "--affected",
+            "--path",
+            "shared/lib.txt",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8 stderr");
+    assert!(
+        stderr.contains("running affected tasks:"),
+        "expected affected roots log:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("serial schedule: shared-lib -> api-test -> web-test -> ci"),
+        "expected full affected union schedule:\n{stdout}"
+    );
+}
+
+#[test]
+fn task_affected_intersects_named_roots() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/affected-deps",
+            "--dry-run",
+            "task",
+            "web-test",
+            "--affected",
+            "--path",
+            "crates/api/README.md",
+            "--no-strict",
+        ])
+        .assert()
+        .success();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8 stderr");
+    assert!(
+        stderr.contains("no affected tasks to run"),
+        "web-test should be skipped when only api paths changed:\n{stderr}"
+    );
+}
+
+#[test]
+fn task_affected_noop_when_nothing_matches_non_strict() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/affected-deps",
+            "--dry-run",
+            "task",
+            "--affected",
+            "--path",
+            "does-not-exist.txt",
+            "--no-strict",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("no affected tasks to run"));
+}
+
+#[test]
+fn plan_affected_emits_multi_root_execution_plan() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/affected-deps",
+            "plan",
+            "--affected",
+            "--path",
+            "shared/lib.txt",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("json plan");
+    let roots = value["roots"]
+        .as_array()
+        .expect("roots")
+        .iter()
+        .filter_map(|entry| entry.as_str())
+        .collect::<Vec<_>>();
+    assert!(roots.contains(&"shared-lib"));
+    assert!(roots.contains(&"api-test"));
+    assert!(roots.contains(&"web-test"));
+    assert!(roots.contains(&"ci"));
+    let order = value["serial_order"]
+        .as_array()
+        .expect("serial_order")
+        .iter()
+        .filter_map(|entry| entry.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(order, vec!["shared-lib", "api-test", "web-test", "ci"]);
+}
+
+#[test]
+fn task_help_mentions_affected() {
+    cargo_bin_cmd!("nxr")
+        .args(["task", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--affected"))
+        .stdout(predicate::str::contains("--base"))
+        .stdout(predicate::str::contains("--path"));
+}
+
+#[test]
+fn plan_help_mentions_affected() {
+    cargo_bin_cmd!("nxr")
+        .args(["plan", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--affected"));
+}
+
+#[test]
 fn task_timeout_fixture_emits_timeout_fields_in_nxr_document() {
     let Some(()) = require_nix() else {
         return;

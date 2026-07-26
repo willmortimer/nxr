@@ -459,10 +459,9 @@ The command reports normalized configuration after defaults and capability resol
 
 ## 3. Planned expansion (committed roadmap)
 
-Scheduled work is in [ROADMAP.md](ROADMAP.md) (2.5 → 3.1) with full design in
+Scheduled work is in [ROADMAP.md](ROADMAP.md) (2.6 → 3.1) with full design in
 [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md):
 
-- **2.5** affected execution;
 - **2.6** Home Manager module, `nxr fmt`, `nxr in`, `nxr envrc`, doctor env/cache,
   generic installables, configuration adapters, shell-entry menu;
 - **3.0** execution-context schema v2 (contexts, secrets, task I/O, dependency states);

@@ -27,15 +27,11 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 | **V2.3.2** | Edge-case hardening | TTY-safe stderr, completion `discoveryInputs`, affected empty/rename/full nodes, release version/layout checks — shipped as `v2.3.2`. |
 | **V2.3.3** | Correctness cut | Watch ↔ task pipeline parity, empty affected = all unaffected, path validation, apps↔tasks decoupling, cache v4 BLAKE3 — shipped as `v2.3.3`. |
 | **V2.4** | Run model + UX | Structured run results / `--output summary`, per-task timeouts, richer completion — shipped as `v2.4.0`; patch `v2.4.1` finishes module API, terminals, events, and shell routing. |
+| **V2.5** | Affected execution | `task --affected` / `plan --affected` wired to existing path analysis — shipped as `v2.5.0`. |
 
 ## Active roadmap
 
 Design detail for everything below lives in [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).
-
-### 2.5 — Affected execution
-
-Keep the current plan: `task --affected` / `plan --affected`, coherent with existing
-affected analysis.
 
 ### 2.6 — Ecosystem ergonomics
 

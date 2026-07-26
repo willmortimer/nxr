@@ -34,7 +34,7 @@ pub struct TaskRequest<'a> {
     pub flake_arg: Option<&'a str>,
     pub nix_override: Option<&'a str>,
     /// One or more task roots whose dependency subgraphs are unioned.
-    pub tasks: &'a [String],
+    pub tasks: Vec<String>,
     /// Forwarded only to each root task's app ([`nxr_task::ArgumentForwarding::Root`]);
     /// dependency nodes always get none.
     pub args: &'a [String],
@@ -1065,7 +1065,7 @@ mod tests {
         let request = super::TaskRequest {
             flake_arg: None,
             nix_override: None,
-            tasks: &task_names,
+            tasks: task_names,
             args: &[],
             root: false,
             cwd: None,

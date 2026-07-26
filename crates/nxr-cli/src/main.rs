@@ -156,22 +156,79 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
         Some(Command::Shell { name }) => {
             dispatch_nix_op(cli, &nix_flags, name.as_deref(), NixOp::Shell, runner)
         }
-        Some(Command::Plan { app, args }) => dispatch_plan(cli, &nix_flags, app, args, runner),
+        Some(Command::Plan {
+            app,
+            affected,
+            base,
+            working_tree,
+            all_changes,
+            strict: _,
+            no_strict,
+            paths,
+            args,
+        }) => {
+            if *affected {
+                dispatch_plan_affected(
+                    cli,
+                    &nix_flags,
+                    app.as_deref(),
+                    *no_strict,
+                    &affected::AffectedPathSources {
+                        base: base.clone(),
+                        working_tree: *working_tree,
+                        all_changes: all_changes.clone(),
+                    },
+                    paths,
+                    args,
+                    runner,
+                )
+            } else {
+                let app = app.as_deref().ok_or_else(|| {
+                    RunError::Usage("plan requires an app or task name (or --affected)".to_owned())
+                })?;
+                dispatch_plan(cli, &nix_flags, app, args, runner)
+            }
+        }
         Some(Command::Task {
             jobs,
             keep_going,
             watch,
             debounce,
+            affected,
+            base,
+            working_tree,
+            all_changes,
+            strict: _,
+            no_strict,
+            paths,
             tasks,
             args,
         }) => {
-            if *watch {
+            if *affected {
+                dispatch_task_affected(
+                    cli,
+                    &nix_flags,
+                    tasks,
+                    args,
+                    *jobs,
+                    *keep_going,
+                    !*no_strict,
+                    &affected::AffectedPathSources {
+                        base: base.clone(),
+                        working_tree: *working_tree,
+                        all_changes: all_changes.clone(),
+                    },
+                    paths,
+                    runner,
+                )
+            } else if *watch {
                 let options = watch_options_from_debounce(*debounce);
                 let request =
                     watch_task_request(cli, &nix_flags, tasks, args, *jobs, *keep_going, options)?;
                 watch::run(&request, runner).map_err(RunError::from)
             } else {
-                let request = task_request(cli, &nix_flags, tasks, args, *jobs, *keep_going)?;
+                let request =
+                    task_request(cli, &nix_flags, tasks.clone(), args, *jobs, *keep_going)?;
                 task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
             }
         }
@@ -287,6 +344,75 @@ fn dispatch_plan(
     let request = app_request(cli, nix_flags, app, args)?;
     plan::run(&request, cli.json, runner)?;
     Ok(exit::SUCCESS)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_plan_affected(
+    cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
+    requested: Option<&str>,
+    no_strict: bool,
+    sources: &affected::AffectedPathSources,
+    paths: &[String],
+    _args: &[String],
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    let strict_policy = !no_strict;
+    let selection = affected::select_for_flake(
+        cli.flake.as_deref(),
+        cli.nix.as_deref(),
+        cli.refresh_discovery,
+        nix_flags,
+        sources,
+        strict_policy,
+        paths,
+        runner,
+    )?;
+    let requested = match requested {
+        Some(name) => vec![name.to_owned()],
+        None => Vec::new(),
+    };
+    let roots = affected::resolve_affected_task_roots(
+        &selection.document,
+        &selection.analysis,
+        &requested,
+    )?;
+    plan::run_affected_tasks(&selection.document, &roots, cli.json, runner)?;
+    Ok(exit::SUCCESS)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_task_affected(
+    cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
+    requested: &[String],
+    args: &[String],
+    jobs: usize,
+    keep_going: bool,
+    strict: bool,
+    sources: &affected::AffectedPathSources,
+    paths: &[String],
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    let selection = affected::select_for_flake(
+        cli.flake.as_deref(),
+        cli.nix.as_deref(),
+        cli.refresh_discovery,
+        nix_flags,
+        sources,
+        strict,
+        paths,
+        runner,
+    )?;
+    let roots =
+        affected::resolve_affected_task_roots(&selection.document, &selection.analysis, requested)?;
+    if roots.is_empty() {
+        let _ = runner.info("no affected tasks to run");
+        return Ok(exit::SUCCESS);
+    }
+    let _ = runner.info(format!("running affected tasks: {}", roots.join(", ")));
+    let request = task_request(cli, nix_flags, roots, args, jobs, keep_going)?;
+    task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -436,7 +562,7 @@ fn app_request<'a>(
 fn task_request<'a>(
     cli: &'a Cli,
     nix_flags: &'a nxr_nix::OptionalNixFlags,
-    tasks: &'a [String],
+    tasks: Vec<String>,
     args: &'a [String],
     jobs: usize,
     keep_going: bool,

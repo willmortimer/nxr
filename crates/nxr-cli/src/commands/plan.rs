@@ -10,7 +10,7 @@ use nxr_core::diagnostics::exit;
 use nxr_nix::TaskDiscoveryError;
 use nxr_task::{
     ExecutionPlan, FailurePolicy, PlanError as TaskPlanError, ResolveTaskError,
-    build_execution_plan, resolve_task_name,
+    build_execution_plan, build_execution_plan_roots, resolve_task_name,
 };
 
 use crate::commands::common::{
@@ -100,6 +100,47 @@ fn plan_task(request: &AppRequest<'_>, json: bool, runner: RunnerOutput) -> Resu
     Ok(())
 }
 
+/// Plan the union DAG for affected task roots (schema-compatible execution plan).
+///
+/// When `roots` is empty, prints a short no-op message (or empty JSON roots list)
+/// and returns successfully without building a plan.
+///
+/// # Errors
+///
+/// Returns [`PlanError`] when planning or rendering fails.
+pub fn run_affected_tasks(
+    document: &nxr_task::TaskDocument,
+    roots: &[String],
+    json: bool,
+    runner: RunnerOutput,
+) -> Result<(), PlanError> {
+    if roots.is_empty() {
+        runner
+            .info("no affected tasks to plan")
+            .map_err(PlanError::Io)?;
+        if json {
+            writeln!(
+                io::stdout().lock(),
+                "{{\n  \"schema_version\": {},\n  \"roots\": [],\n  \"nodes\": []\n}}",
+                ExecutionPlan::SCHEMA_VERSION
+            )?;
+        } else {
+            writeln!(io::stdout().lock(), "No affected tasks to plan.")?;
+        }
+        return Ok(());
+    }
+
+    let root_refs: Vec<&str> = roots.iter().map(String::as_str).collect();
+    let plan =
+        build_execution_plan_roots(&document.tasks, &root_refs, FailurePolicy::FailFast, None)?;
+    runner
+        .info(format!("planning affected tasks: {}", roots.join(", ")))
+        .map_err(PlanError::Io)?;
+    let mut stdout = io::stdout().lock();
+    write_execution_plan(&mut stdout, &plan, json)?;
+    Ok(())
+}
+
 /// Write an app [`Plan`] as JSON or a concise human summary.
 ///
 /// # Errors
@@ -157,6 +198,9 @@ fn write_human_plan(writer: &mut impl Write, plan: &Plan) -> io::Result<()> {
 
 fn write_human_execution_plan(writer: &mut impl Write, plan: &ExecutionPlan) -> io::Result<()> {
     writeln!(writer, "root: {}", plan.root)?;
+    if plan.roots.len() > 1 {
+        writeln!(writer, "roots: {}", plan.roots.join(", "))?;
+    }
     writeln!(writer, "failure_policy: {}", plan.failure_policy.as_str())?;
     writeln!(
         writer,

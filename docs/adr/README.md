@@ -5,7 +5,7 @@
 This index lists decisions that should be captured as individual Architecture Decision Records as implementation proceeds.
 
 V3-era ADRs (0201–0412) remain **Deferred** unless pulled forward by
-[ROADMAP.md](../ROADMAP.md). Active delivery follows that roadmap (2.5 → 3.1).
+[ROADMAP.md](../ROADMAP.md). Active delivery follows that roadmap (2.6 → 3.1).
 Execution-context design: [EXECUTION_CONTEXT.md](../EXECUTION_CONTEXT.md).
 
 An ADR is required when a decision:

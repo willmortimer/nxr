@@ -309,7 +309,7 @@ fn run_task_generation(
     let task_request = TaskRequest {
         flake_arg: request.flake_arg,
         nix_override: request.nix_override,
-        tasks,
+        tasks: tasks.to_vec(),
         args: request.args,
         root: request.root,
         cwd: request.cwd,

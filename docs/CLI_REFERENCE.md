@@ -60,6 +60,7 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr check [name]` | Build `checks.<system>.<name>`, or `nix flake check` when omitted |
 | `nxr shell [name]` | Interactive `nix develop` for `devShells.<system>.<name>` (default when omitted) |
 | `nxr plan <app\|task> [-- args…]` | Show app or task execution plan (apps win when both exist) |
+| `nxr plan --affected [--base\|--working-tree\|--all-changes\|--path…]` | Plan the union DAG of affected tasks |
 | `nxr select` | Interactive fuzzy app picker |
 | `nxr doctor [app]` | Diagnose environment and flake setup |
 | `nxr doctor --all` | Extra non-destructive findings (descriptions, naming, cache) |
@@ -77,6 +78,7 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr inspect app <name>` | Single app details |
 | `nxr inspect task <name>` | Single task details |
 | `nxr task <name>… [args…]` | Run one or more task roots as a union DAG (shared deps run once); trailing args go to each **root** task app only |
+| `nxr task --affected [--base\|--working-tree\|--all-changes\|--path…] [name…]` | Run the union DAG of affected tasks (optional names intersect); empty set exits 0 |
 | `nxr graph <name>` | Print task plan (text) |
 | `nxr graph <name> --format dot` | Graphviz DOT digraph (does not invoke Graphviz) |
 | `nxr graph <name> --format mermaid` | Mermaid flowchart |

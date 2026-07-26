@@ -59,3 +59,6 @@ Thumbs.db
 
 # --- Optional local archives ---
 *-docs.zip
+
+# --- Local-only docs (not shared) ---
+/docs/internal/

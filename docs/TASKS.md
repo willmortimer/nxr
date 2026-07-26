@@ -137,6 +137,22 @@ nxr task lint unit integration -j 8
 The execution plan records every requested root in `roots` (additive); `root`
 remains the first requested name for backward compatibility.
 
+## Affected execution
+
+`nxr task --affected` and `nxr plan --affected` reuse `nxr affected` analysis
+(path sources, strict/`--no-strict`). Prefer `--path PATH` (repeatable) on these
+commands so positional tokens stay task names.
+
+```bash
+nxr task --affected --path shared/lib.txt
+nxr task web-test api-test --affected --base origin/main --no-strict
+nxr plan --affected --working-tree --json
+```
+
+Without task names, every affected task becomes a multi-root union. With names,
+only the intersection runs (unaffected names are skipped). An empty set exits 0
+without scheduling. Conflicts with `task --watch`.
+
 ## Argument forwarding (V2 freeze)
 
 Trailing CLI arguments after the task name(s) are forwarded to each **root
