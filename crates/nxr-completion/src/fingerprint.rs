@@ -8,6 +8,7 @@ use std::time::SystemTime;
 
 use blake3::{Hash, Hasher};
 use camino::{Utf8Path, Utf8PathBuf};
+use fs2::FileExt;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 
@@ -364,6 +365,13 @@ fn fingerprint_index_root() -> Option<PathBuf> {
         return Some(root);
     }
 
+    #[cfg(test)]
+    if let Ok(guard) = CONCURRENT_TEST_FINGERPRINT_INDEX_ROOT.lock()
+        && let Some(root) = guard.clone()
+    {
+        return Some(root);
+    }
+
     directories::ProjectDirs::from("dev", "nxr", "nxr")
         .map(|dirs| dirs.cache_dir().join("discovery").join("fingerprint-index"))
 }
@@ -423,6 +431,20 @@ fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "missing parent directory"))?;
     fs::create_dir_all(parent)?;
 
+    let lock_path = parent.join(format!(
+        ".{}.lock",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("fingerprint-index")
+    ));
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    lock_file.lock_exclusive()?;
+
     let temp_path = parent.join(format!(
         ".{}.{}.{}.tmp",
         path.file_name()
@@ -449,6 +471,7 @@ fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
     })();
 
     let _ = fs::remove_file(&temp_path);
+    lock_file.unlock()?;
     write_result
 }
 
@@ -465,6 +488,10 @@ fn record_file_read() {
 }
 
 #[cfg(test)]
+static CONCURRENT_TEST_FINGERPRINT_INDEX_ROOT: std::sync::Mutex<Option<PathBuf>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
 thread_local! {
     static TEST_FINGERPRINT_INDEX_ROOT: std::cell::RefCell<Option<PathBuf>> =
         const { std::cell::RefCell::new(None) };
@@ -477,6 +504,14 @@ pub(crate) fn set_test_fingerprint_index_root(root: Option<PathBuf>) {
     TEST_FINGERPRINT_INDEX_ROOT.with(|cell| {
         *cell.borrow_mut() = root;
     });
+}
+
+#[cfg(test)]
+pub(crate) fn set_concurrent_test_fingerprint_index_root(root: Option<PathBuf>) {
+    let mut guard = CONCURRENT_TEST_FINGERPRINT_INDEX_ROOT
+        .lock()
+        .expect("concurrent fingerprint index lock");
+    *guard = root;
 }
 
 #[cfg(test)]
@@ -742,10 +777,9 @@ mod tests {
             let index_root = temp.path().join("fingerprint-index");
             let index_file = fs::read_dir(&index_root)
                 .expect("read index dir")
-                .next()
-                .expect("index file")
-                .expect("entry")
-                .path();
+                .map(|entry| entry.expect("entry").path())
+                .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .expect("index json file");
             fs::write(&index_file, "{not-json").expect("corrupt index");
 
             reset_file_read_counter();

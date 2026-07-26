@@ -791,6 +791,8 @@ mod tests {
     }
 
     fn with_shared_cache_dir<T>(cache_home: &Path, f: impl FnOnce() -> T) -> T {
+        let fingerprint_index_root = cache_home.join("fingerprint-index");
+        fs::create_dir_all(&fingerprint_index_root).expect("create fingerprint index dir");
         fs::create_dir_all(cache_home).expect("create cache dir");
         {
             let mut guard = super::CONCURRENT_TEST_CACHE_ROOT
@@ -798,8 +800,8 @@ mod tests {
                 .expect("concurrent cache lock");
             *guard = Some(cache_home.to_path_buf());
         }
-        crate::fingerprint::set_test_fingerprint_index_root(Some(
-            cache_home.join("fingerprint-index"),
+        crate::fingerprint::set_concurrent_test_fingerprint_index_root(Some(
+            fingerprint_index_root,
         ));
 
         let result = f();
@@ -810,7 +812,7 @@ mod tests {
                 .expect("concurrent cache lock");
             *guard = None;
         }
-        crate::fingerprint::set_test_fingerprint_index_root(None);
+        crate::fingerprint::set_concurrent_test_fingerprint_index_root(None);
         result
     }
 
