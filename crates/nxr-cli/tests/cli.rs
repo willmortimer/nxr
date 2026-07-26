@@ -2825,18 +2825,44 @@ fn wait_for_watch_occurrences(
     );
 }
 
+/// Isolated copy of `fixtures/basic-apps` so parallel watch tests do not race
+/// on shared tree mutations.
+fn isolated_basic_apps_flake() -> tempfile::TempDir {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let src = repo_root().join("fixtures/basic-apps");
+    let dst = temp.path().join("basic-apps");
+    copy_dir_recursive(&src, &dst).expect("copy basic-apps fixture");
+    temp
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
 fn spawn_basic_apps_watch(
     counter: &common::NixCallCounter,
+    flake_dir: &std::path::Path,
     extra_args: &[&str],
 ) -> (std::process::Child, std::process::ChildStdout) {
     use std::process::{Command, Stdio};
 
     use assert_cmd::cargo::CommandCargoExt;
 
-    let repo_root = repo_root();
+    let flake = flake_dir.to_string_lossy().into_owned();
     let mut args = vec![
         "--flake",
-        "fixtures/basic-apps",
+        flake.as_str(),
         "watch",
         "hello",
         "--debounce",
@@ -2845,7 +2871,7 @@ fn spawn_basic_apps_watch(
     args.extend(extra_args);
     let mut child = Command::cargo_bin("nxr")
         .expect("nxr binary")
-        .current_dir(&repo_root)
+        .current_dir(repo_root())
         .env("NXR_NIX", &counter.wrapper)
         .args(args)
         .stdout(Stdio::piped())
@@ -2864,8 +2890,10 @@ fn watch_source_restart_skips_discovery_nix_calls() {
         return;
     };
 
+    let fixture = isolated_basic_apps_flake();
+    let flake_dir = fixture.path().join("basic-apps");
     let counter = NixCallCounter::install();
-    let (mut child, stdout) = spawn_basic_apps_watch(&counter, &[]);
+    let (mut child, stdout) = spawn_basic_apps_watch(&counter, &flake_dir, &[]);
     let rx = start_watch_stdout_reader(stdout);
     let mut output = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(90);
@@ -2873,7 +2901,7 @@ fn watch_source_restart_skips_discovery_nix_calls() {
 
     std::fs::write(&counter.log, "").expect("reset log");
 
-    let trigger = repo_root().join("fixtures/basic-apps/.watch-source-trigger");
+    let trigger = flake_dir.join(".watch-source-trigger");
     std::fs::write(&trigger, b"touch").expect("write trigger");
     wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 2, deadline);
     let _ = std::fs::remove_file(trigger);
@@ -2902,30 +2930,17 @@ fn watch_source_restart_skips_discovery_nix_calls() {
 fn watch_metadata_restart_rediscovers_apps() {
     use std::time::{Duration, Instant};
 
-    struct RestoreFile {
-        path: std::path::PathBuf,
-        original: Vec<u8>,
-    }
-
-    impl Drop for RestoreFile {
-        fn drop(&mut self) {
-            let _ = std::fs::write(&self.path, &self.original);
-        }
-    }
-
     let Some(()) = require_nix() else {
         return;
     };
 
-    let flake_path = repo_root().join("fixtures/basic-apps/flake.nix");
+    let fixture = isolated_basic_apps_flake();
+    let flake_dir = fixture.path().join("basic-apps");
+    let flake_path = flake_dir.join("flake.nix");
     let original = std::fs::read(&flake_path).expect("read flake.nix");
-    let _restore = RestoreFile {
-        path: flake_path.clone(),
-        original: original.clone(),
-    };
 
     let counter = NixCallCounter::install();
-    let (mut child, stdout) = spawn_basic_apps_watch(&counter, &[]);
+    let (mut child, stdout) = spawn_basic_apps_watch(&counter, &flake_dir, &[]);
     let rx = start_watch_stdout_reader(stdout);
     let mut output = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(90);
