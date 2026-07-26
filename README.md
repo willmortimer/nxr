@@ -27,11 +27,18 @@ imports = [ inputs.nxr.flakeModules.default ];
 perSystem.nxr = {
   shellIntegration.enable = true;
   # optional: shellIntegration.devShells = [ "default" "backend" ];
+  # optional: schema.enable = false;  # skip exportedSchemas.nxr
   tasks.ci = { app = "ci"; };
 };
 ```
 
-Details: [docs/DEV_ENV_INTEGRATION.md](docs/DEV_ENV_INTEGRATION.md).
+The module also exports `exportedSchemas.nxr` (disable with `nxr.schema.enable = false`).
+On Determinate Nix with a `flake-schemas` input, schemas merge automatically when
+`nxr.schema.mergeIntoSchemas` is left at its default. Runtime task documents remain
+`nxr.<system>` via ordinary `nix eval` on upstream Nix and Lix.
+
+Details: [docs/DEV_ENV_INTEGRATION.md](docs/DEV_ENV_INTEGRATION.md),
+[docs/TASKS.md](docs/TASKS.md#flake-schema-export-exportedschemasnxr).
 
 ## Quick start
 
@@ -50,6 +57,7 @@ nxr select                # fuzzy picker
 nxr plan test --json      # exact Nix argv + cwd / env / shell policy
 nxr explain test          # why this app/task, cache key, capabilities, argv
 nxr doctor --all          # environment + workspace findings
+nxr doctor determinate    # Determinate Nix diagnostics (N/A on upstream/Lix)
 ```
 
 Inline flake + app (like `nix run`):
@@ -79,7 +87,8 @@ nxr --flake ./path/to/flake hello
 | `nxr explain <name>` | Full resolution + exact Nix invocation |
 | `nxr affected [PATH…]` | Conservative path→app/task analysis (`--json` for CI) |
 | `nxr inspect` / `doctor` | Overview and diagnostics |
-| `nxr cache clear\|status` | Discovery cache management |
+| `nxr doctor determinate` | Determinate Nix distribution / nixd / lazy-tree findings |
+| `nxr cache clear\|status` | Discovery + capability cache management |
 | `nxr completion zsh` | Shell completion script |
 
 Useful globals: `--flake`, `--cwd` / `--root`, `--shell <name>`,
@@ -137,8 +146,10 @@ nxr task ci --watch
 nxr task lint unit --watch -j 4       # multi-root union + scheduler options
 ```
 
-Built-in ignores: `.git`, `target`, `result*`, `/nix/store`. Ctrl-C stops the
-watcher and shuts down the current generation.
+Built-in ignores: `.git`, `target`, `result*`, `/nix/store`. Source-only edits
+reuse the cached workspace snapshot and prepared plan (no rediscovery); changes
+to `flake.nix` / `*.nix` / `flake.lock` / declared `discoveryInputs` rebuild
+metadata. Ctrl-C stops the watcher and shuts down the current generation.
 
 ### Monorepo views and affected
 
@@ -173,7 +184,9 @@ Coming from `mise` / `just`? [docs/MIGRATE_FROM_MISE_JUST.md](docs/MIGRATE_FROM_
 |---|---|
 | [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) | Commands and flags |
 | [docs/APP_AUTHORING.md](docs/APP_AUTHORING.md) | Writing robust flake apps |
-| [docs/TASKS.md](docs/TASKS.md) | Task graphs and aliases |
+| [docs/TASKS.md](docs/TASKS.md) | Task graphs, aliases, schema export |
+| [docs/TASK_SCHEMA_V2.md](docs/TASK_SCHEMA_V2.md) | Draft v2 inputs/outputs/cache/resources (not implemented) |
+| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Nix call budgets, caches, release timing harness |
 | [docs/MONOREPO_VIEWS.md](docs/MONOREPO_VIEWS.md) | Categories, namespaces, projects file |
 | [docs/DEV_ENV_INTEGRATION.md](docs/DEV_ENV_INTEGRATION.md) | Dev shells, direnv, shellIntegration |
 | [docs/EXECUTION_CONTEXT.md](docs/EXECUTION_CONTEXT.md) | Contexts, secrets, Home Manager, processes (planned) |
@@ -190,5 +203,10 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**2.5.0** — `task --affected` / `plan --affected` using existing path analysis.
-History: [CHANGELOG.md](CHANGELOG.md).
+**2.5.0** on `main` — affected execution, plus warm-path latency foundations:
+persistent Nix capability cache, incremental discovery fingerprints, watch
+snapshot reuse, generic flake inventory / `exportedSchemas.nxr`, and
+`nxr doctor determinate`. Task schema v2 remains a draft only.
+
+History: [CHANGELOG.md](CHANGELOG.md). Next: [docs/ROADMAP.md](docs/ROADMAP.md)
+(2.6 ecosystem ergonomics → 3.0 execution-context schema).
