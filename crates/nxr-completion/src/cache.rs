@@ -211,7 +211,7 @@ struct CachedDiscovery {
     tasks: Option<TaskDocument>,
 }
 
-const CACHE_SCHEMA_VERSION: u32 = 4;
+const CACHE_SCHEMA_VERSION: u32 = 5;
 
 #[cfg(test)]
 thread_local! {
@@ -775,14 +775,18 @@ mod tests {
         let cache_home = temp.path().join("cache").join("discovery");
         fs::create_dir_all(&cache_home).expect("create cache dir");
         super::TEST_CACHE_ROOT.with(|cell| {
-            *cell.borrow_mut() = Some(cache_home);
+            *cell.borrow_mut() = Some(cache_home.clone());
         });
+        crate::fingerprint::set_test_fingerprint_index_root(Some(
+            cache_home.join("fingerprint-index"),
+        ));
 
         let result = f();
 
         super::TEST_CACHE_ROOT.with(|cell| {
             *cell.borrow_mut() = None;
         });
+        crate::fingerprint::set_test_fingerprint_index_root(None);
         result
     }
 
@@ -794,6 +798,9 @@ mod tests {
                 .expect("concurrent cache lock");
             *guard = Some(cache_home.to_path_buf());
         }
+        crate::fingerprint::set_test_fingerprint_index_root(Some(
+            cache_home.join("fingerprint-index"),
+        ));
 
         let result = f();
 
@@ -803,6 +810,7 @@ mod tests {
                 .expect("concurrent cache lock");
             *guard = None;
         }
+        crate::fingerprint::set_test_fingerprint_index_root(None);
         result
     }
 
