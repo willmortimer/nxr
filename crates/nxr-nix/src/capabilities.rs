@@ -639,6 +639,29 @@ fn config_has_setting(config_json: Option<&str>, key: &str) -> bool {
         .is_some_and(|value| value.get(key).is_some())
 }
 
+/// Read a string-list Nix config setting from `nix config show --json` output.
+#[must_use]
+pub fn config_string_list_setting(config_json: Option<&str>, key: &str) -> Option<Vec<String>> {
+    let raw = config_json?;
+    let value: JsonValue = serde_json::from_str(raw).ok()?;
+    let setting = value.get(key)?;
+    let setting_value = setting.get("value").unwrap_or(setting);
+    match setting_value {
+        JsonValue::Array(items) => Some(
+            items
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .map(str::to_owned)
+                .collect(),
+        ),
+        JsonValue::String(text) => {
+            let items: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
+            if items.is_empty() { None } else { Some(items) }
+        }
+        _ => None,
+    }
+}
+
 /// Read a boolean Nix config setting from `nix config show --json` output.
 #[must_use]
 pub fn config_bool_setting(config_json: Option<&str>, key: &str) -> Option<bool> {

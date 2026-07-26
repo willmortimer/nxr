@@ -184,6 +184,27 @@ impl NixAdapter {
         discovery::discover_outputs_with_args(&self.nix, &self.system, flake_ref, table, &args)
     }
 
+    /// Run `nix flake show --json` and return the parsed document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixError`] when flakes are disabled, evaluation fails, or JSON is invalid.
+    pub fn flake_show_json(
+        &self,
+        flake_ref: &str,
+        requested: &OptionalNixFlags,
+    ) -> Result<serde_json::Value, NixError> {
+        use crate::capabilities::{NixFailureKind, run_nix};
+
+        self.require_flakes()?;
+        let args = self.compatible_argv(
+            command::flake_show_args(flake_ref),
+            &Self::discovery_flags(requested),
+        )?;
+        let stdout = run_nix(&self.nix, &args, NixFailureKind::Evaluation)?;
+        serde_json::from_slice(&stdout).map_err(|source| NixError::InvalidJson { source })
+    }
+
     /// Build a capability-aware `nix run` argv for an app.
     ///
     /// # Errors
@@ -244,6 +265,20 @@ impl NixAdapter {
     ) -> Result<Vec<String>, NixError> {
         self.require_flakes()?;
         self.compatible_argv(command::nix_develop_args(flake_ref, shell_name), requested)
+    }
+
+    /// Capability-aware `nix fmt` argv.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixError::FlakesDisabled`] when flakes are not enabled.
+    pub fn nix_fmt_argv(
+        &self,
+        paths: &[impl AsRef<str>],
+        requested: &OptionalNixFlags,
+    ) -> Result<Vec<String>, NixError> {
+        self.require_flakes()?;
+        self.compatible_argv(command::nix_fmt_args(paths), requested)
     }
 }
 

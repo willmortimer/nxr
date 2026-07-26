@@ -4,6 +4,7 @@ pub mod adapter;
 pub mod capabilities;
 pub mod capability_cache;
 pub mod command;
+pub mod configurations;
 pub mod determinate;
 pub mod discovery;
 pub mod inventory;
@@ -18,8 +19,9 @@ pub use adapter::NixAdapter;
 pub use capabilities::{
     CapabilityEvidence, CapabilityProvenance, FlagPolicy, NixCapabilities, NixDistribution,
     NixFailureKind, NixVersion, OptionalNixFlags, TESTED_NIX_SUPPORT_FLOOR, config_bool_setting,
-    detect_capabilities, detect_system, locate_nix, negotiate_capabilities, parse_nix_distribution,
-    parse_nix_version_output, probe_config_json, probe_version_banner, run_nix,
+    config_string_list_setting, detect_capabilities, detect_system, locate_nix,
+    negotiate_capabilities, parse_nix_distribution, parse_nix_version_output, probe_config_json,
+    probe_version_banner, run_nix,
 };
 pub use capability_cache::{
     CAPABILITY_CACHE_ENV, CAPABILITY_CACHE_TTL_ENV, CapabilityCacheStatus, capability_cache_dir,
@@ -27,9 +29,14 @@ pub use capability_cache::{
     detect_nix_environment,
 };
 pub use command::{
-    NIX_EXECUTABLE_ENV, check_installable, current_system_args, flake_eval_json_args,
-    flake_show_args, nix_build_args, nix_develop_args, nix_develop_wrap_run_args,
-    nix_flake_check_args, nix_run_args, package_installable,
+    NIX_EXECUTABLE_ENV, attr_installable, check_installable, current_system_args,
+    flake_eval_json_args, flake_show_args, nix_build_args, nix_develop_args,
+    nix_develop_wrap_run_args, nix_flake_check_args, nix_fmt_args, nix_run_args,
+    package_installable, token_is_explicit_installable,
+};
+pub use configurations::{
+    ConfigurationEntry, ConfigurationKind, configuration_installable, find_configuration,
+    is_configuration_output_key, list_configurations, parse_configuration_output_node,
 };
 pub use determinate::{
     DeterminatePerformanceFeatures, LazyTreesState, NixdProbe, host_is_macos,

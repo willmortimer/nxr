@@ -120,12 +120,37 @@ pub fn check_installable(flake_ref: &str, system: &str, name: &str) -> String {
     format!("{flake_ref}#checks.{system}.{name}")
 }
 
+/// Arguments for `nix fmt` (flake formatter).
+///
+/// When `paths` is empty, `nix fmt` formats the flake in the current directory.
+#[must_use]
+pub fn nix_fmt_args(paths: &[impl AsRef<str>]) -> Vec<String> {
+    let mut args = vec!["fmt".to_owned()];
+    args.extend(paths.iter().map(|path| path.as_ref().to_owned()));
+    args
+}
+
+/// Build installable from a flake reference and attribute path.
+#[must_use]
+pub fn attr_installable(flake_ref: &str, attr_path: &str) -> String {
+    format!("{flake_ref}#{attr_path}")
+}
+
+/// Whether a build token is an explicit flake installable rather than a leaf name.
+#[must_use]
+pub fn token_is_explicit_installable(token: &str) -> bool {
+    token.contains('#')
+        || token.starts_with(".#")
+        || token.contains(':') && (token.starts_with("github:") || token.starts_with("git+"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        check_installable, current_system_args, flake_eval_json_args, flake_show_args,
-        nix_build_args, nix_develop_args, nix_develop_wrap_run_args, nix_flake_check_args,
-        nix_run_args, package_installable,
+        attr_installable, check_installable, current_system_args, flake_eval_json_args,
+        flake_show_args, nix_build_args, nix_develop_args, nix_develop_wrap_run_args,
+        nix_flake_check_args, nix_fmt_args, nix_run_args, package_installable,
+        token_is_explicit_installable,
     };
 
     #[test]
@@ -268,6 +293,26 @@ mod tests {
             nix_build_args(&check_installable(".", "x86_64-linux", "fmt")),
             vec!["build".to_owned(), ".#checks.x86_64-linux.fmt".to_owned()]
         );
+    }
+
+    #[test]
+    fn nix_fmt_argv_formats_paths_or_cwd() {
+        assert_eq!(nix_fmt_args(&[] as &[&str]), vec!["fmt".to_owned()]);
+        assert_eq!(
+            nix_fmt_args(&["flake.nix", "nix/"]),
+            vec!["fmt".to_owned(), "flake.nix".to_owned(), "nix/".to_owned()]
+        );
+    }
+
+    #[test]
+    fn attr_installable_and_explicit_token_detection() {
+        assert_eq!(
+            attr_installable(".", "packages.x86_64-linux.nxr"),
+            ".#packages.x86_64-linux.nxr"
+        );
+        assert!(token_is_explicit_installable(".#packages.x86_64-linux.nxr"));
+        assert!(token_is_explicit_installable("github:foo/bar#default"));
+        assert!(!token_is_explicit_installable("marker"));
     }
 
     #[test]
