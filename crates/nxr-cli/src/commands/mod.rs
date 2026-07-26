@@ -6,6 +6,7 @@ pub mod common;
 pub mod complete;
 pub mod completion;
 pub mod doctor;
+pub mod doctor_determinate;
 pub mod explain;
 pub mod graph;
 pub mod inspect;

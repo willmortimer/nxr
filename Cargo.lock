@@ -652,11 +652,15 @@ dependencies = [
 name = "nxr-nix"
 version = "2.5.0"
 dependencies = [
+ "blake3",
  "camino",
+ "directories",
+ "fs2",
  "nxr-core",
  "nxr-task",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "which",
 ]
@@ -688,6 +692,7 @@ dependencies = [
  "camino",
  "globset",
  "notify",
+ "nxr-affected",
  "nxr-core",
  "tempfile",
  "thiserror",

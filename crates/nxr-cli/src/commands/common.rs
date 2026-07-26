@@ -91,6 +91,122 @@ pub struct WorkspaceSnapshot {
     pub invocation_directory: Utf8PathBuf,
 }
 
+/// Per-invocation holder for Nix adapter probes and workspace snapshots.
+///
+/// Doctor, watch, and task paths thread one instance so adapter capability probes
+/// and discovery run at most once per CLI invocation.
+#[derive(Debug)]
+pub struct WorkspaceState<'a> {
+    flake_arg: Option<&'a str>,
+    nix_override: Option<&'a str>,
+    nix_flags: &'a OptionalNixFlags,
+    adapter: Option<NixAdapter>,
+    snapshot_apps: Option<WorkspaceSnapshot>,
+    snapshot_tasks: Option<WorkspaceSnapshot>,
+}
+
+impl<'a> WorkspaceState<'a> {
+    /// Create an empty holder for the given invocation inputs.
+    #[must_use]
+    pub fn new(
+        flake_arg: Option<&'a str>,
+        nix_override: Option<&'a str>,
+        nix_flags: &'a OptionalNixFlags,
+    ) -> Self {
+        Self {
+            flake_arg,
+            nix_override,
+            nix_flags,
+            adapter: None,
+            snapshot_apps: None,
+            snapshot_tasks: None,
+        }
+    }
+
+    /// Locate `nix` and run capability probes at most once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixError`] when the executable cannot be located or probed.
+    pub fn adapter(&mut self) -> Result<&NixAdapter, NixError> {
+        if self.adapter.is_none() {
+            self.adapter = Some(build_adapter(self.nix_override)?);
+        }
+        Ok(self.adapter.as_ref().expect("adapter cached after success"))
+    }
+
+    /// Locate `nix` and run capability probes, optionally bypassing the cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixError`] when the executable cannot be located or probed.
+    pub fn adapter_refresh(&mut self, refresh: bool) -> Result<&NixAdapter, NixError> {
+        if refresh || self.adapter.is_none() {
+            self.adapter = Some(build_adapter_refresh(self.nix_override, refresh)?);
+        }
+        Ok(self.adapter.as_ref().expect("adapter cached after success"))
+    }
+
+    /// Load or reuse a workspace snapshot for the current invocation.
+    ///
+    /// A tasks-inclusive snapshot satisfies apps-only callers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrepareError`] when directories, flake selection, Nix, or discovery fail.
+    pub fn snapshot(&mut self, load_tasks: bool) -> Result<&WorkspaceSnapshot, PrepareError> {
+        self.ensure_snapshot(load_tasks)?;
+        if load_tasks {
+            return Ok(self
+                .snapshot_tasks
+                .as_ref()
+                .expect("tasks snapshot ensured"));
+        }
+        if let Some(snapshot) = self.snapshot_tasks.as_ref() {
+            return Ok(snapshot);
+        }
+        Ok(self.snapshot_apps.as_ref().expect("apps snapshot ensured"))
+    }
+
+    fn ensure_snapshot(&mut self, load_tasks: bool) -> Result<(), PrepareError> {
+        if load_tasks {
+            if self.snapshot_tasks.is_none() {
+                let adapter = self.adapter().map_err(PrepareError::Nix)?.clone();
+                self.snapshot_tasks = Some(WorkspaceSnapshot::build(
+                    self.flake_arg,
+                    true,
+                    self.nix_flags,
+                    adapter,
+                )?);
+            }
+            return Ok(());
+        }
+
+        if self.snapshot_tasks.is_some() {
+            return Ok(());
+        }
+
+        if self.snapshot_apps.is_none() {
+            let adapter = self.adapter().map_err(PrepareError::Nix)?.clone();
+            self.snapshot_apps = Some(WorkspaceSnapshot::build(
+                self.flake_arg,
+                false,
+                self.nix_flags,
+                adapter,
+            )?);
+        }
+        Ok(())
+    }
+
+    /// Drop cached snapshots so the next [`Self::snapshot`] call rediscovers.
+    ///
+    /// The Nix adapter (capability probes) is retained.
+    pub fn invalidate_snapshots(&mut self) {
+        self.snapshot_apps = None;
+        self.snapshot_tasks = None;
+    }
+}
+
 /// Errors while preparing an app plan.
 #[derive(Debug, thiserror::Error)]
 pub enum PrepareError {
@@ -171,12 +287,20 @@ pub fn discover_apps(request: DiscoverRequest<'_>) -> Result<DiscoveredApps, Pre
 /// Returns [`PrepareError`] when directories, flake selection, discovery, or
 /// app resolution fail.
 pub fn prepare_app_plan(request: &AppRequest<'_>) -> Result<PreparedPlan, PrepareError> {
-    let snapshot = WorkspaceSnapshot::load(
-        request.flake_arg,
-        request.nix_override,
-        false,
-        request.nix_flags,
-    )?;
+    let mut state = WorkspaceState::new(request.flake_arg, request.nix_override, request.nix_flags);
+    prepare_app_plan_in_state(request, &mut state)
+}
+
+/// Prepare an app plan using a shared per-invocation workspace holder.
+///
+/// # Errors
+///
+/// Same as [`prepare_app_plan`].
+pub fn prepare_app_plan_in_state(
+    request: &AppRequest<'_>,
+    state: &mut WorkspaceState<'_>,
+) -> Result<PreparedPlan, PrepareError> {
+    let snapshot = state.snapshot(false)?;
     snapshot.prepare_discovered_app(request)
 }
 
@@ -259,9 +383,18 @@ impl WorkspaceSnapshot {
         load_tasks: bool,
         nix_flags: &OptionalNixFlags,
     ) -> Result<Self, PrepareError> {
+        let nix = build_adapter(nix_override)?;
+        Self::build(flake_arg, load_tasks, nix_flags, nix)
+    }
+
+    fn build(
+        flake_arg: Option<&str>,
+        load_tasks: bool,
+        nix_flags: &OptionalNixFlags,
+        nix: NixAdapter,
+    ) -> Result<Self, PrepareError> {
         let invocation_directory = current_invocation_directory()?;
         let flake = resolve_flake(flake_arg, &invocation_directory)?;
-        let nix = build_adapter(nix_override)?;
         let context = DiscoveryContext {
             flake_ref: flake.nix_ref.clone(),
             local_root: flake.local_root.clone(),
@@ -472,13 +605,33 @@ pub fn current_invocation_directory() -> Result<Utf8PathBuf, PrepareError> {
 ///
 /// Returns [`NixError`] when the executable cannot be located or the system cannot be detected.
 pub fn build_adapter(nix_override: Option<&str>) -> Result<NixAdapter, NixError> {
+    build_adapter_refresh(nix_override, false)
+}
+
+/// Build a [`NixAdapter`], optionally bypassing the capability cache.
+///
+/// # Errors
+///
+/// Returns [`NixError`] when the executable cannot be located or the system cannot be detected.
+pub fn build_adapter_refresh(
+    nix_override: Option<&str>,
+    refresh: bool,
+) -> Result<NixAdapter, NixError> {
     match nix_override {
         Some(path) => {
             let nix = Utf8PathBuf::from(path);
             if !nix.is_file() {
                 return Err(NixError::NixNotFound { path: nix });
             }
-            NixAdapter::from_nix(nix)
+            if refresh {
+                NixAdapter::from_nix_refresh(nix)
+            } else {
+                NixAdapter::from_nix(nix)
+            }
+        }
+        None if refresh => {
+            let nix = nxr_nix::locate_nix()?;
+            NixAdapter::from_nix_refresh(nix)
         }
         None => NixAdapter::new(),
     }

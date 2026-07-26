@@ -9,13 +9,13 @@ Baselines for the runner. App **execution** time is dominated by `nix run` and t
 | Bare `nxr <app>` / `nxr run <app>` (success or ordinary app failure) | **exactly 1×** `nix` (`nix run`); **0×** probes / `flake show` | Locate-only prepare; no `currentSystem` / capability probes unless `--offline` / `--accept-flake-config`; TTY stderr is inherited (no capture) |
 | Bare app missing installable (non-TTY stderr) | **1×** `nix run` + optional diagnostic discovery | Bounded stderr tail (~128 KiB); suggestion discovery only when stderr indicates installable-resolution failure |
 | Bare app on a TTY | **1×** `nix run`; inherit stderr | Prefer transparent rendering over typo suggestions |
-| Adapter init (list/task/doctor) | **1×** `nix eval` (`currentSystem`) + capability probes (`--version`, config/help) | Shared via `WorkspaceSnapshot` / `NixAdapter`; not repeated per task node |
+| Adapter init (list/task/doctor) | **1×** `nix eval` (`currentSystem`) + capability probes (`--version`, config/help) | Shared via `WorkspaceSnapshot` / `NixAdapter`; capability probes persist across invocations (`~/.cache/nxr/capabilities/`); not repeated per task node |
 | `nxr task` with **N** nodes | **N×** `nix run` + **O(1)** discovery | One `flake show` (apps) + one task `eval` (or warm combined cache); **not** N× `flake show` |
 | `nxr list --refresh-discovery` | Dominated by `nix flake show` | Catalog commands still discover |
 | Named `nxr build` / `check` / `shell` | Direct installable argv (no whole-output discovery up front) | Adapter init still probes once for system / flags |
 | Named build/check/shell missing attribute | **1×** installable + optional diagnostic discovery | Suggestion discovery only when stderr indicates missing attribute |
 
-Instrumented integration tests wrap `NXR_NIX` with a counting shim to assert these budgets (`run==1`, `eval==0`, `flake-show==0`, `other==0` for bare success/fail).
+Instrumented integration tests wrap `NXR_NIX` with a counting shim to assert these budgets (`run==1`, `eval==0`, `flake-show==0`, `other==0` for bare success/fail). Capability probes are logged separately as `version`, `config`, and `help` (not lumped into `other`).
 
 ## Budgets
 
@@ -35,6 +35,8 @@ Discovery cache **schema v3** invalidates on:
 
 Built-in ignores cover `.git`, `result`, `target`, and similar trees. Set `NXR_CACHE_FINGERPRINT_IGNORE` to a colon-separated list of globs to skip huge vendored `.nix` trees. Remote flakes are never cached.
 
+Capability cache invalidates on Nix executable identity (canonical path + device/inode + size + mtime), with a 7-day TTL backstop (`NXR_CAPABILITY_CACHE_TTL_SECS`; `0` disables). Set `NXR_CAPABILITY_CACHE=off` to bypass. `nxr cache clear` removes capability entries alongside discovery cache.
+
 ## Measured baselines
 
 Host: `aarch64-darwin` (Apple Silicon), macOS 26.5.1, Nix 2.34.7. Binary: `cargo build -p nxr-cli` (debug). Timings via `/usr/bin/time -p`, three runs, quiet mode where applicable. Measured 2026-07-18.
@@ -48,7 +50,9 @@ Host: `aarch64-darwin` (Apple Silicon), macOS 26.5.1, Nix 2.34.7. Binary: `cargo
 | Warm `nxr __complete apps` | **0.05 s** | Within completion budget |
 | `nxr plan test` | **0.17 s** | Resolve + plan; no app execution |
 
-Re-measure after changing discovery, cache keys, or Nix adapter behavior:
+Re-measure after changing discovery, cache keys, or Nix adapter behavior.
+
+**Debug (quick smoke):**
 
 ```bash
 cargo build -p nxr-cli --quiet
@@ -56,6 +60,21 @@ cargo build -p nxr-cli --quiet
 ./target/debug/nxr --refresh-discovery -q list
 ./target/debug/nxr -q list
 ```
+
+**Release (regression harness):**
+
+```bash
+./scripts/perf/measure-release.sh
+```
+
+The script prefers `nix build .#nxr` and falls back to `cargo build -p nxr-cli --release`. It times cold/warm `list` and warm `plan` over `NXR_PERF_RUNS` (default 5) and prints per-run wall times plus **p50**. Compare p50 across commits; use p95/max to spot filesystem or Nix daemon outliers. Optional baseline artifact: [`scripts/perf/baseline-aarch64-darwin.json`](../scripts/perf/baseline-aarch64-darwin.json).
+
+Suggested release p50 targets on a local SSD (order-of-magnitude; see also nxr-next performance foundations):
+
+| Scenario | p50 target |
+|---|---:|
+| Warm `nxr list` (small fixture) | < 25 ms |
+| Warm `nxr plan <app>` | < 75 ms |
 
 ## Interpretation
 

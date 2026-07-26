@@ -180,6 +180,20 @@ pub enum ExplainSubcommand {
     },
 }
 
+/// `nxr doctor` sub-targets.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum DoctorSubcommand {
+    /// Determinate Nix distribution and integration diagnostics
+    Determinate {
+        /// Include extended builder hints from nixd status
+        #[arg(long = "all")]
+        all: bool,
+        /// Bypass the capability cache when probing Nix
+        #[arg(long = "refresh")]
+        refresh: bool,
+    },
+}
+
 /// Top-level commands. Bare `nxr` defaults to listing apps.
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 pub enum Command {
@@ -278,13 +292,15 @@ pub enum Command {
     Select,
     /// Diagnose environment and flake configuration
     Doctor {
+        #[command(subcommand)]
+        target: Option<DoctorSubcommand>,
         /// Run clean-environment diagnostics (may dry-run plan only)
         #[arg(long = "clean-env")]
         clean_env: bool,
         /// Emit extra non-destructive findings (descriptions, naming, cache)
         #[arg(long = "all")]
         all: bool,
-        /// Optional app name to validate
+        /// Optional app name to validate (default doctor form only)
         app: Option<String>,
     },
     /// Explain resolution and invocation for an app or task
@@ -450,8 +466,8 @@ pub enum Command {
 /// `nxr cache` subcommands.
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 pub enum CacheSubcommand {
-    /// Remove all discovery cache entries
+    /// Remove discovery and capability cache entries
     Clear,
-    /// Show discovery cache location and size
+    /// Show discovery and capability cache locations and sizes
     Status,
 }

@@ -4,6 +4,7 @@ use std::io::{self, Write};
 
 use nxr_completion::{clear_discovery_cache, discovery_cache_status};
 use nxr_core::diagnostics::exit;
+use nxr_nix::{capability_cache_status, clear_capability_cache};
 use serde::Serialize;
 
 use crate::runner_output::RunnerOutput;
@@ -28,14 +29,21 @@ impl CacheError {
 
 #[derive(Serialize)]
 struct CacheClearJson {
-    removed: usize,
+    discovery_removed: usize,
+    capabilities_removed: usize,
+}
+
+#[derive(Serialize)]
+struct CacheStatusSection {
+    path: String,
+    entries: usize,
+    total_bytes: u64,
 }
 
 #[derive(Serialize)]
 struct CacheStatusJson {
-    path: String,
-    entries: usize,
-    total_bytes: u64,
+    discovery: CacheStatusSection,
+    capabilities: CacheStatusSection,
 }
 
 /// Remove all discovery cache entries.
@@ -44,16 +52,21 @@ struct CacheStatusJson {
 ///
 /// Returns [`CacheError`] when cache files cannot be removed or output fails.
 pub fn clear(json: bool, runner: RunnerOutput) -> Result<(), CacheError> {
-    let removed = clear_discovery_cache()?;
+    let discovery_removed = clear_discovery_cache()?;
+    let capabilities_removed = clear_capability_cache()?;
     if json {
-        let payload = CacheClearJson { removed };
+        let payload = CacheClearJson {
+            discovery_removed,
+            capabilities_removed,
+        };
         let rendered = serde_json::to_string_pretty(&payload)?;
         writeln!(io::stdout().lock(), "{rendered}")?;
     } else {
         runner
             .info(format!(
-                "removed {removed} discovery cache entr{}",
-                if removed == 1 { "y" } else { "ies" }
+                "removed {discovery_removed} discovery cache entr{} and {capabilities_removed} capability cache entr{}",
+                if discovery_removed == 1 { "y" } else { "ies" },
+                if capabilities_removed == 1 { "y" } else { "ies" },
             ))
             .map_err(CacheError::Io)?;
     }
@@ -65,28 +78,59 @@ pub fn clear(json: bool, runner: RunnerOutput) -> Result<(), CacheError> {
 /// # Errors
 ///
 /// Returns [`CacheError`] when the cache directory cannot be read or output fails.
-pub fn status(json: bool, runner: RunnerOutput) -> Result<(), CacheError> {
-    let status = discovery_cache_status()?;
+pub fn status(json: bool, mut runner: RunnerOutput) -> Result<(), CacheError> {
+    let discovery = discovery_cache_status()?;
+    let capabilities = capability_cache_status()?;
     if json {
         let payload = CacheStatusJson {
-            path: status.path,
-            entries: status.entries,
-            total_bytes: status.total_bytes,
+            discovery: CacheStatusSection {
+                path: discovery.path,
+                entries: discovery.entries,
+                total_bytes: discovery.total_bytes,
+            },
+            capabilities: CacheStatusSection {
+                path: capabilities.path,
+                entries: capabilities.entries,
+                total_bytes: capabilities.total_bytes,
+            },
         };
         let rendered = serde_json::to_string_pretty(&payload)?;
         writeln!(io::stdout().lock(), "{rendered}")?;
-    } else if status.path.is_empty() {
+    } else {
+        render_status_section(
+            &mut runner,
+            "discovery",
+            &discovery.path,
+            discovery.entries,
+            discovery.total_bytes,
+        )?;
+        render_status_section(
+            &mut runner,
+            "capability",
+            &capabilities.path,
+            capabilities.entries,
+            capabilities.total_bytes,
+        )?;
+    }
+    Ok(())
+}
+
+fn render_status_section(
+    runner: &mut RunnerOutput,
+    label: &str,
+    path: &str,
+    entries: usize,
+    total_bytes: u64,
+) -> Result<(), CacheError> {
+    if path.is_empty() {
         runner
-            .info("discovery cache unavailable on this host")
+            .info(format!("{label} cache unavailable on this host"))
             .map_err(CacheError::Io)?;
     } else {
         runner
             .info(format!(
-                "discovery cache: {} ({} entr{}, {} bytes)",
-                status.path,
-                status.entries,
-                if status.entries == 1 { "y" } else { "ies" },
-                status.total_bytes
+                "{label} cache: {path} ({entries} entr{}, {total_bytes} bytes)",
+                if entries == 1 { "y" } else { "ies" },
             ))
             .map_err(CacheError::Io)?;
     }

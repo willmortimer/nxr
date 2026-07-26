@@ -8,62 +8,9 @@ use serde_json::Value as JsonValue;
 
 use crate::capabilities::{NixFailureKind, run_nix};
 use crate::command;
+pub use crate::inventory::OutputTable;
+use crate::inventory::{list_standard_outputs, parse_flake_inventory};
 use crate::{NixError, ParseAppsError};
-
-/// Which flake output table to parse from `nix flake show --json`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OutputTable {
-    /// `apps.<system>.*` (`type == "app"`).
-    Apps,
-    /// `packages.<system>.*` (`type == "derivation"`).
-    Packages,
-    /// `checks.<system>.*` (`type == "derivation"`).
-    Checks,
-    /// `devShells.<system>.*` (`type == "derivation"`).
-    DevShells,
-}
-
-impl OutputTable {
-    #[must_use]
-    pub const fn show_key(self) -> &'static str {
-        match self {
-            Self::Apps => "apps",
-            Self::Packages => "packages",
-            Self::Checks => "checks",
-            Self::DevShells => "devShells",
-        }
-    }
-
-    #[must_use]
-    pub const fn attr_prefix(self) -> &'static str {
-        match self {
-            Self::Apps => "apps",
-            Self::Packages => "packages",
-            Self::Checks => "checks",
-            Self::DevShells => "devShells",
-        }
-    }
-
-    /// Upstream `nix flake show --json` `type` field (pre-inventory format).
-    #[must_use]
-    pub const fn expected_type(self) -> &'static str {
-        match self {
-            Self::Apps => "app",
-            Self::Packages | Self::Checks | Self::DevShells => "derivation",
-        }
-    }
-
-    /// Determinate Nix inventory v2 `what` field (flake-schemas).
-    #[must_use]
-    pub const fn expected_what(self) -> &'static str {
-        match self {
-            Self::Apps => "app",
-            Self::Packages => "package",
-            Self::Checks => "CI test",
-            Self::DevShells => "development environment",
-        }
-    }
-}
 
 /// Discover apps for `system` from `flake_ref`.
 ///
@@ -152,101 +99,19 @@ pub fn parse_outputs_from_flake_show(
     system: &str,
     table: OutputTable,
 ) -> Result<Vec<FlakeOutput>, ParseAppsError> {
-    if let Some(outputs) = parse_legacy_show_table(show, flake_ref, system, table) {
-        return Ok(outputs);
-    }
-    if let Some(outputs) = parse_inventory_v2_table(show, flake_ref, system, table) {
-        return Ok(outputs);
-    }
-    Ok(Vec::new())
-}
-
-/// Upstream / Lix shape: `{ "apps": { "<system>": { "<name>": { "type": … } } } }`.
-fn parse_legacy_show_table(
-    show: &JsonValue,
-    flake_ref: &str,
-    system: &str,
-    table: OutputTable,
-) -> Option<Vec<FlakeOutput>> {
-    let entries = show
-        .get(table.show_key())
-        .and_then(|root| root.get(system))
-        .and_then(JsonValue::as_object)?;
-
-    let expected_type = table.expected_type();
-    let mut outputs = Vec::new();
-    for (name, entry) in entries {
-        let Some(entry_type) = entry.get("type").and_then(JsonValue::as_str) else {
-            continue;
-        };
-        if entry_type != expected_type {
-            continue;
-        }
-
-        let description = entry
-            .get("description")
-            .and_then(JsonValue::as_str)
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned);
-
-        outputs.push(FlakeOutput {
-            name: name.clone(),
-            attr_path: format!("{}.{system}.{name}", table.attr_prefix()),
+    let inventory = parse_flake_inventory(show);
+    let entries = list_standard_outputs(&inventory, table, system);
+    Ok(entries
+        .into_iter()
+        .map(|entry| FlakeOutput {
+            name: entry.name.clone(),
+            attr_path: format!("{}.{system}.{}", table.attr_prefix(), entry.name),
             flake_ref: flake_ref.to_owned(),
             system: system.to_owned(),
-            description,
-            is_default: name == "default",
-        });
-    }
-
-    outputs.sort_by(|left, right| left.name.cmp(&right.name));
-    Some(outputs)
-}
-
-/// Determinate Nix inventory v2: `{ "version": 2, "inventory": { "apps": { "output": { "children": … } } } }`.
-fn parse_inventory_v2_table(
-    show: &JsonValue,
-    flake_ref: &str,
-    system: &str,
-    table: OutputTable,
-) -> Option<Vec<FlakeOutput>> {
-    let entries = show
-        .get("inventory")
-        .and_then(|inv| inv.get(table.show_key()))
-        .and_then(|root| root.get("output"))
-        .and_then(|output| output.get("children"))
-        .and_then(|systems| systems.get(system))
-        .and_then(|system_node| system_node.get("children"))
-        .and_then(JsonValue::as_object)?;
-
-    let expected_what = table.expected_what();
-    let mut outputs = Vec::new();
-    for (name, entry) in entries {
-        let Some(what) = entry.get("what").and_then(JsonValue::as_str) else {
-            continue;
-        };
-        if what != expected_what {
-            continue;
-        }
-
-        let description = entry
-            .get("shortDescription")
-            .and_then(JsonValue::as_str)
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned);
-
-        outputs.push(FlakeOutput {
-            name: name.clone(),
-            attr_path: format!("{}.{system}.{name}", table.attr_prefix()),
-            flake_ref: flake_ref.to_owned(),
-            system: system.to_owned(),
-            description,
-            is_default: name == "default",
-        });
-    }
-
-    outputs.sort_by(|left, right| left.name.cmp(&right.name));
-    Some(outputs)
+            description: entry.description,
+            is_default: entry.is_default,
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -256,6 +121,7 @@ mod tests {
     use serde_json::json;
 
     use super::{OutputTable, parse_apps_from_flake_show, parse_outputs_from_flake_show};
+    use crate::inventory::parse_flake_inventory;
     use nxr_core::App;
 
     const BASIC_APPS_SHOW: &str =
@@ -527,5 +393,46 @@ mod tests {
             vec!["backend", "default"]
         );
         assert_eq!(shells[0].attr_path, "devShells.aarch64-darwin.backend");
+    }
+
+    #[test]
+    fn parse_unknown_outputs_preserved_in_ast_without_affecting_standard_lists() {
+        let show = json!({
+            "apps": {
+                "aarch64-darwin": {
+                    "hello": { "type": "app", "description": "Hi" }
+                }
+            },
+            "customWorkflow": {
+                "aarch64-darwin": {
+                    "plan": { "type": "unknown", "description": "CI plan" }
+                }
+            },
+            "version": 2,
+            "inventory": {
+                "nxr": {
+                    "output": {
+                        "children": {
+                            "aarch64-darwin": {
+                                "children": {
+                                    "test": {
+                                        "what": "NXR task",
+                                        "shortDescription": "Run tests"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let inventory = parse_flake_inventory(&show);
+        assert!(inventory.outputs.contains_key("customWorkflow"));
+        assert!(inventory.outputs.contains_key("nxr"));
+
+        let apps = parse_apps_from_flake_show(&show, ".", "aarch64-darwin").expect("apps");
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].name, "hello");
     }
 }

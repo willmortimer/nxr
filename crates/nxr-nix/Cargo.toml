@@ -8,13 +8,19 @@ publish.workspace = true
 description = "Nix CLI adapter for nxr"
 
 [dependencies]
+blake3 = { workspace = true }
 camino = { workspace = true }
+directories = { workspace = true }
+fs2 = { workspace = true }
 nxr-core = { path = "../nxr-core" }
 nxr-task = { path = "../nxr-task" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 which = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

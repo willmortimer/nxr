@@ -3,20 +3,22 @@
 use std::io::{self, Write};
 use std::time::Duration;
 
+use camino::Utf8PathBuf;
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
 use nxr_nix::{AppNotFoundError, NixError, TaskDiscoveryError, resolve_app_by_name};
 use nxr_process::{InterruptFlags, Supervisor, spawn_in};
 use nxr_task::{PlanError, resolve_task_name};
 use nxr_watch::{
-    Generation, PathFilterError, PathFilters, WatchConfig, WatchError, WatchPoll, WatchSession,
+    ChangeClass, Generation, MetadataInputRegistry, PathFilterError, PathFilters, WatchConfig,
+    WatchError, WatchPoll, WatchSession, classify_pending_changes,
 };
 
 use crate::commands::common::{
-    AppRequest, PrepareError, PreparedPlan, WorkspaceSnapshot, current_invocation_directory,
-    prepare_app_plan,
+    AppRequest, PrepareError, PreparedPlan, WorkspaceState, current_invocation_directory,
+    prepare_app_plan_in_state,
 };
-use crate::commands::task::{self, TaskError, TaskRequest, plan_exit_code};
+use crate::commands::task::{self, PreparedTaskGeneration, TaskError, TaskRequest, plan_exit_code};
 use crate::flake::{FlakeResolveError, resolve_flake};
 use crate::output_task::{EventsFormat, TaskOutputMode};
 use crate::runner_output::RunnerOutput;
@@ -154,13 +156,19 @@ enum GenerationOutcome {
     Stopped { code: i32 },
 }
 
+#[derive(Default)]
+struct WatchCaches {
+    app_plan: Option<PreparedPlan>,
+    task_plan: Option<PreparedTaskGeneration>,
+}
+
 /// Resolve `name` as a task (preferred) or app, then watch the flake root.
 ///
 /// Task targets use the normal [`task::execute`] pipeline each generation
 /// (`WorkspaceSnapshot` → `ExecutionPlan` → `PreparedTaskNode` → `Scheduler`),
 /// preserving `-j`, `--keep-going`, working directories, output/events, and exit
-/// codes. Metadata (`.nix`, `flake.lock`, projects, `discoveryInputs`) is
-/// reloaded because each generation rebuilds the snapshot.
+/// codes. Metadata inputs (`.nix`, `flake.lock`, projects, `discoveryInputs`)
+/// invalidate the snapshot; ordinary source edits reuse the prepared plan.
 ///
 /// # Errors
 ///
@@ -176,16 +184,20 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
         .clone()
         .ok_or(WatchCommandError::RemoteFlake)?;
 
-    let target = resolve_target(request)?;
+    let mut workspace =
+        WorkspaceState::new(request.flake_arg, request.nix_override, request.nix_flags);
+    let target = resolve_target(request, &mut workspace)?;
 
     let filters = PathFilters::new(&request.options.include, &request.options.exclude)?;
     let mut session = WatchSession::start(&WatchConfig {
         root: watch_root.clone(),
         debounce: request.options.debounce,
-        filters,
+        filters: filters.clone(),
     })?;
     let interrupts = InterruptFlags::install().map_err(WatchCommandError::Supervision)?;
     let mut generation = Generation::new();
+    let mut metadata_registry = MetadataInputRegistry::new();
+    let mut caches = WatchCaches::default();
 
     runner
         .info(format!(
@@ -201,13 +213,34 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
             clear_terminal().map_err(WatchCommandError::Io)?;
         }
 
+        let pending_changes = session.take_pending_changes();
+        let invalidate_snapshot = apply_restart_classification(
+            &watch_root,
+            &filters,
+            &pending_changes,
+            &mut metadata_registry,
+            &mut workspace,
+            &mut caches,
+            runner,
+        )?;
+        if invalidate_snapshot || generation_id == 1 {
+            refresh_metadata_registry(&mut workspace, &mut metadata_registry)?;
+        }
+
         runner
             .verbose(format!("watch generation {generation_id}"))
             .map_err(WatchCommandError::Io)?;
 
-        session.drain_events();
-
-        match run_generation(request, &target, &mut session, &interrupts, runner)? {
+        match run_generation(
+            request,
+            &target,
+            &mut workspace,
+            &mut session,
+            &interrupts,
+            &mut caches,
+            invalidate_snapshot,
+            runner,
+        )? {
             GenerationOutcome::Idle => loop {
                 if interrupts.take_pending() {
                     return Ok(exit::INTERRUPTED);
@@ -223,17 +256,15 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
     }
 }
 
-fn resolve_target(request: &WatchRequest<'_>) -> Result<WatchTarget, WatchCommandError> {
+fn resolve_target(
+    request: &WatchRequest<'_>,
+    workspace: &mut WorkspaceState<'_>,
+) -> Result<WatchTarget, WatchCommandError> {
     if request.task_settings.is_some() {
         return Ok(WatchTarget::Task);
     }
 
-    let snapshot = WorkspaceSnapshot::load(
-        request.flake_arg,
-        request.nix_override,
-        true,
-        request.nix_flags,
-    )?;
+    let snapshot = workspace.snapshot(true)?;
     let document = snapshot
         .tasks
         .as_ref()
@@ -250,11 +281,78 @@ fn resolve_target(request: &WatchRequest<'_>) -> Result<WatchTarget, WatchComman
     }
 }
 
+fn refresh_metadata_registry(
+    workspace: &mut WorkspaceState<'_>,
+    registry: &mut MetadataInputRegistry,
+) -> Result<(), WatchCommandError> {
+    let snapshot = workspace.snapshot(true)?;
+    if let Some(document) = snapshot.tasks.as_ref() {
+        registry.set_discovery_inputs(document.discovery_inputs.clone());
+    }
+    Ok(())
+}
+
+fn apply_restart_classification(
+    watch_root: &camino::Utf8Path,
+    filters: &PathFilters,
+    pending_changes: &[Utf8PathBuf],
+    metadata_registry: &mut MetadataInputRegistry,
+    workspace: &mut WorkspaceState<'_>,
+    caches: &mut WatchCaches,
+    runner: RunnerOutput,
+) -> Result<bool, WatchCommandError> {
+    let Some((merged, labeled)) =
+        classify_pending_changes(watch_root, pending_changes, filters, metadata_registry)
+    else {
+        return Ok(false);
+    };
+
+    let invalidate_snapshot = merged == ChangeClass::Metadata;
+    let snapshot_label = if invalidate_snapshot {
+        "rebuilt"
+    } else {
+        "reused"
+    };
+    let plan_label = snapshot_label;
+
+    for (path, class) in &labeled {
+        let relative = path
+            .strip_prefix(watch_root)
+            .map_or(path.as_str(), camino::Utf8Path::as_str);
+        runner
+            .verbose(format!(
+                "change: {relative}\nclassification: {}\nsnapshot: {snapshot_label}\nplan: {plan_label}\ngeneration: restarted",
+                change_class_label(*class)
+            ))
+            .map_err(WatchCommandError::Io)?;
+    }
+
+    if invalidate_snapshot {
+        workspace.invalidate_snapshots();
+        caches.app_plan = None;
+        caches.task_plan = None;
+    }
+
+    Ok(invalidate_snapshot)
+}
+
+fn change_class_label(class: ChangeClass) -> &'static str {
+    match class {
+        ChangeClass::Metadata => "metadata",
+        ChangeClass::Source => "source",
+        ChangeClass::Ignored => "ignored",
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_generation(
     request: &WatchRequest<'_>,
     target: &WatchTarget,
+    workspace: &mut WorkspaceState<'_>,
     session: &mut WatchSession,
     interrupts: &InterruptFlags,
+    caches: &mut WatchCaches,
+    invalidate_snapshot: bool,
     runner: RunnerOutput,
 ) -> Result<GenerationOutcome, WatchCommandError> {
     match target {
@@ -271,18 +369,44 @@ fn run_generation(
                 environment_policy: request.environment_policy.clone(),
                 nix_flags: request.nix_flags,
             };
-            let prepared = prepare_app_plan(&app_request)?;
+            let prepared = if let Some(cached) = caches.app_plan.as_ref() {
+                if invalidate_snapshot {
+                    let plan = prepare_app_plan_in_state(&app_request, workspace)?;
+                    caches.app_plan = Some(plan.clone());
+                    plan
+                } else {
+                    runner
+                        .verbose("snapshot: reused\nplan: reused")
+                        .map_err(WatchCommandError::Io)?;
+                    cached.clone()
+                }
+            } else {
+                let plan = prepare_app_plan_in_state(&app_request, workspace)?;
+                caches.app_plan = Some(plan.clone());
+                plan
+            };
             let supervisor = spawn_prepared(&prepared)?;
             wait_supervisor(supervisor, session, interrupts)
         }
-        WatchTarget::Task => run_task_generation(request, session, interrupts, runner),
+        WatchTarget::Task => run_task_generation(
+            request,
+            workspace,
+            session,
+            interrupts,
+            caches,
+            invalidate_snapshot,
+            runner,
+        ),
     }
 }
 
 fn run_task_generation(
     request: &WatchRequest<'_>,
+    workspace: &mut WorkspaceState<'_>,
     session: &mut WatchSession,
     interrupts: &InterruptFlags,
+    caches: &mut WatchCaches,
+    invalidate_snapshot: bool,
     runner: RunnerOutput,
 ) -> Result<GenerationOutcome, WatchCommandError> {
     let single_root;
@@ -323,21 +447,35 @@ fn run_task_generation(
         nix_flags: request.nix_flags,
     };
 
+    let reuse_from_cache = !invalidate_snapshot && caches.task_plan.is_some();
     let mut restart_requested = false;
-    let code = task::execute_with_control(&task_request, false, false, runner, &mut || {
-        if interrupts.take_pending() {
-            return Ok(task::RunControl::Stop);
-        }
-        session.drain_events();
-        match session.poll_restart(Duration::ZERO) {
-            Ok(WatchPoll::Restart) => {
-                restart_requested = true;
-                Ok(task::RunControl::Restart)
+    let code = task::execute_with_control(
+        &task_request,
+        false,
+        false,
+        runner,
+        &mut || {
+            if interrupts.take_pending() {
+                return Ok(task::RunControl::Stop);
             }
-            Ok(WatchPoll::Timeout) => Ok(task::RunControl::Continue),
-            Err(error) => Err(io::Error::other(error)),
-        }
-    })?;
+            session.drain_events();
+            match session.poll_restart(Duration::ZERO) {
+                Ok(WatchPoll::Restart) => {
+                    restart_requested = true;
+                    Ok(task::RunControl::Restart)
+                }
+                Ok(WatchPoll::Timeout) => Ok(task::RunControl::Continue),
+                Err(error) => Err(io::Error::other(error)),
+            }
+        },
+        if reuse_from_cache {
+            None
+        } else {
+            Some(workspace)
+        },
+        reuse_from_cache,
+        Some(&mut caches.task_plan),
+    )?;
 
     if restart_requested {
         return Ok(GenerationOutcome::Restart);

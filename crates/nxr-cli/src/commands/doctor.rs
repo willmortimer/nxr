@@ -11,8 +11,8 @@ use nxr_nix::{NixAdapter, NixCapabilities, NixError, OptionalNixFlags, resolve_a
 use serde::Serialize;
 
 use crate::commands::common::{
-    AppRequest, PrepareError, WorkspaceSnapshot, build_adapter, current_invocation_directory,
-    prepare_app_plan,
+    AppRequest, PrepareError, WorkspaceState, current_invocation_directory,
+    prepare_app_plan_in_state,
 };
 use crate::commands::explain::workspace_context_from_snapshot;
 use crate::flake::{FlakeResolveError, resolve_flake};
@@ -100,9 +100,11 @@ pub fn run(
             format!("NXR_DEV_SHELL={active}"),
         );
     }
-    let capabilities = collect_findings(request, &mut findings);
-    let workspace = if request.all {
-        collect_workspace_context(request, &mut findings)
+    let nix_flags = OptionalNixFlags::default();
+    let mut workspace = WorkspaceState::new(request.flake_arg, request.nix_override, &nix_flags);
+    let capabilities = collect_findings(request, &mut findings, &mut workspace);
+    let workspace_context = if request.all {
+        collect_workspace_context(request, &mut findings, &mut workspace)
     } else {
         None
     };
@@ -115,7 +117,7 @@ pub fn run(
     let report = DoctorReport {
         schema_version: SCHEMA_VERSION,
         capabilities,
-        workspace,
+        workspace: workspace_context,
         findings,
     };
     let mut stdout = io::stdout().lock();
@@ -131,8 +133,9 @@ pub fn run(
 fn collect_findings(
     request: DoctorRequest<'_>,
     findings: &mut Vec<Diagnostic>,
+    workspace: &mut WorkspaceState<'_>,
 ) -> Option<NixCapabilities> {
-    let adapter = match build_adapter(request.nix_override) {
+    let adapter = match workspace.adapter() {
         Ok(adapter) => {
             push_finding(
                 findings,
@@ -169,7 +172,7 @@ fn collect_findings(
     }
 
     if request.clean_env {
-        collect_clean_env_findings(request, findings);
+        collect_clean_env_findings(request, findings, workspace);
     }
 
     capabilities
@@ -375,15 +378,11 @@ fn is_recommended_app_name(name: &str) -> bool {
 }
 
 fn collect_workspace_context(
-    request: DoctorRequest<'_>,
+    _request: DoctorRequest<'_>,
     findings: &mut Vec<Diagnostic>,
+    workspace: &mut WorkspaceState<'_>,
 ) -> Option<crate::commands::explain::WorkspaceContext> {
-    let snapshot = match WorkspaceSnapshot::load(
-        request.flake_arg,
-        request.nix_override,
-        false,
-        &OptionalNixFlags::default(),
-    ) {
+    let snapshot = match workspace.snapshot(false) {
         Ok(snapshot) => snapshot,
         Err(error) => {
             push_finding(
@@ -405,7 +404,7 @@ fn collect_workspace_context(
         );
     }
 
-    match workspace_context_from_snapshot(&snapshot, &EnvironmentPolicy::Inherit, None) {
+    match workspace_context_from_snapshot(snapshot, &EnvironmentPolicy::Inherit, None) {
         Ok(workspace) => Some(workspace),
         Err(error) => {
             push_finding(
@@ -518,7 +517,11 @@ fn collect_workspace_cache_findings(
     }
 }
 
-fn collect_clean_env_findings(request: DoctorRequest<'_>, findings: &mut Vec<Diagnostic>) {
+fn collect_clean_env_findings(
+    request: DoctorRequest<'_>,
+    findings: &mut Vec<Diagnostic>,
+    workspace: &mut WorkspaceState<'_>,
+) {
     push_finding(
         findings,
         DiagnosticLevel::Info,
@@ -556,7 +559,7 @@ fn collect_clean_env_findings(request: DoctorRequest<'_>, findings: &mut Vec<Dia
         nix_flags: &nix_flags,
     };
 
-    match prepare_app_plan(&app_request) {
+    match prepare_app_plan_in_state(&app_request, workspace) {
         Ok(prepared) => {
             let command = prepared.plan.command.arguments.join(" ");
             push_finding(

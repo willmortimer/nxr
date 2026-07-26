@@ -15,7 +15,7 @@ use nxr_task::{
     Scheduler, SchedulerError, build_execution_plan_roots, resolve_task_name,
 };
 
-use crate::commands::common::{PrepareError, PreparedTaskNode, WorkspaceSnapshot};
+use crate::commands::common::{PrepareError, PreparedTaskNode, WorkspaceSnapshot, WorkspaceState};
 use crate::commands::plan::{PlanRenderError, write_plan};
 use crate::commands::run::RunError;
 use crate::flake::FlakeResolveError;
@@ -153,9 +153,16 @@ pub fn execute(
     json: bool,
     runner: RunnerOutput,
 ) -> Result<i32, TaskError> {
-    execute_with_control(request, dry_run, json, runner, &mut || {
-        Ok(RunControl::Continue)
-    })
+    execute_with_control(
+        request,
+        dry_run,
+        json,
+        runner,
+        &mut || Ok(RunControl::Continue),
+        None,
+        false,
+        None,
+    )
 }
 
 /// External control signals for watch-mode integration with the scheduler loop.
@@ -169,6 +176,15 @@ pub enum RunControl {
     Stop,
 }
 
+/// Prepared task graph reused across source-only watch generations.
+#[derive(Clone, Debug)]
+pub struct PreparedTaskGeneration {
+    pub document: nxr_task::TaskDocument,
+    pub plan: ExecutionPlan,
+    pub prepared_nodes: BTreeMap<String, PreparedTaskNode>,
+    pub canonical_roots: Vec<String>,
+}
+
 /// Like [`execute`], but polls `control` during the scheduler loop.
 ///
 /// Used by `nxr watch` / `task --watch` so mid-run filesystem changes can abort
@@ -177,12 +193,16 @@ pub enum RunControl {
 /// # Errors
 ///
 /// Same as [`execute`]. Control-poll I/O errors map to [`TaskError::Supervision`].
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn execute_with_control(
     request: &TaskRequest<'_>,
     dry_run: bool,
     json: bool,
     runner: RunnerOutput,
     control: &mut dyn FnMut() -> io::Result<RunControl>,
+    workspace: Option<&mut WorkspaceState<'_>>,
+    reuse_from_cache: bool,
+    cache: Option<&mut Option<PreparedTaskGeneration>>,
 ) -> Result<i32, TaskError> {
     if request.jobs == 0 {
         return Err(TaskError::InvalidJobs(0));
@@ -194,52 +214,94 @@ pub fn execute_with_control(
         return Err(TaskError::RawConflictsWithMultiplex);
     }
 
-    let snapshot = WorkspaceSnapshot::load(
-        request.flake_arg,
-        request.nix_override,
-        true,
-        request.nix_flags,
-    )?;
-    let document = snapshot
-        .tasks
-        .as_ref()
-        .expect("load_tasks=true always populates tasks")
-        .clone();
+    let prepared_bundle = if reuse_from_cache {
+        cache
+            .as_ref()
+            .and_then(|cached| cached.as_ref())
+            .cloned()
+            .ok_or_else(|| {
+                TaskError::Supervision(io::Error::other(
+                    "watch reuse requested without a prepared task cache",
+                ))
+            })?
+    } else {
+        let owned_snapshot;
+        let snapshot = if let Some(state) = workspace {
+            state.snapshot(true).map_err(TaskError::Prepare)?
+        } else {
+            owned_snapshot = WorkspaceSnapshot::load(
+                request.flake_arg,
+                request.nix_override,
+                true,
+                request.nix_flags,
+            )?;
+            &owned_snapshot
+        };
+        let document = snapshot
+            .tasks
+            .as_ref()
+            .expect("load_tasks=true always populates tasks")
+            .clone();
+
+        let failure_policy = if request.keep_going {
+            FailurePolicy::KeepGoing
+        } else {
+            FailurePolicy::FailFast
+        };
+
+        let canonical_roots: Vec<String> = request
+            .tasks
+            .iter()
+            .map(|name| {
+                resolve_task_name(&document, name)
+                    .map(str::to_owned)
+                    .map_err(|error| TaskError::Plan(PlanError::UnknownRoot { root: error.name }))
+            })
+            .collect::<Result<_, _>>()?;
+        let root_refs: Vec<&str> = canonical_roots.iter().map(String::as_str).collect();
+
+        let plan = build_execution_plan_roots(&document.tasks, &root_refs, failure_policy, None)?;
+        validate_interactive_run(&plan, request)?;
+        snapshot
+            .validate_task_apps(&document)
+            .map_err(PrepareError::NotFound)?;
+        let prepared_nodes = snapshot.prepare_task_nodes(
+            &document,
+            &canonical_roots,
+            &plan.serial_order,
+            request.args,
+            request.root,
+            request.cwd,
+            request.shell,
+            request.shell_mode,
+            &request.environment_policy,
+            request.nix_flags,
+        )?;
+
+        let bundle = PreparedTaskGeneration {
+            document,
+            plan,
+            prepared_nodes,
+            canonical_roots,
+        };
+        if let Some(cache) = cache {
+            *cache = Some(bundle.clone());
+        }
+        bundle
+    };
+
+    let PreparedTaskGeneration {
+        document: _document,
+        plan,
+        prepared_nodes,
+        canonical_roots,
+    } = prepared_bundle;
 
     let failure_policy = if request.keep_going {
         FailurePolicy::KeepGoing
     } else {
         FailurePolicy::FailFast
     };
-
-    let canonical_roots: Vec<String> = request
-        .tasks
-        .iter()
-        .map(|name| {
-            resolve_task_name(&document, name)
-                .map(str::to_owned)
-                .map_err(|error| TaskError::Plan(PlanError::UnknownRoot { root: error.name }))
-        })
-        .collect::<Result<_, _>>()?;
-    let root_refs: Vec<&str> = canonical_roots.iter().map(String::as_str).collect();
-
-    let plan = build_execution_plan_roots(&document.tasks, &root_refs, failure_policy, None)?;
-    validate_interactive_run(&plan, request)?;
-    snapshot
-        .validate_task_apps(&document)
-        .map_err(PrepareError::NotFound)?;
-    let prepared_nodes = snapshot.prepare_task_nodes(
-        &document,
-        &canonical_roots,
-        &plan.serial_order,
-        request.args,
-        request.root,
-        request.cwd,
-        request.shell,
-        request.shell_mode,
-        &request.environment_policy,
-        request.nix_flags,
-    )?;
 
     // Parallel runs without an explicit --output still need a labeled renderer so
     // piped child stdout is not discarded by NullSink.

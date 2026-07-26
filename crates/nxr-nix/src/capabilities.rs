@@ -4,7 +4,7 @@ use std::fmt;
 use std::process::Command;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use crate::NixError;
@@ -47,6 +47,38 @@ pub enum FlagPolicy {
     BestEffortInternal,
 }
 
+/// Detected Nix distribution from the `nix --version` banner.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NixDistribution {
+    /// Upstream Nix (nixos/nix).
+    Upstream,
+    /// Determinate Nix with optional product version from the banner.
+    Determinate { product_version: Option<String> },
+    /// Lix.
+    Lix,
+    /// Banner did not match a known distribution label.
+    Unknown,
+}
+
+impl NixDistribution {
+    /// Stable label for doctor output and JSON diagnostics.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Upstream => "upstream",
+            Self::Determinate { .. } => "determinate",
+            Self::Lix => "lix",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Whether this host runs Determinate Nix.
+    #[must_use]
+    pub const fn is_determinate(&self) -> bool {
+        matches!(self, Self::Determinate { .. })
+    }
+}
+
 /// Parsed Nix CLI version (`major.minor.patch`).
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct NixVersion {
@@ -81,8 +113,68 @@ impl Serialize for NixVersion {
     }
 }
 
+impl<'de> Deserialize<'de> for NixVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(text) => parse_nix_version_token(&text)
+                .ok_or_else(|| serde::de::Error::custom("invalid Nix version string")),
+            serde_json::Value::Object(map) => {
+                let major = map
+                    .get("major")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| serde::de::Error::custom("missing major"))?;
+                let minor = map
+                    .get("minor")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| serde::de::Error::custom("missing minor"))?;
+                let patch = map
+                    .get("patch")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                Ok(Self {
+                    major,
+                    minor,
+                    patch,
+                })
+            }
+            _ => Err(serde::de::Error::custom(
+                "expected Nix version string or object",
+            )),
+        }
+    }
+}
+
+/// How a negotiated capability was established.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityEvidence {
+    /// Assumed from the tested support floor without probing.
+    VersionFloor,
+    /// Derived from the `nix --version` banner.
+    VersionBanner,
+    /// Read from `nix config show` / `show-config` JSON.
+    Config,
+    /// Inferred from `nix --help` / subcommand help output.
+    HelpProbe,
+    /// Confirmed by a positive command probe (for example `nix flake --help`).
+    PositiveCommandProbe,
+    /// Restored from the on-disk capability cache.
+    Cache,
+}
+
+/// Provenance for negotiated Nix capabilities.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CapabilityProvenance {
+    pub from_cache: bool,
+    pub evidence: Vec<CapabilityEvidence>,
+}
+
 /// Negotiated Nix CLI capabilities for the current host.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[allow(clippy::struct_excessive_bools)] // capability bitfield matches the negotiated feature set
 pub struct NixCapabilities {
     pub version: NixVersion,
@@ -255,19 +347,64 @@ pub fn detect_system(nix: &Utf8Path) -> Result<String, NixError> {
 ///
 /// Returns [`NixError`] when version detection fails.
 pub fn detect_capabilities(nix: &Utf8Path) -> Result<NixCapabilities, NixError> {
+    detect_capabilities_with_evidence(nix).map(|(capabilities, _)| capabilities)
+}
+
+/// Probe capabilities and return how each input was established.
+///
+/// # Errors
+///
+/// Returns [`NixError`] when version detection fails.
+pub fn detect_capabilities_with_evidence(
+    nix: &Utf8Path,
+) -> Result<(NixCapabilities, Vec<CapabilityEvidence>), NixError> {
     let version_output = run_nix_capture(nix, &["--version".to_owned()])?;
     let version =
         parse_nix_version_output(&version_output).ok_or(NixError::InvalidVersionOutput)?;
 
-    let config_json = probe_config_json(nix);
-    let help_text = probe_help_text(nix);
+    let mut evidence = vec![CapabilityEvidence::VersionBanner];
 
-    Ok(negotiate_capabilities(
+    let config_json = probe_config_json_internal(nix);
+    if config_json.is_some() {
+        evidence.push(CapabilityEvidence::Config);
+    }
+
+    let skip_help = should_skip_help_probes(version, &version_output, config_json.as_deref());
+    let help_text = if skip_help {
+        None
+    } else {
+        let help = probe_help_text(nix);
+        if help.is_some() {
+            evidence.push(CapabilityEvidence::HelpProbe);
+        }
+        help
+    };
+
+    let capabilities = negotiate_capabilities(
         version,
         &version_output,
         config_json.as_deref(),
         help_text.as_deref(),
-    ))
+    );
+    if capabilities.version >= FEATURE_FLOOR {
+        evidence.push(CapabilityEvidence::VersionFloor);
+    }
+
+    Ok((capabilities, evidence))
+}
+
+fn should_skip_help_probes(
+    version: NixVersion,
+    version_output: &str,
+    config_json: Option<&str>,
+) -> bool {
+    if version_output.contains("Determinate") {
+        return true;
+    }
+    if config_json.is_some() && version >= FEATURE_FLOOR {
+        return true;
+    }
+    version >= TESTED_NIX_SUPPORT_FLOOR
 }
 
 /// Build [`NixCapabilities`] from already-captured Nix outputs (unit-test seam).
@@ -326,6 +463,48 @@ fn help_indicates_flake_command(help: &str) -> bool {
             let trimmed = line.trim_start();
             trimmed == "flake" || trimmed.starts_with("flake ")
         })
+}
+
+/// Read the `nix --version` banner.
+///
+/// # Errors
+///
+/// Returns [`NixError`] when `nix --version` cannot be executed.
+pub fn probe_version_banner(nix: &Utf8Path) -> Result<String, NixError> {
+    run_nix_capture(nix, &["--version".to_owned()])
+}
+
+/// Classify the Nix distribution from a `nix --version` banner.
+#[must_use]
+pub fn parse_nix_distribution(version_output: &str) -> NixDistribution {
+    let line = version_output
+        .lines()
+        .next()
+        .unwrap_or(version_output)
+        .trim();
+    if line.contains("Determinate Nix") {
+        return NixDistribution::Determinate {
+            product_version: parse_determinate_product_version(line),
+        };
+    }
+    if line.contains("Lix") {
+        return NixDistribution::Lix;
+    }
+    if line.contains("(Nix)") {
+        return NixDistribution::Upstream;
+    }
+    NixDistribution::Unknown
+}
+
+fn parse_determinate_product_version(banner: &str) -> Option<String> {
+    let marker = "Determinate Nix ";
+    let rest = banner.split(marker).nth(1)?;
+    let version = rest.split(')').next()?.trim();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_owned())
+    }
 }
 
 /// Parse `nix --version` stdout into a [`NixVersion`].
@@ -392,7 +571,7 @@ fn run_nix_capture(nix: &Utf8Path, args: &[String]) -> Result<String, NixError> 
     String::from_utf8(stdout).map_err(|_| NixError::InvalidVersionOutput)
 }
 
-fn probe_config_json(nix: &Utf8Path) -> Option<String> {
+fn probe_config_json_internal(nix: &Utf8Path) -> Option<String> {
     for args in [
         vec!["config".to_owned(), "show".to_owned(), "--json".to_owned()],
         vec!["show-config".to_owned(), "--json".to_owned()],
@@ -404,6 +583,12 @@ fn probe_config_json(nix: &Utf8Path) -> Option<String> {
         }
     }
     None
+}
+
+/// Probe `nix config show --json` when available.
+#[must_use]
+pub fn probe_config_json(nix: &Utf8Path) -> Option<String> {
+    probe_config_json_internal(nix)
 }
 
 fn probe_help_text(nix: &Utf8Path) -> Option<String> {
@@ -454,6 +639,24 @@ fn config_has_setting(config_json: Option<&str>, key: &str) -> bool {
         .is_some_and(|value| value.get(key).is_some())
 }
 
+/// Read a boolean Nix config setting from `nix config show --json` output.
+#[must_use]
+pub fn config_bool_setting(config_json: Option<&str>, key: &str) -> Option<bool> {
+    let raw = config_json?;
+    let value: JsonValue = serde_json::from_str(raw).ok()?;
+    let setting = value.get(key)?;
+    let setting_value = setting.get("value").unwrap_or(setting);
+    match setting_value {
+        JsonValue::Bool(enabled) => Some(*enabled),
+        JsonValue::String(text) => match text.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => Some(true),
+            "false" | "0" | "no" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn help_mentions(help: &str, flag: &str) -> bool {
     help.split_whitespace().any(|token| token == flag)
         || help.contains(&format!(" {flag} "))
@@ -468,8 +671,9 @@ fn help_mentions_log_format_json(help: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        FEATURE_FLOOR, NixCapabilities, NixVersion, OptionalNixFlags, TESTED_NIX_SUPPORT_FLOOR,
-        detect_system, locate_nix, negotiate_capabilities, parse_nix_version_output,
+        FEATURE_FLOOR, NixCapabilities, NixDistribution, NixVersion, OptionalNixFlags,
+        TESTED_NIX_SUPPORT_FLOOR, detect_system, locate_nix, negotiate_capabilities,
+        parse_nix_distribution, parse_nix_version_output,
     };
     use crate::NixError;
 
@@ -511,6 +715,28 @@ mod tests {
             Some(NixVersion::new(2, 34, 8))
         );
         assert_eq!(parse_nix_version_output("not-a-version"), None);
+    }
+
+    #[test]
+    fn parse_nix_distribution_from_common_banners() {
+        assert_eq!(
+            parse_nix_distribution("nix (Nix) 2.34.7\n"),
+            NixDistribution::Upstream
+        );
+        assert_eq!(
+            parse_nix_distribution("nix (Lix, like Nix) 2.91.0"),
+            NixDistribution::Lix
+        );
+        assert_eq!(
+            parse_nix_distribution("nix (Determinate Nix 3.21.7) 2.34.8\n"),
+            NixDistribution::Determinate {
+                product_version: Some("3.21.7".to_owned()),
+            }
+        );
+        assert_eq!(
+            parse_nix_distribution("nix custom build 1.0.0"),
+            NixDistribution::Unknown
+        );
     }
 
     #[test]

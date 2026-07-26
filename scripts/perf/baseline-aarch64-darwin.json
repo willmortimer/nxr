@@ -1,0 +1,13 @@
+{
+  "host": "aarch64-darwin",
+  "measured": "2026-07-26",
+  "binary": "release (nix build .#nxr or cargo build --release)",
+  "runs": 5,
+  "fixture": "fixtures/basic-apps",
+  "p50_seconds": {
+    "cold_list": null,
+    "warm_list": null,
+    "warm_plan": null
+  },
+  "notes": "Fill p50 values after running ./scripts/perf/measure-release.sh on a reference host."
+}

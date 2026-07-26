@@ -1081,6 +1081,8 @@ fn cache_status_json_emits_path_and_entries() {
         .args(["cache", "status", "--json"])
         .assert()
         .success()
+        .stdout(predicate::str::contains("\"discovery\""))
+        .stdout(predicate::str::contains("\"capabilities\""))
         .stdout(predicate::str::contains("\"entries\""))
         .stdout(predicate::str::contains("\"path\""));
 }
@@ -1092,7 +1094,53 @@ fn doctor_help_documents_clean_env_flag() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--clean-env"))
-        .stdout(predicate::str::contains("--all"));
+        .stdout(predicate::str::contains("--all"))
+        .stdout(predicate::str::contains("determinate"));
+}
+
+#[test]
+fn doctor_determinate_help_documents_flags() {
+    cargo_bin_cmd!("nxr")
+        .args(["doctor", "determinate", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--all"))
+        .stdout(predicate::str::contains("--refresh"));
+}
+
+#[test]
+fn doctor_determinate_json_reports_distribution_envelope() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--json", "doctor", "determinate"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse doctor json");
+    assert_eq!(value["schema_version"], 1);
+    assert!(value["distribution"].is_string());
+    assert!(value["findings"].is_array());
+    let codes: Vec<&str> = value["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .map(|finding| finding["code"].as_str().expect("code"))
+        .collect();
+    let distribution = value["distribution"].as_str().expect("distribution");
+    if distribution == "upstream" || distribution == "lix" {
+        assert!(codes.contains(&"determinate.distribution.na"));
+    } else if distribution == "determinate" {
+        assert!(codes.contains(&"determinate.distribution.detected"));
+    }
+    let rendered = stdout.to_ascii_lowercase();
+    assert!(!rendered.contains("bearer "));
+    assert!(!rendered.contains("api_key="));
 }
 
 #[test]
@@ -2484,6 +2532,55 @@ fn task_keep_going_runs_unrelated_after_failure() {
 }
 
 #[test]
+fn warm_list_reuses_capability_cache_without_reprobing() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let home = tempfile::TempDir::new().expect("cache home");
+    let repo_root = repo_root();
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "list"])
+        .assert()
+        .success();
+
+    let cold_log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    let cold_version = counter.count("version");
+    let cold_config = counter.count("config");
+    let cold_help = counter.count("help");
+    assert!(
+        cold_version >= 1,
+        "cold list should probe nix version at least once; log={cold_log}"
+    );
+
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "list"])
+        .assert()
+        .success();
+
+    let warm_log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(
+        counter.count("version"),
+        0,
+        "warm list should not re-probe version; cold version={cold_version} config={cold_config} help={cold_help}; log={warm_log}"
+    );
+    assert_eq!(counter.count("config"), 0, "log={warm_log}");
+    assert_eq!(counter.count("help"), 0, "log={warm_log}");
+}
+
+#[test]
 fn bare_app_fast_path_skips_flake_show() {
     let Some(()) = require_nix() else {
         return;
@@ -2576,6 +2673,294 @@ fn task_ci_uses_o1_discovery_not_per_node_flake_show() {
     assert_eq!(
         runs, 3,
         "ci DAG has three app nodes → three nix run calls; log={log}"
+    );
+}
+
+#[test]
+fn doctor_all_does_not_double_capability_probes() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_NIX", &counter.wrapper)
+        .args([
+            "--flake",
+            "fixtures/basic-apps",
+            "--json",
+            "doctor",
+            "--all",
+        ])
+        .assert()
+        .success();
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(counter.count("eval"), 1, "single system probe; log={log}");
+    assert_eq!(
+        counter.count("version"),
+        1,
+        "single version probe; log={log}"
+    );
+    assert_eq!(counter.count("config"), 1, "single config probe; log={log}");
+}
+
+#[test]
+fn watch_app_does_not_double_workspace_init_on_first_generation() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    use assert_cmd::cargo::CommandCargoExt;
+
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let repo_root = repo_root();
+    let mut child = Command::cargo_bin("nxr")
+        .expect("nxr binary")
+        .current_dir(&repo_root)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "watch", "hello"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn watch");
+
+    let mut stdout = child.stdout.take().expect("stdout pipe");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut output = Vec::new();
+    let mut buf = [0_u8; 256];
+    loop {
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!(
+                "watch timed out before first generation; output={}",
+                String::from_utf8_lossy(&output)
+            );
+        }
+        match stdout.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                output.extend_from_slice(&buf[..n]);
+                if String::from_utf8_lossy(&output).contains("hello from basic-apps") {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => panic!("read watch stdout: {error}"),
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(
+        counter.count("version"),
+        1,
+        "resolve_target + prepare share one adapter; log={log}"
+    );
+    assert_eq!(counter.count("config"), 1, "single config probe; log={log}");
+    assert_eq!(
+        counter.count("run"),
+        1,
+        "first generation runs once; log={log}"
+    );
+}
+
+fn start_watch_stdout_reader(
+    stdout: impl std::io::Read + Send + 'static,
+) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    use std::sync::mpsc;
+    use std::thread;
+
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut stdout = stdout;
+        let mut buf = [0_u8; 256];
+        loop {
+            match std::io::Read::read(&mut stdout, &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    rx
+}
+
+fn wait_for_watch_occurrences(
+    rx: &std::sync::mpsc::Receiver<Vec<u8>>,
+    output: &mut Vec<u8>,
+    needle: &str,
+    occurrences: usize,
+    deadline: std::time::Instant,
+) {
+    use std::sync::mpsc::RecvTimeoutError;
+
+    while std::time::Instant::now() < deadline {
+        if String::from_utf8_lossy(output).matches(needle).count() >= occurrences {
+            return;
+        }
+        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(chunk) => output.extend_from_slice(&chunk),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    panic!(
+        "watch timed out waiting for {occurrences}x {needle:?}; output={}",
+        String::from_utf8_lossy(output)
+    );
+}
+
+/// Isolated copy of `fixtures/basic-apps` so parallel watch tests do not race
+/// on shared tree mutations.
+fn isolated_basic_apps_flake() -> tempfile::TempDir {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let src = repo_root().join("fixtures/basic-apps");
+    let dst = temp.path().join("basic-apps");
+    copy_dir_recursive(&src, &dst).expect("copy basic-apps fixture");
+    temp
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+fn spawn_basic_apps_watch(
+    counter: &common::NixCallCounter,
+    flake_dir: &std::path::Path,
+    extra_args: &[&str],
+) -> (std::process::Child, std::process::ChildStdout) {
+    use std::process::{Command, Stdio};
+
+    use assert_cmd::cargo::CommandCargoExt;
+
+    let flake = flake_dir.to_string_lossy().into_owned();
+    let mut args = vec![
+        "--flake",
+        flake.as_str(),
+        "watch",
+        "hello",
+        "--debounce",
+        "100",
+    ];
+    args.extend(extra_args);
+    let mut child = Command::cargo_bin("nxr")
+        .expect("nxr binary")
+        .current_dir(repo_root())
+        .env("NXR_NIX", &counter.wrapper)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn watch");
+    let stdout = child.stdout.take().expect("stdout pipe");
+    (child, stdout)
+}
+
+#[test]
+fn watch_source_restart_skips_discovery_nix_calls() {
+    use std::time::{Duration, Instant};
+
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let fixture = isolated_basic_apps_flake();
+    let flake_dir = fixture.path().join("basic-apps");
+    let counter = NixCallCounter::install();
+    let (mut child, stdout) = spawn_basic_apps_watch(&counter, &flake_dir, &[]);
+    let rx = start_watch_stdout_reader(stdout);
+    let mut output = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(90);
+    wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 1, deadline);
+
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    let trigger = flake_dir.join(".watch-source-trigger");
+    std::fs::write(&trigger, b"touch").expect("write trigger");
+    wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 2, deadline);
+    let _ = std::fs::remove_file(trigger);
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(
+        counter.count("flake-show"),
+        0,
+        "source-only restart must reuse snapshot; log={log}"
+    );
+    assert_eq!(
+        counter.count("eval"),
+        0,
+        "source-only restart must not re-eval tasks; log={log}"
+    );
+    assert!(
+        counter.count("run") >= 1,
+        "expected at least one rerun; log={log}"
+    );
+}
+
+#[test]
+fn watch_metadata_restart_rediscovers_apps() {
+    use std::time::{Duration, Instant};
+
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let fixture = isolated_basic_apps_flake();
+    let flake_dir = fixture.path().join("basic-apps");
+    let flake_path = flake_dir.join("flake.nix");
+    let original = std::fs::read(&flake_path).expect("read flake.nix");
+
+    let counter = NixCallCounter::install();
+    let (mut child, stdout) = spawn_basic_apps_watch(&counter, &flake_dir, &[]);
+    let rx = start_watch_stdout_reader(stdout);
+    let mut output = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(90);
+    wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 1, deadline);
+
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    let mut edited = original;
+    edited.push(b'\n');
+    std::fs::write(&flake_path, &edited).expect("touch flake.nix");
+
+    wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 2, deadline);
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert!(
+        counter.count("flake-show") >= 1,
+        "metadata restart must rediscover apps; log={log}"
     );
 }
 
