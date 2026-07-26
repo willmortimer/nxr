@@ -1,0 +1,316 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/task-v2.schema.json",
+  "title": "nxr task document (schema v2 draft)",
+  "description": "DRAFT — not implemented. Versioned task orchestration metadata (schema version 2) extending v1 with declared inputs, outputs, cache policy, and resource reservations. Execution contexts, secrets, dependency states, and confirmation requirements are planned separately (see docs/EXECUTION_CONTEXT.md). Current nxr releases (schema v1 runners) reject unsupported majors and do not accept this document. Breaking changes before implementation require a new draft revision of this schema.",
+  "type": "object",
+  "required": ["schema_version"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2,
+      "description": "Major schema version. Unsupported majors must be rejected by runners."
+    },
+    "tasks": {
+      "type": "object",
+      "description": "Map of task name to task definition.",
+      "additionalProperties": {
+        "$ref": "#/$defs/task"
+      }
+    },
+    "apps": {
+      "type": "object",
+      "description": "Optional listing metadata for flake app leaf names. Does not define apps; apps remain apps.<system>.* outputs.",
+      "additionalProperties": {
+        "$ref": "#/$defs/appListing"
+      }
+    },
+    "discoveryInputs": {
+      "type": "array",
+      "description": "Optional flake-root-relative paths whose contents are hashed into the discovery cache key (cache schema v3). Declared via perSystem.nxr.discoveryInputs.",
+      "default": [],
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "appListing": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "category": {
+          "type": "string",
+          "description": "Optional logical category for list/inspect filtering."
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "required": ["app"],
+      "additionalProperties": false,
+      "description": "Task definition. Unknown execution-affecting fields must be rejected (strict envelope).",
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Optional short description for listings and completion."
+        },
+        "dependsOn": {
+          "type": "array",
+          "description": "Task names that must complete before this task runs. Defaults to [].",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "app": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Flake app leaf name (apps.<system>.<name>) this task runs."
+        },
+        "workingDirectory": {
+          "type": "string",
+          "description": "Optional working-directory policy (`invocation`, `flake-root`) or flake-root-relative path. Absolute paths and parent traversal (`..`) are rejected."
+        },
+        "hidden": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the task is omitted from default listings."
+        },
+        "category": {
+          "type": "string",
+          "description": "Optional logical category for grouping in listings."
+        },
+        "aliases": {
+          "type": "array",
+          "description": "Optional alternate names resolved by explicit task commands (not bare nxr <name>).",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "interactive": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the node requires exclusive terminal access (stdin inherited; cannot run concurrently with peers or multiplexed output). Interactive tasks cannot be cached."
+        },
+        "paths": {
+          "type": "array",
+          "description": "Optional repository-relative path roots for conservative affected analysis.",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "timeout": {
+          "type": "string",
+          "description": "Optional wall-clock timeout for this task's process (e.g. `10m`, `30s`, `500ms`)."
+        },
+        "terminationGracePeriod": {
+          "type": "string",
+          "description": "Optional grace period after timeout/interrupt before SIGKILL (e.g. `5s`)."
+        },
+        "inputs": {
+          "$ref": "#/$defs/taskInputs",
+          "description": "Declared inputs for cache-key fingerprinting and structured upstream bindings."
+        },
+        "outputs": {
+          "type": "array",
+          "description": "Declared workspace outputs that may be restored from a task result cache.",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/taskOutput"
+          }
+        },
+        "cache": {
+          "$ref": "#/$defs/taskCache",
+          "description": "Opt-in task result cache policy for declared workspace outputs."
+        },
+        "resources": {
+          "$ref": "#/$defs/taskResources",
+          "description": "Estimated resource demand and named exclusivity locks for cooperative scheduling."
+        }
+      }
+    },
+    "taskInputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Inputs that affect task correctness for caching and structured dependency wiring.",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "description": "Repository-relative paths and globs whose content is hashed into the cache key.",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "env": {
+          "type": "array",
+          "description": "Environment variable names (or bindings) included in the cache key. The full inherited environment is never hashed.",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/envInput"
+          }
+        },
+        "includeGitState": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, Git tree/commit state participates in the cache key."
+        },
+        "bindings": {
+          "type": "object",
+          "description": "Named bindings to upstream task outputs (`<task>.<output>`).",
+          "default": {},
+          "additionalProperties": {
+            "$ref": "#/$defs/taskInputBinding"
+          }
+        }
+      }
+    },
+    "envInput": {
+      "description": "Environment variable name or structured binding.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "$ref": "#/$defs/envInputBinding"
+        }
+      ]
+    },
+    "envInputBinding": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Environment variable name."
+        },
+        "required": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the task fails if the variable is unset at execution time."
+        },
+        "secret": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the variable is treated as secret metadata. Secret inputs disable caching by default and must never appear in plans or events."
+        }
+      }
+    },
+    "taskInputBinding": {
+      "type": "object",
+      "required": ["from"],
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Upstream task output reference (`<task>.<output>`)."
+        }
+      }
+    },
+    "taskOutput": {
+      "type": "object",
+      "required": ["path"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Repository-relative output path contained under the flake root."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["replace", "merge", "verify-only", "report"],
+          "default": "replace",
+          "description": "How a cached artifact is restored. Initial implementations may support only `replace` and `report`."
+        },
+        "optional": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, a missing output at save time does not fail the task."
+        }
+      }
+    },
+    "taskCache": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Task result cache policy. Disabled by default until runtime support lands.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["disabled", "local", "shared-read", "shared"],
+          "default": "disabled",
+          "description": "Cache scope. `shared` means read and write; fork PRs should normally downgrade to `shared-read` or `local`."
+        },
+        "version": {
+          "type": "string",
+          "description": "Author-controlled cache salt incremented when task behavior changes without input changes."
+        },
+        "restore": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, a cache hit restores declared outputs instead of executing the task."
+        },
+        "save": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, successful runs with declared outputs may be written to the cache."
+        },
+        "failures": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, failed runs may be cached. Disabled in initial implementations."
+        }
+      }
+    },
+    "taskResources": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Resource reservations and exclusivity locks for cooperative job control.",
+      "properties": {
+        "cpu": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Scheduler CPU token demand (not a hard OS quota)."
+        },
+        "memory": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?(B|KiB|MiB|GiB|TiB)$",
+          "description": "Estimated peak memory reservation (e.g. `4GiB`, `512MiB`)."
+        },
+        "io": {
+          "type": "string",
+          "enum": ["light", "normal", "heavy"],
+          "default": "normal",
+          "description": "Relative I/O intensity for scheduling heuristics."
+        },
+        "network": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the task is expected to use the network (diagnostic and CI policy metadata)."
+        },
+        "exclusive": {
+          "type": "array",
+          "description": "Named mutexes; at most one in-flight task may hold each lock.",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

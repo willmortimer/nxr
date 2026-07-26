@@ -239,19 +239,27 @@ execution-event vocabulary are **frozen** for the V2.0 release:
 Additive optional **listing** fields may appear within major version 1. Breaking
 changes require a new major `schema_version`. See [COMPATIBILITY.md](COMPATIBILITY.md).
 
-### Schema v2 (planned — execution contexts)
+### Schema v2 (draft — not implemented)
 
 Do **not** add execution-affecting fields (`context`, `shell` on tasks, secrets,
-inputs/outputs, dependency states, confirmation) to schema v1. Unknown fields are
-currently ignored; an older runner would silently drop security policy.
+inputs/outputs, cache, resources, dependency states, confirmation) to schema v1.
+Unknown fields are currently ignored; an older runner would silently drop security
+policy.
 
-Schema **v2** will carry those fields and **reject** unknown execution/security
-metadata. Detail: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) §3 (schema
-versioning) and [ROADMAP.md](ROADMAP.md) §3.0.
+A **draft** schema v2 document exists at
+[`schemas/task-v2.schema.json`](../schemas/task-v2.schema.json) with `inputs`,
+`outputs`, `cache`, and `resources`. Current nxr releases **reject**
+`schema_version: 2` (unsupported major). See [TASK_SCHEMA_V2.md](TASK_SCHEMA_V2.md)
+for the full draft spec, ADR-0135/0138 cross-links, and compatibility notes.
+
+Execution **contexts** and related security fields are planned in the same major
+version family but documented in [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) §3
+(schema versioning) and [ROADMAP.md](ROADMAP.md) §3.0.
 
 ## Related
 
-- Schema: [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json)
+- Schema v1 (frozen): [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json)
+- Schema v2 (draft): [`schemas/task-v2.schema.json`](../schemas/task-v2.schema.json) — [TASK_SCHEMA_V2.md](TASK_SCHEMA_V2.md)
 - Execution contexts (planned): [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md)
 - App authoring: [APP_AUTHORING.md](APP_AUTHORING.md)
 - Architecture (task model): [ARCHITECTURE.md](ARCHITECTURE.md) §6
