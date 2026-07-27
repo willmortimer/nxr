@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-07-27
+
+Secure execution contexts: full env policy, trust, secret bindings/delivery, and context CLI.
+
+### Added
+
+- Full clean/inherit keep/set/unset environment policy at spawn; schema v2 semantic validation.
+- Project trust database (`nxr trust status|add|revoke`, `NXR_TRUST_PROJECT`).
+- User secret bindings (`secret-bindings.toml` / config.toml); file and stdin delivery; sops path stubs.
+- `nxr context list|inspect|run`.
+
+### Changed
+
+- Workspace and Nix package version **3.0.0**.
+
 ## [2.8.0] - 2026-07-27
 
 Automation ergonomics (ADR-0148): scaffolding, selectors, CI plan export, and reports.

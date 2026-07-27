@@ -206,7 +206,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**2.8.0** — automation ergonomics: `init`/`migrate`, selectors, `ci plan --json`, JUnit/SARIF reports, golden fixture.
+**3.0.0** — secure execution contexts: env policy, trust, secret bindings/delivery, `nxr context`.
 
 History: [CHANGELOG.md](CHANGELOG.md). Next: [docs/ROADMAP.md](docs/ROADMAP.md)
-(3.0 secure contexts → 3.1).
+(3.1 workspace actions + process MVP).
