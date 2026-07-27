@@ -329,6 +329,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             name,
             args,
             watch::WatchOptions::from_cli(*debounce, include, exclude, *clear),
+            false,
             runner,
         ),
         Some(Command::Graph { task, format }) => {
@@ -601,6 +602,7 @@ fn dispatch_in(
                 name,
                 args,
                 watch::WatchOptions::default(),
+                false,
             )?;
             watch::run(&request, runner).map_err(RunError::from)
         }
@@ -634,6 +636,7 @@ fn dispatch_run_command_in_shell(
             app,
             args,
             watch_options_from_debounce(debounce),
+            true,
         )?;
         return watch::run(&request, runner).map_err(RunError::from);
     }
@@ -738,6 +741,7 @@ fn watch_request_in_shell<'a>(
     name: &'a str,
     args: &'a [String],
     options: watch::WatchOptions,
+    force_app: bool,
 ) -> Result<watch::WatchRequest<'a>, RunError> {
     Ok(watch::WatchRequest {
         flake_arg: cli.flake.as_deref(),
@@ -753,6 +757,7 @@ fn watch_request_in_shell<'a>(
         output_mode: cli.output,
         events_format: cli.events,
         task_settings: None,
+        force_app,
         nix_flags,
     })
 }
@@ -1035,6 +1040,7 @@ fn dispatch_run_command(
             app,
             args,
             watch_options_from_debounce(debounce),
+            true,
             runner,
         );
     }
@@ -1051,9 +1057,10 @@ fn execute_watch(
     name: &str,
     args: &[String],
     options: watch::WatchOptions,
+    force_app: bool,
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
-    let request = watch_request(cli, nix_flags, name, args, options)?;
+    let request = watch_request(cli, nix_flags, name, args, options, force_app)?;
     watch::run(&request, runner).map_err(RunError::from)
 }
 
@@ -1071,6 +1078,7 @@ fn watch_request<'a>(
     name: &'a str,
     args: &'a [String],
     options: watch::WatchOptions,
+    force_app: bool,
 ) -> Result<watch::WatchRequest<'a>, RunError> {
     Ok(watch::WatchRequest {
         flake_arg: cli.flake.as_deref(),
@@ -1088,6 +1096,7 @@ fn watch_request<'a>(
         // When `name` resolves as a task, use the normal scheduler with global
         // output/events; jobs stay at 1 unless entered via `task --watch -j`.
         task_settings: None,
+        force_app,
         nix_flags,
     })
 }
@@ -1124,6 +1133,7 @@ fn watch_task_request<'a>(
             output_mode: cli.output,
             events_format: cli.events,
         }),
+        force_app: false,
         nix_flags,
     })
 }

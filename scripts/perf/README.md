@@ -62,3 +62,12 @@ Nix **call-count** budgets (warm list: `version=0`, `help=0`, `config=1`,
 [`baseline-aarch64-darwin.json`](baseline-aarch64-darwin.json) records sample
 p50 values for local regression triage on a reference host. Update it when
 remeasuring; do not treat it as the CI gate (use `ci-thresholds.json` instead).
+
+## Fingerprint / monorepo bench
+
+```bash
+./scripts/perf/measure-fingerprint.sh
+```
+
+Runs the `synthetic_monorepo_warm_fingerprint_scales` unit test (500 `.nix`
+files): warm path must re-read zero file bytes and skip index rewrite.

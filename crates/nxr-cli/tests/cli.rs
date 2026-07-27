@@ -2206,6 +2206,41 @@ fn watch_unknown_name_exits_not_found() {
 }
 
 #[test]
+fn watch_app_prefix_runs_named_app() {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    use assert_cmd::cargo::CommandCargoExt;
+
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let mut child = Command::cargo_bin("nxr")
+        .expect("nxr binary")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/basic-apps",
+            "watch",
+            "app:hello",
+            "--debounce",
+            "100",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn watch");
+    let stdout = child.stdout.take().expect("stdout");
+    let rx = start_watch_stdout_reader(stdout);
+    let mut output = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(45);
+    wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 1, deadline);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
 fn watch_help_mentions_debounce() {
     cargo_bin_cmd!("nxr")
         .args(["watch", "--help"])

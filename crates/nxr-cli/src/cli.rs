@@ -429,7 +429,7 @@ pub enum Command {
     },
     /// Watch and rerun on filesystem changes
     Watch {
-        /// App or task name (task wins when both exist)
+        /// App or task name (`app:` / `task:` disambiguate; otherwise task wins)
         name: String,
         /// Debounce window in milliseconds
         #[arg(long = "debounce", default_value_t = crate::commands::watch::DEFAULT_DEBOUNCE_MS)]

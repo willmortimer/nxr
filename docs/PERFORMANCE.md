@@ -27,10 +27,18 @@ Instrumented integration tests wrap `NXR_NIX` with a counting shim to assert the
 
 Discovery cache **schema v5** (incremental fingerprint index) invalidates on:
 
-- **Content** of every `*.nix` file under the local flake root (path-scoped walk), plus `flake.lock` when present — not arbitrary non-Nix sources. Unchanged files reuse a prior BLAKE3 when **device/inode/size/nanosecond mtime** match (metadata-gated reuse, not a full re-read). Tools that rewrite bytes while preserving those metadata fields can theoretically evade rehash until TTL/`--refresh-discovery`; that is uncommon and tracked for stronger wording or periodic forced rehash.
+- **Content-correct hashes** of every `*.nix` file under the local flake root
+  (path-scoped walk), plus `flake.lock` when present — not arbitrary non-Nix
+  sources. Unchanged files **reuse** a prior BLAKE3 when **device/inode/size/
+  nanosecond mtime** match (metadata-gated reuse, not a full re-read each warm
+  hit). The on-disk index is not rewritten when the computed index is unchanged.
+  Tools that rewrite bytes while preserving those metadata fields can
+  theoretically evade rehash until TTL/`--refresh-discovery`; that is uncommon.
 - **Nix identity**: canonical Nix executable path + version string
 - **Discovery schema version** (`nxr.<system>` / task document major)
-- **Sorted `discoveryInputs`**: content hashes of paths declared via `perSystem.nxr.discoveryInputs` (emitted on `nxr.<system>.discoveryInputs`; hashed on store/load without a second eval on warm hits)
+- **Sorted `discoveryInputs`**: content-correct hashes of paths declared via
+  `perSystem.nxr.discoveryInputs` (same metadata-gated incremental index as the
+  Nix tree; hashed on store/load without a second eval on warm hits)
 - **TTL backstop**: default 24h (`NXR_CACHE_TTL_SECS`; `0` disables)
 
 Built-in ignores cover `.git`, `result`, `target`, and similar trees. Set `NXR_CACHE_FINGERPRINT_IGNORE` to a colon-separated list of globs to skip huge vendored `.nix` trees. Remote flakes are never cached.
@@ -96,9 +104,13 @@ Suggested release p50 targets on a local SSD (order-of-magnitude; see also nxr-n
 
 CI hosted-runner ceilings (see `scripts/perf/ci-thresholds.json`) are intentionally looser so the gate catches order-of-magnitude regressions without flaking on noisy VMs.
 
+High-file-count fingerprint warm paths (index reuse, no rewrite) are asserted by
+`cargo test -p nxr-completion --lib fingerprint::tests::synthetic_monorepo_warm_fingerprint_scales`
+or `./scripts/perf/measure-fingerprint.sh`.
+
 ## Interpretation
 
-- Prefer cache hits for interactive listing and completion; use `--refresh-discovery` when flake inputs change. Editing imported `.nix` files (content) or declared `discoveryInputs` under the flake root invalidates the cache without touching `flake.nix`.
+- Prefer cache hits for interactive listing and completion; use `--refresh-discovery` when flake inputs change. Editing imported `.nix` files (byte content, or metadata that breaks the inode/size/mtime reuse gate) or declared `discoveryInputs` under the flake root invalidates the cache without touching `flake.nix`.
 - Prefer the bare-app fast path and once-per-run `WorkspaceSnapshot` so task DAGs do not multiply `flake show`.
 - Do not compare `nxr test` wall time to runner overhead — almost all of it is nextest / Nix build of the `test` app.
 - Release (`nix build .#nxr`) binaries are typically faster than debug builds; treat the table as order-of-magnitude guidance.

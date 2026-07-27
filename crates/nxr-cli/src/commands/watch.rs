@@ -92,6 +92,8 @@ pub struct WatchRequest<'a> {
     pub events_format: Option<EventsFormat>,
     /// When set, watch runs the normal task scheduler (multi-root, `-j`, output).
     pub task_settings: Option<TaskWatchSettings>,
+    /// Resolve as an app without loading tasks (`nxr run --watch`, or `app:` prefix).
+    pub force_app: bool,
     pub nix_flags: &'a nxr_nix::OptionalNixFlags,
 }
 
@@ -144,7 +146,7 @@ impl WatchCommandError {
 #[derive(Clone, Debug)]
 enum WatchTarget {
     App { name: String },
-    Task,
+    Task { name: String },
 }
 
 enum GenerationOutcome {
@@ -224,7 +226,7 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
             runner,
         )?;
         if invalidate_snapshot || generation_id == 1 {
-            refresh_metadata_registry(&mut workspace, &mut metadata_registry)?;
+            refresh_metadata_registry(&target, &mut workspace, &mut metadata_registry)?;
         }
 
         runner
@@ -261,33 +263,89 @@ fn resolve_target(
     workspace: &mut WorkspaceState<'_>,
 ) -> Result<WatchTarget, WatchCommandError> {
     if request.task_settings.is_some() {
-        return Ok(WatchTarget::Task);
+        return Ok(WatchTarget::Task {
+            name: request.name.to_owned(),
+        });
     }
 
-    let snapshot = workspace.snapshot(true)?;
-    let document = snapshot
-        .tasks
-        .as_ref()
-        .expect("load_tasks=true always populates tasks");
+    match parse_watch_name(request.name) {
+        WatchNameKind::App { name } => resolve_app_target(workspace, name),
+        WatchNameKind::Task { name } => Ok(WatchTarget::Task {
+            name: name.to_owned(),
+        }),
+        WatchNameKind::Unprefixed { name } => {
+            if request.force_app {
+                return resolve_app_target(workspace, name);
+            }
+            // Default: task wins when both exist — requires a task-inclusive snapshot.
+            let snapshot = workspace.snapshot(true)?;
+            let document = snapshot
+                .tasks
+                .as_ref()
+                .expect("load_tasks=true always populates tasks");
 
-    if resolve_task_name(document, request.name).is_ok() {
-        Ok(WatchTarget::Task)
-    } else {
-        let apps: Vec<_> = snapshot.apps.values().cloned().collect();
-        let app = resolve_app_by_name(&apps, request.name)?;
-        Ok(WatchTarget::App {
-            name: app.name.clone(),
-        })
+            if resolve_task_name(document, name).is_ok() {
+                Ok(WatchTarget::Task {
+                    name: name.to_owned(),
+                })
+            } else {
+                let apps: Vec<_> = snapshot.apps.values().cloned().collect();
+                let app = resolve_app_by_name(&apps, name)?;
+                Ok(WatchTarget::App {
+                    name: app.name.clone(),
+                })
+            }
+        }
     }
 }
 
+fn resolve_app_target(
+    workspace: &mut WorkspaceState<'_>,
+    name: &str,
+) -> Result<WatchTarget, WatchCommandError> {
+    // Apps-only snapshot avoids task evaluation when the caller disambiguates.
+    let snapshot = workspace.snapshot(false)?;
+    let apps: Vec<_> = snapshot.apps.values().cloned().collect();
+    let app = resolve_app_by_name(&apps, name)?;
+    Ok(WatchTarget::App {
+        name: app.name.clone(),
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WatchNameKind<'a> {
+    App { name: &'a str },
+    Task { name: &'a str },
+    Unprefixed { name: &'a str },
+}
+
+fn parse_watch_name(raw: &str) -> WatchNameKind<'_> {
+    if let Some(name) = raw.strip_prefix("app:") {
+        return WatchNameKind::App { name };
+    }
+    if let Some(name) = raw.strip_prefix("task:") {
+        return WatchNameKind::Task { name };
+    }
+    WatchNameKind::Unprefixed { name: raw }
+}
+
 fn refresh_metadata_registry(
+    target: &WatchTarget,
     workspace: &mut WorkspaceState<'_>,
     registry: &mut MetadataInputRegistry,
 ) -> Result<(), WatchCommandError> {
-    let snapshot = workspace.snapshot(true)?;
-    if let Some(document) = snapshot.tasks.as_ref() {
-        registry.set_discovery_inputs(document.discovery_inputs.clone());
+    match target {
+        WatchTarget::App { .. } => {
+            // App watch does not need task discoveryInputs; flake.nix / lock /
+            // .nix tree coverage already comes from the default metadata set.
+            registry.set_discovery_inputs(Vec::new());
+        }
+        WatchTarget::Task { .. } => {
+            let snapshot = workspace.snapshot(true)?;
+            if let Some(document) = snapshot.tasks.as_ref() {
+                registry.set_discovery_inputs(document.discovery_inputs.clone());
+            }
+        }
     }
     Ok(())
 }
@@ -388,8 +446,9 @@ fn run_generation(
             let supervisor = spawn_prepared(&prepared)?;
             wait_supervisor(supervisor, session, interrupts)
         }
-        WatchTarget::Task => run_task_generation(
+        WatchTarget::Task { name } => run_task_generation(
             request,
+            name,
             workspace,
             session,
             interrupts,
@@ -400,8 +459,10 @@ fn run_generation(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_task_generation(
     request: &WatchRequest<'_>,
+    resolved_name: &str,
     workspace: &mut WorkspaceState<'_>,
     session: &mut WatchSession,
     interrupts: &InterruptFlags,
@@ -420,7 +481,7 @@ fn run_task_generation(
                 settings.events_format,
             )
         } else {
-            single_root = vec![request.name.to_owned()];
+            single_root = vec![resolved_name.to_owned()];
             (
                 single_root.as_slice(),
                 1,
@@ -577,6 +638,22 @@ mod tests {
         assert_eq!(
             WatchOptions::default().debounce,
             Duration::from_millis(DEFAULT_DEBOUNCE_MS)
+        );
+    }
+
+    #[test]
+    fn parse_watch_name_prefixes() {
+        assert_eq!(
+            parse_watch_name("app:hello"),
+            WatchNameKind::App { name: "hello" }
+        );
+        assert_eq!(
+            parse_watch_name("task:ci"),
+            WatchNameKind::Task { name: "ci" }
+        );
+        assert_eq!(
+            parse_watch_name("hello"),
+            WatchNameKind::Unprefixed { name: "hello" }
         );
     }
 }

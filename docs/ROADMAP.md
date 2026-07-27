@@ -54,12 +54,14 @@ Ship before expanding schema-v2 runtime. Priority order from the 2.6 re-audit:
 
 **Warm-path polish**
 
-5. Skip rewriting an unchanged fingerprint index; incrementally cover
-   `discoveryInputs`; avoid double fingerprint work in status/explain paths.
-6. Large-monorepo / high-file-count benchmarks; qualify fingerprint “content”
-   invalidation wording vs inode/size/mtime reuse.
-7. Optional: `watch` lightweight name resolution / explicit `app:` form when
-   task discovery is expensive.
+5. ~~Skip rewriting an unchanged fingerprint index; incrementally cover
+   `discoveryInputs`; avoid double fingerprint work in status/explain paths~~ —
+   done.
+6. ~~Large-monorepo / high-file-count benchmarks; qualify fingerprint “content”
+   invalidation wording vs inode/size/mtime reuse~~ — done
+   (`synthetic_monorepo_warm_fingerprint_scales` + `docs/PERFORMANCE.md`).
+7. ~~Optional: `watch` lightweight name resolution / explicit `app:` form~~ —
+   done (`app:` / `task:` prefixes; `nxr run --watch` forces apps-only snapshot).
 
 **Not in 2.7** (keep deferred): thread-per-pipe multiplexing (before high-concurrency
 runner claims), generic inventory/role CLI, expanded Determinate doctor depth,

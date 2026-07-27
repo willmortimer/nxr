@@ -87,7 +87,7 @@ Rejected   considered and explicitly not chosen
 | ADR-0131 | Configuration adapters inspect/build only; never switch/activate | Proposed | 2.6 |
 | ADR-0132 | Process nodes after task I/O; no built-in service module zoo | Proposed | 3.1 |
 | ADR-0133 | Persist Nix capability detection | Accepted (v2 config digest) | 2.6 / 2.7 |
-| ADR-0134 | Use an incremental content-correct workspace fingerprint | Accepted (2.7: skip unchanged rewrite; discoveryInputs) | 2.6 |
+| ADR-0134 | Use an incremental content-correct workspace fingerprint | Accepted (skip unchanged rewrite; discoveryInputs index) | 2.6 / 2.7 |
 | ADR-0135 | Opt-in task result caching for declared workspace outputs | Proposed | Later (post-3.0) |
 | ADR-0136 | Export and consume custom flake schemas | Accepted (NXR schema; generic inventory Later) | 2.6 |
 | ADR-0137 | Treat Determinate Nix as a negotiated capability provider | Accepted (doctor determinate v1; deepen Later) | 2.6 |

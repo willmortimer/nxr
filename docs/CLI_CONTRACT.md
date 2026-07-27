@@ -29,6 +29,8 @@ nxr cache clear|status
 nxr inspect ...
 nxr task <task> [args...]
 nxr watch <app-or-task>
+nxr watch app:<name>
+nxr watch task:<name>
 nxr graph <task>
 ```
 
@@ -426,6 +428,8 @@ nxr task --affected [--base REF | --working-tree | --all-changes REF | --path PA
 nxr plan --affected [--base REF | --working-tree | --all-changes REF | --path PATH…] [name…]
 nxr graph ci
 nxr watch dev
+nxr watch app:dev
+nxr watch task:ci
 ```
 
 Trailing arguments after the task name are forwarded to the **root task app only**

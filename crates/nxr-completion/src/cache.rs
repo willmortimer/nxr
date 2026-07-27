@@ -127,7 +127,7 @@ pub fn cached_apps(context: &DiscoveryContext) -> Option<Vec<App>> {
 #[must_use]
 pub fn cached_workspace(context: &DiscoveryContext) -> Option<WorkspaceDiscovery> {
     let local_root = context.local_root.as_ref()?;
-    load_cached_workspace(local_root, context, false)
+    load_cached_workspace(local_root, context, false, None)
         .ok()
         .flatten()
 }
@@ -151,7 +151,7 @@ where
     if options.refresh {
         let discovery = discover()?;
         if let Some(local_root) = &context.local_root {
-            let _ = store_cached_workspace(local_root, context, &discovery);
+            let _ = store_cached_workspace(local_root, context, &discovery, None);
         }
         return Ok(discovery);
     }
@@ -160,12 +160,14 @@ where
         return discover();
     };
 
-    if let Ok(Some(discovery)) = load_cached_workspace(local_root, context, options.require_tasks) {
+    if let Ok(Some(discovery)) =
+        load_cached_workspace(local_root, context, options.require_tasks, None)
+    {
         return Ok(discovery);
     }
 
     let discovery = discover()?;
-    let _ = store_cached_workspace(local_root, context, &discovery);
+    let _ = store_cached_workspace(local_root, context, &discovery, None);
     Ok(discovery)
 }
 
@@ -374,10 +376,12 @@ pub fn discovery_cache_entry(context: &DiscoveryContext) -> io::Result<Discovery
     };
 
     let canonical_root = canonical_flake_root(local_root);
+    // Fingerprint once; reuse for hit validation so status/explain do not walk twice.
     let invalidation_key = nix_tree_fingerprint(&canonical_root)?;
     let context_key = cache_context_key(context);
     let cache_file = cache_file_path(&context_key).map(|path| path.display().to_string());
-    let hit = cached_workspace(context).is_some();
+    let hit = load_cached_workspace(local_root, context, false, Some(invalidation_key.as_str()))?
+        .is_some();
     let cached_invalidation_key = if hit {
         Some(invalidation_key.clone())
     } else {
@@ -563,6 +567,7 @@ fn load_cached_workspace(
     local_root: &Utf8Path,
     context: &DiscoveryContext,
     require_tasks: bool,
+    precomputed_nix_fingerprint: Option<&str>,
 ) -> io::Result<Option<WorkspaceDiscovery>> {
     let context = cache_context_key(context);
     let path = cache_file_path(&context)
@@ -601,7 +606,10 @@ fn load_cached_workspace(
         return Ok(None);
     }
 
-    let current_fingerprint = nix_tree_fingerprint(&canonical_root)?;
+    let current_fingerprint = match precomputed_nix_fingerprint {
+        Some(fingerprint) => fingerprint.to_owned(),
+        None => nix_tree_fingerprint(&canonical_root)?,
+    };
     if cached.nix_fingerprint != current_fingerprint {
         return Ok(None);
     }
@@ -626,6 +634,7 @@ fn store_cached_workspace(
     local_root: &Utf8Path,
     context: &DiscoveryContext,
     discovery: &WorkspaceDiscovery,
+    precomputed_nix_fingerprint: Option<&str>,
 ) -> io::Result<()> {
     let mut context = cache_context_key(context);
     let discovery_inputs = merged_discovery_inputs(&context, discovery);
@@ -639,7 +648,10 @@ fn store_cached_workspace(
     }
 
     let canonical_root = canonical_flake_root(local_root);
-    let nix_fingerprint = nix_tree_fingerprint(&canonical_root)?;
+    let nix_fingerprint = match precomputed_nix_fingerprint {
+        Some(fingerprint) => fingerprint.to_owned(),
+        None => nix_tree_fingerprint(&canonical_root)?,
+    };
     let discovery_inputs_fingerprint =
         discovery_inputs_fingerprint(&canonical_root, &discovery_inputs)?;
     let entry = CachedDiscovery {
@@ -846,7 +858,7 @@ mod tests {
             assert_eq!(calls, 1);
             assert_eq!(discovered, apps);
 
-            let cached = load_cached_workspace(&root, &context, false)
+            let cached = load_cached_workspace(&root, &context, false, None)
                 .expect("read cache")
                 .expect("cache hit");
             assert_eq!(cached.apps, apps);
@@ -878,9 +890,9 @@ mod tests {
                 apps: apps.clone(),
                 tasks: Some(tasks.clone()),
             };
-            store_cached_workspace(&root, &context, &discovery).expect("store cache");
+            store_cached_workspace(&root, &context, &discovery, None).expect("store cache");
 
-            let cached = load_cached_workspace(&root, &context, true)
+            let cached = load_cached_workspace(&root, &context, true, None)
                 .expect("read cache")
                 .expect("cache hit");
             assert_eq!(cached.apps, apps);
@@ -905,16 +917,17 @@ mod tests {
                     apps: apps.clone(),
                     tasks: None,
                 },
+                None,
             )
             .expect("store cache");
 
             assert!(
-                load_cached_workspace(&root, &context, true)
+                load_cached_workspace(&root, &context, true, None)
                     .expect("read cache")
                     .is_none()
             );
             assert!(
-                load_cached_workspace(&root, &context, false)
+                load_cached_workspace(&root, &context, false, None)
                     .expect("read cache")
                     .is_some()
             );
@@ -984,6 +997,7 @@ mod tests {
                     apps: initial.clone(),
                     tasks: None,
                 },
+                None,
             )
             .expect("seed cache");
 
@@ -1007,7 +1021,7 @@ mod tests {
             assert_eq!(calls, 1);
             assert_eq!(apps, refreshed);
 
-            let cached = load_cached_workspace(&root, &context, false)
+            let cached = load_cached_workspace(&root, &context, false, None)
                 .expect("read cache")
                 .expect("cache entry");
             assert_eq!(cached.apps, refreshed);
@@ -1031,12 +1045,13 @@ mod tests {
                     apps: apps.clone(),
                     tasks: None,
                 },
+                None,
             )
             .expect("seed cache");
 
             fs::write(root.join("nix/apps.nix"), "{ changed = true; }").expect("edit apps.nix");
 
-            let cached = load_cached_workspace(&root, &context, false).expect("read cache");
+            let cached = load_cached_workspace(&root, &context, false, None).expect("read cache");
             assert!(cached.is_none());
 
             let mut calls = 0;
@@ -1069,6 +1084,7 @@ mod tests {
                     apps: apps.clone(),
                     tasks: None,
                 },
+                None,
             )
             .expect("seed cache");
 
@@ -1077,7 +1093,7 @@ mod tests {
             fs::rename(&temp_lock, root.join("flake.lock")).expect("atomic replace");
 
             assert!(
-                load_cached_workspace(&root, &context, false)
+                load_cached_workspace(&root, &context, false, None)
                     .expect("read cache")
                     .is_none()
             );
@@ -1108,10 +1124,11 @@ mod tests {
                     apps: apps.clone(),
                     tasks: None,
                 },
+                None,
             )
             .expect("seed cache");
 
-            let cached = load_cached_workspace(&link_root, &context, false)
+            let cached = load_cached_workspace(&link_root, &context, false, None)
                 .expect("read cache")
                 .expect("cache hit via symlink");
             assert_eq!(cached.apps, apps);
@@ -1204,6 +1221,7 @@ mod tests {
                             &root,
                             &context,
                             &WorkspaceDiscovery { apps, tasks: None },
+                            None,
                         )
                     })
                 })
@@ -1220,7 +1238,7 @@ mod tests {
                 "expected cache file after concurrent writers"
             );
 
-            let cached = load_cached_workspace(&root, &context, false)
+            let cached = load_cached_workspace(&root, &context, false, None)
                 .expect("read cache")
                 .expect("cache hit after concurrent writers");
             assert_eq!(cached.apps.len(), 1);
@@ -1257,9 +1275,10 @@ mod tests {
                     apps: apps.clone(),
                     tasks: None,
                 },
+                None,
             )
             .expect("store cache");
-            let cached = load_cached_workspace(&root, &context, false)
+            let cached = load_cached_workspace(&root, &context, false, None)
                 .expect("read cache")
                 .expect("cache hit");
             assert_eq!(cached.apps, apps);
@@ -1276,8 +1295,13 @@ mod tests {
         let apps = sample_apps(root.as_str(), "aarch64-darwin");
 
         with_cache_dir(&temp, || {
-            store_cached_workspace(&root, &context, &WorkspaceDiscovery { apps, tasks: None })
-                .expect("store cache");
+            store_cached_workspace(
+                &root,
+                &context,
+                &WorkspaceDiscovery { apps, tasks: None },
+                None,
+            )
+            .expect("store cache");
 
             let status = super::discovery_cache_status().expect("status");
             assert_eq!(status.entries, 1);
@@ -1311,13 +1335,14 @@ mod tests {
                     apps: apps.clone(),
                     tasks: None,
                 },
+                None,
             )
             .expect("seed cache");
 
             fs::write(root.join("flake.nix"), "{ a = 2; }").expect("edit flake.nix");
 
             assert!(
-                load_cached_workspace(&root, &context, false)
+                load_cached_workspace(&root, &context, false, None)
                     .expect("read cache")
                     .is_none()
             );
@@ -1341,6 +1366,7 @@ mod tests {
                     apps: apps.clone(),
                     tasks: None,
                 },
+                None,
             )
             .expect("seed cache");
 
@@ -1352,7 +1378,7 @@ mod tests {
                 .expect("rewrite");
 
             assert!(
-                load_cached_workspace(&root, &context, false)
+                load_cached_workspace(&root, &context, false, None)
                     .expect("read cache")
                     .is_none()
             );
@@ -1378,13 +1404,14 @@ mod tests {
                     apps: apps.clone(),
                     tasks: None,
                 },
+                None,
             )
             .expect("seed cache");
 
             fs::write(root.join("Cargo.toml"), "[package]\nname = \"b\"\n").expect("edit cargo");
 
             assert!(
-                load_cached_workspace(&root, &context, false)
+                load_cached_workspace(&root, &context, false, None)
                     .expect("read cache")
                     .is_none()
             );
@@ -1408,6 +1435,7 @@ mod tests {
                     apps: apps.clone(),
                     tasks: None,
                 },
+                None,
             )
             .expect("seed cache");
 
@@ -1421,7 +1449,7 @@ mod tests {
             super::TEST_CACHE_TTL_SECS.with(|cell| {
                 *cell.borrow_mut() = Some(Some(60));
             });
-            let miss = load_cached_workspace(&root, &context, false).expect("read cache");
+            let miss = load_cached_workspace(&root, &context, false, None).expect("read cache");
             super::TEST_CACHE_TTL_SECS.with(|cell| {
                 *cell.borrow_mut() = None;
             });

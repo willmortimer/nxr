@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSON) so config changes under the same binary cannot reuse stale capabilities.
   Warm hits still probe config once for digest validity, then skip
   version/help/system.
+- Fingerprint index skips pretty-JSON rewrite when unchanged; `discoveryInputs`
+  use the same metadata-gated incremental index; explain/doctor cache status
+  fingerprints the Nix tree once per operation.
+
+### Added
+
+- `nxr watch app:<name>` / `task:<name>` disambiguation; `nxr run --watch`
+  resolves apps without loading tasks.
+- Synthetic monorepo fingerprint warm-path bench
+  (`scripts/perf/measure-fingerprint.sh`).
 
 ### Changed
 
@@ -26,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/perf/ci-thresholds.json` (ubuntu + Nix latest). Warm `list` Nix
   call-count budgets (`version=0`, `help=0`, `config=1`, `flake-show=0`) stay
   gated by CLI integration tests.
+- PERFORMANCE docs clarify content-correct hashes under inode/size/mtime reuse.
 
 Feature release: warm-path latency foundations and ecosystem ergonomics.
 
