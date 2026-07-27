@@ -67,7 +67,11 @@ All v1 task fields remain available. New per-task fields:
 Top-level `contexts` maps context names to shell, environment policy, secret
 references (logical `ref` strings only), and `confirm` metadata.
 
-## Example contexts (illustrative — runtime application not yet implemented)
+## Example contexts (runtime: env-provider secrets partial — H3)
+
+`delivery = "env"` secrets resolve from the caller environment at task spawn
+(see [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md)). `file` / `stdin` and sops/HM
+bindings are not implemented yet.
 
 ```nix
 perSystem.nxr.contexts = {

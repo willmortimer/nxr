@@ -7,6 +7,7 @@
 //! - [`events`] — typed execution event bus (`Event` / [`EventSink`])
 //! - [`scheduler`] — ready-queue scheduler with job limit ([`Scheduler`])
 
+pub mod context;
 pub mod duration;
 pub mod events;
 pub mod graph;
@@ -17,6 +18,12 @@ pub mod run_events;
 pub mod scheduler;
 pub mod schema;
 
+pub use context::{
+    AppliedTaskContext, ContextError, PlanSecretEntry, PlanSecretValuePlaceholder,
+    apply_task_context, merge_spawn_env_overrides, resolve_env_provider_secrets,
+    resolve_env_provider_secrets_with, resolve_task_context, secret_delivery_mode,
+    serialized_plan_excludes_value,
+};
 pub use duration::{DurationParseError, format_duration, parse_duration};
 pub use events::{
     ChunkEncoding, Event, EventSink, NodeOutcome, NullSink, OutputPayload, RecordingSink,

@@ -69,6 +69,17 @@ impl EnvironmentPolicy {
 
     /// Apply this policy to a [`Command`] before spawn.
     pub fn apply(&self, command: &mut Command) {
+        Self::apply_with_overrides(self, command, &BTreeMap::new());
+    }
+
+    /// Apply this policy, then set spawn-time overrides (secrets / context inherit `set`).
+    ///
+    /// Overrides are never written into serialized plans.
+    pub fn apply_with_overrides(
+        &self,
+        command: &mut Command,
+        overrides: &BTreeMap<String, String>,
+    ) {
         match self {
             Self::Inherit => {}
             Self::Clean { keep, set, unset } => {
@@ -91,6 +102,12 @@ impl EnvironmentPolicy {
                     command.env(key, value);
                 }
             }
+        }
+        for (key, value) in overrides {
+            if key.is_empty() {
+                continue;
+            }
+            command.env(key, value);
         }
     }
 }

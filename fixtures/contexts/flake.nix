@@ -55,7 +55,7 @@
             };
             secrets = {
               DEPLOY_TOKEN = {
-                ref = "fixture/prod/deploy-token";
+                ref = "NXR_FIXTURE_DEPLOY_TOKEN";
                 delivery = "env";
               };
             };
@@ -88,7 +88,11 @@
         in
         {
           deploy = mkApp pkgs "fixture-deploy" "Deploy" ''
-            echo "deploy"
+            if [ -z "''${DEPLOY_TOKEN:-}" ]; then
+              echo "missing deploy token" >&2
+              exit 42
+            fi
+            echo "deploy ok"
           '';
           test = mkApp pkgs "fixture-test" "Run tests" ''
             echo "test"

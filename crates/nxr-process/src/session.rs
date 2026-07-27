@@ -1,5 +1,6 @@
 //! Killable supervised child sessions for watch generations.
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io;
 use std::path::Path;
@@ -162,10 +163,12 @@ where
     P: AsRef<OsStr>,
     A: AsRef<OsStr>,
 {
-    spawn_in_with(program, args, cwd, environment, SpawnStdio::Inherit)
+    spawn_in_with(program, args, cwd, environment, SpawnStdio::Inherit, None)
 }
 
 /// Spawn `program` with argv in a new process group and the given stdio mode.
+///
+/// Optional `env_overrides` are applied after `environment` (runtime secrets only).
 ///
 /// # Errors
 ///
@@ -177,19 +180,22 @@ pub fn spawn_in_with<P, A>(
     cwd: Option<&Path>,
     environment: &EnvironmentPolicy,
     stdio: SpawnStdio,
+    env_overrides: Option<&BTreeMap<String, String>>,
 ) -> io::Result<ChildSession>
 where
     P: AsRef<OsStr>,
     A: AsRef<OsStr>,
 {
+    let empty = BTreeMap::new();
+    let overrides = env_overrides.unwrap_or(&empty);
     #[cfg(unix)]
     {
-        unix::spawn(program.as_ref(), args, cwd, environment, stdio)
+        unix::spawn(program.as_ref(), args, cwd, environment, stdio, overrides)
     }
 
     #[cfg(windows)]
     {
-        let _ = (program, args, cwd, environment, stdio);
+        let _ = (program, args, cwd, environment, stdio, overrides);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Windows supervised spawn is not implemented yet",
@@ -198,7 +204,7 @@ where
 
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = (program, args, cwd, environment, stdio);
+        let _ = (program, args, cwd, environment, stdio, overrides);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "supervised spawn is not supported on this platform",
@@ -208,6 +214,8 @@ where
 
 #[cfg(unix)]
 mod unix {
+    use std::collections::BTreeMap;
+
     use super::{ChildSession, Command, EnvironmentPolicy, OsStr, Path, SpawnStdio, Stdio, io};
     use nix::sys::signal::{Signal, killpg};
     use nix::unistd::Pid;
@@ -219,6 +227,7 @@ mod unix {
         cwd: Option<&Path>,
         environment: &EnvironmentPolicy,
         stdio: SpawnStdio,
+        env_overrides: &BTreeMap<String, String>,
     ) -> io::Result<ChildSession> {
         let (child_stdin, child_stdout, child_stderr) = match stdio {
             SpawnStdio::Inherit => (Stdio::inherit(), Stdio::inherit(), Stdio::inherit()),
@@ -236,7 +245,7 @@ mod unix {
         if let Some(dir) = cwd {
             command.current_dir(dir);
         }
-        environment.apply(&mut command);
+        environment.apply_with_overrides(&mut command, env_overrides);
 
         let child = command.spawn()?;
         let pgid = child.id();
@@ -344,6 +353,7 @@ mod tests {
             None,
             &EnvironmentPolicy::Inherit,
             SpawnStdio::PipeStdoutStderr,
+            None,
         )
         .expect("spawn bash stdin probe");
         let mut code = None;

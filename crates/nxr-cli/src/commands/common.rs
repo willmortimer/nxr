@@ -9,14 +9,15 @@ use nxr_completion::cache::{
     DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_workspace_with_cache,
 };
 use nxr_core::diagnostics::exit;
-use nxr_core::{App, EnvironmentPolicy, Plan, PlanCommand, PlanKind};
+use nxr_core::{App, EnvironmentPolicy, Plan, PlanCommand, PlanKind, PlanSecretRef};
 use nxr_nix::{
     AppNotFoundError, NixAdapter, NixCapabilities, NixError, OptionalNixFlags,
     TESTED_NIX_SUPPORT_FLOOR, detect_capabilities, flake_show_has_nxr_for_system, locate_nix,
     nix_develop_wrap_run_args, nix_run_args, parse_apps_from_flake_show, resolve_app_by_name,
 };
 use nxr_task::{
-    SchemaError, TaskDocument, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION,
+    ContextError, PlanSecretEntry, SchemaError, SecretDelivery, TaskDocument,
+    WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, apply_task_context,
 };
 
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
@@ -249,6 +250,8 @@ pub enum PrepareError {
     TaskDiscovery(#[from] nxr_nix::TaskDiscoveryError),
     #[error(transparent)]
     TaskSchema(#[from] SchemaError),
+    #[error(transparent)]
+    Context(#[from] ContextError),
 }
 
 impl PrepareError {
@@ -264,7 +267,7 @@ impl PrepareError {
             Self::Nix(error) => error.exit_code(),
             Self::NotFound(error) => error.exit_code(),
             Self::TaskDiscovery(error) => error.exit_code(),
-            Self::TaskSchema(_) => nxr_core::diagnostics::exit::EVALUATION,
+            Self::TaskSchema(_) | Self::Context(_) => nxr_core::diagnostics::exit::EVALUATION,
         }
     }
 }
@@ -563,7 +566,7 @@ impl WorkspaceSnapshot {
                 environment_policy: environment_policy.clone(),
                 nix_flags,
             };
-            let plan = build_plan(
+            let mut plan = build_plan(
                 &app_request,
                 &self.flake,
                 &self.nix,
@@ -572,6 +575,17 @@ impl WorkspaceSnapshot {
                 &execution_directory,
                 &strip_one_separator(forwarded),
             )?;
+            let node_environment = if let Some(context_name) = definition.context.as_deref() {
+                let applied =
+                    apply_task_context(document, task_id, context_name, environment_policy)?;
+                plan.context = Some(applied.context_name);
+                plan.secrets = plan_secrets_for_core(&applied.plan_secrets);
+                plan.context_env_set = applied.spawn_env_set.clone();
+                plan.environment_policy = applied.environment_policy.clone();
+                applied.environment_policy
+            } else {
+                environment_policy.clone()
+            };
             let timeout = definition
                 .timeout
                 .as_deref()
@@ -601,7 +615,7 @@ impl WorkspaceSnapshot {
                     program: self.nix.nix.clone(),
                     arguments: plan.command.arguments.clone(),
                     cwd: execution_directory,
-                    environment: plan.environment_policy.clone(),
+                    environment: node_environment,
                     plan,
                     timeout,
                     termination_grace,
@@ -810,6 +824,9 @@ fn build_plan(
         shell: request.shell.map(str::to_owned),
         active_shell: active_dev_shell(),
         environment_policy: request.environment_policy.clone(),
+        context: None,
+        secrets: Vec::new(),
+        context_env_set: BTreeMap::new(),
         command: PlanCommand {
             program: adapter.nix.as_str().to_owned(),
             arguments: command_arguments,
@@ -864,12 +881,35 @@ fn build_fast_plan(
         shell: request.shell.map(str::to_owned),
         active_shell: active_dev_shell(),
         environment_policy: request.environment_policy.clone(),
+        context: None,
+        secrets: Vec::new(),
+        context_env_set: BTreeMap::new(),
         command: PlanCommand {
             program: nix.as_str().to_owned(),
             arguments: command_arguments,
         },
         forwarded_arguments: forwarded.to_vec(),
     })
+}
+
+fn plan_secrets_for_core(entries: &[PlanSecretEntry]) -> Vec<PlanSecretRef> {
+    entries
+        .iter()
+        .map(|entry| PlanSecretRef {
+            name: entry.name.clone(),
+            reference: entry.reference.clone(),
+            delivery: secret_delivery_label(entry.delivery).to_owned(),
+            value: "<runtime>".to_owned(),
+        })
+        .collect()
+}
+
+fn secret_delivery_label(delivery: SecretDelivery) -> &'static str {
+    match delivery {
+        SecretDelivery::Env => "env",
+        SecretDelivery::File => "file",
+        SecretDelivery::Stdin => "stdin",
+    }
 }
 
 #[cfg(test)]
