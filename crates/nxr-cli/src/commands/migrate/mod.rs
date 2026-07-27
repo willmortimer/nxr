@@ -135,7 +135,8 @@ mod tests {
     use camino::Utf8PathBuf;
 
     use super::{MigrateRequest, MigrateSource, run};
-    use crate::runner_output::{OutputOptions, RunnerOutput};
+    use crate::output_options::{ColorWhen, LogFormat, OutputOptions};
+    use crate::runner_output::RunnerOutput;
 
     #[test]
     fn migrate_justfile_to_stdout() {
@@ -143,7 +144,14 @@ mod tests {
         let justfile = Utf8PathBuf::from_path_buf(temp.path().join("Justfile")).expect("utf-8");
         std::fs::write(justfile.as_std_path(), "hello:\n    echo hello\n").expect("write justfile");
 
-        let runner = RunnerOutput::new(OutputOptions::plain());
+        let runner = RunnerOutput::new(OutputOptions::new(
+            0,
+            0,
+            true,
+            false,
+            ColorWhen::Never,
+            LogFormat::Plain,
+        ));
         let code = run(
             MigrateRequest {
                 source: MigrateSource::Justfile,

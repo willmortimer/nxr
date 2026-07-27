@@ -462,6 +462,7 @@ fn discover_tasks_required(
             Ok::<WorkspaceDiscovery, ListError>(WorkspaceDiscovery {
                 apps: Vec::new(),
                 tasks: Some(tasks),
+                ..Default::default()
             })
         },
     )?;
@@ -497,7 +498,11 @@ fn discover_workspace_soft_tasks(
                 .discover_apps(&flake_ref, nix_flags)
                 .map_err(ListError::Nix)?;
             let tasks = adapter.discover_tasks(&flake_ref, nix_flags).ok();
-            Ok(WorkspaceDiscovery { apps, tasks })
+            Ok(WorkspaceDiscovery {
+                apps,
+                tasks,
+                ..Default::default()
+            })
         },
     )
 }

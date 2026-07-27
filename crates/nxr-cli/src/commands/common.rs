@@ -393,6 +393,102 @@ pub fn locate_nix_path(nix_override: Option<&str>) -> Result<Utf8PathBuf, NixErr
     }
 }
 
+fn coalesced_discovery_error(error: nxr_nix::CoalescedDiscoveryError) -> PrepareError {
+    match error {
+        nxr_nix::CoalescedDiscoveryError::Nix(error) => PrepareError::Nix(error),
+        nxr_nix::CoalescedDiscoveryError::Tasks(error) => PrepareError::TaskDiscovery(error),
+        nxr_nix::CoalescedDiscoveryError::InvalidEnvelope { source } => {
+            PrepareError::Nix(NixError::InvalidJson { source })
+        }
+        nxr_nix::CoalescedDiscoveryError::ParseApps(error) => PrepareError::Nix(error.into()),
+    }
+}
+
+pub(crate) struct ColdWorkspaceDiscovery {
+    pub(crate) discovery: WorkspaceDiscovery,
+    pub(crate) dev_shells: BTreeSet<String>,
+    pub(crate) used_coalesced: bool,
+}
+
+/// Discover apps and optional tasks, preferring coalesced eval when available.
+pub(crate) fn cold_discover_workspace(
+    nix: &NixAdapter,
+    flake_ref: &str,
+    load_tasks: bool,
+    nix_flags: &OptionalNixFlags,
+) -> Result<ColdWorkspaceDiscovery, PrepareError> {
+    let use_coalesced =
+        load_tasks && nxr_nix::coalesced_discovery_available(&nix.version_banner);
+    let mut dev_shells = BTreeSet::new();
+
+    if use_coalesced {
+        let mut discovery_flags = nix_flags.clone();
+        discovery_flags.no_write_lock_file = true;
+        let args = nix.compatible_argv(
+            nxr_nix::coalesced_discovery_args(flake_ref, &nix.system),
+            &discovery_flags,
+        )?;
+        match nxr_nix::discover_coalesced(&nix.nix, &nix.system, flake_ref, &args)
+            .map_err(coalesced_discovery_error)
+        {
+            Ok(coalesced) => {
+                let workspace = coalesced
+                    .into_workspace(flake_ref, &nix.system, load_tasks)
+                    .map_err(coalesced_discovery_error)?;
+                dev_shells = workspace.dev_shells.clone().into_iter().collect();
+                return Ok(ColdWorkspaceDiscovery {
+                    discovery: WorkspaceDiscovery {
+                        apps: workspace.apps,
+                        tasks: workspace.tasks,
+                        dev_shells: workspace.dev_shells,
+                    },
+                    dev_shells,
+                    used_coalesced: true,
+                });
+            }
+            Err(error) => {
+                eprintln!("nxr: coalesced discovery failed, falling back: {error}");
+            }
+        }
+    }
+
+    let show = nix
+        .flake_show_json(flake_ref, nix_flags)
+        .map_err(PrepareError::Nix)?;
+    dev_shells = parse_outputs_from_flake_show(
+        &show,
+        flake_ref,
+        &nix.system,
+        OutputTable::DevShells,
+    )
+    .map_err(|error| PrepareError::Nix(error.into()))?
+    .into_iter()
+    .map(|shell| shell.name)
+    .collect();
+    let apps = parse_apps_from_flake_show(&show, flake_ref, &nix.system)
+        .map_err(|error| PrepareError::Nix(error.into()))?;
+    let tasks = if load_tasks {
+        Some(
+            nix.discover_tasks(flake_ref, nix_flags)
+                .map_err(PrepareError::TaskDiscovery)?,
+        )
+    } else if flake_show_has_nxr_for_system(&show, &nix.system) {
+        None
+    } else {
+        Some(TaskDocument::new(BTreeMap::new()))
+    };
+
+    Ok(ColdWorkspaceDiscovery {
+        discovery: WorkspaceDiscovery {
+            apps,
+            tasks,
+            dev_shells: dev_shells.iter().cloned().collect(),
+        },
+        dev_shells,
+        used_coalesced: false,
+    })
+}
+
 /// Whether stderr from a failed `nix run` indicates a missing installable/app.
 #[must_use]
 pub fn stderr_indicates_missing_installable(stderr: &str) -> bool {
@@ -438,7 +534,7 @@ impl WorkspaceSnapshot {
             discovery_inputs: Vec::new(),
         };
         let flake_ref = flake.nix_ref.clone();
-        let mut dev_shells = BTreeSet::new();
+        let used_coalesced = std::cell::Cell::new(false);
         let discovery = discover_workspace_with_cache(
             &context,
             DiscoveryCacheOptions {
@@ -446,35 +542,17 @@ impl WorkspaceSnapshot {
                 require_tasks: load_tasks,
             },
             || {
-                let show = nix
-                    .flake_show_json(&flake_ref, nix_flags)
-                    .map_err(PrepareError::Nix)?;
-                dev_shells = parse_outputs_from_flake_show(
-                    &show,
-                    &flake_ref,
-                    &nix.system,
-                    OutputTable::DevShells,
-                )
-                .map_err(|error| PrepareError::Nix(error.into()))?
-                .into_iter()
-                .map(|shell| shell.name)
-                .collect();
-                let apps = parse_apps_from_flake_show(&show, &flake_ref, &nix.system)
-                    .map_err(|error| PrepareError::Nix(error.into()))?;
-                let tasks = if load_tasks {
-                    Some(
-                        nix.discover_tasks(&flake_ref, nix_flags)
-                            .map_err(PrepareError::TaskDiscovery)?,
-                    )
-                } else if flake_show_has_nxr_for_system(&show, &nix.system) {
-                    None
-                } else {
-                    Some(TaskDocument::new(BTreeMap::new()))
-                };
-                Ok::<WorkspaceDiscovery, PrepareError>(WorkspaceDiscovery { apps, tasks })
+                let cold = cold_discover_workspace(&nix, &flake_ref, load_tasks, nix_flags)?;
+                used_coalesced.set(cold.used_coalesced);
+                Ok::<WorkspaceDiscovery, PrepareError>(cold.discovery)
             },
         )?;
-        let dev_shells = if load_tasks && dev_shells.is_empty() {
+        let mut dev_shells: BTreeSet<String> = discovery.dev_shells.iter().cloned().collect();
+        let dev_shells = if load_tasks
+            && dev_shells.is_empty()
+            && !used_coalesced.get()
+            && discovery.tasks.is_none()
+        {
             let show = nix
                 .flake_show_json(&flake_ref, nix_flags)
                 .map_err(PrepareError::Nix)?;

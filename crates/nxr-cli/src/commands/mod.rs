@@ -17,6 +17,7 @@ pub mod envrc;
 pub mod explain;
 pub mod fmt;
 pub mod graph;
+pub mod history;
 pub mod init;
 pub mod inspect;
 pub mod list;

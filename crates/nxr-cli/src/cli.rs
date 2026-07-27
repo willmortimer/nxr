@@ -469,6 +469,11 @@ pub enum Command {
         #[command(subcommand)]
         action: CacheSubcommand,
     },
+    /// Show recent run summaries persisted under XDG state
+    History {
+        #[command(subcommand)]
+        action: Option<HistorySubcommand>,
+    },
     /// Report apps and tasks likely affected by changed paths
     Affected {
         /// Collect changed paths from `git diff --name-only <base>...HEAD`
@@ -642,6 +647,21 @@ pub enum CacheSubcommand {
     Clear,
     /// Show cache locations and sizes
     Status,
+    /// Explain discovery cache hit/miss and invalidation reasons
+    Explain {
+        /// Treat cache as task-inclusive (require cached tasks document)
+        #[arg(long = "tasks")]
+        tasks: bool,
+    },
+}
+
+/// `nxr history` subcommands.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum HistorySubcommand {
+    /// List recent run summaries (default)
+    List,
+    /// Remove all persisted run summaries
+    Clear,
 }
 
 /// `nxr trust` subcommands.

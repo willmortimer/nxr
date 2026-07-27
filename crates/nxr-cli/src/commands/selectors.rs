@@ -9,7 +9,7 @@ use nxr_task::{
     TaskTargetResolution, resolve_task_targets,
 };
 
-use crate::commands::common::{PrepareError, build_adapter, current_invocation_directory};
+use crate::commands::common::{PrepareError, build_adapter, cold_discover_workspace, current_invocation_directory};
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
 
 /// Errors while expanding selectors at the CLI layer.
@@ -126,17 +126,9 @@ fn discover_task_document_for_flake(
     let workspace = discover_workspace_with_cache(
         &context,
         DiscoveryCacheOptions::with_tasks(refresh_discovery),
-        || -> Result<WorkspaceDiscovery, SelectorCommandError> {
-            let apps = adapter
-                .discover_apps(&flake_ref, nix_flags)
-                .map_err(SelectorCommandError::Nix)?;
-            let tasks = adapter
-                .discover_tasks(&flake_ref, nix_flags)
-                .map_err(SelectorCommandError::Tasks)?;
-            Ok(WorkspaceDiscovery {
-                apps,
-                tasks: Some(tasks),
-            })
+        || {
+            let cold = cold_discover_workspace(adapter, &flake_ref, true, nix_flags)?;
+            Ok::<WorkspaceDiscovery, SelectorCommandError>(cold.discovery)
         },
     )?;
     workspace

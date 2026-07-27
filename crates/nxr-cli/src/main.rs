@@ -22,13 +22,14 @@ use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
 
 use crate::cli::{
     BuildSubcommand, CacheSubcommand, CiSubcommand, Cli, Command, ContextSubcommand,
-    DoctorSubcommand, ExplainSubcommand, InspectSubcommand, MigrateSubcommand, TrustSubcommand,
+    DoctorSubcommand, ExplainSubcommand, HistorySubcommand, InspectSubcommand, MigrateSubcommand,
+    TrustSubcommand,
 };
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
     affected, cache, ci, complete, completion, configurations, context, doctor, doctor_builders,
-    doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt, graph, init, inspect, list,
-    manpage, migrate, nix_op, plan, run, select, selectors, task, trust, watch,
+    doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt, graph, history, init,
+    inspect, list, manpage, migrate, nix_op, plan, run, select, selectors, task, trust, watch,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -109,6 +110,8 @@ enum RunError {
     #[error(transparent)]
     Cache(#[from] cache::CacheError),
     #[error(transparent)]
+    History(#[from] history::HistoryError),
+    #[error(transparent)]
     Affected(#[from] affected::AffectedCommandError),
     #[error(transparent)]
     Ci(#[from] ci::CiPlanError),
@@ -147,6 +150,7 @@ impl RunError {
             Self::Inspect(error) => error.exit_code(),
             Self::Watch(error) => error.exit_code(),
             Self::Cache(error) => error.exit_code(),
+            Self::History(error) => error.exit_code(),
             Self::Affected(error) => error.exit_code(),
             Self::Ci(error) => error.exit_code(),
             Self::Selector(error) => error.exit_code(),
@@ -474,6 +478,27 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             }
             CacheSubcommand::Status => {
                 cache::status(cli.json, runner)?;
+                Ok(exit::SUCCESS)
+            }
+            CacheSubcommand::Explain { tasks } => {
+                cache::explain(
+                    cli.flake.as_deref(),
+                    cli.nix.as_deref(),
+                    *tasks,
+                    cli.json,
+                    &nix_flags,
+                    runner,
+                )?;
+                Ok(exit::SUCCESS)
+            }
+        },
+        Some(Command::History { action }) => match action {
+            None | Some(HistorySubcommand::List) => {
+                history::list(cli.json, runner)?;
+                Ok(exit::SUCCESS)
+            }
+            Some(HistorySubcommand::Clear) => {
+                history::clear(cli.json, runner)?;
                 Ok(exit::SUCCESS)
             }
         },

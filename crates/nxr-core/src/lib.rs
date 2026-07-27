@@ -8,6 +8,7 @@ pub mod model;
 pub mod plan;
 pub mod projects;
 pub mod repo_path;
+pub mod run_history;
 pub mod sanitize;
 pub mod trust;
 
@@ -29,6 +30,10 @@ pub use projects::{
     listable_apps, load_projects_document, set_app_category,
 };
 pub use repo_path::{RepoPathError, normalize_repo_relative_path, validate_repo_relative_path};
+pub use run_history::{
+    DEFAULT_RUN_HISTORY_LIMIT, DiscoveryCacheOutcome, RunSummary, RunSummaryInput, RunTargetKind,
+    RUN_HISTORY_LIMIT_ENV, clear_runs, list_runs, record_run, record_run_result,
+};
 pub use sanitize::sanitize_terminal_text;
 pub use trust::{
     NXR_TRUST_PROJECT_ENV, TrustDatabase, TrustError, canonical_project_key, enforce_project_trust,

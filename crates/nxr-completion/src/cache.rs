@@ -113,6 +113,17 @@ impl DiscoveryCacheOptions {
 pub struct WorkspaceDiscovery {
     pub apps: Vec<App>,
     pub tasks: Option<TaskDocument>,
+    pub dev_shells: Vec<String>,
+}
+
+impl Default for WorkspaceDiscovery {
+    fn default() -> Self {
+        Self {
+            apps: Vec::new(),
+            tasks: None,
+            dev_shells: Vec::new(),
+        }
+    }
 }
 
 /// Return cached apps when the on-disk entry is still valid.
@@ -185,7 +196,11 @@ where
     F: FnOnce() -> Result<Vec<App>, E>,
 {
     let discovery = discover_workspace_with_cache(context, options, || {
-        discover().map(|apps| WorkspaceDiscovery { apps, tasks: None })
+        discover().map(|apps| WorkspaceDiscovery {
+            apps,
+            tasks: None,
+            dev_shells: Vec::new(),
+        })
     })?;
     Ok(discovery.apps)
 }
@@ -211,6 +226,8 @@ struct CachedDiscovery {
     apps: Vec<App>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tasks: Option<TaskDocument>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    dev_shells: Vec<String>,
 }
 
 const CACHE_SCHEMA_VERSION: u32 = 5;
@@ -277,6 +294,44 @@ pub struct DiscoveryCacheEntry {
     /// Fingerprint stored in the on-disk entry (present on hit or stale miss).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cached_invalidation_key: Option<String>,
+    /// Structured miss reasons when [`Self::hit`] is false.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub miss_reasons: Vec<DiscoveryCacheMissReason>,
+}
+
+/// Structured reason a discovery cache lookup missed.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DiscoveryCacheMissReason {
+    RemoteFlake,
+    CacheUnavailable,
+    Absent,
+    Corrupt,
+    SchemaVersion {
+        expected: u32,
+        found: u32,
+    },
+    DiscoverySchemaVersion {
+        expected: u32,
+        found: u32,
+    },
+    ContextMismatch {
+        field: String,
+    },
+    TtlExpired {
+        age_secs: u64,
+        ttl_secs: u64,
+    },
+    FingerprintMismatch,
+    DiscoveryInputsMismatch,
+    TasksRequired,
+}
+
+/// Full discovery cache explain report for one flake context.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DiscoveryCacheExplain {
+    pub entry: DiscoveryCacheEntry,
+    pub coalesced_discovery_available: bool,
 }
 
 /// Remove all discovery cache entries.
@@ -360,6 +415,35 @@ pub fn discovery_cache_status() -> io::Result<DiscoveryCacheStatus> {
 ///
 /// Returns [`io::Error`] when fingerprinting or reading a stale cache file fails.
 pub fn discovery_cache_entry(context: &DiscoveryContext) -> io::Result<DiscoveryCacheEntry> {
+    discovery_cache_entry_with_options(context, DiscoveryCacheOptions::normal())
+}
+
+/// Explain discovery cache validity, miss reasons, and coalesced discovery availability.
+///
+/// # Errors
+///
+/// Returns [`io::Error`] when fingerprinting or reading a stale cache file fails.
+pub fn explain_discovery_cache(
+    context: &DiscoveryContext,
+    options: DiscoveryCacheOptions,
+    coalesced_discovery_available: bool,
+) -> io::Result<DiscoveryCacheExplain> {
+    let entry = discovery_cache_entry_with_options(context, options)?;
+    Ok(DiscoveryCacheExplain {
+        entry,
+        coalesced_discovery_available,
+    })
+}
+
+/// Like [`discovery_cache_entry`] but honors [`DiscoveryCacheOptions::require_tasks`].
+///
+/// # Errors
+///
+/// Returns [`io::Error`] when fingerprinting or reading a stale cache file fails.
+pub fn discovery_cache_entry_with_options(
+    context: &DiscoveryContext,
+    options: DiscoveryCacheOptions,
+) -> io::Result<DiscoveryCacheEntry> {
     let directory = discovery_cache_dir()
         .map(|path| path.display().to_string())
         .unwrap_or_default();
@@ -372,15 +456,15 @@ pub fn discovery_cache_entry(context: &DiscoveryContext) -> io::Result<Discovery
             hit: false,
             invalidation_key: None,
             cached_invalidation_key: None,
+            miss_reasons: vec![DiscoveryCacheMissReason::RemoteFlake],
         });
     };
 
     let canonical_root = canonical_flake_root(local_root);
-    // Fingerprint once; reuse for hit validation so status/explain do not walk twice.
     let invalidation_key = nix_tree_fingerprint(&canonical_root)?;
     let context_key = cache_context_key(context);
     let cache_file = cache_file_path(&context_key).map(|path| path.display().to_string());
-    let hit = load_cached_workspace(local_root, context, false, Some(invalidation_key.as_str()))?
+    let hit = load_cached_workspace(local_root, context, options.require_tasks, Some(invalidation_key.as_str()))?
         .is_some();
     let cached_invalidation_key = if hit {
         Some(invalidation_key.clone())
@@ -390,6 +474,11 @@ pub fn discovery_cache_entry(context: &DiscoveryContext) -> io::Result<Discovery
             .and_then(|path| read_cached_fingerprint(path))
             .transpose()?
     };
+    let miss_reasons = if hit {
+        Vec::new()
+    } else {
+        diagnose_cache_miss(local_root, context, options.require_tasks)?
+    };
 
     Ok(DiscoveryCacheEntry {
         available: true,
@@ -398,7 +487,109 @@ pub fn discovery_cache_entry(context: &DiscoveryContext) -> io::Result<Discovery
         hit,
         invalidation_key: Some(invalidation_key),
         cached_invalidation_key,
+        miss_reasons,
     })
+}
+
+fn diagnose_cache_miss(
+    local_root: &Utf8Path,
+    context: &DiscoveryContext,
+    require_tasks: bool,
+) -> io::Result<Vec<DiscoveryCacheMissReason>> {
+    if cache_root().is_none() {
+        return Ok(vec![DiscoveryCacheMissReason::CacheUnavailable]);
+    }
+
+    let context = cache_context_key(context);
+    let path = match cache_file_path(&context) {
+        Some(path) => path,
+        None => return Ok(vec![DiscoveryCacheMissReason::CacheUnavailable]),
+    };
+
+    let contents = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(vec![DiscoveryCacheMissReason::Absent]);
+        }
+        Err(error) => return Err(error),
+    };
+
+    let cached: CachedDiscovery = match serde_json::from_str(&contents) {
+        Ok(cached) => cached,
+        Err(_) => return Ok(vec![DiscoveryCacheMissReason::Corrupt]),
+    };
+
+    let mut reasons = Vec::new();
+    if cached.schema_version != CACHE_SCHEMA_VERSION {
+        reasons.push(DiscoveryCacheMissReason::SchemaVersion {
+            expected: CACHE_SCHEMA_VERSION,
+            found: cached.schema_version,
+        });
+    }
+    if cached.discovery_schema_version != DISCOVERY_SCHEMA_VERSION {
+        reasons.push(DiscoveryCacheMissReason::DiscoverySchemaVersion {
+            expected: DISCOVERY_SCHEMA_VERSION,
+            found: cached.discovery_schema_version,
+        });
+    }
+
+    let canonical_root = canonical_flake_root(local_root);
+    if cached.flake_root != canonical_root.as_str() {
+        reasons.push(DiscoveryCacheMissReason::ContextMismatch {
+            field: "flake_root".to_owned(),
+        });
+    }
+    if cached.system != context.system {
+        reasons.push(DiscoveryCacheMissReason::ContextMismatch {
+            field: "system".to_owned(),
+        });
+    }
+    if cached.flake_ref != context.flake_ref {
+        reasons.push(DiscoveryCacheMissReason::ContextMismatch {
+            field: "flake_ref".to_owned(),
+        });
+    }
+    if cached.nix_path != context.nix_path {
+        reasons.push(DiscoveryCacheMissReason::ContextMismatch {
+            field: "nix_path".to_owned(),
+        });
+    }
+    if cached.nix_version != context.nix_version {
+        reasons.push(DiscoveryCacheMissReason::ContextMismatch {
+            field: "nix_version".to_owned(),
+        });
+    }
+
+    if let Some(ttl) = cache_ttl_secs() {
+        let age = unix_now_secs().saturating_sub(cached.cached_at);
+        if age > ttl {
+            reasons.push(DiscoveryCacheMissReason::TtlExpired {
+                age_secs: age,
+                ttl_secs: ttl,
+            });
+        }
+    }
+
+    let current_fingerprint = nix_tree_fingerprint(&canonical_root)?;
+    if cached.nix_fingerprint != current_fingerprint {
+        reasons.push(DiscoveryCacheMissReason::FingerprintMismatch);
+    }
+
+    let inputs_fingerprint =
+        discovery_inputs_fingerprint(&canonical_root, &cached.discovery_inputs)?;
+    if cached.discovery_inputs_fingerprint != inputs_fingerprint {
+        reasons.push(DiscoveryCacheMissReason::DiscoveryInputsMismatch);
+    }
+
+    if require_tasks && cached.tasks.is_none() {
+        reasons.push(DiscoveryCacheMissReason::TasksRequired);
+    }
+
+    if reasons.is_empty() {
+        reasons.push(DiscoveryCacheMissReason::Absent);
+    }
+
+    Ok(reasons)
 }
 
 fn read_cached_fingerprint(cache_file: &str) -> Option<io::Result<String>> {
@@ -627,6 +818,7 @@ fn load_cached_workspace(
     Ok(Some(WorkspaceDiscovery {
         apps: cached.apps,
         tasks: cached.tasks,
+        dev_shells: cached.dev_shells,
     }))
 }
 
@@ -668,6 +860,7 @@ fn store_cached_workspace(
         flake_ref: context.flake_ref.clone(),
         apps: discovery.apps.clone(),
         tasks: discovery.tasks.clone(),
+        dev_shells: discovery.dev_shells.clone(),
     };
 
     let serialized = serde_json::to_vec_pretty(&entry)
@@ -764,22 +957,7 @@ mod tests {
 
     fn sample_tasks() -> TaskDocument {
         let mut tasks = BTreeMap::new();
-        tasks.insert(
-            "ci".to_owned(),
-            TaskDefinition {
-                description: Some("CI".to_owned()),
-                depends_on: Vec::new(),
-                app: "hello".to_owned(),
-                working_directory: None,
-                hidden: false,
-                category: None,
-                aliases: Vec::new(),
-                interactive: false,
-                paths: Vec::new(),
-                timeout: None,
-                termination_grace_period: None,
-            },
-        );
+        tasks.insert("ci".to_owned(), TaskDefinition::new("hello"));
         TaskDocument::new(tasks)
     }
 
@@ -889,6 +1067,7 @@ mod tests {
             let discovery = WorkspaceDiscovery {
                 apps: apps.clone(),
                 tasks: Some(tasks.clone()),
+                ..Default::default()
             };
             store_cached_workspace(&root, &context, &discovery, None).expect("store cache");
 
@@ -916,6 +1095,7 @@ mod tests {
                 &WorkspaceDiscovery {
                     apps: apps.clone(),
                     tasks: None,
+                    ..Default::default()
                 },
                 None,
             )
@@ -954,6 +1134,7 @@ mod tests {
                     Ok::<_, std::convert::Infallible>(WorkspaceDiscovery {
                         apps: apps.clone(),
                         tasks: Some(tasks.clone()),
+                        ..Default::default()
                     })
                 },
             )
@@ -970,6 +1151,7 @@ mod tests {
                     Ok::<_, std::convert::Infallible>(WorkspaceDiscovery {
                         apps: Vec::new(),
                         tasks: None,
+                        ..Default::default()
                     })
                 },
             )
@@ -996,6 +1178,7 @@ mod tests {
                 &WorkspaceDiscovery {
                     apps: initial.clone(),
                     tasks: None,
+                    ..Default::default()
                 },
                 None,
             )
@@ -1044,6 +1227,7 @@ mod tests {
                 &WorkspaceDiscovery {
                     apps: apps.clone(),
                     tasks: None,
+                    ..Default::default()
                 },
                 None,
             )
@@ -1083,6 +1267,7 @@ mod tests {
                 &WorkspaceDiscovery {
                     apps: apps.clone(),
                     tasks: None,
+                    ..Default::default()
                 },
                 None,
             )
@@ -1123,6 +1308,7 @@ mod tests {
                 &WorkspaceDiscovery {
                     apps: apps.clone(),
                     tasks: None,
+                    ..Default::default()
                 },
                 None,
             )
@@ -1220,7 +1406,11 @@ mod tests {
                         store_cached_workspace(
                             &root,
                             &context,
-                            &WorkspaceDiscovery { apps, tasks: None },
+                            &WorkspaceDiscovery {
+                                apps,
+                                tasks: None,
+                                dev_shells: Vec::new(),
+                            },
                             None,
                         )
                     })
@@ -1274,6 +1464,7 @@ mod tests {
                 &WorkspaceDiscovery {
                     apps: apps.clone(),
                     tasks: None,
+                    ..Default::default()
                 },
                 None,
             )
@@ -1298,7 +1489,11 @@ mod tests {
             store_cached_workspace(
                 &root,
                 &context,
-                &WorkspaceDiscovery { apps, tasks: None },
+                &WorkspaceDiscovery {
+                    apps,
+                    tasks: None,
+                    dev_shells: Vec::new(),
+                },
                 None,
             )
             .expect("store cache");
@@ -1334,6 +1529,7 @@ mod tests {
                 &WorkspaceDiscovery {
                     apps: apps.clone(),
                     tasks: None,
+                    ..Default::default()
                 },
                 None,
             )
@@ -1365,6 +1561,7 @@ mod tests {
                 &WorkspaceDiscovery {
                     apps: apps.clone(),
                     tasks: None,
+                    ..Default::default()
                 },
                 None,
             )
@@ -1403,6 +1600,7 @@ mod tests {
                 &WorkspaceDiscovery {
                     apps: apps.clone(),
                     tasks: None,
+                    ..Default::default()
                 },
                 None,
             )
@@ -1434,6 +1632,7 @@ mod tests {
                 &WorkspaceDiscovery {
                     apps: apps.clone(),
                     tasks: None,
+                    ..Default::default()
                 },
                 None,
             )

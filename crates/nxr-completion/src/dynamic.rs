@@ -204,6 +204,7 @@ mod tests {
             Ok::<WorkspaceDiscovery, ()>(WorkspaceDiscovery {
                 apps: Vec::new(),
                 tasks: None,
+                ..Default::default()
             })
         });
         assert!(apps.is_empty());
