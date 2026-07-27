@@ -13,7 +13,7 @@ use nxr_core::{App, AppList, ListApp, ProjectsError};
 use nxr_nix::{
     AppNotFoundError, NixError, OptionalNixFlags, TaskDiscoveryError, resolve_app_by_name,
 };
-use nxr_task::{TaskDefinition, TaskDocument, resolve_task};
+use nxr_task::{ExecutionContext, TaskDefinition, TaskDocument, resolve_task};
 use serde::Serialize;
 
 use crate::commands::common::{PrepareError, build_adapter, current_invocation_directory};
@@ -256,6 +256,8 @@ struct InspectOverviewJson<'a> {
     apps: Vec<ListApp>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     tasks: BTreeMap<String, TaskDefinition>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    contexts: BTreeMap<String, ExecutionContext>,
 }
 
 #[derive(Serialize)]
@@ -296,6 +298,7 @@ fn write_overview(
             task_schema_version: (!tasks.is_empty()).then_some(task_doc.schema_version),
             apps: AppList::from_apps(&flake.display, system, apps.iter().cloned()).apps,
             tasks,
+            contexts: task_doc.contexts.clone(),
         };
         let rendered = serde_json::to_string_pretty(&envelope)?;
         writeln!(writer, "{rendered}")?;
@@ -320,6 +323,12 @@ fn write_overview(
             task_doc.schema_version
         )?;
         write_human_tasks(writer, &tasks)?;
+    }
+
+    if !task_doc.contexts.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Contexts:")?;
+        write_human_contexts(writer, &task_doc.contexts)?;
     }
 
     if flake
@@ -419,6 +428,12 @@ fn write_task(
     if let Some(category) = &task.category {
         writeln!(writer, "Category: {}", sanitize_terminal_text(category))?;
     }
+    if let Some(shell) = &task.shell {
+        writeln!(writer, "Shell: {}", sanitize_terminal_text(shell))?;
+    }
+    if let Some(context) = &task.context {
+        writeln!(writer, "Context: {}", sanitize_terminal_text(context))?;
+    }
     Ok(())
 }
 
@@ -455,6 +470,29 @@ fn write_human_tasks(
             writeln!(writer, "{}", sanitize_terminal_text(description))?;
         } else {
             writeln!(writer)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_human_contexts(
+    writer: &mut impl Write,
+    contexts: &BTreeMap<String, ExecutionContext>,
+) -> io::Result<()> {
+    let max_name_len = contexts.keys().map(String::len).max().unwrap_or_default();
+    let name_width = max_name_len.max(4).max(max_name_len.saturating_add(1));
+
+    for (name, context) in contexts {
+        write!(writer, "  {name:<name_width$}")?;
+        match (&context.shell, context.confirm) {
+            (Some(shell), true) => writeln!(
+                writer,
+                "shell={} confirm=true",
+                sanitize_terminal_text(shell)
+            )?,
+            (Some(shell), false) => writeln!(writer, "shell={}", sanitize_terminal_text(shell))?,
+            (None, true) => writeln!(writer, "confirm=true")?,
+            (None, false) => writeln!(writer)?,
         }
     }
     Ok(())
@@ -513,6 +551,12 @@ mod tests {
                 paths: Vec::new(),
                 timeout: None,
                 termination_grace_period: None,
+                inputs: None,
+                outputs: Vec::new(),
+                cache: None,
+                resources: None,
+                shell: None,
+                context: None,
             },
         );
         tasks.insert(
@@ -529,6 +573,12 @@ mod tests {
                 paths: Vec::new(),
                 timeout: None,
                 termination_grace_period: None,
+                inputs: None,
+                outputs: Vec::new(),
+                cache: None,
+                resources: None,
+                shell: None,
+                context: None,
             },
         );
         TaskDocument::new(tasks)

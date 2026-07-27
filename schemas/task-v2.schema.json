@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://nxr.dev/schemas/task-v2.schema.json",
   "title": "nxr task document (schema v2 draft)",
-  "description": "PARTIAL — strict parse implemented in nxr-task (H1). Versioned task orchestration metadata (schema version 2) extending v1 with declared inputs, outputs, cache policy, and resource reservations. Execution contexts, secrets, dependency states, and confirmation requirements are planned separately (see docs/EXECUTION_CONTEXT.md). Runtime caching and resource scheduling are not yet implemented.",
+  "description": "PARTIAL — strict parse implemented in nxr-task (H1/H2). Versioned task orchestration metadata (schema version 2) extending v1 with declared inputs, outputs, cache policy, resource reservations, and named execution contexts. Secret resolution and runtime context application remain later work (see docs/EXECUTION_CONTEXT.md). Runtime caching and resource scheduling are not yet implemented.",
   "type": "object",
   "required": ["schema_version"],
   "additionalProperties": false,
@@ -33,6 +33,13 @@
       "items": {
         "type": "string",
         "minLength": 1
+      }
+    },
+    "contexts": {
+      "type": "object",
+      "description": "Named execution contexts (shell, environment policy, secret references, confirm). Secret values never appear in metadata.",
+      "additionalProperties": {
+        "$ref": "#/$defs/context"
       }
     }
   },
@@ -134,6 +141,16 @@
         "resources": {
           "$ref": "#/$defs/taskResources",
           "description": "Estimated resource demand and named exclusivity locks for cooperative scheduling."
+        },
+        "shell": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional devShell name for a shell-only execution context."
+        },
+        "context": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional named execution context reference (`contexts.<name>`)."
         }
       }
     },
@@ -309,6 +326,93 @@
             "type": "string",
             "minLength": 1
           }
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Named execution context bundling shell, environment policy, secret references, and confirmation.",
+      "properties": {
+        "shell": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional devShell name (`devShells.<name>`)."
+        },
+        "environment": {
+          "$ref": "#/$defs/contextEnvironment",
+          "description": "Optional environment policy for this context."
+        },
+        "secrets": {
+          "type": "object",
+          "description": "Secret requirements keyed by slot name. Values are logical references only.",
+          "default": {},
+          "additionalProperties": {
+            "$ref": "#/$defs/contextSecretRef"
+          }
+        },
+        "confirm": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the runner should prompt before execution."
+        }
+      }
+    },
+    "contextEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Environment policy for an execution context.",
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["inherit", "clean"],
+          "description": "Whether to inherit the caller environment or start from the clean allowlist."
+        },
+        "keep": {
+          "type": "array",
+          "description": "Extra environment variable names retained in `clean` mode.",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "set": {
+          "type": "object",
+          "description": "Non-secret environment values applied in this context.",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "unset": {
+          "type": "array",
+          "description": "Environment variable names removed before spawn in `clean` mode.",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "contextSecretRef": {
+      "type": "object",
+      "required": ["ref"],
+      "additionalProperties": false,
+      "description": "Logical secret reference (never a secret value).",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Logical secret reference resolved at runtime via user configuration."
+        },
+        "delivery": {
+          "type": "string",
+          "enum": ["env", "file", "stdin"],
+          "default": "env",
+          "description": "How the secret is delivered to the child process."
         }
       }
     }

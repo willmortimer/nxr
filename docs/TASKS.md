@@ -272,28 +272,28 @@ execution-event vocabulary are **frozen** for the V2.0 release:
 Additive optional **listing** fields may appear within major version 1. Breaking
 changes require a new major `schema_version`. See [COMPATIBILITY.md](COMPATIBILITY.md).
 
-### Schema v2 (draft — not implemented)
+### Schema v2 (partial — parse and module authoring)
 
 Do **not** add execution-affecting fields (`context`, `shell` on tasks, secrets,
 inputs/outputs, cache, resources, dependency states, confirmation) to schema v1.
 Unknown fields are currently ignored; an older runner would silently drop security
 policy.
 
-A **draft** schema v2 document exists at
-[`schemas/task-v2.schema.json`](../schemas/task-v2.schema.json) with `inputs`,
-`outputs`, `cache`, and `resources`. Current nxr releases **reject**
-`schema_version: 2` (unsupported major). See [TASK_SCHEMA_V2.md](TASK_SCHEMA_V2.md)
-for the full draft spec, ADR-0135/0138 cross-links, and compatibility notes.
+Schema v2 is documented at [`schemas/task-v2.schema.json`](../schemas/task-v2.schema.json).
+`crates/nxr-task` accepts `schema_version: 2` with strict rejection of unknown
+fields. Named **contexts** can be authored via flake-parts
+(`perSystem.nxr.contexts.<name>` in `nix/modules/contexts.nix`) and are emitted on
+`nxr.<system>.contexts`. Runtime secret delivery and context application remain
+later work (see [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md)).
 
-Execution **contexts** and related security fields are planned in the same major
-version family but documented in [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) §3
-(schema versioning) and [ROADMAP.md](ROADMAP.md) §3.0.
+See [TASK_SCHEMA_V2.md](TASK_SCHEMA_V2.md) for the full spec, ADR-0135/0138
+cross-links, and compatibility notes.
 
 ## Related
 
 - Schema v1 (frozen): [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json)
-- Schema v2 (draft): [`schemas/task-v2.schema.json`](../schemas/task-v2.schema.json) — [TASK_SCHEMA_V2.md](TASK_SCHEMA_V2.md)
-- Execution contexts (planned): [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md)
+- Schema v2 (partial): [`schemas/task-v2.schema.json`](../schemas/task-v2.schema.json) — [TASK_SCHEMA_V2.md](TASK_SCHEMA_V2.md)
+- Execution contexts: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) — module options + parse (runtime later)
 - App authoring: [APP_AUTHORING.md](APP_AUTHORING.md)
 - Architecture (task model): [ARCHITECTURE.md](ARCHITECTURE.md) §6
-- Fixture: [`fixtures/task-dag/`](../fixtures/task-dag/)
+- Fixtures: [`fixtures/task-dag/`](../fixtures/task-dag/), [`fixtures/contexts/`](../fixtures/contexts/)

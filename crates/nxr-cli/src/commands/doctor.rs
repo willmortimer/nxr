@@ -268,6 +268,8 @@ fn collect_flake_findings(
                 collect_workspace_cache_findings(&flake, adapter, findings);
             }
 
+            collect_task_context_findings(adapter, &flake.nix_ref, findings);
+
             collect_projects_member_findings(&flake, adapter, &apps, findings);
 
             if let Some(app_name) = request.app {
@@ -297,6 +299,35 @@ fn collect_flake_findings(
                 DiagnosticLevel::Error,
                 "apps.unavailable",
                 error.user_message(),
+            );
+        }
+    }
+}
+
+fn collect_task_context_findings(
+    adapter: &NixAdapter,
+    flake_ref: &str,
+    findings: &mut Vec<Diagnostic>,
+) {
+    match adapter.discover_tasks(flake_ref, &OptionalNixFlags::default()) {
+        Ok(task_doc) => {
+            if task_doc.contexts.is_empty() {
+                return;
+            }
+            let names: Vec<String> = task_doc.contexts.keys().cloned().collect();
+            push_finding(
+                findings,
+                DiagnosticLevel::Info,
+                "contexts.defined",
+                format!("defined {} context(s): {}", names.len(), names.join(", ")),
+            );
+        }
+        Err(error) => {
+            push_finding(
+                findings,
+                DiagnosticLevel::Warning,
+                "contexts.unavailable",
+                format!("task metadata unavailable: {}", error.user_message()),
             );
         }
     }

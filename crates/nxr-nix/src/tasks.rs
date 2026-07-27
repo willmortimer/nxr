@@ -331,6 +331,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_v2_contexts() {
+        let value = json!({
+            "schema_version": 2,
+            "contexts": {
+                "release": {
+                    "shell": "release",
+                    "environment": { "mode": "clean", "keep": ["HOME"] },
+                    "secrets": {
+                        "TOKEN": { "ref": "fixture/prod/token", "delivery": "env" }
+                    },
+                    "confirm": true
+                }
+            },
+            "tasks": {
+                "deploy": {
+                    "app": "deploy",
+                    "context": "release"
+                }
+            }
+        });
+        let doc = parse_task_document(&value).expect("v2 contexts accepted");
+        assert_eq!(doc.contexts.len(), 1);
+        assert_eq!(doc.tasks["deploy"].context.as_deref(), Some("release"));
+    }
+
+    #[test]
     fn missing_nxr_attr_detection() {
         let error = NixError::CommandFailed {
             nix: Utf8PathBuf::from("nix"),

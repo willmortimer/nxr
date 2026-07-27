@@ -1,8 +1,9 @@
 # Task schema v2 (draft)
 
 **Status:** **partial** — strict parse and Rust types for `schema_version: 2` are
-implemented in `crates/nxr-task`. Execution contexts, secret resolution, result-cache
-runtime, and resource scheduling runtime remain later work (H2/H3 and roadmap 3.0).
+implemented in `crates/nxr-task`, including named **contexts** (H2). Secret
+resolution, runtime context application, result-cache runtime, and resource
+scheduling runtime remain later work (H3 and roadmap 3.0).
 
 Runners accept [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json)
 (`schema_version: 1`) and [`schemas/task-v2.schema.json`](../schemas/task-v2.schema.json)
@@ -22,10 +23,11 @@ Related decisions:
 | [ADR-0135](adr/README.md) | Opt-in task result caching for declared workspace outputs | Runtime: later (post-3.0) |
 | [ADR-0138](adr/README.md) | Task resource declarations and cooperative job control | Schema: 3.0 |
 
-Execution **contexts**, secret delivery, dependency states (`database@ready`), process
-nodes, and confirmation requirements are planned in the same major version family but
-documented separately in [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md). They are **not**
-defined in this draft schema file.
+Execution **contexts** (named shell/env/secret-ref bundles), secret delivery,
+dependency states (`database@ready`), process nodes, and confirmation
+requirements are documented in [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).
+Context metadata is defined in this schema; runtime application and secret
+resolution are not yet implemented.
 
 Internal design notes (gitignored packet): `docs/internal/nxr-next-improvements/`.
 
@@ -46,7 +48,8 @@ Same evaluable flake attribute as v1: `nxr.<system>`.
   "schema_version": 2,
   "tasks": { },
   "apps": { },
-  "discoveryInputs": []
+  "discoveryInputs": [],
+  "contexts": { }
 }
 ```
 
@@ -58,8 +61,49 @@ All v1 task fields remain available. New per-task fields:
 | `outputs` | Repository-relative workspace artifacts that may be restored from a result cache |
 | `cache` | Opt-in result cache policy (`disabled` by default) |
 | `resources` | CPU/memory/IO estimates and named exclusivity locks |
+| `shell` | Optional devShell name for a shell-only execution context |
+| `context` | Optional named execution context reference |
 
-## Example (illustrative — not runnable today)
+Top-level `contexts` maps context names to shell, environment policy, secret
+references (logical `ref` strings only), and `confirm` metadata.
+
+## Example contexts (illustrative — runtime application not yet implemented)
+
+```nix
+perSystem.nxr.contexts = {
+  backend = {
+    shell = "backend";
+    environment = {
+      mode = "inherit";
+      set.RUST_LOG = "debug";
+    };
+  };
+
+  release = {
+    shell = "release";
+    environment = {
+      mode = "clean";
+      keep = [ "HOME" "SSH_AUTH_SOCK" ];
+      set.RELEASE_CHANNEL = "stable";
+    };
+    secrets.DEPLOY_TOKEN = {
+      ref = "fixture/prod/deploy-token";
+      delivery = "env";
+    };
+    confirm = true;
+  };
+};
+
+perSystem.nxr.tasks.deploy = {
+  app = "deploy";
+  context = "release";
+};
+```
+
+See [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) for the full design. Flake-parts
+module options live under `perSystem.nxr.contexts` (`nix/modules/contexts.nix`).
+
+## Example task cache/resources (illustrative — not runnable today)
 
 ```nix
 perSystem.nxr.tasks.test = {
@@ -176,7 +220,7 @@ shared-workspace conflicts.
 | Runner | `schema_version: 1` | `schema_version: 2` |
 |---|---|---|
 | nxr ≤ 2.x (pre-H1) | Accepted | **Rejected** (unsupported major) |
-| nxr (H1+) | Accepted; unknown task fields tolerated | Accepted at parse; unknown fields **rejected**; contexts/secrets/cache/runtime still later |
+| nxr (H1+) | Accepted; unknown task fields tolerated | Accepted at parse; unknown fields **rejected**; contexts parse/validate (H2); secret/runtime still later |
 
 `crates/nxr-task` exports `SCHEMA_VERSION = 1` (default for new documents) and
 `SCHEMA_VERSION_V2 = 2` with strict parse via `parse_task_document`. Nix module emission
