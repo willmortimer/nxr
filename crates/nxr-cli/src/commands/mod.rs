@@ -27,5 +27,6 @@ pub mod run;
 pub mod select;
 pub mod selectors;
 pub mod task;
+pub mod trust;
 pub mod views;
 pub mod watch;

@@ -544,6 +544,11 @@ pub enum Command {
         #[command(subcommand)]
         action: CiSubcommand,
     },
+    /// Manage project trust for secret-bearing and confirmation-gated tasks
+    Trust {
+        #[command(subcommand)]
+        action: TrustSubcommand,
+    },
     /// Bare `nxr <app> [args…]` form (reserved names win first)
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -610,6 +615,17 @@ pub enum MigrateSubcommand {
 pub enum CacheSubcommand {
     /// Remove discovery and capability cache entries
     Clear,
-    /// Show discovery and capability cache locations and sizes
+    /// Show cache locations and sizes
     Status,
+}
+
+/// `nxr trust` subcommands.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum TrustSubcommand {
+    /// Show whether the selected project is trusted
+    Status,
+    /// Persist trust for the selected project
+    Add,
+    /// Remove persisted trust for the selected project
+    Revoke,
 }
