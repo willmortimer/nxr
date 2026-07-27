@@ -4,7 +4,7 @@ Baselines for the runner. App **execution** time is dominated by `nix run` and t
 
 ## Process supervision
 
-Parallel and multiplexed `nxr task` runs pipe every supervised child's stdout/stderr through a single `mio` poll loop (kqueue on macOS, epoll on Linux) in `nxr-process`. One reusable 32 KiB read buffer is shared across all registered fds; compact `u32` node ids are used in the hot path and mapped back to task labels when emitting events. Per-node timeouts are tracked in a min-deadline heap so the poll interval can wake at the next timeout instead of scanning every running node each iteration.
+Parallel and multiplexed `nxr task` runs pipe every supervised child's stdout/stderr through a single `mio` poll loop (kqueue on macOS, epoll on Linux) in `nxr-process`. FDs are `O_NONBLOCK`; each readiness event drains until `WouldBlock`/EOF within a per-FD fairness budget (1 MiB). Pipe registrations outlive process exit until EOF so rapid-exit output is not discarded ([ADR-0143](adr/0143-mio-pipe-drain.md)). One reusable 32 KiB read buffer is shared across registered fds; compact `u32` node ids map back to task labels when emitting events. Per-node timeouts use a min-deadline heap with O(log n) nearest-deadline lookup (lazy cancelled-entry prune).
 
 Windows builds still use one reader thread per pipe (Unix-first); the supervisor API is unchanged.
 
@@ -53,7 +53,7 @@ Discovery cache **schema v5** (incremental fingerprint index) invalidates on:
 
 Built-in ignores cover `.git`, `result`, `target`, and similar trees. Set `NXR_CACHE_FINGERPRINT_IGNORE` to a colon-separated list of globs to skip huge vendored `.nix` trees. Remote flakes are never cached.
 
-Capability cache (schema **v3**) invalidates on Nix executable identity (canonical path + device/inode + size + mtime) **and** an environment digest (`NIX_CONFIG` / `NIX_USER_CONF_FILES` / `NIX_CONF_DIR` plus `nix config show --json` at store time), with a 7-day TTL backstop (`NXR_CAPABILITY_CACHE_TTL_SECS`; `0` disables). Warm hits with a matching environment digest skip all capability probes (version, config, help, and system). When the binary cache is warm but the environment digest changed, only `nix config show` is re-probed. Set `NXR_CAPABILITY_CACHE=off` to bypass. `nxr cache clear` removes capability entries alongside discovery cache.
+Capability cache (schema **v4** as of 2.7.1) invalidates on Nix executable identity (canonical path + device/inode + size + mtime) **and** an environment digest that includes `NIX_CONFIG` / path lists **plus config-file identity** (size/mtime/ctime/content hash for known conf files — [ADR-0145](adr/0145-capability-config-files.md)), with `nix config show --json` as a store-time / miss backstop and a 7-day TTL (`NXR_CAPABILITY_CACHE_TTL_SECS`; `0` disables). Warm hits with a matching environment digest skip all capability probes. When the binary layer is warm but the environment digest changed, only config is re-probed. Set `NXR_CAPABILITY_CACHE=off` to bypass. `nxr cache clear` removes capability entries alongside discovery cache.
 
 ## Measured baselines
 

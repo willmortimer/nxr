@@ -20,8 +20,9 @@ Do not contradict [docs/CONTRACT_SUMMARY.md](docs/CONTRACT_SUMMARY.md). In short
 - nxr is an execution-context layer—not a replacement for direnv, devenv, Home Manager, or secret stores ([docs/EXECUTION_CONTEXT.md](docs/EXECUTION_CONTEXT.md)).
 - Secret values never appear in plans/events; execution-affecting schema fields must not be silently ignored (schema v2).
 
-Accepted foundational ADRs are listed in [docs/adr/README.md](docs/adr/README.md).
-Active roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) (2.7 → 3.1).
+Accepted foundational ADRs are listed in [docs/adr/README.md](docs/adr/README.md)
+(including audit absorb ADR-0143–0150).
+Active roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) (2.7.1 → 3.1).
 
 ## Working agreements
 

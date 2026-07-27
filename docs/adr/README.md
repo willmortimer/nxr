@@ -96,6 +96,28 @@ Rejected   considered and explicitly not chosen
 | ADR-0140 | Delegate derivation execution placement to Nix | Proposed | Later |
 | ADR-0141 | Publish separate Nix-native and portable release artifacts | Accepted (`*-nix-package.tar.gz` + `*-portable.tar.gz`) | 2.7 |
 | ADR-0142 | Generate and test user reference documentation | Accepted (guided path / example repo Later) | 2.6 |
+| ADR-0143 | Mio pipe readiness must drain until WouldBlock | Accepted | 2.7.1 |
+| ADR-0144 | Auto-promote task documents to schema v2 for security fields | Accepted | 2.7.1 |
+| ADR-0145 | Capability-cache config layer hashes config file identity | Accepted | 2.7.1 |
+| ADR-0146 | Secret refs distinguish provider from logical reference | Accepted | 2.7.1 / 3.0 |
+| ADR-0147 | Two-tier actions — Nix store vs workspace CAS | Proposed | 3.1 |
+| ADR-0148 | Automation ergonomics CLI surface (init/migrate/ci/selectors) | Proposed | 2.8 |
+| ADR-0149 | Context shell and confirmation must not be silently ignored | Accepted | 2.7.1 / 3.0 |
+| ADR-0150 | Generic inventory and coalesced discovery | Proposed | 3.1 |
+
+Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
+[`0144-auto-schema-v2.md`](0144-auto-schema-v2.md),
+[`0145-capability-config-files.md`](0145-capability-config-files.md),
+[`0146-secret-provider-ref.md`](0146-secret-provider-ref.md),
+[`0147-two-tier-actions.md`](0147-two-tier-actions.md),
+[`0148-automation-ergonomics.md`](0148-automation-ergonomics.md),
+[`0149-context-shell-confirm.md`](0149-context-shell-confirm.md),
+[`0150-inventory-coalesce.md`](0150-inventory-coalesce.md).
+
+Audit absorb (2026-07, post-`a040e50`): remaps active delivery to
+**2.7.1 → 2.8 → 3.0 → 3.1** (process workflows remain in 3.1 MVP; distributed
+workers stay Later / former “3.2”). Internal DAG: `docs/internal/dag-to-3.1.md`
+(gitignored).
 
 Notes on ADR-0133–0142 (from the internal `nxr-next` plan; 2.6 re-audit at `v2.6.0`):
 
