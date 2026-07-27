@@ -644,7 +644,7 @@ thread_local! {
 
 #[cfg(test)]
 pub(crate) fn test_config_probe_count() -> u32 {
-    TEST_CONFIG_PROBE_COUNT.with(|cell| cell.get())
+    TEST_CONFIG_PROBE_COUNT.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]

@@ -5,9 +5,10 @@ use std::io::{self, Write};
 use nxr_core::diagnostics::{Diagnostic, DiagnosticLevel, exit};
 use nxr_core::sanitize::sanitize_terminal_text;
 use nxr_nix::{
-    LazyTreesState, NixAdapter, NixDistribution, NixError, OptionalNixFlags, host_is_macos,
-    probe_distribution_context, probe_nixd, probe_performance_features, probe_version_banner,
-    redact_sensitive_text,
+    LazyTreesState, NixAdapter, NixDistribution, NixError, OptionalNixFlags,
+    config_string_list_setting, distribution_from_version_banner, effective_experimental_features,
+    host_is_macos, probe_ci_environment, probe_nixd, probe_performance_features,
+    probe_wasm_support, redact_sensitive_text,
 };
 use serde::Serialize;
 
@@ -102,22 +103,9 @@ fn collect_findings(
         }
     };
 
-    let version_banner = match probe_version_banner(adapter.nix()) {
-        Ok(banner) => banner,
-        Err(error) => {
-            push_finding(
-                findings,
-                DiagnosticLevel::Error,
-                "determinate.nix.version_unavailable",
-                error.user_message(),
-            );
-            return NixDistribution::Unknown;
-        }
-    };
+    let distribution = distribution_from_version_banner(&adapter.version_banner);
 
-    let (distribution, config_json) = probe_distribution_context(adapter.nix(), &version_banner);
-
-    if adapter.capability_provenance().from_cache {
+    if adapter.capability_provenance.from_cache {
         push_finding(
             findings,
             DiagnosticLevel::Info,
@@ -142,24 +130,32 @@ fn collect_findings(
                 format!(
                     "Determinate Nix detected (product {}, compatibility {})",
                     product_version.as_deref().unwrap_or("unknown"),
-                    adapter.capabilities().version
+                    adapter.capabilities.version
                 ),
             );
             push_finding(
                 findings,
                 DiagnosticLevel::Info,
                 "determinate.nix.executable",
-                format!("nix executable: {}", adapter.nix()),
+                format!("nix executable: {}", adapter.nix),
             );
             collect_determinate_feature_findings(
-                adapter,
+                &adapter,
                 &distribution,
-                config_json.as_deref(),
+                adapter.config_json.as_deref(),
                 findings,
             );
-            collect_nixd_findings(findings);
+            collect_config_findings(adapter.config_json.as_deref(), findings);
+            collect_ci_findings(findings);
+            let nixd_probe = probe_nixd();
+            collect_nixd_findings(&nixd_probe, findings);
             if request.all {
-                collect_builder_findings(adapter.system(), findings);
+                collect_builder_findings(
+                    &adapter,
+                    adapter.config_json.as_deref(),
+                    nixd_probe.is_some(),
+                    findings,
+                );
             }
         }
         NixDistribution::Upstream | NixDistribution::Lix => {
@@ -232,21 +228,143 @@ fn collect_determinate_feature_findings(
         }
     }
 
-    if adapter.capabilities().flakes_enabled {
+    if adapter.capabilities.flakes_enabled {
         push_finding(
             findings,
             DiagnosticLevel::Info,
             "determinate.flakes.enabled",
             format!(
                 "flakes enabled (compatibility version {})",
-                adapter.capabilities().version
+                adapter.capabilities.version
             ),
         );
     }
 }
 
-fn collect_nixd_findings(findings: &mut Vec<Diagnostic>) {
-    match probe_nixd() {
+fn collect_config_findings(config_json: Option<&str>, findings: &mut Vec<Diagnostic>) {
+    if let Some(features) = effective_experimental_features(config_json) {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "determinate.experimental_features.effective",
+            format!(
+                "effective experimental features ({}): {}",
+                features.len(),
+                features.join(", ")
+            ),
+        );
+    } else if config_json.is_some() {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "determinate.experimental_features.unconfigured",
+            "no experimental features configured".to_owned(),
+        );
+    } else {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "determinate.experimental_features.unavailable",
+            "could not read experimental features from Nix configuration".to_owned(),
+        );
+    }
+
+    if let Some(substituters) = config_string_list_setting(config_json, "substituters") {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "determinate.substituters.configured",
+            format!(
+                "Nix substituters ({}): {}",
+                substituters.len(),
+                redact_sensitive_text(&substituters.join(" "))
+            ),
+        );
+    } else if config_json.is_some() {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "determinate.substituters.unconfigured",
+            "no substituters configured".to_owned(),
+        );
+    } else {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "determinate.substituters.unavailable",
+            "could not read substituters from Nix configuration".to_owned(),
+        );
+    }
+
+    if let Some(keys) = config_string_list_setting(config_json, "trusted-public-keys") {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "determinate.trusted_keys.configured",
+            format!("trusted public keys: {}", keys.len()),
+        );
+    }
+
+    if let Some(keys) = config_string_list_setting(config_json, "extra-substituters") {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "determinate.extra_substituters.configured",
+            format!(
+                "extra substituters ({}): {}",
+                keys.len(),
+                redact_sensitive_text(&keys.join(" "))
+            ),
+        );
+    }
+
+    let wasm = probe_wasm_support(config_json);
+    if wasm.wasm_builtin {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "determinate.wasm_builtin.enabled",
+            "wasm-builtin experimental feature enabled".to_owned(),
+        );
+    } else if config_json.is_some() {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "determinate.wasm_builtin.unconfigured",
+            "wasm-builtin experimental feature not enabled".to_owned(),
+        );
+    }
+
+    if wasm.wasm_derivations {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "determinate.wasm_derivations.enabled",
+            "wasm-derivations experimental feature enabled".to_owned(),
+        );
+    } else if config_json.is_some() {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "determinate.wasm_derivations.unconfigured",
+            "wasm-derivations experimental feature not enabled".to_owned(),
+        );
+    }
+}
+
+fn collect_ci_findings(findings: &mut Vec<Diagnostic>) {
+    if let Some(label) = probe_ci_environment() {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "determinate.ci.detected",
+            format!("CI environment detected ({label})"),
+        );
+    }
+}
+
+fn collect_nixd_findings(nixd_probe: &Option<nxr_nix::NixdProbe>, findings: &mut Vec<Diagnostic>) {
+    match nixd_probe {
         Some(probe) => {
             push_finding(
                 findings,
@@ -254,23 +372,23 @@ fn collect_nixd_findings(findings: &mut Vec<Diagnostic>) {
                 "determinate.nixd.found",
                 format!("determinate-nixd found at {}", probe.executable),
             );
-            if let Some(version) = probe.version {
+            if let Some(version) = &probe.version {
                 push_finding(
                     findings,
                     DiagnosticLevel::Info,
                     "determinate.nixd.version",
                     format!(
                         "determinate-nixd version: {}",
-                        redact_sensitive_text(&version)
+                        redact_sensitive_text(version)
                     ),
                 );
             }
-            if let Some(status) = probe.status_summary {
+            if let Some(status) = &probe.status_summary {
                 push_finding(
                     findings,
                     DiagnosticLevel::Info,
                     "determinate.nixd.status",
-                    redact_sensitive_text(&status),
+                    redact_sensitive_text(status),
                 );
             }
         }
@@ -285,8 +403,68 @@ fn collect_nixd_findings(findings: &mut Vec<Diagnostic>) {
     }
 }
 
-fn collect_builder_findings(system: &str, findings: &mut Vec<Diagnostic>) {
-    if host_is_macos(system) {
+fn collect_builder_findings(
+    adapter: &NixAdapter,
+    config_json: Option<&str>,
+    nixd_present: bool,
+    findings: &mut Vec<Diagnostic>,
+) {
+    if let Some(builders) = config_string_list_setting(config_json, "builders") {
+        if builders.is_empty() {
+            push_finding(
+                findings,
+                DiagnosticLevel::Info,
+                "determinate.builders.configured.empty",
+                "no remote builders configured".to_owned(),
+            );
+        } else {
+            push_finding(
+                findings,
+                DiagnosticLevel::Info,
+                "determinate.builders.configured",
+                format!(
+                    "remote builders configured ({}): {}",
+                    builders.len(),
+                    redact_sensitive_text(&builders.join("; "))
+                ),
+            );
+            if nixd_present {
+                push_finding(
+                    findings,
+                    DiagnosticLevel::Info,
+                    "determinate.builders.reachability.nixd",
+                    "remote builders configured and determinate-nixd is present \
+                     (reachability not probed)"
+                        .to_owned(),
+                );
+            } else {
+                push_finding(
+                    findings,
+                    DiagnosticLevel::Warning,
+                    "determinate.builders.reachability.nixd_missing",
+                    "remote builders configured but determinate-nixd is not on PATH \
+                     (reachability not probed)"
+                        .to_owned(),
+                );
+            }
+        }
+    } else if config_json.is_some() {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "determinate.builders.configured.empty",
+            "no remote builders configured".to_owned(),
+        );
+    } else {
+        push_finding(
+            findings,
+            DiagnosticLevel::Info,
+            "determinate.builders.configured.unavailable",
+            "could not read builders from Nix configuration".to_owned(),
+        );
+    }
+
+    if host_is_macos(&adapter.system) {
         push_finding(
             findings,
             DiagnosticLevel::Info,
@@ -367,31 +545,6 @@ fn write_json_report(writer: &mut impl Write, report: &DoctorDeterminateReport) 
     Ok(())
 }
 
-trait DeterminateAdapterExt {
-    fn nix(&self) -> &camino::Utf8Path;
-    fn capabilities(&self) -> &nxr_nix::NixCapabilities;
-    fn capability_provenance(&self) -> &nxr_nix::CapabilityProvenance;
-    fn system(&self) -> &str;
-}
-
-impl DeterminateAdapterExt for NixAdapter {
-    fn nix(&self) -> &camino::Utf8Path {
-        &self.nix
-    }
-
-    fn capabilities(&self) -> &nxr_nix::NixCapabilities {
-        &self.capabilities
-    }
-
-    fn capability_provenance(&self) -> &nxr_nix::CapabilityProvenance {
-        &self.capability_provenance
-    }
-
-    fn system(&self) -> &str {
-        &self.system
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{DoctorDeterminateReport, write_json_report};
@@ -404,6 +557,16 @@ mod tests {
             "aarch64-darwin".to_owned(),
             NixCapabilities::all_supported_for_tests(NixVersion::new(2, 34, 8)),
         )
+    }
+
+    fn test_config_json() -> String {
+        r#"{
+            "lazy-trees": {"value": false},
+            "experimental-features": {"value": ["nix-command", "flakes", "wasm-builtin"]},
+            "substituters": {"value": ["https://cache.nixos.org"]},
+            "trusted-public-keys": {"value": ["cache.nixos.org-1:abc"]}
+        }"#
+        .to_owned()
     }
 
     #[test]
@@ -461,6 +624,32 @@ mod tests {
             findings
                 .iter()
                 .any(|finding| finding.code == "determinate.lazy_trees.disabled")
+        );
+    }
+
+    #[test]
+    fn config_findings_include_experimental_features_and_substituters() {
+        let mut findings = Vec::new();
+        super::collect_config_findings(Some(&test_config_json()), &mut findings);
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.code == "determinate.experimental_features.effective")
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.code == "determinate.substituters.configured")
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.code == "determinate.trusted_keys.configured")
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.code == "determinate.wasm_builtin.enabled")
         );
     }
 

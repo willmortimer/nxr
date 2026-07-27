@@ -384,7 +384,7 @@ nxr doctor --all
 
 `doctor --all` adds non-destructive workspace findings: app description/naming quality, discovery cache status, invalidation key, and a structured `workspace` object in JSON (flake root, system, Nix capabilities, cache metadata).
 
-`nxr doctor determinate` reports read-only Determinate Nix integration findings (distribution, lazy trees / parallel evaluation when detectable, `determinate-nixd` presence, builder hints with `--all`). On upstream Nix or Lix it emits a single informational `determinate.distribution.na` finding. JSON output redacts token-like values from nixd status; secrets never appear in findings.
+`nxr doctor determinate` reports read-only Determinate Nix integration findings (distribution, effective experimental features, substituters and trusted keys with secrets redacted, lazy trees / parallel evaluation when detectable, Wasm experimental features when configured, CI environment detection, `determinate-nixd` presence, remote-builder heuristics with `--all`). On upstream Nix or Lix it emits a single informational `determinate.distribution.na` finding. Capability-cache warm hits reuse stored version/config probes (zero additional `nix --version` / `nix config show` calls). JSON output redacts token-like values from nixd status; secrets never appear in findings.
 
 `nxr explain` prints how nxr would resolve and invoke an app or task: flake root, system, Nix executable/version/capabilities, discovery cache hit/miss and invalidation key, attr path, execution directory, environment policy, requested/active dev shell, exact Nix argv, task dependency path, shell-wrap skip reason, and scheduler skip reasons for dependent task nodes.
 

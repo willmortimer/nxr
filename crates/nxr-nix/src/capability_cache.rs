@@ -45,6 +45,10 @@ pub struct NixEnvironment {
     pub system: String,
     pub capabilities: NixCapabilities,
     pub provenance: CapabilityProvenance,
+    /// `nix --version` banner captured at probe or cache store time.
+    pub version_banner: String,
+    /// `nix config show --json` captured at probe or cache store time.
+    pub config_json: Option<String>,
 }
 
 /// On-disk capability cache summary for `nxr cache status`.
@@ -91,6 +95,9 @@ struct CachedEntry {
     capabilities: NixCapabilities,
     evidence: Vec<CapabilityEvidence>,
     recorded_at: u64,
+    /// Cached `nix config show --json` for config-derived doctor diagnostics.
+    #[serde(default)]
+    config_json: Option<String>,
 }
 
 #[cfg(test)]
@@ -134,21 +141,23 @@ pub fn detect_nix_environment(nix: &Utf8Path, refresh: bool) -> Result<NixEnviro
     let executable = executable_identity(nix)?;
     let env_digest = env_config_digest();
 
-    if capability_cache_enabled() && !refresh {
-        if let Some(entry) = load_cached_entry(&executable) {
-            if entry.env_digest == env_digest {
-                return Ok(NixEnvironment {
-                    system: entry.current_system,
-                    capabilities: entry.capabilities,
-                    provenance: CapabilityProvenance {
-                        from_cache: true,
-                        evidence: vec![CapabilityEvidence::Cache],
-                    },
-                });
-            }
-
-            return Ok(reprobe_config_layer(nix, &executable, &entry, &env_digest)?);
+    if capability_cache_enabled() && !refresh
+        && let Some(entry) = load_cached_entry(&executable)
+    {
+        if entry.env_digest == env_digest {
+            return Ok(NixEnvironment {
+                system: entry.current_system,
+                capabilities: entry.capabilities,
+                provenance: CapabilityProvenance {
+                    from_cache: true,
+                    evidence: vec![CapabilityEvidence::Cache],
+                },
+                version_banner: entry.identity.version_banner.clone(),
+                config_json: entry.config_json.clone(),
+            });
         }
+
+        return reprobe_config_layer(nix, &executable, &entry, &env_digest);
     }
 
     let version_banner = probe_version_banner(nix)?;
@@ -163,7 +172,7 @@ pub fn detect_nix_environment(nix: &Utf8Path, refresh: bool) -> Result<NixEnviro
         let identity = StoredNixIdentity {
             canonical_path: executable.canonical_path.clone(),
             file: executable.file.clone(),
-            version_banner,
+            version_banner: version_banner.clone(),
         };
         let entry = CachedEntry {
             schema_version: CACHE_SCHEMA_VERSION,
@@ -174,6 +183,7 @@ pub fn detect_nix_environment(nix: &Utf8Path, refresh: bool) -> Result<NixEnviro
             capabilities: capabilities.clone(),
             evidence: evidence.clone(),
             recorded_at: unix_now_secs(),
+            config_json: config_json.clone(),
         };
         let _ = store_cached_entry(&executable, &entry);
     }
@@ -185,6 +195,8 @@ pub fn detect_nix_environment(nix: &Utf8Path, refresh: bool) -> Result<NixEnviro
             from_cache: false,
             evidence,
         },
+        version_banner,
+        config_json,
     })
 }
 
@@ -213,6 +225,7 @@ fn reprobe_config_layer(
         capabilities: capabilities.clone(),
         evidence: evidence.clone(),
         recorded_at: unix_now_secs(),
+        config_json: config_json.clone(),
     };
     let _ = store_cached_entry(executable, &updated);
 
@@ -223,6 +236,8 @@ fn reprobe_config_layer(
             from_cache: true,
             evidence,
         },
+        version_banner: entry.identity.version_banner.clone(),
+        config_json,
     })
 }
 
@@ -514,7 +529,7 @@ mod tests {
             identity: StoredNixIdentity {
                 canonical_path: executable.canonical_path.clone(),
                 file: executable.file.clone(),
-                version_banner: format!("nix (Nix) {}\n", TESTED_NIX_SUPPORT_FLOOR),
+                version_banner: format!("nix (Nix) {TESTED_NIX_SUPPORT_FLOOR}\n"),
             },
             env_digest: env_digest.to_owned(),
             config_digest: env_digest.to_owned(),
@@ -522,6 +537,10 @@ mod tests {
             capabilities: NixCapabilities::all_supported_for_tests(TESTED_NIX_SUPPORT_FLOOR),
             evidence: vec![CapabilityEvidence::Config],
             recorded_at: super::unix_now_secs(),
+            config_json: Some(
+                r#"{"lazy-trees": {"value": true}, "experimental-features": {"value": ["nix-command", "flakes"]}}"#
+                    .to_owned(),
+            ),
         }
     }
 
@@ -564,6 +583,10 @@ mod tests {
             assert_eq!(
                 env.system, "aarch64-darwin",
                 "cached system should be returned"
+            );
+            assert!(
+                env.config_json.is_some(),
+                "cached config_json should be returned on warm hit"
             );
         });
     }

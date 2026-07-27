@@ -22,6 +22,10 @@ pub struct NixAdapter {
     pub capabilities: NixCapabilities,
     /// How capabilities were established (cache hit, probes, version floor, …).
     pub capability_provenance: CapabilityProvenance,
+    /// `nix --version` banner from capability detection or cache.
+    pub version_banner: String,
+    /// `nix config show --json` from capability detection or cache.
+    pub config_json: Option<String>,
 }
 
 impl NixAdapter {
@@ -48,6 +52,8 @@ impl NixAdapter {
             system: environment.system,
             capabilities: environment.capabilities,
             capability_provenance: environment.provenance,
+            version_banner: environment.version_banner,
+            config_json: environment.config_json,
         })
     }
 
@@ -63,12 +69,15 @@ impl NixAdapter {
             system: environment.system,
             capabilities: environment.capabilities,
             capability_provenance: environment.provenance,
+            version_banner: environment.version_banner,
+            config_json: environment.config_json,
         })
     }
 
     /// Construct an adapter from known parts (primarily for tests).
     #[must_use]
     pub fn with_parts(nix: Utf8PathBuf, system: String, capabilities: NixCapabilities) -> Self {
+        let version_banner = format!("nix (Nix) {}\n", capabilities.version);
         Self {
             nix,
             system,
@@ -77,6 +86,8 @@ impl NixAdapter {
                 from_cache: false,
                 evidence: Vec::new(),
             },
+            version_banner,
+            config_json: None,
         }
     }
 
