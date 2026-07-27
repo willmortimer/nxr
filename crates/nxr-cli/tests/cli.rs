@@ -4266,6 +4266,7 @@ fn task_deploy_dry_run_plan_redacts_secret_values() {
     let assert = cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
         .env("NXR_FIXTURE_DEPLOY_TOKEN", marker)
+        .env("NXR_ASSUME_YES", "1")
         .args([
             "--flake",
             "fixtures/contexts",
@@ -4307,6 +4308,7 @@ fn task_deploy_injects_env_secret_into_child() {
     let output = cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
         .env("NXR_FIXTURE_DEPLOY_TOKEN", marker)
+        .env("NXR_ASSUME_YES", "1")
         .args(["--flake", "fixtures/contexts", "task", "deploy"])
         .output()
         .expect("spawn nxr task deploy");
@@ -4341,6 +4343,7 @@ fn task_deploy_missing_secret_names_ref_and_slot() {
     cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
         .env_remove("NXR_FIXTURE_DEPLOY_TOKEN")
+        .env("NXR_ASSUME_YES", "1")
         .args(["--flake", "fixtures/contexts", "task", "deploy"])
         .assert()
         .failure()
