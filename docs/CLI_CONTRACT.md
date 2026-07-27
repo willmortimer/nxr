@@ -458,20 +458,17 @@ The following should be considered stable after V1:
 
 New fields may be added to JSON objects. Existing fields should not change meaning within a schema major version.
 
-## 14. Planned command surface (not yet shipped)
+## 14. Ecosystem ergonomics (2.6)
 
-Design authority: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) and [ROADMAP.md](ROADMAP.md).
-Do not treat these as stable until the named release ships.
-
-### 2.6 ecosystem ergonomics
+Design authority: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).
 
 ```bash
 nxr in <shell> <app|task|…>     # ergonomic alias of --shell; never after app name
-nxr fmt [PATH…]                 # thin nix fmt / flake formatter
+nxr fmt [PATH…]                 # thin nix fmt / flake formatter (not apps.fmt)
 nxr envrc [--shell NAME] [--write] [--force]
-nxr doctor env
-nxr doctor cache
-nxr doctor builders
+nxr doctor env                  # direnv / .envrc / shell integration (informational)
+nxr doctor cache                # substituters, trusted keys, discovery/capability cache
+nxr doctor builders             # remote builders / nixd (read-only)
 nxr build <flake#installable>   # generic installable escape hatch
 nxr build --attr <attr-path>
 nxr list configurations
@@ -482,6 +479,14 @@ nxr build configuration <name>  # build only; never switch/activate
 Parsing invariant preserved: runner options stay before the target name
 (`nxr --shell backend test` / `nxr in backend test`). Reject forms that place
 `--shell` after the app.
+
+`nxr envrc` uses the global `--shell` flag for a named shell (`nxr --shell backend envrc`).
+`--write` refuses to overwrite an existing `.envrc` without `--force` (exit 2).
+
+## 15. Planned command surface (not yet shipped)
+
+Design authority: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) and [ROADMAP.md](ROADMAP.md).
+Do not treat these as stable until the named release ships.
 
 ### 3.0 execution contexts
 

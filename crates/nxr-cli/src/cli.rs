@@ -157,6 +157,11 @@ pub enum InspectSubcommand {
         /// Task name
         name: String,
     },
+    /// Inspect a flake configuration (`nixosConfigurations`, `darwinConfigurations`, `homeConfigurations`)
+    Configuration {
+        /// Configuration name
+        name: String,
+    },
 }
 
 /// `nxr explain` sub-targets.
@@ -192,6 +197,22 @@ pub enum DoctorSubcommand {
         #[arg(long = "refresh")]
         refresh: bool,
     },
+    /// Direnv, `.envrc`, and nxr shell-integration diagnostics (informational)
+    Env,
+    /// Nix substituters, trusted keys, and nxr discovery/capability cache diagnostics
+    Cache,
+    /// Remote builders and Determinate nixd diagnostics (read-only)
+    Builders,
+}
+
+/// `nxr build` sub-targets.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum BuildSubcommand {
+    /// Build a flake configuration (no switch/activate)
+    Configuration {
+        /// Configuration name
+        name: String,
+    },
 }
 
 /// Top-level commands. Bare `nxr` defaults to listing apps.
@@ -226,8 +247,14 @@ pub enum Command {
     },
     /// Build a flake package (`nix build`)
     Build {
-        /// Package name (`packages.<system>.<name>`); default package when omitted
-        name: Option<String>,
+        #[command(subcommand)]
+        target: Option<BuildSubcommand>,
+        /// Package leaf name or explicit installable (`.#attr` or `flake#attr`)
+        #[arg(value_name = "INSTALLABLE")]
+        installable: Option<String>,
+        /// Build a flake attribute path (for example `nixosConfigurations.dev.config.system.build.vm`)
+        #[arg(long = "attr", value_name = "ATTR", conflicts_with = "installable")]
+        attr: Option<String>,
     },
     /// Build a flake check, or run `nix flake check` when omitted
     Check {
@@ -457,6 +484,31 @@ pub enum Command {
         /// Explicit repository-relative changed paths
         #[arg(value_name = "PATH")]
         paths: Vec<String>,
+    },
+    /// Format Nix sources via `nix fmt` / the flake formatter
+    Fmt {
+        /// Paths to format (default: selected flake)
+        #[arg(value_name = "PATH")]
+        paths: Vec<String>,
+    },
+    /// Generate direnv `.envrc` content (`use flake` / `use flake .#<shell>`)
+    Envrc {
+        /// Write `<flake-root>/.envrc` (refuses overwrite without `--force`)
+        #[arg(long = "write")]
+        write: bool,
+        /// Overwrite an existing `.envrc` when using `--write`
+        #[arg(long = "force", requires = "write")]
+        force: bool,
+    },
+    /// Ergonomic dev-shell prefix: `nxr in <shell> <app|task|…>` (alias of `--shell`)
+    In {
+        /// Development shell name
+        shell: String,
+        /// Subcommand (`run`, `plan`, `task`, `watch`, `explain`) or app name
+        verb: String,
+        /// Arguments forwarded to the target
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        rest: Vec<String>,
     },
     /// Bare `nxr <app> [args…]` form (reserved names win first)
     #[command(external_subcommand)]

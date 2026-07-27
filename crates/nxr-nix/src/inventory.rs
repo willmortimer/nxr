@@ -224,6 +224,13 @@ fn parse_legacy_show(show: &JsonValue) -> FlakeInventory {
 }
 
 fn parse_legacy_output_node(output_name: &str, value: &JsonValue) -> Option<InventoryNode> {
+    if crate::configurations::is_configuration_output_key(output_name) {
+        return Some(crate::configurations::parse_configuration_output_node(
+            output_name,
+            value,
+        ));
+    }
+
     let systems = value.as_object()?;
     let mut output_node = InventoryNode::leaf(vec![output_name.to_owned()]);
 

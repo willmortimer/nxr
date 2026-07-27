@@ -39,7 +39,24 @@ Capability cache invalidates on Nix executable identity (canonical path + device
 
 ## Measured baselines
 
-Host: `aarch64-darwin` (Apple Silicon), macOS 26.5.1, Nix 2.34.7. Binary: `cargo build -p nxr-cli` (debug). Timings via `/usr/bin/time -p`, three runs, quiet mode where applicable. Measured 2026-07-18.
+### Release (`nix build .#nxr`) — 2026-07-26
+
+Host: `aarch64-darwin`, macOS 26.5.1, Determinate Nix 3.21.8 / Nix 2.34.8.
+Harness: [`scripts/perf/measure-release.sh`](../scripts/perf/measure-release.sh) (`NXR_PERF_RUNS=5`).
+Artifact: [`scripts/perf/baseline-aarch64-darwin.json`](../scripts/perf/baseline-aarch64-darwin.json).
+
+| Scenario | p50 wall time | Observations |
+|---|---|---|
+| Cold `list` (`fixtures/basic-apps`, `--refresh-discovery`) | **0.16 s** | First cold sample ~0.57 s; later samples benefit from Nix eval cache |
+| Warm `list` (`fixtures/basic-apps`) | **0.01 s** | Discovery + capability cache; under 25 ms target |
+| Warm `plan hello` (`fixtures/basic-apps`) | **≤ 0.01 s** | Resolve + plan only |
+| Warm `list` (this repo) | **0.01 s** | Three-run spot check after `--refresh-discovery` |
+
+Warm list is ~5× faster than the prior **debug** baseline (~0.05 s) on the same host class, and capability-cache integration tests assert zero `version`/`config`/`help` reprobes on warm `list`.
+
+### Debug (historical, 2026-07-18)
+
+Host: `aarch64-darwin`, macOS 26.5.1, Nix 2.34.7. Binary: `cargo build -p nxr-cli` (debug).
 
 | Scenario | Avg wall time | Observations |
 |---|---|---|
@@ -67,7 +84,7 @@ cargo build -p nxr-cli --quiet
 ./scripts/perf/measure-release.sh
 ```
 
-The script prefers `nix build .#nxr` and falls back to `cargo build -p nxr-cli --release`. It times cold/warm `list` and warm `plan` over `NXR_PERF_RUNS` (default 5) and prints per-run wall times plus **p50**. Compare p50 across commits; use p95/max to spot filesystem or Nix daemon outliers. Optional baseline artifact: [`scripts/perf/baseline-aarch64-darwin.json`](../scripts/perf/baseline-aarch64-darwin.json).
+The script prefers `nix build .#nxr` and falls back to `cargo build -p nxr-cli --release`. It times cold/warm `list` and warm `plan` over `NXR_PERF_RUNS` (default 5) and prints per-run wall times plus **p50**. Compare p50 across commits; use p95/max to spot filesystem or Nix daemon outliers.
 
 Suggested release p50 targets on a local SSD (order-of-magnitude; see also nxr-next performance foundations):
 

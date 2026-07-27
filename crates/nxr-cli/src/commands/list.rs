@@ -33,6 +33,8 @@ pub enum ListKind {
     Packages,
     /// `devShells.<system>.*`
     Shells,
+    /// `nixosConfigurations` / `darwinConfigurations` / `homeConfigurations`
+    Configurations,
     /// `nxr.<system>` tasks only
     Tasks,
 }
@@ -54,6 +56,8 @@ pub enum ListError {
     Json(#[from] JsonListError),
     #[error(transparent)]
     Io(#[from] io::Error),
+    #[error(transparent)]
+    Configuration(#[from] crate::commands::configurations::ConfigurationError),
 }
 
 impl ListError {
@@ -66,6 +70,7 @@ impl ListError {
             Self::Tasks(error) => error.exit_code(),
             Self::Projects(error) => error.exit_code(),
             Self::Json(_) | Self::Io(_) => nxr_core::diagnostics::exit::EVALUATION,
+            Self::Configuration(error) => error.exit_code(),
         }
     }
 }
@@ -201,6 +206,15 @@ pub fn run(
                 OutputTable::DevShells,
                 "shells",
                 "Available development shells",
+                json,
+                nix_flags,
+                runner,
+            )?;
+        }
+        Some(ListKind::Configurations) => {
+            crate::commands::configurations::list(
+                flake_arg,
+                nix_override,
                 json,
                 nix_flags,
                 runner,

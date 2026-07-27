@@ -190,7 +190,7 @@ Coming from `mise` / `just`? [docs/MIGRATE_FROM_MISE_JUST.md](docs/MIGRATE_FROM_
 | [docs/MONOREPO_VIEWS.md](docs/MONOREPO_VIEWS.md) | Categories, namespaces, projects file |
 | [docs/DEV_ENV_INTEGRATION.md](docs/DEV_ENV_INTEGRATION.md) | Dev shells, direnv, shellIntegration |
 | [docs/EXECUTION_CONTEXT.md](docs/EXECUTION_CONTEXT.md) | Contexts, secrets, Home Manager, processes (planned) |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Active 2.6 → 3.1 plan |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Active 3.0 → 3.1 plan |
 | [docs/ADAPTERS.md](docs/ADAPTERS.md) | Read-only ecosystem graph boundary |
 | [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | Platforms and schema freeze |
 | [docs/RELEASE.md](docs/RELEASE.md) | Release artifacts, checksums, SBOM |
@@ -203,10 +203,10 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**2.5.0** on `main` — affected execution, plus warm-path latency foundations:
-persistent Nix capability cache, incremental discovery fingerprints, watch
-snapshot reuse, generic flake inventory / `exportedSchemas.nxr`, and
-`nxr doctor determinate`. Task schema v2 remains a draft only.
+**2.6.0** — warm-path latency foundations (capability cache, incremental
+fingerprints, watch snapshot reuse, inventory/schema export, doctor determinate)
+plus ecosystem ergonomics (`homeManagerModules.default`, `fmt` / `in` / `envrc`,
+doctor env/cache/builders, generic build/`--attr`, configuration adapters).
 
 History: [CHANGELOG.md](CHANGELOG.md). Next: [docs/ROADMAP.md](docs/ROADMAP.md)
-(2.6 ecosystem ergonomics → 3.0 execution-context schema).
+(3.0 execution-context schema).

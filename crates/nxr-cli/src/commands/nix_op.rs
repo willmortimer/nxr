@@ -5,8 +5,8 @@ use std::io::{self, Write};
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
 use nxr_nix::{
-    NixError, OptionalNixFlags, OutputNotFoundError, OutputTable, check_installable,
-    package_installable, resolve_output_by_name,
+    NixError, OptionalNixFlags, OutputNotFoundError, OutputTable, attr_installable,
+    check_installable, package_installable, resolve_output_by_name, token_is_explicit_installable,
 };
 use serde::Serialize;
 
@@ -31,6 +31,8 @@ pub enum NixOpError {
     Io(#[from] io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Configuration(#[from] super::configurations::ConfigurationError),
 }
 
 impl NixOpError {
@@ -42,6 +44,7 @@ impl NixOpError {
             Self::Nix(error) => error.exit_code(),
             Self::NotFound(error) => error.exit_code(),
             Self::Io(_) | Self::Json(_) => exit::EVALUATION,
+            Self::Configuration(error) => error.exit_code(),
         }
     }
 }
@@ -71,6 +74,7 @@ pub struct NixOpRequest<'a> {
     pub flake_arg: Option<&'a str>,
     pub nix_override: Option<&'a str>,
     pub name: Option<&'a str>,
+    pub attr: Option<&'a str>,
     pub dry_run: bool,
     pub json: bool,
     pub nix_flags: &'a OptionalNixFlags,
@@ -169,7 +173,7 @@ fn suggest_missing_output(
     }
 }
 
-/// `nxr build [name]` → `nix build` for `packages.<system>.<name>` (or default package).
+/// `nxr build [installable]` → `nix build` for packages or explicit installables.
 ///
 /// Named builds use a direct installable (no whole-output discovery up front).
 /// Suggestion discovery runs only when stderr indicates a missing attribute.
@@ -178,15 +182,7 @@ pub fn execute_build(request: &NixOpRequest<'_>, runner: RunnerOutput) -> Result
     let flake = resolve_flake(request.flake_arg, &invocation_cwd)?;
     let adapter = build_adapter(request.nix_override)?;
 
-    let (target, attr_path, installable) = if let Some(name) = request.name {
-        (
-            Some(name.to_owned()),
-            Some(format!("packages.{}.{name}", adapter.system)),
-            package_installable(&flake.nix_ref, &adapter.system, name),
-        )
-    } else {
-        (None, None, flake.nix_ref.clone())
-    };
+    let (target, attr_path, installable) = resolve_build_target(request, &flake, &adapter);
 
     let arguments = adapter.nix_build_argv(&installable, request.nix_flags)?;
     if write_dry_run(
@@ -214,6 +210,8 @@ pub fn execute_build(request: &NixOpRequest<'_>, runner: RunnerOutput) -> Result
 
     if code != exit::SUCCESS
         && let Some(name) = request.name
+        && !token_is_explicit_installable(name)
+        && request.attr.is_none()
         && stderr_indicates_missing_installable(&stderr)
         && let Ok(Some(not_found)) = suggest_missing_output(
             &adapter,
@@ -228,6 +226,76 @@ pub fn execute_build(request: &NixOpRequest<'_>, runner: RunnerOutput) -> Result
     }
 
     Ok(code)
+}
+
+/// `nxr build configuration <name>` → read-only configuration build installable.
+pub fn execute_build_configuration(
+    request: &NixOpRequest<'_>,
+    configuration_name: &str,
+    runner: RunnerOutput,
+) -> Result<i32, NixOpError> {
+    let (flake, _entry, installable) = super::configurations::resolve_for_build(
+        request.flake_arg,
+        request.nix_override,
+        configuration_name,
+        request.nix_flags,
+    )?;
+    let adapter = build_adapter(request.nix_override)?;
+    let attr_path = installable.split_once('#').map(|(_, attr)| attr.to_owned());
+
+    let arguments = adapter.nix_build_argv(&installable, request.nix_flags)?;
+    if write_dry_run(
+        request,
+        NixOpKind::Build,
+        &flake,
+        &adapter.system,
+        Some(configuration_name),
+        attr_path.as_deref(),
+        adapter.nix.as_str(),
+        &arguments,
+    )? {
+        return Ok(exit::SUCCESS);
+    }
+
+    runner
+        .verbose(format!("building configuration {configuration_name}"))
+        .map_err(NixOpError::Io)?;
+    let invocation_cwd = current_invocation_directory()?;
+    let (code, _) = run_nix_child_with_stderr(
+        &adapter.nix,
+        &arguments,
+        &invocation_cwd,
+        request.environment,
+    )?;
+    Ok(code)
+}
+
+fn resolve_build_target(
+    request: &NixOpRequest<'_>,
+    flake: &FlakeSelection,
+    adapter: &nxr_nix::NixAdapter,
+) -> (Option<String>, Option<String>, String) {
+    if let Some(attr) = request.attr {
+        let attr_path = attr.to_owned();
+        let installable = attr_installable(&flake.nix_ref, attr);
+        return (None, Some(attr_path), installable);
+    }
+
+    if let Some(name) = request.name {
+        if token_is_explicit_installable(name) {
+            let attr_path = name
+                .split_once('#')
+                .map(|(_, attr)| attr.to_owned())
+                .or_else(|| Some(name.to_owned()));
+            return (None, attr_path, name.to_owned());
+        }
+
+        let attr_path = format!("packages.{}.{name}", adapter.system);
+        let installable = package_installable(&flake.nix_ref, &adapter.system, name);
+        return (Some(name.to_owned()), Some(attr_path), installable);
+    }
+
+    (None, None, flake.nix_ref.clone())
 }
 
 /// `nxr check [name]` → named check via `nix build`, or `nix flake check` when omitted.

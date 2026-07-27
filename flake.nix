@@ -33,6 +33,9 @@
 
         flakeModules.default = import ./nix/modules/flake-parts.nix;
 
+        # Reusable Home Manager module only — do not ship homeConfigurations.
+        homeManagerModules.default = import ./nix/modules/home-manager.nix;
+
         overlays.default = import ./nix/overlays/default.nix;
 
         templates.default = {

@@ -322,6 +322,18 @@ fn write_overview(
         write_human_tasks(writer, &tasks)?;
     }
 
+    if flake
+        .local_root
+        .as_deref()
+        .is_some_and(|root| root.join("devenv.yaml").is_file() || root.join("devenv.nix").is_file())
+    {
+        writeln!(writer)?;
+        writeln!(
+            writer,
+            "Note: devenv metadata detected (read-only; nxr does not activate devenv)"
+        )?;
+    }
+
     Ok(())
 }
 

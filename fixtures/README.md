@@ -25,6 +25,7 @@ valid under pure `path:` flake refs (Nix 2.18+).
 | [watch-project](watch-project/) | Placeholder for V2 watch mode |
 | [ecosystem-graph-cargo](ecosystem-graph-cargo/) | Read-only Cargo workspace graph snapshot (adapter boundary example; not executed) |
 | [diamond-dedupe](diamond-dedupe/) | Multi-root union with shared diamond ancestor |
+| [configurations](configurations/) | Minimal `nixosConfigurations` for list/inspect/build adapters |
 
 ## Try them (without nxr yet)
 
