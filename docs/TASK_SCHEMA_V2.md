@@ -60,13 +60,32 @@ Same evaluable flake attribute as v1: `nxr.<system>`.
 | `shell` | Optional `devShells.<name>` (shell-only context) |
 | `context` | Optional named execution context |
 
+Top-level `contexts` maps context names to shell, environment policy, secret
+references (logical `ref` strings plus optional `provider`, default `env`), and
+`confirm` metadata. Flake-parts consumers emit `schema_version: 2` automatically
+when contexts or task `shell` / `context` fields are present.
+
 ### Context secrets
 
+`delivery = "env"` secrets with `provider = "env"` (default) resolve from the
+caller environment at task spawn (see [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md)).
+Non-env providers error at resolve time. Contexts with `confirm = true` prompt
+before spawn (or require `NXR_ASSUME_YES=1` when stdin is not a TTY).
+
 ```nix
-secrets.DEPLOY_TOKEN = {
-  provider = "env";           # default; logical bindings → 3.0
-  ref = "CLOUDFLARE_API_TOKEN"; # env var name when provider = env
-  delivery = "env";
+perSystem.nxr.contexts.release = {
+  shell = "release";
+  secrets.DEPLOY_TOKEN = {
+    provider = "env";              # default; logical bindings → 3.0
+    ref = "CLOUDFLARE_API_TOKEN";  # env var name when provider = env
+    delivery = "env";
+  };
+  confirm = true;
+};
+
+perSystem.nxr.tasks.deploy = {
+  app = "deploy";
+  context = "release";
 };
 ```
 

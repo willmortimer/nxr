@@ -29,6 +29,16 @@
           meta.description = description;
         };
 
+      mkShell =
+        pkgs: name: description:
+        pkgs.mkShell {
+          name = "fixture-${name}";
+          buildInputs = [ pkgs.coreutils ];
+          shellHook = ''
+            export NXR_DEV_SHELL=${name}
+          '';
+        };
+
       nxrDoc = {
         schema_version = 2;
         contexts = {
@@ -57,6 +67,7 @@
               DEPLOY_TOKEN = {
                 ref = "NXR_FIXTURE_DEPLOY_TOKEN";
                 delivery = "env";
+                provider = "env";
               };
             };
             confirm = true;
@@ -97,6 +108,17 @@
           test = mkApp pkgs "fixture-test" "Run tests" ''
             echo "test"
           '';
+        }
+      );
+
+      devShells = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          backend = mkShell pkgs "backend" "Backend dev shell";
+          release = mkShell pkgs "release" "Release dev shell";
         }
       );
 

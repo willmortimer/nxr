@@ -58,7 +58,13 @@ pub struct PlanSecretRef {
     #[serde(rename = "ref")]
     pub reference: String,
     pub delivery: String,
+    #[serde(default = "default_secret_provider")]
+    pub provider: String,
     pub value: String,
+}
+
+fn default_secret_provider() -> String {
+    "env".to_owned()
 }
 
 impl Plan {

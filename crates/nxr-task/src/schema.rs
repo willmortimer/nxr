@@ -396,6 +396,20 @@ pub struct ContextSecretRef {
     pub reference: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<SecretDelivery>,
+    #[serde(default)]
+    pub provider: SecretProvider,
+}
+
+/// Runtime secret provider for resolving a logical `ref` (schema v2).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SecretProvider {
+    #[default]
+    Env,
+    File,
+    Sops,
+    #[serde(rename = "sops-nix")]
+    SopsNix,
 }
 
 /// How a secret reference is delivered to a child process (schema v2).
@@ -691,6 +705,8 @@ struct ContextSecretRefV2Strict {
     reference: String,
     #[serde(default)]
     delivery: Option<SecretDelivery>,
+    #[serde(default)]
+    provider: SecretProvider,
 }
 
 impl From<TaskDocumentV2Strict> for TaskDocument {
@@ -842,6 +858,7 @@ impl From<ContextSecretRefV2Strict> for ContextSecretRef {
         Self {
             reference: strict.reference,
             delivery: strict.delivery,
+            provider: strict.provider,
         }
     }
 }

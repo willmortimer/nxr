@@ -281,7 +281,9 @@ policy.
 
 Schema v2 is documented at [`schemas/task-v2.schema.json`](../schemas/task-v2.schema.json).
 `crates/nxr-task` accepts `schema_version: 2` with strict rejection of unknown
-fields. Named **contexts** can be authored via flake-parts
+fields. The flake-parts module auto-emits `schema_version: 2` when contexts or
+task `shell` / `context` fields are present (override with
+`perSystem.nxr.schemaVersion`). Named **contexts** can be authored via flake-parts
 (`perSystem.nxr.contexts.<name>` in `nix/modules/contexts.nix`) and are emitted on
 `nxr.<system>.contexts`. Runtime **env-provider** secret delivery (`delivery =
 "env"`) and clean/inherit environment application for task nodes are implemented

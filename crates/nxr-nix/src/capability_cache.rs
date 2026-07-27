@@ -1,5 +1,6 @@
 //! Persistent cache for Nix system and capability detection.
 
+use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -30,10 +31,9 @@ pub const DEFAULT_CACHE_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// On-disk schema for capability cache entries.
 ///
-/// v3 splits the cache into two layers keyed by binary identity:
-/// - Layer 1 (binary): version banner + help/version-derived capability flags + system.
-/// - Layer 2 (environment): `env_digest` / `config_digest` for config-derived fields.
-const CACHE_SCHEMA_VERSION: u32 = 3;
+/// v4 extends the environment digest with known Nix config file identities
+/// (path, size, mtime, ctime, and content hash when readable).
+const CACHE_SCHEMA_VERSION: u32 = 4;
 
 /// Environment variables that reshape effective Nix configuration without
 /// changing the `nix` executable identity.
@@ -141,7 +141,8 @@ pub fn detect_nix_environment(nix: &Utf8Path, refresh: bool) -> Result<NixEnviro
     let executable = executable_identity(nix)?;
     let env_digest = env_config_digest();
 
-    if capability_cache_enabled() && !refresh
+    if capability_cache_enabled()
+        && !refresh
         && let Some(entry) = load_cached_entry(&executable)
     {
         if entry.env_digest == env_digest {
@@ -437,6 +438,7 @@ fn config_digest_from_parts(
         }
         hasher.update(&[0]);
     }
+    hash_nix_config_files(&env_value, &mut hasher);
     match config_json {
         Some(json) => {
             hasher.update(b"config-json");
@@ -448,6 +450,88 @@ fn config_digest_from_parts(
         }
     }
     hasher.finalize().to_hex().to_string()
+}
+
+fn hash_nix_config_files(env_value: &impl Fn(&str) -> Option<String>, hasher: &mut Hasher) {
+    for path in collect_nix_config_paths(env_value) {
+        hasher.update(path.as_os_str().as_encoded_bytes());
+        hasher.update(&[0]);
+        if path.is_file() {
+            if let Ok(metadata) = fs::metadata(&path) {
+                let (modified_secs, modified_nanos) = metadata
+                    .modified()
+                    .ok()
+                    .and_then(system_time_to_parts)
+                    .unwrap_or((0, 0));
+                let (created_secs, created_nanos) = metadata
+                    .created()
+                    .ok()
+                    .and_then(system_time_to_parts)
+                    .unwrap_or((0, 0));
+                hasher.update(&metadata.len().to_le_bytes());
+                hasher.update(&modified_secs.to_le_bytes());
+                hasher.update(&modified_nanos.to_le_bytes());
+                hasher.update(&created_secs.to_le_bytes());
+                hasher.update(&created_nanos.to_le_bytes());
+                match fs::read(&path) {
+                    Ok(content) => {
+                        hasher.update(blake3::hash(&content).as_bytes());
+                    }
+                    Err(_) => {
+                        hasher.update(b"<unreadable>");
+                    }
+                }
+            } else {
+                hasher.update(b"<metadata-unavailable>");
+            }
+        } else {
+            hasher.update(b"<absent>");
+        }
+        hasher.update(&[0]);
+    }
+}
+
+fn collect_nix_config_paths(env_value: &impl Fn(&str) -> Option<String>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    if let Some(files) = env_value("NIX_USER_CONF_FILES") {
+        for part in files.split(':') {
+            let trimmed = part.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let path = PathBuf::from(trimmed);
+            if seen.insert(path.clone()) {
+                paths.push(path);
+            }
+        }
+    }
+
+    if let Some(dir) = env_value("NIX_CONF_DIR") {
+        let path = PathBuf::from(dir).join("nix.conf");
+        if seen.insert(path.clone()) {
+            paths.push(path);
+        }
+    }
+
+    for candidate in common_nix_conf_paths() {
+        if candidate.is_file() && seen.insert(candidate.clone()) {
+            paths.push(candidate);
+        }
+    }
+
+    paths.sort();
+    paths
+}
+
+fn common_nix_conf_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(home) = directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        paths.push(home.join(".config/nix/nix.conf"));
+    }
+    paths.push(PathBuf::from("/etc/nix/nix.conf"));
+    paths
 }
 
 fn cache_file_path(executable: &ExecutableIdentity) -> Option<PathBuf> {
@@ -746,6 +830,36 @@ mod tests {
         assert_eq!(left, right);
         let other = super::config_digest_from_parts(|_| None, Some(r#"{"a":2}"#));
         assert_ne!(left, other);
+    }
+
+    #[test]
+    fn nix_conf_file_content_changes_env_digest() {
+        let temp = TempDir::new().expect("tempdir");
+        let conf = temp.path().join("nix.conf");
+        fs::write(&conf, "experimental-features = flakes").expect("write conf");
+        let conf_path = conf.display().to_string();
+        let digest_a = super::config_digest_from_parts(
+            |key| {
+                if key == "NIX_USER_CONF_FILES" {
+                    Some(conf_path.clone())
+                } else {
+                    None
+                }
+            },
+            None,
+        );
+        fs::write(&conf, "experimental-features = nix-command flakes").expect("rewrite conf");
+        let digest_b = super::config_digest_from_parts(
+            |key| {
+                if key == "NIX_USER_CONF_FILES" {
+                    Some(conf_path.clone())
+                } else {
+                    None
+                }
+            },
+            None,
+        );
+        assert_ne!(digest_a, digest_b, "content change must reshape digest");
     }
 
     #[test]

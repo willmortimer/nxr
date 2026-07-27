@@ -56,6 +56,13 @@ let
     };
   };
 
+  secretProvider = types.enum [
+    "env"
+    "file"
+    "sops"
+    "sops-nix"
+  ];
+
   secretRefType = types.submodule {
     options = {
       ref = lib.mkOption {
@@ -72,6 +79,15 @@ let
         description = ''
           How the secret is delivered to the child process (`env`, `file`, or
           `stdin`). Defaults to `env`.
+        '';
+      };
+
+      provider = lib.mkOption {
+        type = secretProvider;
+        default = "env";
+        description = ''
+          Runtime secret provider for resolving the logical `ref` (`env`,
+          `file`, `sops`, or `sops-nix`). Defaults to `env`.
         '';
       };
     };

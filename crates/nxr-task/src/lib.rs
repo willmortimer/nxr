@@ -19,9 +19,10 @@ pub mod scheduler;
 pub mod schema;
 
 pub use context::{
-    AppliedTaskContext, ContextError, PlanSecretEntry, PlanSecretValuePlaceholder,
-    apply_task_context, merge_spawn_env_overrides, resolve_env_provider_secrets,
-    resolve_env_provider_secrets_with, resolve_task_context, secret_delivery_mode,
+    AppliedTaskContext, ContextError, NXR_ASSUME_YES_ENV, PlanSecretEntry,
+    PlanSecretValuePlaceholder, apply_task_context, enforce_context_confirm,
+    merge_spawn_env_overrides, resolve_env_provider_secrets, resolve_env_provider_secrets_with,
+    resolve_task_context, secret_delivery_mode, secret_provider_mode,
     serialized_plan_excludes_value,
 };
 pub use duration::{DurationParseError, format_duration, parse_duration};
@@ -44,8 +45,8 @@ pub use scheduler::{NodeState, ScheduleOutcome, Scheduler, SchedulerError};
 pub use schema::{
     AppListingMetadata, ContextEnvironment, ContextEnvironmentMode, ContextSecretRef, EnvInput,
     EnvInputBinding, ExecutionContext, IoIntensity, MAX_SUPPORTED_SCHEMA_VERSION, SCHEMA_VERSION,
-    SCHEMA_VERSION_V2, SchemaError, SecretDelivery, TaskCache, TaskCacheMode, TaskDefinition,
-    TaskDocument, TaskInputBinding, TaskInputs, TaskOutput, TaskOutputMode, TaskResources,
-    WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, parse_task_document,
+    SCHEMA_VERSION_V2, SchemaError, SecretDelivery, SecretProvider, TaskCache, TaskCacheMode,
+    TaskDefinition, TaskDocument, TaskInputBinding, TaskInputs, TaskOutput, TaskOutputMode,
+    TaskResources, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, parse_task_document,
     validate_schema_version, validate_working_directory,
 };

@@ -1,6 +1,6 @@
 //! Shared helpers for list / run / plan commands.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::Path;
 
@@ -11,9 +11,10 @@ use nxr_completion::cache::{
 use nxr_core::diagnostics::exit;
 use nxr_core::{App, EnvironmentPolicy, Plan, PlanCommand, PlanKind, PlanSecretRef};
 use nxr_nix::{
-    AppNotFoundError, NixAdapter, NixCapabilities, NixError, OptionalNixFlags,
+    AppNotFoundError, NixAdapter, NixCapabilities, NixError, OptionalNixFlags, OutputTable,
     TESTED_NIX_SUPPORT_FLOOR, detect_capabilities, flake_show_has_nxr_for_system, locate_nix,
-    nix_develop_wrap_run_args, nix_run_args, parse_apps_from_flake_show, resolve_app_by_name,
+    nix_develop_wrap_run_args, nix_run_args, parse_apps_from_flake_show,
+    parse_outputs_from_flake_show, resolve_app_by_name,
 };
 use nxr_task::{
     ContextError, PlanSecretEntry, SchemaError, SecretDelivery, TaskDocument,
@@ -77,6 +78,10 @@ pub struct PreparedTaskNode {
     pub timeout: Option<std::time::Duration>,
     /// Grace before SIGKILL after timeout/interrupt for this node.
     pub termination_grace: Option<std::time::Duration>,
+    /// Context name when this node uses an execution context.
+    pub context_name: Option<String>,
+    /// Whether this node requires interactive confirmation before spawn.
+    pub confirm: bool,
 }
 
 /// Once-per-invocation workspace evaluation: flake, Nix adapter, apps, optional tasks.
@@ -90,6 +95,8 @@ pub struct WorkspaceSnapshot {
     pub apps: BTreeMap<String, App>,
     pub tasks: Option<TaskDocument>,
     pub invocation_directory: Utf8PathBuf,
+    /// Known `devShells.<system>.*` leaf names from flake show.
+    pub dev_shells: BTreeSet<String>,
 }
 
 /// Per-invocation holder for Nix adapter probes and workspace snapshots.
@@ -240,6 +247,8 @@ pub enum PrepareError {
     RootRequiresLocalFlake,
     #[error("task workingDirectory must stay within the flake root (got {value})")]
     WorkingDirectoryOutsideFlakeRoot { value: String },
+    #[error("task {task} references unknown devShell {shell}")]
+    UnknownDevShell { task: String, shell: String },
     #[error(transparent)]
     Flake(#[from] FlakeResolveError),
     #[error(transparent)]
@@ -263,6 +272,7 @@ impl PrepareError {
             | Self::RootRequiresLocalFlake
             | Self::WorkingDirectoryOutsideFlakeRoot { .. } => exit::DISCOVERY,
             Self::RootAndCwdConflict => exit::USAGE,
+            Self::UnknownDevShell { .. } => exit::NOT_FOUND,
             Self::Flake(error) => error.exit_code(),
             Self::Nix(error) => error.exit_code(),
             Self::NotFound(error) => error.exit_code(),
@@ -426,6 +436,7 @@ impl WorkspaceSnapshot {
             discovery_inputs: Vec::new(),
         };
         let flake_ref = flake.nix_ref.clone();
+        let mut dev_shells = BTreeSet::new();
         let discovery = discover_workspace_with_cache(
             &context,
             DiscoveryCacheOptions {
@@ -436,6 +447,16 @@ impl WorkspaceSnapshot {
                 let show = nix
                     .flake_show_json(&flake_ref, nix_flags)
                     .map_err(PrepareError::Nix)?;
+                dev_shells = parse_outputs_from_flake_show(
+                    &show,
+                    &flake_ref,
+                    &nix.system,
+                    OutputTable::DevShells,
+                )
+                .map_err(|error| PrepareError::Nix(error.into()))?
+                .into_iter()
+                .map(|shell| shell.name)
+                .collect();
                 let apps = parse_apps_from_flake_show(&show, &flake_ref, &nix.system)
                     .map_err(|error| PrepareError::Nix(error.into()))?;
                 let tasks = if load_tasks {
@@ -451,6 +472,18 @@ impl WorkspaceSnapshot {
                 Ok::<WorkspaceDiscovery, PrepareError>(WorkspaceDiscovery { apps, tasks })
             },
         )?;
+        let dev_shells = if load_tasks && dev_shells.is_empty() {
+            let show = nix
+                .flake_show_json(&flake_ref, nix_flags)
+                .map_err(PrepareError::Nix)?;
+            parse_outputs_from_flake_show(&show, &flake_ref, &nix.system, OutputTable::DevShells)
+                .map_err(|error| PrepareError::Nix(error.into()))?
+                .into_iter()
+                .map(|shell| shell.name)
+                .collect()
+        } else {
+            dev_shells
+        };
         let apps = discovery
             .apps
             .into_iter()
@@ -463,6 +496,7 @@ impl WorkspaceSnapshot {
             apps,
             tasks: discovery.tasks,
             invocation_directory,
+            dev_shells,
         })
     }
 
@@ -554,6 +588,29 @@ impl WorkspaceSnapshot {
                 cwd,
                 definition.working_directory.as_deref(),
             )?;
+            let mut context_name = None;
+            let mut confirm = false;
+            let effective_shell = shell
+                .map(str::to_owned)
+                .or_else(|| {
+                    if let Some(name) = definition.context.as_deref() {
+                        document
+                            .contexts
+                            .get(name)
+                            .and_then(|context| context.shell.clone())
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| definition.shell.clone());
+            if let Some(shell_name) = effective_shell_wrap(effective_shell.as_deref(), shell_mode) {
+                if !self.dev_shells.contains(shell_name) {
+                    return Err(PrepareError::UnknownDevShell {
+                        task: task_id.clone(),
+                        shell: shell_name.to_owned(),
+                    });
+                }
+            }
             let app_request = AppRequest {
                 flake_arg: None,
                 nix_override: None,
@@ -561,7 +618,7 @@ impl WorkspaceSnapshot {
                 args: forwarded,
                 root,
                 cwd,
-                shell,
+                shell: effective_shell.as_deref(),
                 shell_mode,
                 environment_policy: environment_policy.clone(),
                 nix_flags,
@@ -575,9 +632,10 @@ impl WorkspaceSnapshot {
                 &execution_directory,
                 &strip_one_separator(forwarded),
             )?;
-            let node_environment = if let Some(context_name) = definition.context.as_deref() {
-                let applied =
-                    apply_task_context(document, task_id, context_name, environment_policy)?;
+            let node_environment = if let Some(name) = definition.context.as_deref() {
+                let applied = apply_task_context(document, task_id, name, environment_policy)?;
+                context_name = Some(applied.context_name.clone());
+                confirm = applied.confirm;
                 plan.context = Some(applied.context_name);
                 plan.secrets = plan_secrets_for_core(&applied.plan_secrets);
                 plan.context_env_set = applied.spawn_env_set.clone();
@@ -619,6 +677,8 @@ impl WorkspaceSnapshot {
                     plan,
                     timeout,
                     termination_grace,
+                    context_name,
+                    confirm,
                 },
             );
         }
@@ -899,9 +959,19 @@ fn plan_secrets_for_core(entries: &[PlanSecretEntry]) -> Vec<PlanSecretRef> {
             name: entry.name.clone(),
             reference: entry.reference.clone(),
             delivery: secret_delivery_label(entry.delivery).to_owned(),
+            provider: secret_provider_label(entry.provider).to_owned(),
             value: "<runtime>".to_owned(),
         })
         .collect()
+}
+
+fn secret_provider_label(provider: nxr_task::SecretProvider) -> &'static str {
+    match provider {
+        nxr_task::SecretProvider::Env => "env",
+        nxr_task::SecretProvider::File => "file",
+        nxr_task::SecretProvider::Sops => "sops",
+        nxr_task::SecretProvider::SopsNix => "sops-nix",
+    }
 }
 
 fn secret_delivery_label(delivery: SecretDelivery) -> &'static str {

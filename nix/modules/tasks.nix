@@ -126,6 +126,20 @@ let
   };
 in
 {
+  options.nxr.schemaVersion = lib.mkOption {
+    type = lib.types.nullOr (lib.types.enum [
+      1
+      2
+    ]);
+    default = null;
+    description = ''
+      Force the emitted `nxr.<system>.schema_version`. When unset, nxr
+      auto-selects `2` when contexts or task v2 fields are present, otherwise
+      `1`. Setting `1` while v2 fields are present fails evaluation; setting
+      `2` always emits schema version 2.
+    '';
+  };
+
   options.nxr.tasks = lib.mkOption {
     type = types.attrsOf taskType;
     default = { };

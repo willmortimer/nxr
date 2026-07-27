@@ -11,8 +11,8 @@ use nxr_process::{DeadlineQueue, InterruptFlags, PipeMultiplexer, PipeStream, Su
 use nxr_task::{
     ContextError, Event, EventSink, ExecutionPlan, FailurePolicy, OutputPayload, PlanError,
     PlanSecretEntry, PlanSecretValuePlaceholder, RunEventDecorator, Scheduler, SchedulerError,
-    SecretDelivery, build_execution_plan_roots, merge_spawn_env_overrides,
-    resolve_env_provider_secrets, resolve_task_name,
+    SecretDelivery, SecretProvider, build_execution_plan_roots, enforce_context_confirm,
+    merge_spawn_env_overrides, resolve_env_provider_secrets, resolve_task_name,
 };
 
 use crate::commands::common::{PrepareError, PreparedTaskNode, WorkspaceSnapshot, WorkspaceState};
@@ -858,6 +858,10 @@ fn spawn_node(
     let prepared = prepared_nodes
         .get(node_id)
         .expect("scheduler only starts ids prepared before run");
+    if prepared.confirm {
+        let context_name = prepared.context_name.as_deref().unwrap_or("unknown");
+        enforce_context_confirm(context_name, node_id, true).map_err(TaskError::Context)?;
+    }
     runner
         .verbose(format!(
             "running task {node_id} via app {}",
@@ -932,6 +936,7 @@ fn resolve_plan_secrets(
             name: secret.name.clone(),
             reference: secret.reference.clone(),
             delivery: parse_plan_secret_delivery(&secret.delivery),
+            provider: parse_plan_secret_provider(&secret.provider),
             value: PlanSecretValuePlaceholder::RUNTIME,
         })
         .collect();
@@ -943,6 +948,15 @@ fn parse_plan_secret_delivery(label: &str) -> SecretDelivery {
         "file" => SecretDelivery::File,
         "stdin" => SecretDelivery::Stdin,
         _ => SecretDelivery::Env,
+    }
+}
+
+fn parse_plan_secret_provider(label: &str) -> SecretProvider {
+    match label {
+        "file" => SecretProvider::File,
+        "sops" => SecretProvider::Sops,
+        "sops-nix" => SecretProvider::SopsNix,
+        _ => SecretProvider::Env,
     }
 }
 
