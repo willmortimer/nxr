@@ -16,6 +16,7 @@ use nxr_task::{
 };
 
 use crate::commands::common::{PrepareError, PreparedTaskNode, WorkspaceSnapshot, WorkspaceState};
+use crate::commands::history;
 use crate::commands::plan::{PlanRenderError, write_plan};
 use crate::commands::run::RunError;
 use crate::commands::secrets::{
@@ -182,7 +183,8 @@ pub fn execute(
     json: bool,
     runner: RunnerOutput,
 ) -> Result<i32, TaskError> {
-    execute_with_control(
+    let started = std::time::Instant::now();
+    let code = execute_with_control(
         request,
         dry_run,
         json,
@@ -191,7 +193,25 @@ pub fn execute(
         None,
         false,
         None,
-    )
+    )?;
+    if !dry_run {
+        let mut state = WorkspaceState::new(
+            request.flake_arg,
+            request.nix_override,
+            request.nix_flags,
+        );
+        let discovery_context = state.discovery_context().ok();
+        history::record_completed_run(
+            started,
+            nxr_core::RunTargetKind::Task,
+            request.tasks.join(","),
+            discovery_context.as_ref().map(|ctx| ctx.flake_ref.clone()),
+            code,
+            discovery_context.as_ref(),
+            true,
+        );
+    }
+    Ok(code)
 }
 
 /// External control signals for watch-mode integration with the scheduler loop.

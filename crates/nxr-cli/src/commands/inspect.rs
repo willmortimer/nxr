@@ -222,6 +222,7 @@ fn discover_workspace(
             Ok(WorkspaceDiscovery {
                 apps,
                 tasks: Some(tasks),
+                ..Default::default()
             })
         },
     )

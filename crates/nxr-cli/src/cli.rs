@@ -476,6 +476,11 @@ pub enum Command {
         #[command(subcommand)]
         action: CacheSubcommand,
     },
+    /// Show recent run summaries persisted under XDG state
+    History {
+        #[command(subcommand)]
+        action: Option<HistorySubcommand>,
+    },
     /// Report apps and tasks likely affected by changed paths
     Affected {
         /// Collect changed paths from `git diff --name-only <base>...HEAD`
@@ -677,11 +682,24 @@ pub enum CacheSubcommand {
     Clear,
     /// Show cache locations and sizes
     Status,
-    /// Explain workspace action cache key and hit/miss for a task
+    /// Explain discovery cache and/or workspace CAS for a task
     Explain {
-        /// Task name
-        task: String,
+        /// Task name for workspace CAS explain (omit for discovery-only explain)
+        #[arg(value_name = "TASK")]
+        task: Option<String>,
+        /// Treat discovery cache as task-inclusive (require cached tasks document)
+        #[arg(long = "tasks")]
+        tasks: bool,
     },
+}
+
+/// `nxr history` subcommands.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum HistorySubcommand {
+    /// List recent run summaries (default)
+    List,
+    /// Remove all persisted run summaries
+    Clear,
 }
 
 /// `nxr trust` subcommands.

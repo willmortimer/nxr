@@ -8,6 +8,7 @@ use crate::commands::common::{
     AppRequest, PrepareError, prepare_fast_app_plan, stderr_indicates_missing_installable,
     suggest_missing_app_after_run,
 };
+use crate::commands::history;
 use crate::commands::plan::{PlanRenderError, write_plan};
 use crate::runner_output::RunnerOutput;
 
@@ -51,6 +52,7 @@ pub fn execute(
     json: bool,
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
+    let started = std::time::Instant::now();
     let prepared = prepare_fast_app_plan(request)?;
 
     if dry_run {
@@ -86,6 +88,16 @@ pub fn execute(
     {
         return Err(RunError::Prepare(PrepareError::NotFound(not_found)));
     }
+
+    history::record_completed_run(
+        started,
+        nxr_core::RunTargetKind::App,
+        request.app.to_owned(),
+        Some(prepared.plan.flake.clone()),
+        code,
+        None,
+        false,
+    );
 
     Ok(code)
 }

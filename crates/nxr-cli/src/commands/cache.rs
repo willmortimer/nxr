@@ -2,18 +2,22 @@
 
 use std::io::{self, Write};
 
-use nxr_completion::{clear_discovery_cache, discovery_cache_status};
+use nxr_completion::{
+    DiscoveryCacheOptions, clear_discovery_cache, discovery_cache_status, explain_discovery_cache,
+};
 use nxr_core::cas::CacheExplain;
+use nxr_core::cas::{clear_workspace_cas, workspace_cas_status};
 use nxr_core::diagnostics::exit;
-use nxr_nix::{capability_cache_status, clear_capability_cache};
+use nxr_nix::{
+    OptionalNixFlags, capability_cache_status, clear_capability_cache, coalesced_discovery_available,
+};
 use nxr_task::{PlanError, build_execution_plan_roots, resolve_task_name};
 use serde::Serialize;
 
-use crate::commands::common::{PrepareError, WorkspaceSnapshot};
+use crate::commands::common::{PrepareError, WorkspaceSnapshot, WorkspaceState};
 use crate::commands::workspace_cache::explain_workspace_cache;
-use crate::flake::FlakeResolveError;
+use crate::flake::{FlakeResolveError, resolve_flake};
 use crate::runner_output::RunnerOutput;
-use nxr_core::cas::{clear_workspace_cas, workspace_cas_status};
 
 /// Errors while managing the discovery cache.
 #[derive(Debug, thiserror::Error)]
@@ -28,6 +32,8 @@ pub enum CacheError {
     Flake(#[from] FlakeResolveError),
     #[error(transparent)]
     Plan(#[from] PlanError),
+    #[error(transparent)]
+    Nix(#[from] nxr_nix::NixError),
     #[error("task {name} not found")]
     TaskNotFound { name: String },
 }
@@ -36,7 +42,10 @@ impl CacheError {
     #[must_use]
     pub const fn exit_code(&self) -> i32 {
         match self {
-            Self::Io(_) | Self::Json(_) | Self::Prepare(_) | Self::Flake(_) => exit::EVALUATION,
+            Self::Io(_) | Self::Json(_) => exit::EVALUATION,
+            Self::Flake(error) => error.exit_code(),
+            Self::Prepare(error) => error.exit_code(),
+            Self::Nix(error) => error.exit_code(),
             Self::Plan(_) | Self::TaskNotFound { .. } => exit::NOT_FOUND,
         }
     }
@@ -238,6 +247,81 @@ fn render_cache_explain(
                 .info(format!("    {label}: {value}"))
                 .map_err(CacheError::Io)?;
         }
+    }
+    Ok(())
+}
+
+/// Explain discovery cache validity and miss reasons for the selected flake.
+///
+/// # Errors
+///
+/// Returns [`CacheError`] when flake resolution, cache inspection, or output fails.
+pub fn explain(
+    flake_arg: Option<&str>,
+    nix_override: Option<&str>,
+    require_tasks: bool,
+    json: bool,
+    nix_flags: &OptionalNixFlags,
+    runner: RunnerOutput,
+) -> Result<(), CacheError> {
+    let invocation_directory =
+        crate::commands::common::current_invocation_directory().map_err(CacheError::Prepare)?;
+    let _flake = resolve_flake(flake_arg, &invocation_directory).map_err(CacheError::Flake)?;
+    let mut state = WorkspaceState::new(flake_arg, nix_override, nix_flags);
+    let context = state.discovery_context().map_err(CacheError::Prepare)?;
+    let adapter = state.adapter().map_err(CacheError::Nix)?;
+    let coalesced = coalesced_discovery_available(&adapter.version_banner);
+    let report = explain_discovery_cache(
+        &context,
+        DiscoveryCacheOptions {
+            refresh: false,
+            require_tasks,
+        },
+        coalesced,
+    )?;
+
+    if json {
+        let rendered = serde_json::to_string_pretty(&report)?;
+        writeln!(io::stdout().lock(), "{rendered}")?;
+        return Ok(());
+    }
+
+    let entry = &report.entry;
+    if !entry.available {
+        runner
+            .info("discovery cache unavailable (remote flake or host has no cache directory)")
+            .map_err(CacheError::Io)?;
+        return Ok(());
+    }
+
+    runner
+        .info(format!(
+            "discovery cache: hit={} path={}",
+            entry.hit,
+            entry.cache_file.as_deref().unwrap_or("n/a")
+        ))
+        .map_err(CacheError::Io)?;
+    if let Some(key) = &entry.invalidation_key {
+        runner
+            .info(format!("invalidation_key: {key}"))
+            .map_err(CacheError::Io)?;
+    }
+    if let Some(key) = &entry.cached_invalidation_key {
+        runner
+            .info(format!("cached_invalidation_key: {key}"))
+            .map_err(CacheError::Io)?;
+    }
+    runner
+        .info(format!(
+            "coalesced_discovery_available: {}",
+            report.coalesced_discovery_available
+        ))
+        .map_err(CacheError::Io)?;
+    for reason in &entry.miss_reasons {
+        let rendered = serde_json::to_string(reason).map_err(CacheError::Json)?;
+        runner
+            .info(format!("miss_reason: {rendered}"))
+            .map_err(CacheError::Io)?;
     }
     Ok(())
 }

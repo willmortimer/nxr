@@ -3049,6 +3049,139 @@ fn task_ci_uses_o1_discovery_not_per_node_flake_show() {
 }
 
 #[test]
+fn coalesced_cold_task_discovery_uses_single_eval_when_forced() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let home = tempfile::TempDir::new().expect("cache home");
+    let repo_root = repo_root();
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_FORCE_COALESCED_DISCOVERY", "1")
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/task-dag", "list"])
+        .assert();
+
+    // Reset log after capability probes so only cold task discovery is measured.
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_FORCE_COALESCED_DISCOVERY", "1")
+        .env("NXR_NIX", &counter.wrapper)
+        .args([
+            "--flake",
+            "fixtures/task-dag",
+            "--refresh-discovery",
+            "task",
+            "ci",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(
+        counter.count("flake-show"),
+        0,
+        "coalesced discovery must not call flake show; log={log}"
+    );
+    assert_eq!(
+        counter.count("eval"),
+        1,
+        "coalesced discovery should use one eval; log={log}"
+    );
+}
+
+#[test]
+fn cache_explain_json_reports_structured_miss_reasons() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let home = tempfile::TempDir::new().expect("cache home");
+    let repo_root = repo_root();
+
+    let output = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .args([
+            "--flake",
+            "fixtures/basic-apps",
+            "--json",
+            "cache",
+            "explain",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let value: serde_json::Value = serde_json::from_slice(&output).expect("parse json");
+    assert!(value.get("entry").is_some());
+    let miss = value
+        .pointer("/entry/miss_reasons")
+        .and_then(|v| v.as_array())
+        .expect("miss_reasons array");
+    assert!(
+        miss.iter().any(|reason| reason.get("kind") == Some(&serde_json::json!("absent"))),
+        "cold cache explain should report absent miss: {value}"
+    );
+}
+
+#[test]
+fn history_records_task_run_summary() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let home = tempfile::TempDir::new().expect("state home");
+    let repo_root = repo_root();
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_STATE_HOME", home.path().join("state"))
+        .env("NXR_NIX", which::which("nix").expect("nix"))
+        .args(["--flake", "fixtures/basic-apps", "run", "succeed"])
+        .assert()
+        .success();
+
+    let output = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_STATE_HOME", home.path().join("state"))
+        .args(["--json", "history"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let value: serde_json::Value = serde_json::from_slice(&output).expect("parse history json");
+    let entries = value
+        .get("entries")
+        .and_then(|v| v.as_array())
+        .expect("entries");
+    assert!(
+        entries.iter().any(|entry| {
+            entry.get("target_kind") == Some(&serde_json::json!("app"))
+                && entry.get("target") == Some(&serde_json::json!("succeed"))
+        }),
+        "expected app succeed summary in history: {value}"
+    );
+}
+
+#[test]
 fn doctor_all_does_not_double_capability_probes() {
     let Some(()) = require_nix() else {
         return;

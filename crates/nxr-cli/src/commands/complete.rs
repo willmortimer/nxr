@@ -131,7 +131,11 @@ fn discover_apps(
                 .discover_apps(&flake_ref, &nix_flags)
                 .map_err(|error| error.to_string())?;
             let tasks = adapter.discover_tasks(&flake_ref, &nix_flags).ok();
-            Ok::<WorkspaceDiscovery, String>(WorkspaceDiscovery { apps, tasks })
+            Ok::<WorkspaceDiscovery, String>(WorkspaceDiscovery {
+                apps,
+                tasks,
+                ..Default::default()
+            })
         },
     ))
 }
@@ -244,7 +248,11 @@ fn discover_workspace(
                 .discover_apps(&flake_ref, &nix_flags)
                 .map_err(|error| error.to_string())?;
             let tasks = adapter.discover_tasks(&flake_ref, &nix_flags).ok();
-            Ok::<WorkspaceDiscovery, String>(WorkspaceDiscovery { apps, tasks })
+            Ok::<WorkspaceDiscovery, String>(WorkspaceDiscovery {
+                apps,
+                tasks,
+                ..Default::default()
+            })
         },
     )
     .ok()
