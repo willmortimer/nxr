@@ -9,7 +9,8 @@ use nxr_core::cas::CacheExplain;
 use nxr_core::cas::{clear_workspace_cas, workspace_cas_status};
 use nxr_core::diagnostics::exit;
 use nxr_nix::{
-    OptionalNixFlags, capability_cache_status, clear_capability_cache, coalesced_discovery_available,
+    OptionalNixFlags, capability_cache_status, clear_capability_cache,
+    coalesced_discovery_available,
 };
 use nxr_task::{PlanError, build_execution_plan_roots, resolve_task_name};
 use serde::Serialize;

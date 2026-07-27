@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.2] - 2026-07-27
+
+### Fixed
+
+- rustfmt drift in 3.1 workspace/cache/history/coalesce sources so CI format checks pass.
+- Release smoke README assertion mismatched the nix-package archive text (`runnable standalone`), which blocked GitHub Release publish after v3.1.1 builds succeeded.
+
+### Changed
+
+- Workspace and Nix package version **3.1.2**.
+
 ## [3.1.1] - 2026-07-27
 
 ### Fixed

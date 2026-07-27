@@ -307,21 +307,10 @@ pub enum DiscoveryCacheMissReason {
     CacheUnavailable,
     Absent,
     Corrupt,
-    SchemaVersion {
-        expected: u32,
-        found: u32,
-    },
-    DiscoverySchemaVersion {
-        expected: u32,
-        found: u32,
-    },
-    ContextMismatch {
-        field: String,
-    },
-    TtlExpired {
-        age_secs: u64,
-        ttl_secs: u64,
-    },
+    SchemaVersion { expected: u32, found: u32 },
+    DiscoverySchemaVersion { expected: u32, found: u32 },
+    ContextMismatch { field: String },
+    TtlExpired { age_secs: u64, ttl_secs: u64 },
     FingerprintMismatch,
     DiscoveryInputsMismatch,
     TasksRequired,
@@ -464,8 +453,13 @@ pub fn discovery_cache_entry_with_options(
     let invalidation_key = nix_tree_fingerprint(&canonical_root)?;
     let context_key = cache_context_key(context);
     let cache_file = cache_file_path(&context_key).map(|path| path.display().to_string());
-    let hit = load_cached_workspace(local_root, context, options.require_tasks, Some(invalidation_key.as_str()))?
-        .is_some();
+    let hit = load_cached_workspace(
+        local_root,
+        context,
+        options.require_tasks,
+        Some(invalidation_key.as_str()),
+    )?
+    .is_some();
     let cached_invalidation_key = if hit {
         Some(invalidation_key.clone())
     } else {

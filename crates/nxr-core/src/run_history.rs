@@ -169,10 +169,8 @@ fn run_history_path() -> Option<PathBuf> {
         return Some(state_home.join("nxr").join(RUN_HISTORY_FILENAME));
     }
 
-    directories::ProjectDirs::from("dev", "nxr", "nxr").and_then(|dirs| {
-        dirs.state_dir()
-            .map(|path| path.join(RUN_HISTORY_FILENAME))
-    })
+    directories::ProjectDirs::from("dev", "nxr", "nxr")
+        .and_then(|dirs| dirs.state_dir().map(|path| path.join(RUN_HISTORY_FILENAME)))
 }
 
 fn run_history_limit() -> usize {

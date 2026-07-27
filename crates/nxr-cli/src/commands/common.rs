@@ -426,8 +426,7 @@ pub(crate) fn cold_discover_workspace(
     load_tasks: bool,
     nix_flags: &OptionalNixFlags,
 ) -> Result<ColdWorkspaceDiscovery, PrepareError> {
-    let use_coalesced =
-        load_tasks && nxr_nix::coalesced_discovery_available(&nix.version_banner);
+    let use_coalesced = load_tasks && nxr_nix::coalesced_discovery_available(&nix.version_banner);
     let mut dev_shells = BTreeSet::new();
 
     if use_coalesced {
@@ -464,16 +463,12 @@ pub(crate) fn cold_discover_workspace(
     let show = nix
         .flake_show_json(flake_ref, nix_flags)
         .map_err(PrepareError::Nix)?;
-    dev_shells = parse_outputs_from_flake_show(
-        &show,
-        flake_ref,
-        &nix.system,
-        OutputTable::DevShells,
-    )
-    .map_err(|error| PrepareError::Nix(error.into()))?
-    .into_iter()
-    .map(|shell| shell.name)
-    .collect();
+    dev_shells =
+        parse_outputs_from_flake_show(&show, flake_ref, &nix.system, OutputTable::DevShells)
+            .map_err(|error| PrepareError::Nix(error.into()))?
+            .into_iter()
+            .map(|shell| shell.name)
+            .collect();
     let apps = parse_apps_from_flake_show(&show, flake_ref, &nix.system)
         .map_err(|error| PrepareError::Nix(error.into()))?;
     let tasks = if load_tasks {

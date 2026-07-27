@@ -169,17 +169,16 @@ impl CoalescedDiscovery {
         load_tasks: bool,
     ) -> Result<CoalescedWorkspace, CoalescedDiscoveryError> {
         let apps = parse_apps_from_flake_show(&self.show, flake_ref, system)?;
-        let dev_shells = parse_outputs_from_flake_show(
-            &self.show,
-            flake_ref,
-            system,
-            OutputTable::DevShells,
-        )?
-        .into_iter()
-        .map(|shell| shell.name)
-        .collect();
+        let dev_shells =
+            parse_outputs_from_flake_show(&self.show, flake_ref, system, OutputTable::DevShells)?
+                .into_iter()
+                .map(|shell| shell.name)
+                .collect();
         let tasks = if load_tasks {
-            Some(self.tasks.unwrap_or_else(|| TaskDocument::new(std::collections::BTreeMap::new())))
+            Some(
+                self.tasks
+                    .unwrap_or_else(|| TaskDocument::new(std::collections::BTreeMap::new())),
+            )
         } else if flake_show_has_nxr_for_system(&self.show, system) {
             None
         } else {
@@ -237,7 +236,10 @@ mod tests {
 
     #[test]
     fn distribution_gate_matches_determinate_banner() {
-        assert!(distribution_from_version_banner("nix (Determinate Nix 3.0.0) 2.34.0\n").is_determinate());
+        assert!(
+            distribution_from_version_banner("nix (Determinate Nix 3.0.0) 2.34.0\n")
+                .is_determinate()
+        );
         assert!(!distribution_from_version_banner("nix (Lix, like Nix) 2.91.0").is_determinate());
     }
 
@@ -254,7 +256,10 @@ mod tests {
         let adapter = crate::NixAdapter::new().expect("adapter");
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let fixture = manifest.join("../../fixtures/task-dag");
-        let flake_ref = format!("path:{}", fixture.canonicalize().expect("fixture").display());
+        let flake_ref = format!(
+            "path:{}",
+            fixture.canonicalize().expect("fixture").display()
+        );
         let args = coalesced_discovery_args(&flake_ref, &adapter.system);
         let mut flags = OptionalNixFlags::default();
         flags.no_write_lock_file = true;
@@ -267,6 +272,11 @@ mod tests {
             .into_workspace(&flake_ref, &adapter.system, true)
             .expect("workspace");
         assert!(!workspace.apps.is_empty());
-        assert!(workspace.tasks.as_ref().is_some_and(|doc| !doc.tasks.is_empty()));
+        assert!(
+            workspace
+                .tasks
+                .as_ref()
+                .is_some_and(|doc| !doc.tasks.is_empty())
+        );
     }
 }

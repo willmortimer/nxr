@@ -737,7 +737,9 @@ mod tests {
                     hit: false,
                     invalidation_key: Some("99".to_owned()),
                     cached_invalidation_key: Some("88".to_owned()),
-                    miss_reasons: vec![nxr_completion::DiscoveryCacheMissReason::FingerprintMismatch],
+                    miss_reasons: vec![
+                        nxr_completion::DiscoveryCacheMissReason::FingerprintMismatch,
+                    ],
                 },
                 invocation_directory: "/work".to_owned(),
                 requested_shell: None,

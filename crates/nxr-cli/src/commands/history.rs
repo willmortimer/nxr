@@ -151,11 +151,7 @@ fn discovery_outcome(
     }
     (
         DiscoveryCacheOutcome::Miss,
-        entry
-            .miss_reasons
-            .iter()
-            .map(miss_reason_label)
-            .collect(),
+        entry.miss_reasons.iter().map(miss_reason_label).collect(),
     )
 }
 

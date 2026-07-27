@@ -31,9 +31,9 @@ pub use capability_cache::{
     detect_nix_environment,
 };
 pub use coalesce::{
-    CoalescedDiscovery, CoalescedDiscoveryError, CoalescedWorkspace,
-    FORCE_COALESCED_DISCOVERY_ENV, coalesced_discovery_args, coalesced_discovery_available,
-    coalesced_discovery_expr, discover_coalesced,
+    CoalescedDiscovery, CoalescedDiscoveryError, CoalescedWorkspace, FORCE_COALESCED_DISCOVERY_ENV,
+    coalesced_discovery_args, coalesced_discovery_available, coalesced_discovery_expr,
+    discover_coalesced,
 };
 pub use command::{
     NIX_EXECUTABLE_ENV, attr_installable, check_installable, current_system_args,

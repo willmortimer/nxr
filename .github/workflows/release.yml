@@ -284,14 +284,24 @@ jobs:
         run: |
           set -euo pipefail
           archive="$(find artifact -name '*-nix-package.tar.gz' -print -quit)"
-          test -n "$archive"
+          if [[ -z "$archive" ]]; then
+            echo "missing *-nix-package.tar.gz under artifact/" >&2
+            find artifact -type f -print >&2 || true
+            exit 1
+          fi
           tar -xzf "$archive"
           staging="$(find . -maxdepth 1 -type d -name 'nxr-*-x86_64-linux-nix-package' -print -quit)"
+          if [[ -z "$staging" ]]; then
+            echo "missing extracted nxr-*-x86_64-linux-nix-package directory" >&2
+            ls -la >&2
+            exit 1
+          fi
           test -x "$staging/bin/nxr"
           test -d "$staging/share/man"
           test -d "$staging/share/nxr/shell"
           test -f "$staging/README.txt"
-          grep -q 'not a portable standalone' "$staging/README.txt"
+          # Must match README.txt written in "Package release archive".
+          grep -q 'NOT produce a runnable standalone' "$staging/README.txt"
 
           # Nix ELFs need their build-time /nix/store closure. Rebuilding the
           # same flake output on this runner materializes those paths; cmp

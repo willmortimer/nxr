@@ -9,7 +9,9 @@ use nxr_task::{
     TaskTargetResolution, resolve_task_targets,
 };
 
-use crate::commands::common::{PrepareError, build_adapter, cold_discover_workspace, current_invocation_directory};
+use crate::commands::common::{
+    PrepareError, build_adapter, cold_discover_workspace, current_invocation_directory,
+};
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
 
 /// Errors while expanding selectors at the CLI layer.

@@ -195,11 +195,8 @@ pub fn execute(
         None,
     )?;
     if !dry_run {
-        let mut state = WorkspaceState::new(
-            request.flake_arg,
-            request.nix_override,
-            request.nix_flags,
-        );
+        let mut state =
+            WorkspaceState::new(request.flake_arg, request.nix_override, request.nix_flags);
         let discovery_context = state.discovery_context().ok();
         history::record_completed_run(
             started,

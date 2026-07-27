@@ -3133,7 +3133,8 @@ fn cache_explain_json_reports_structured_miss_reasons() {
         .and_then(|v| v.as_array())
         .expect("miss_reasons array");
     assert!(
-        miss.iter().any(|reason| reason.get("kind") == Some(&serde_json::json!("absent"))),
+        miss.iter()
+            .any(|reason| reason.get("kind") == Some(&serde_json::json!("absent"))),
         "cold cache explain should report absent miss: {value}"
     );
 }

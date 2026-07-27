@@ -40,8 +40,8 @@ pub use projects::{
 };
 pub use repo_path::{RepoPathError, normalize_repo_relative_path, validate_repo_relative_path};
 pub use run_history::{
-    DEFAULT_RUN_HISTORY_LIMIT, DiscoveryCacheOutcome, RunSummary, RunSummaryInput, RunTargetKind,
-    RUN_HISTORY_LIMIT_ENV, clear_runs, list_runs, record_run, record_run_result,
+    DEFAULT_RUN_HISTORY_LIMIT, DiscoveryCacheOutcome, RUN_HISTORY_LIMIT_ENV, RunSummary,
+    RunSummaryInput, RunTargetKind, clear_runs, list_runs, record_run, record_run_result,
 };
 pub use sanitize::sanitize_terminal_text;
 pub use trust::{
