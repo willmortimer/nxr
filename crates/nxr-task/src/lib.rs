@@ -35,7 +35,9 @@ pub use resolve::{
 pub use run_events::{RunEventDecorator, format_rfc3339_utc};
 pub use scheduler::{NodeState, ScheduleOutcome, Scheduler, SchedulerError};
 pub use schema::{
-    AppListingMetadata, SCHEMA_VERSION, SchemaError, TaskDefinition, TaskDocument,
-    WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, validate_schema_version,
-    validate_working_directory,
+    AppListingMetadata, EnvInput, EnvInputBinding, IoIntensity, MAX_SUPPORTED_SCHEMA_VERSION,
+    SCHEMA_VERSION, SCHEMA_VERSION_V2, SchemaError, TaskCache, TaskCacheMode, TaskDefinition,
+    TaskDocument, TaskInputBinding, TaskInputs, TaskOutput, TaskOutputMode, TaskResources,
+    WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, parse_task_document,
+    validate_schema_version, validate_working_directory,
 };

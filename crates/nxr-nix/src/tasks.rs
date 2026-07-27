@@ -140,12 +140,10 @@ pub fn discover_tasks_with_args(
 /// # Errors
 ///
 /// Returns [`TaskDiscoveryError::InvalidDocument`] on serde failures and
-/// [`TaskDiscoveryError::Schema`] when the major version is unsupported.
+/// [`TaskDiscoveryError::Schema`] when the major version is unsupported or
+/// validation fails.
 pub fn parse_task_document(value: &JsonValue) -> Result<TaskDocument, TaskDiscoveryError> {
-    let doc: TaskDocument = serde_json::from_value(value.clone())
-        .map_err(|source| TaskDiscoveryError::InvalidDocument { source })?;
-    doc.validate()?;
-    Ok(doc)
+    nxr_task::parse_task_document(value).map_err(TaskDiscoveryError::Schema)
 }
 
 /// Whether a Nix evaluation error indicates the `nxr.<system>` attr is absent.
@@ -247,7 +245,10 @@ mod tests {
             }
         });
         let err = parse_task_document(&value).expect_err("app required");
-        assert!(matches!(err, TaskDiscoveryError::InvalidDocument { .. }));
+        assert!(matches!(
+            err,
+            TaskDiscoveryError::Schema(SchemaError::InvalidDocument { .. })
+        ));
     }
 
     #[test]
@@ -286,6 +287,47 @@ mod tests {
             TaskDiscoveryError::Schema(SchemaError::AbsoluteWorkingDirectory { .. })
         ));
         assert_eq!(err.exit_code(), exit::EVALUATION);
+    }
+
+    #[test]
+    fn parse_rejects_v2_unknown_task_field() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "ci": {
+                    "app": "ci",
+                    "futureField": true
+                }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("v2 unknown field rejected");
+        assert!(matches!(
+            err,
+            TaskDiscoveryError::Schema(SchemaError::InvalidDocument { .. })
+        ));
+        assert_eq!(err.exit_code(), exit::EVALUATION);
+    }
+
+    #[test]
+    fn parse_accepts_v2_known_fields() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "ci": {
+                    "app": "ci",
+                    "cache": { "mode": "disabled" }
+                }
+            }
+        });
+        let doc = parse_task_document(&value).expect("v2 known fields accepted");
+        assert_eq!(doc.schema_version, 2);
+        assert_eq!(
+            doc.tasks["ci"]
+                .cache
+                .as_ref()
+                .and_then(|cache| cache.mode.as_ref()),
+            Some(&nxr_task::TaskCacheMode::Disabled)
+        );
     }
 
     #[test]
