@@ -19,8 +19,13 @@ use nxr_core::{normalize_repo_relative_path, validate_repo_relative_path};
 /// Use this to skip huge vendored `.nix` trees that rarely affect discovery.
 pub const FINGERPRINT_IGNORE_ENV: &str = "NXR_CACHE_FINGERPRINT_IGNORE";
 
-const FINGERPRINT_INDEX_SCHEMA_VERSION: u32 = 1;
-const DISCOVERY_INPUTS_INDEX_SCHEMA_VERSION: u32 = 1;
+/// When set to a positive integer, re-read every indexed file after that many seconds
+/// even when metadata matches (backstop for same-mtime rewrites).
+pub const FINGERPRINT_FORCE_REHASH_ENV: &str = "NXR_FINGERPRINT_FORCE_REHASH_SECS";
+
+const FINGERPRINT_INDEX_SCHEMA_VERSION: u32 = 2;
+const DISCOVERY_INPUTS_INDEX_SCHEMA_VERSION: u32 = 2;
+const LEGACY_FINGERPRINT_INDEX_SCHEMA_VERSION: u32 = 1;
 const BUILTIN_IGNORE_POLICY_VERSION: &str = "v1";
 /// Sentinel content hash for a declared discovery input that is absent on disk.
 const MISSING_INPUT_CONTENT_HASH: &str =
@@ -61,7 +66,7 @@ pub(crate) fn nix_tree_fingerprint_with_ignore(
         compute_workspace_fingerprint(&root, extra_ignore, &ignore_policy_hash, loaded.as_ref())?;
 
     if let Some(path) = index_path {
-        // Skip pretty-JSON rewrite when the warm path produced an identical index.
+        // Skip rewrite when the warm path produced an identical index.
         if loaded.as_ref() != Some(&index) {
             store_fingerprint_index(&path, &index)?;
         }
@@ -101,9 +106,14 @@ pub fn discovery_inputs_fingerprint(
         Some(path) => load_discovery_inputs_index(path)?,
         None => None,
     };
-    let prior = loaded
+    let compatible = loaded
         .as_ref()
         .filter(|index| discovery_inputs_index_compatible(index, &root));
+    let force_rehash = compatible
+        .map(|index| should_force_rehash(index.last_rehash_ns))
+        .unwrap_or(false);
+    let prior = if force_rehash { None } else { compatible };
+    let last_rehash_ns = resolve_last_rehash_ns(prior, force_rehash)?;
 
     let mut entries = BTreeMap::new();
     for relative in paths {
@@ -120,6 +130,7 @@ pub fn discovery_inputs_fingerprint(
         schema_version: DISCOVERY_INPUTS_INDEX_SCHEMA_VERSION,
         root: root.as_str().to_owned(),
         entries,
+        last_rehash_ns,
     };
 
     if let Some(path) = index_path
@@ -139,6 +150,8 @@ struct WorkspaceFingerprintIndex {
     entries: BTreeMap<String, FingerprintEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     lock_file: Option<LockFingerprintEntry>,
+    #[serde(default)]
+    last_rehash_ns: u128,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -153,6 +166,8 @@ struct FingerprintEntry {
     file_identity: Option<FileIdentity>,
     size: u64,
     modified_ns: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changed_ns: Option<u128>,
     content_hash: String,
 }
 
@@ -162,6 +177,8 @@ struct LockFingerprintEntry {
     file_identity: Option<FileIdentity>,
     size: u64,
     modified_ns: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changed_ns: Option<u128>,
     content_hash: String,
 }
 
@@ -170,6 +187,8 @@ struct DiscoveryInputsIndex {
     schema_version: u32,
     root: String,
     entries: BTreeMap<String, FingerprintEntry>,
+    #[serde(default)]
+    last_rehash_ns: u128,
 }
 
 fn compute_workspace_fingerprint(
@@ -178,10 +197,13 @@ fn compute_workspace_fingerprint(
     ignore_policy_hash: &str,
     loaded: Option<&WorkspaceFingerprintIndex>,
 ) -> io::Result<(String, WorkspaceFingerprintIndex)> {
-    let reuse_index =
-        loaded.is_some_and(|index| index_is_compatible(index, root, ignore_policy_hash));
-
-    let prior = if reuse_index { loaded } else { None };
+    let compatible =
+        loaded.filter(|index| index_is_compatible(index, root, ignore_policy_hash));
+    let force_rehash = compatible
+        .map(|index| should_force_rehash(index.last_rehash_ns))
+        .unwrap_or(false);
+    let prior = if force_rehash { None } else { compatible };
+    let last_rehash_ns = resolve_last_rehash_ns(prior, force_rehash)?;
 
     let mut entries = BTreeMap::new();
     let mut nix_paths = Vec::new();
@@ -213,6 +235,7 @@ fn compute_workspace_fingerprint(
         ignore_policy_hash: ignore_policy_hash.to_owned(),
         entries,
         lock_file,
+        last_rehash_ns,
     };
 
     Ok((fingerprint, index))
@@ -223,9 +246,77 @@ fn index_is_compatible(
     root: &Utf8Path,
     ignore_hash: &str,
 ) -> bool {
-    index.schema_version == FINGERPRINT_INDEX_SCHEMA_VERSION
+    fingerprint_index_schema_supported(index.schema_version)
         && index.root == root.as_str()
         && index.ignore_policy_hash == ignore_hash
+}
+
+fn fingerprint_index_schema_supported(version: u32) -> bool {
+    (LEGACY_FINGERPRINT_INDEX_SCHEMA_VERSION..=FINGERPRINT_INDEX_SCHEMA_VERSION)
+        .contains(&version)
+}
+
+fn discovery_inputs_index_schema_supported(version: u32) -> bool {
+    (LEGACY_FINGERPRINT_INDEX_SCHEMA_VERSION..=DISCOVERY_INPUTS_INDEX_SCHEMA_VERSION)
+        .contains(&version)
+}
+
+fn force_rehash_interval_secs() -> Option<u64> {
+    #[cfg(test)]
+    if let Ok(guard) = TEST_FORCE_REHASH_SECS.lock()
+        && let Some(secs) = *guard
+    {
+        return Some(secs);
+    }
+
+    std::env::var(FINGERPRINT_FORCE_REHASH_ENV)
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .filter(|&secs| secs > 0)
+}
+
+fn now_ns() -> io::Result<u128> {
+    let duration = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    Ok(duration.as_nanos())
+}
+
+fn should_force_rehash(last_rehash_ns: u128) -> bool {
+    let Some(interval_secs) = force_rehash_interval_secs() else {
+        return false;
+    };
+    let Ok(now_ns) = now_ns() else {
+        return false;
+    };
+    now_ns.saturating_sub(last_rehash_ns) >= u128::from(interval_secs) * 1_000_000_000
+}
+
+fn resolve_last_rehash_ns<T>(prior: Option<&T>, force_rehash: bool) -> io::Result<u128>
+where
+    T: LastRehashNs,
+{
+    if force_rehash || prior.is_none() {
+        now_ns()
+    } else {
+        Ok(prior.expect("prior checked").last_rehash_ns())
+    }
+}
+
+trait LastRehashNs {
+    fn last_rehash_ns(&self) -> u128;
+}
+
+impl LastRehashNs for WorkspaceFingerprintIndex {
+    fn last_rehash_ns(&self) -> u128 {
+        self.last_rehash_ns
+    }
+}
+
+impl LastRehashNs for DiscoveryInputsIndex {
+    fn last_rehash_ns(&self) -> u128 {
+        self.last_rehash_ns
+    }
 }
 
 fn aggregate_fingerprint(
@@ -254,9 +345,10 @@ fn fingerprint_entry_for_file(
     let file_identity = file_identity(metadata);
     let size = metadata.len();
     let modified_ns = modified_ns(metadata)?;
+    let changed_ns = changed_ns(metadata)?;
 
     if let Some(prior) = prior
-        && prior.matches_metadata(file_identity, size, modified_ns)
+        && prior.matches_metadata(file_identity, size, modified_ns, changed_ns)
     {
         return Ok(prior.clone());
     }
@@ -266,6 +358,7 @@ fn fingerprint_entry_for_file(
         file_identity,
         size,
         modified_ns,
+        changed_ns,
         content_hash: hash_bytes(&bytes).to_hex().to_string(),
     })
 }
@@ -278,9 +371,10 @@ fn fingerprint_lock_entry(
     let file_identity = file_identity(metadata);
     let size = metadata.len();
     let modified_ns = modified_ns(metadata)?;
+    let changed_ns = changed_ns(metadata)?;
 
     if let Some(prior) = prior
-        && prior.matches_metadata(file_identity, size, modified_ns)
+        && prior.matches_metadata(file_identity, size, modified_ns, changed_ns)
     {
         return Ok(prior.clone());
     }
@@ -290,6 +384,7 @@ fn fingerprint_lock_entry(
         file_identity,
         size,
         modified_ns,
+        changed_ns,
         content_hash: hash_bytes(&bytes).to_hex().to_string(),
     })
 }
@@ -300,8 +395,12 @@ impl FingerprintEntry {
         file_identity: Option<FileIdentity>,
         size: u64,
         modified_ns: u128,
+        changed_ns: Option<u128>,
     ) -> bool {
-        self.file_identity == file_identity && self.size == size && self.modified_ns == modified_ns
+        self.file_identity == file_identity
+            && self.size == size
+            && self.modified_ns == modified_ns
+            && ctime_matches(self.changed_ns, changed_ns)
     }
 
     fn content_hash_bytes(&self) -> [u8; 32] {
@@ -315,8 +414,12 @@ impl LockFingerprintEntry {
         file_identity: Option<FileIdentity>,
         size: u64,
         modified_ns: u128,
+        changed_ns: Option<u128>,
     ) -> bool {
-        self.file_identity == file_identity && self.size == size && self.modified_ns == modified_ns
+        self.file_identity == file_identity
+            && self.size == size
+            && self.modified_ns == modified_ns
+            && ctime_matches(self.changed_ns, changed_ns)
     }
 
     fn content_hash_bytes(&self) -> [u8; 32] {
@@ -369,11 +472,38 @@ fn file_identity(metadata: &fs::Metadata) -> Option<FileIdentity> {
 }
 
 fn modified_ns(metadata: &fs::Metadata) -> io::Result<u128> {
-    let modified = metadata.modified()?;
-    let duration = modified
+    system_time_ns(metadata.modified()?)
+}
+
+fn changed_ns(metadata: &fs::Metadata) -> io::Result<Option<u128>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let nanos = (metadata.ctime() as i128) * 1_000_000_000 + (metadata.ctime_nsec() as i128);
+        if nanos < 0 {
+            return Ok(None);
+        }
+        Ok(Some(nanos as u128))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        Ok(None)
+    }
+}
+
+fn system_time_ns(time: SystemTime) -> io::Result<u128> {
+    let duration = time
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default();
     Ok(duration.as_nanos())
+}
+
+fn ctime_matches(stored: Option<u128>, current: Option<u128>) -> bool {
+    match (stored, current) {
+        (Some(stored), Some(current)) => stored == current,
+        _ => true,
+    }
 }
 
 fn ignore_policy_hash(extra_ignore: &GlobSet) -> String {
@@ -425,7 +555,7 @@ fn load_fingerprint_index(path: &Path) -> io::Result<Option<WorkspaceFingerprint
         Err(_) => return Ok(None),
     };
 
-    if index.schema_version != FINGERPRINT_INDEX_SCHEMA_VERSION {
+    if !fingerprint_index_schema_supported(index.schema_version) {
         return Ok(None);
     }
 
@@ -450,7 +580,7 @@ fn store_fingerprint_index(path: &Path, index: &WorkspaceFingerprintIndex) -> io
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "missing parent directory"))?;
     fs::create_dir_all(parent)?;
 
-    let serialized = serde_json::to_vec_pretty(index)
+    let serialized = serde_json::to_vec(index)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     record_index_store();
     write_atomically(path, &serialized)
@@ -466,7 +596,7 @@ fn discovery_inputs_index_path(root: &Utf8Path) -> Option<PathBuf> {
 }
 
 fn discovery_inputs_index_compatible(index: &DiscoveryInputsIndex, root: &Utf8Path) -> bool {
-    index.schema_version == DISCOVERY_INPUTS_INDEX_SCHEMA_VERSION && index.root == root.as_str()
+    discovery_inputs_index_schema_supported(index.schema_version) && index.root == root.as_str()
 }
 
 fn load_discovery_inputs_index(path: &Path) -> io::Result<Option<DiscoveryInputsIndex>> {
@@ -481,7 +611,7 @@ fn load_discovery_inputs_index(path: &Path) -> io::Result<Option<DiscoveryInputs
         Err(_) => return Ok(None),
     };
 
-    if index.schema_version != DISCOVERY_INPUTS_INDEX_SCHEMA_VERSION {
+    if !discovery_inputs_index_schema_supported(index.schema_version) {
         return Ok(None);
     }
 
@@ -501,7 +631,7 @@ fn store_discovery_inputs_index(path: &Path, index: &DiscoveryInputsIndex) -> io
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "missing parent directory"))?;
     fs::create_dir_all(parent)?;
 
-    let serialized = serde_json::to_vec_pretty(index)
+    let serialized = serde_json::to_vec(index)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     record_index_store();
     write_atomically(path, &serialized)
@@ -551,6 +681,7 @@ fn missing_discovery_input_entry() -> FingerprintEntry {
         file_identity: None,
         size: 0,
         modified_ns: 0,
+        changed_ns: None,
         content_hash: MISSING_INPUT_CONTENT_HASH.to_owned(),
     }
 }
@@ -629,6 +760,9 @@ static CONCURRENT_TEST_FINGERPRINT_INDEX_ROOT: std::sync::Mutex<Option<PathBuf>>
     std::sync::Mutex::new(None);
 
 #[cfg(test)]
+static TEST_FORCE_REHASH_SECS: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
 thread_local! {
     static TEST_FINGERPRINT_INDEX_ROOT: std::cell::RefCell<Option<PathBuf>> =
         const { std::cell::RefCell::new(None) };
@@ -651,6 +785,14 @@ pub(crate) fn set_concurrent_test_fingerprint_index_root(root: Option<PathBuf>) 
         .lock()
         .expect("concurrent fingerprint index lock");
     *guard = root;
+}
+
+#[cfg(test)]
+fn set_test_force_rehash_secs(secs: Option<u64>) {
+    let mut guard = TEST_FORCE_REHASH_SECS
+        .lock()
+        .expect("test force rehash lock");
+    *guard = secs;
 }
 
 #[cfg(test)]
@@ -1084,5 +1226,152 @@ mod tests {
         let err =
             discovery_inputs_fingerprint(&root, &["../escape".to_owned()]).expect_err("escape");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn new_index_uses_compact_json() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            let _ = nix_tree_fingerprint(&root).expect("fingerprint");
+
+            let index_root = temp.path().join("fingerprint-index");
+            let index_file = fs::read_dir(&index_root)
+                .expect("read index dir")
+                .map(|entry| entry.expect("entry").path())
+                .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .expect("index json file");
+            let bytes = fs::read(&index_file).expect("read index");
+            let text = String::from_utf8(bytes).expect("utf8 index");
+            assert!(
+                !text.contains("\n  "),
+                "new indexes must use compact JSON, not pretty-printed"
+            );
+            assert!(text.contains("\"schema_version\":2"));
+        });
+    }
+
+    #[test]
+    fn legacy_pretty_index_loads_and_migrates() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            let expected = nix_tree_fingerprint(&root).expect("baseline");
+
+            let index_root = temp.path().join("fingerprint-index");
+            let index_file = fs::read_dir(&index_root)
+                .expect("read index dir")
+                .map(|entry| entry.expect("entry").path())
+                .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .expect("index json file");
+            let mut index: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&index_file).expect("read index"))
+                    .expect("parse index");
+            index["schema_version"] = serde_json::json!(1);
+            if let Some(entries) = index.get_mut("entries").and_then(|value| value.as_object_mut())
+            {
+                for entry in entries.values_mut() {
+                    entry.as_object_mut().map(|object| {
+                        object.remove("changed_ns");
+                    });
+                }
+            }
+            let pretty = serde_json::to_string_pretty(&index).expect("pretty legacy index");
+            fs::write(&index_file, pretty).expect("write legacy pretty index");
+
+            reset_file_read_counter();
+            let loaded = nix_tree_fingerprint(&root).expect("load legacy");
+            assert_eq!(loaded, expected);
+            assert_eq!(
+                reset_file_read_counter(),
+                0,
+                "legacy pretty index should reuse cached entry metadata"
+            );
+
+            let migrated = fs::read_to_string(&index_file).expect("read migrated");
+            assert!(
+                !migrated.contains("\n  "),
+                "migration rewrite should store compact JSON"
+            );
+            assert!(migrated.contains("\"schema_version\":2"));
+        });
+    }
+
+    #[test]
+    fn force_rehash_env_rereads_unchanged_files() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            fs::write(root.join("pkg.nix"), "pkg\n").expect("pkg");
+
+            let _ = nix_tree_fingerprint(&root).expect("cold");
+            reset_file_read_counter();
+            let _ = nix_tree_fingerprint(&root).expect("warm");
+            assert_eq!(reset_file_read_counter(), 0, "warm path skips file reads");
+
+            let index_root = temp.path().join("fingerprint-index");
+            let index_file = fs::read_dir(&index_root)
+                .expect("read index dir")
+                .map(|entry| entry.expect("entry").path())
+                .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .expect("index json file");
+            let mut index: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&index_file).expect("read index"))
+                    .expect("parse index");
+            index["last_rehash_ns"] = serde_json::json!(0);
+            fs::write(
+                &index_file,
+                serde_json::to_vec(&index).expect("serialize stale rehash timestamp"),
+            )
+            .expect("write stale index");
+
+            super::set_test_force_rehash_secs(Some(1));
+            reset_file_read_counter();
+            let _ = nix_tree_fingerprint(&root).expect("forced rehash");
+            assert_eq!(
+                reset_file_read_counter(),
+                2,
+                "forced rehash should re-read every indexed file"
+            );
+            super::set_test_force_rehash_secs(None);
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ctime_mismatch_triggers_rehash() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            let _ = nix_tree_fingerprint(&root).expect("initial");
+
+            let index_root = temp.path().join("fingerprint-index");
+            let index_file = fs::read_dir(&index_root)
+                .expect("read index dir")
+                .map(|entry| entry.expect("entry").path())
+                .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .expect("index json file");
+            let mut index: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&index_file).expect("read index"))
+                    .expect("parse index");
+            index["entries"]["flake.nix"]["changed_ns"] = serde_json::json!(1);
+            fs::write(
+                &index_file,
+                serde_json::to_vec(&index).expect("serialize stale index"),
+            )
+            .expect("write stale index");
+
+            reset_file_read_counter();
+            let _ = nix_tree_fingerprint(&root).expect("after ctime mismatch");
+            assert_eq!(
+                reset_file_read_counter(),
+                1,
+                "ctime mismatch should re-read the file even when mtime matches"
+            );
+        });
     }
 }

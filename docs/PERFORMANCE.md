@@ -30,10 +30,14 @@ Discovery cache **schema v5** (incremental fingerprint index) invalidates on:
 - **Content-correct hashes** of every `*.nix` file under the local flake root
   (path-scoped walk), plus `flake.lock` when present — not arbitrary non-Nix
   sources. Unchanged files **reuse** a prior BLAKE3 when **device/inode/size/
-  nanosecond mtime** match (metadata-gated reuse, not a full re-read each warm
-  hit). The on-disk index is not rewritten when the computed index is unchanged.
-  Tools that rewrite bytes while preserving those metadata fields can
-  theoretically evade rehash until TTL/`--refresh-discovery`; that is uncommon.
+  nanosecond mtime** (and **ctime on Unix**) match (metadata-gated reuse, not a
+  full re-read each warm hit). The on-disk index is compact JSON and is not
+  rewritten when the computed index is unchanged. Legacy pretty-printed v1
+  indexes still load. Tools that rewrite bytes while preserving those metadata
+  fields can theoretically evade rehash until
+  `NXR_FINGERPRINT_FORCE_REHASH_SECS` / TTL / `--refresh-discovery`; that is
+  uncommon. **Git fsmonitor / watchman** integration is a future optimization
+  (out of scope for V1).
 - **Nix identity**: canonical Nix executable path + version string
 - **Discovery schema version** (`nxr.<system>` / task document major)
 - **Sorted `discoveryInputs`**: content-correct hashes of paths declared via
