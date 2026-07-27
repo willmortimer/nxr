@@ -2208,6 +2208,50 @@ fn task_ci_runs_apps_in_serial_order() {
 }
 
 #[test]
+fn task_rapid_exit_echo_delivers_stdout_chunks() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/task-dag",
+            "--events",
+            "jsonl",
+            "--output",
+            "live",
+            "task",
+            "ci",
+            "-j",
+            "1",
+        ])
+        .assert()
+        .success();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8 stderr");
+    let stdout_chunks: Vec<_> = stderr
+        .lines()
+        .filter(|line| line.starts_with('{'))
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("jsonl event"))
+        .filter(|event| event["type"] == "stdout_chunk")
+        .collect();
+
+    let payload = |node: &str| {
+        stdout_chunks
+            .iter()
+            .find(|event| event["node"] == node)
+            .and_then(|event| event["text"].as_str())
+            .unwrap_or("")
+    };
+
+    assert_eq!(payload("fmt"), "fmt\n");
+    assert_eq!(payload("test"), "test\n");
+    assert_eq!(payload("ci"), "ci\n");
+}
+
+#[test]
 fn task_unknown_name_exits_not_found() {
     let Some(()) = require_nix() else {
         return;

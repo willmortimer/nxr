@@ -28,6 +28,14 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 /// Poll interval while waiting for child exits / pipe chunks.
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
+/// Whether [`drain_pipe_chunks`] should treat poll errors as fatal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PipeDrainMode {
+    Normal,
+    /// Forced shutdown may race with mio fd teardown; `Interrupted` is benign then.
+    ForcedShutdown,
+}
+
 /// Inputs for task execution.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaskRequest<'a> {
@@ -554,6 +562,12 @@ fn run_plan(
             .map_err(TaskError::Supervision)?
         {
             interrupted = true;
+            drain_pipe_chunks(
+                &mut pipe_io,
+                sink,
+                SHUTDOWN_GRACE,
+                PipeDrainMode::ForcedShutdown,
+            )?;
             for (id, code) in codes {
                 sink.emit(Event::NodeExited {
                     node: id.clone(),
@@ -566,7 +580,9 @@ fn run_plan(
                     seq: None,
                 });
                 if let Some(compact) = node_compact_ids.remove(&id) {
-                    pipe_io.remove_node(compact);
+                    if pipe_io.has_pipes(compact) {
+                        pipe_io.remove_node(compact);
+                    }
                     deadlines.cancel(compact);
                 }
                 let _ = scheduler.on_exit(&id, code);
@@ -580,6 +596,12 @@ fn run_plan(
                 let shut = supervisor
                     .shutdown_all(SHUTDOWN_GRACE)
                     .map_err(TaskError::Supervision)?;
+                drain_pipe_chunks(
+                    &mut pipe_io,
+                    sink,
+                    SHUTDOWN_GRACE,
+                    PipeDrainMode::ForcedShutdown,
+                )?;
                 for (stopped_id, stopped_code) in shut {
                     sink.emit(Event::NodeExited {
                         node: stopped_id.clone(),
@@ -595,7 +617,9 @@ fn run_plan(
                         seq: None,
                     });
                     if let Some(compact) = node_compact_ids.remove(&stopped_id) {
-                        pipe_io.remove_node(compact);
+                        if pipe_io.has_pipes(compact) {
+                            pipe_io.remove_node(compact);
+                        }
                         deadlines.cancel(compact);
                     }
                     let _ = scheduler.on_exit(&stopped_id, stopped_code);
@@ -639,8 +663,7 @@ fn run_plan(
                 reason: Some("timeout".to_owned()),
                 seq: None,
             });
-            node_compact_ids.remove(&id);
-            pipe_io.remove_node(compact);
+            deadlines.cancel(compact);
             if first_failure.is_none() {
                 first_failure = Some(code);
             }
@@ -660,10 +683,6 @@ fn run_plan(
                         reason: Some("fail_fast".to_owned()),
                         seq: None,
                     });
-                    if let Some(compact) = node_compact_ids.remove(&stopped_id) {
-                        pipe_io.remove_node(compact);
-                        deadlines.cancel(compact);
-                    }
                     let _ = scheduler.on_exit(&stopped_id, stopped_code);
                 }
                 // Do not re-process remaining timed-out peers that fail-fast just cancelled.
@@ -697,7 +716,8 @@ fn run_plan(
         let poll_timeout = deadlines
             .time_until_next(std::time::Instant::now())
             .map_or(POLL_INTERVAL, |remaining| remaining.min(POLL_INTERVAL));
-        drain_pipe_chunks(&mut pipe_io, sink, poll_timeout);
+        drain_pipe_chunks(&mut pipe_io, sink, poll_timeout, PipeDrainMode::Normal)?;
+        cleanup_closed_pipes(&pipe_io, &mut deadlines, &mut node_compact_ids);
 
         if let Some((id, code)) = supervisor.try_wait_any().map_err(TaskError::Supervision)? {
             let status = if code == exit::SUCCESS {
@@ -715,8 +735,7 @@ fn run_plan(
                 reason: None,
                 seq: None,
             });
-            if let Some(compact) = node_compact_ids.remove(&id) {
-                pipe_io.remove_node(compact);
+            if let Some(&compact) = node_compact_ids.get(&id) {
                 deadlines.cancel(compact);
             }
 
@@ -744,28 +763,26 @@ fn run_plan(
                         reason: Some("fail_fast".to_owned()),
                         seq: None,
                     });
-                    if let Some(compact) = node_compact_ids.remove(&stopped_id) {
-                        pipe_io.remove_node(compact);
-                        deadlines.cancel(compact);
-                    }
                     let _ = scheduler.on_exit(&stopped_id, stopped_code);
                 }
             }
             continue;
         }
 
-        if scheduler.is_finished() && supervisor.is_empty() {
+        if scheduler.is_finished() && supervisor.is_empty() && node_compact_ids.is_empty() {
             break;
         }
 
         let idle_timeout = deadlines
             .time_until_next(std::time::Instant::now())
             .map_or(POLL_INTERVAL, |remaining| remaining.min(POLL_INTERVAL));
-        drain_pipe_chunks(&mut pipe_io, sink, idle_timeout);
+        drain_pipe_chunks(&mut pipe_io, sink, idle_timeout, PipeDrainMode::Normal)?;
+        cleanup_closed_pipes(&pipe_io, &mut deadlines, &mut node_compact_ids);
     }
 
     // Flush any trailing pipe chunks after the last exit.
-    drain_pipe_chunks(&mut pipe_io, sink, Duration::ZERO);
+    drain_pipe_chunks(&mut pipe_io, sink, Duration::ZERO, PipeDrainMode::Normal)?;
+    cleanup_closed_pipes(&pipe_io, &mut deadlines, &mut node_compact_ids);
 
     let outcome = scheduler.outcome();
     // Emit exactly one terminal event for nodes that never started (skipped /
@@ -929,12 +946,36 @@ fn parse_plan_secret_delivery(label: &str) -> SecretDelivery {
     }
 }
 
-fn drain_pipe_chunks(pipe_io: &mut PipeMultiplexer, sink: &mut dyn EventSink, timeout: Duration) {
+fn cleanup_closed_pipes(
+    pipe_io: &PipeMultiplexer,
+    deadlines: &mut DeadlineQueue,
+    node_compact_ids: &mut BTreeMap<String, u32>,
+) {
+    node_compact_ids.retain(|_node_id, compact| {
+        if pipe_io.has_pipes(*compact) {
+            true
+        } else {
+            deadlines.cancel(*compact);
+            false
+        }
+    });
+}
+
+fn drain_pipe_chunks(
+    pipe_io: &mut PipeMultiplexer,
+    sink: &mut dyn EventSink,
+    timeout: Duration,
+    mode: PipeDrainMode,
+) -> Result<(), TaskError> {
     let mut pending = Vec::new();
-    let poll_result = pipe_io.poll(timeout, |chunk| pending.push(chunk));
-    if let Err(error) = poll_result {
-        // Best-effort: pipe teardown during shutdown should not abort the run loop.
-        let _ = error;
+    match pipe_io.poll(timeout, |chunk| pending.push(chunk)) {
+        Ok(()) => {}
+        // Forced shutdown tears down poll registrations while fds may still be
+        // readable; mio can surface EINTR without losing already-buffered chunks.
+        Err(error)
+            if mode == PipeDrainMode::ForcedShutdown
+                && error.kind() == io::ErrorKind::Interrupted => {}
+        Err(error) => return Err(TaskError::Supervision(error)),
     }
     for chunk in pending {
         let node = pipe_io.node_label(chunk.node).to_owned();
@@ -944,6 +985,7 @@ fn drain_pipe_chunks(pipe_io: &mut PipeMultiplexer, sink: &mut dyn EventSink, ti
             PipeStream::Stderr => sink.emit(Event::StderrChunk { node, payload }),
         }
     }
+    Ok(())
 }
 
 /// Compute ready-set waves assuming every node succeeds (for dry-run / verbose).
