@@ -638,6 +638,7 @@ dependencies = [
  "clap_mangen",
  "dialoguer",
  "directories",
+ "fs2",
  "nix",
  "nxr-affected",
  "nxr-completion",
