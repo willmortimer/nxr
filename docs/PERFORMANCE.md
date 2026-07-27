@@ -9,7 +9,7 @@ Baselines for the runner. App **execution** time is dominated by `nix run` and t
 | Bare `nxr <app>` / `nxr run <app>` (success or ordinary app failure) | **exactly 1×** `nix` (`nix run`); **0×** probes / `flake show` | Locate-only prepare; no `currentSystem` / capability probes unless `--offline` / `--accept-flake-config`; TTY stderr is inherited (no capture) |
 | Bare app missing installable (non-TTY stderr) | **1×** `nix run` + optional diagnostic discovery | Bounded stderr tail (~128 KiB); suggestion discovery only when stderr indicates installable-resolution failure |
 | Bare app on a TTY | **1×** `nix run`; inherit stderr | Prefer transparent rendering over typo suggestions |
-| Adapter init (list/task/doctor) | **1×** `nix eval` (`currentSystem`) + capability probes (`--version`, config/help) | Shared via `WorkspaceSnapshot` / `NixAdapter`; warm capability cache still probes **config once** for digest validity, then skips version/help/system |
+| Adapter init (list/task/doctor) | **1×** `nix eval` (`currentSystem`) + capability probes (`--version`, config/help) | Shared via `WorkspaceSnapshot` / `NixAdapter`; warm capability cache skips all probes when the environment digest matches |
 | `nxr task` with **N** nodes | **N×** `nix run` + **O(1)** discovery | One `flake show` (apps) + one task `eval` (or warm combined cache); **not** N× `flake show` |
 | `nxr list --refresh-discovery` | Dominated by `nix flake show` | Catalog commands still discover |
 | Named `nxr build` / `check` / `shell` | Direct installable argv (no whole-output discovery up front) | Adapter init still probes once for system / flags |
@@ -47,7 +47,7 @@ Discovery cache **schema v5** (incremental fingerprint index) invalidates on:
 
 Built-in ignores cover `.git`, `result`, `target`, and similar trees. Set `NXR_CACHE_FINGERPRINT_IGNORE` to a colon-separated list of globs to skip huge vendored `.nix` trees. Remote flakes are never cached.
 
-Capability cache (schema **v2**) invalidates on Nix executable identity (canonical path + device/inode + size + mtime) **and** an effective-configuration digest (`NIX_CONFIG` / `NIX_USER_CONF_FILES` / `NIX_CONF_DIR` plus `nix config show --json`), with a 7-day TTL backstop (`NXR_CAPABILITY_CACHE_TTL_SECS`; `0` disables). Warm hits therefore still run one config probe to validate the digest, then skip version/help/system. Set `NXR_CAPABILITY_CACHE=off` to bypass. `nxr cache clear` removes capability entries alongside discovery cache.
+Capability cache (schema **v3**) invalidates on Nix executable identity (canonical path + device/inode + size + mtime) **and** an environment digest (`NIX_CONFIG` / `NIX_USER_CONF_FILES` / `NIX_CONF_DIR` plus `nix config show --json` at store time), with a 7-day TTL backstop (`NXR_CAPABILITY_CACHE_TTL_SECS`; `0` disables). Warm hits with a matching environment digest skip all capability probes (version, config, help, and system). When the binary cache is warm but the environment digest changed, only `nix config show` is re-probed. Set `NXR_CAPABILITY_CACHE=off` to bypass. `nxr cache clear` removes capability entries alongside discovery cache.
 
 ## Measured baselines
 
@@ -64,7 +64,7 @@ Artifact: [`scripts/perf/baseline-aarch64-darwin.json`](../scripts/perf/baseline
 | Warm `plan hello` (`fixtures/basic-apps`) | **≤ 0.01 s** | Resolve + plan only |
 | Warm `list` (this repo) | **0.01 s** | Three-run spot check after `--refresh-discovery` |
 
-Warm list is ~5× faster than the prior **debug** baseline (~0.05 s) on the same host class. Capability-cache integration tests assert warm `list` Nix call budgets (`version=0`, `help=0`, `config=1` for digest validity, `flake-show=0`). CI enforces warm/cold p50 ceilings via [`scripts/perf/measure-release.sh --enforce`](../scripts/perf/measure-release.sh) and [`scripts/perf/ci-thresholds.json`](../scripts/perf/ci-thresholds.json).
+Warm list is ~5× faster than the prior **debug** baseline (~0.05 s) on the same host class. Capability-cache integration tests assert warm `list` Nix call budgets (`version=0`, `help=0`, `config=0`, `flake-show=0`). CI enforces warm/cold p50 ceilings via [`scripts/perf/measure-release.sh --enforce`](../scripts/perf/measure-release.sh) and [`scripts/perf/ci-thresholds.json`](../scripts/perf/ci-thresholds.json).
 
 ### Debug (historical, 2026-07-18)
 

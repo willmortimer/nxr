@@ -393,6 +393,72 @@ pub fn detect_capabilities_with_evidence(
     Ok((capabilities, evidence))
 }
 
+/// Negotiate capabilities from already-captured version output and optional config JSON.
+///
+/// Probes help only when [`should_skip_help_probes`] is false for the captured inputs.
+///
+/// # Errors
+///
+/// Returns [`NixError`] when version parsing fails or help probing fails.
+pub fn detect_capabilities_with_preprobed_config(
+    nix: &Utf8Path,
+    version_output: &str,
+    config_json: Option<&str>,
+) -> Result<(NixCapabilities, Vec<CapabilityEvidence>), NixError> {
+    let version = parse_nix_version_output(version_output).ok_or(NixError::InvalidVersionOutput)?;
+
+    let mut evidence = vec![CapabilityEvidence::VersionBanner];
+    if config_json.is_some() {
+        evidence.push(CapabilityEvidence::Config);
+    }
+
+    let skip_help = should_skip_help_probes(version, version_output, config_json);
+    let help_text = if skip_help {
+        None
+    } else {
+        let help = probe_help_text(nix);
+        if help.is_some() {
+            evidence.push(CapabilityEvidence::HelpProbe);
+        }
+        help
+    };
+
+    let capabilities =
+        negotiate_capabilities(version, version_output, config_json, help_text.as_deref());
+    if capabilities.version >= FEATURE_FLOOR {
+        evidence.push(CapabilityEvidence::VersionFloor);
+    }
+
+    Ok((capabilities, evidence))
+}
+
+/// Negotiate capabilities from a cached version banner and freshly probed config.
+///
+/// Skips `nix --version` and help probes; used when the binary cache layer is
+/// warm but the environment digest changed.
+///
+/// # Errors
+///
+/// Returns [`NixError::InvalidVersionOutput`] when `version_banner` cannot be parsed.
+pub fn detect_capabilities_with_known_version(
+    version_banner: &str,
+    config_json: Option<&str>,
+) -> Result<(NixCapabilities, Vec<CapabilityEvidence>), NixError> {
+    let version = parse_nix_version_output(version_banner).ok_or(NixError::InvalidVersionOutput)?;
+
+    let mut evidence = Vec::new();
+    if config_json.is_some() {
+        evidence.push(CapabilityEvidence::Config);
+    }
+
+    let capabilities = negotiate_capabilities(version, version_banner, config_json, None);
+    if capabilities.version >= FEATURE_FLOOR {
+        evidence.push(CapabilityEvidence::VersionFloor);
+    }
+
+    Ok((capabilities, evidence))
+}
+
 fn should_skip_help_probes(
     version: NixVersion,
     version_output: &str,
@@ -571,7 +637,24 @@ fn run_nix_capture(nix: &Utf8Path, args: &[String]) -> Result<String, NixError> 
     String::from_utf8(stdout).map_err(|_| NixError::InvalidVersionOutput)
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_CONFIG_PROBE_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn test_config_probe_count() -> u32 {
+    TEST_CONFIG_PROBE_COUNT.with(|cell| cell.get())
+}
+
+#[cfg(test)]
+pub(crate) fn reset_test_config_probe_count() {
+    TEST_CONFIG_PROBE_COUNT.with(|cell| cell.set(0));
+}
+
 fn probe_config_json_internal(nix: &Utf8Path) -> Option<String> {
+    #[cfg(test)]
+    TEST_CONFIG_PROBE_COUNT.with(|cell| cell.set(cell.get() + 1));
     for args in [
         vec!["config".to_owned(), "show".to_owned(), "--json".to_owned()],
         vec!["show-config".to_owned(), "--json".to_owned()],

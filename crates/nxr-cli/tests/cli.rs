@@ -2611,11 +2611,10 @@ fn warm_list_reuses_capability_cache_without_reprobing() {
         0,
         "warm list should not re-probe version; cold version={cold_version} config={cold_config} help={cold_help}; log={warm_log}"
     );
-    // Warm hits still run one config probe to validate the effective-config digest.
     assert_eq!(
         counter.count("config"),
-        1,
-        "warm list should probe config exactly once for digest validity; log={warm_log}"
+        0,
+        "warm list should not re-probe config when env digest matches; log={warm_log}"
     );
     assert_eq!(
         counter.count("help"),
