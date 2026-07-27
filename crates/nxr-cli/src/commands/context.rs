@@ -216,6 +216,7 @@ fn run_with_context(
         reports: request.reports.clone(),
         nix_flags: request.nix_flags,
         context_override: Some(context_name.to_owned()),
+        refresh_discovery: request.refresh_discovery,
     };
     let _ = adapter;
     crate::commands::task::execute(&task_request, request.dry_run, request.json, runner)

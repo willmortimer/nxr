@@ -39,6 +39,8 @@ impl SelectorCommandError {
             Self::Flake(error) => error.exit_code(),
             Self::Nix(error) => error.exit_code(),
             Self::Tasks(error) => error.exit_code(),
+            // Unknown bare/`task:` names are not-found, not usage.
+            Self::Selector(SelectorError::Unknown { .. }) => nxr_core::diagnostics::exit::NOT_FOUND,
             Self::Selector(_) | Self::Usage(_) => nxr_core::diagnostics::exit::USAGE,
         }
     }

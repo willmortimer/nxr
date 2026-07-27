@@ -628,6 +628,16 @@ mod tests {
         }
     }
 
+    fn require_live_nix() -> Option<Utf8PathBuf> {
+        if std::env::var_os("NXR_SKIP_NIX_INTEGRATION").is_some() {
+            eprintln!("skipping: NXR_SKIP_NIX_INTEGRATION set");
+            return None;
+        }
+        which::which("nix")
+            .ok()
+            .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
+    }
+
     #[test]
     fn capability_cache_disabled_by_env() {
         assert!(!cache_enabled_for_env(Some("off")));
@@ -641,11 +651,7 @@ mod tests {
     #[test]
     fn cache_hit_returns_without_redetecting_system() {
         let temp = TempDir::new().expect("tempdir");
-        let nix = which::which("nix")
-            .ok()
-            .and_then(|path| Utf8PathBuf::from_path_buf(path).ok());
-        let Some(nix) = nix else {
-            eprintln!("skipping: nix not on PATH");
+        let Some(nix) = require_live_nix() else {
             return;
         };
 
@@ -678,11 +684,7 @@ mod tests {
     #[test]
     fn cache_miss_stores_entry() {
         let temp = TempDir::new().expect("tempdir");
-        let nix = which::which("nix")
-            .ok()
-            .and_then(|path| Utf8PathBuf::from_path_buf(path).ok());
-        let Some(nix) = nix else {
-            eprintln!("skipping: nix not on PATH");
+        let Some(nix) = require_live_nix() else {
             return;
         };
 
@@ -707,11 +709,7 @@ mod tests {
     #[test]
     fn executable_change_invalidates_cache() {
         let temp = TempDir::new().expect("tempdir");
-        let nix = which::which("nix")
-            .ok()
-            .and_then(|path| Utf8PathBuf::from_path_buf(path).ok());
-        let Some(nix) = nix else {
-            eprintln!("skipping: nix not on PATH");
+        let Some(nix) = require_live_nix() else {
             return;
         };
 
@@ -732,11 +730,7 @@ mod tests {
     #[test]
     fn nix_config_env_change_misses_env_digest() {
         let temp = TempDir::new().expect("tempdir");
-        let nix = which::which("nix")
-            .ok()
-            .and_then(|path| Utf8PathBuf::from_path_buf(path).ok());
-        let Some(nix) = nix else {
-            eprintln!("skipping: nix not on PATH");
+        let Some(nix) = require_live_nix() else {
             return;
         };
 
@@ -767,11 +761,7 @@ mod tests {
     #[test]
     fn nix_config_change_reprobes_config_not_help() {
         let temp = TempDir::new().expect("tempdir");
-        let nix = which::which("nix")
-            .ok()
-            .and_then(|path| Utf8PathBuf::from_path_buf(path).ok());
-        let Some(nix) = nix else {
-            eprintln!("skipping: nix not on PATH");
+        let Some(nix) = require_live_nix() else {
             return;
         };
 
@@ -865,11 +855,7 @@ mod tests {
     #[test]
     fn refresh_bypasses_cache() {
         let temp = TempDir::new().expect("tempdir");
-        let nix = which::which("nix")
-            .ok()
-            .and_then(|path| Utf8PathBuf::from_path_buf(path).ok());
-        let Some(nix) = nix else {
-            eprintln!("skipping: nix not on PATH");
+        let Some(nix) = require_live_nix() else {
             return;
         };
 
@@ -886,11 +872,7 @@ mod tests {
     #[test]
     fn clear_removes_entries() {
         let temp = TempDir::new().expect("tempdir");
-        let nix = which::which("nix")
-            .ok()
-            .and_then(|path| Utf8PathBuf::from_path_buf(path).ok());
-        let Some(nix) = nix else {
-            eprintln!("skipping: nix not on PATH");
+        let Some(nix) = require_live_nix() else {
             return;
         };
 
@@ -906,11 +888,7 @@ mod tests {
 
     #[test]
     fn known_version_skips_help_probes_when_config_present() {
-        let nix = which::which("nix")
-            .ok()
-            .and_then(|path| Utf8PathBuf::from_path_buf(path).ok());
-        let Some(nix) = nix else {
-            eprintln!("skipping: nix not on PATH");
+        let Some(nix) = require_live_nix() else {
             return;
         };
 

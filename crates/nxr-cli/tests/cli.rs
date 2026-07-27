@@ -4638,9 +4638,14 @@ fn task_deploy_dry_run_plan_redacts_secret_values() {
         return;
     }
 
+    // Isolate discovery cache so parallel tests cannot poison empty shell lists.
+    let home = tempfile::TempDir::new().expect("temp home");
     let marker = "nxr-h3-redaction-marker";
     let assert = cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("XDG_CONFIG_HOME", home.path().join("config"))
         .env("NXR_FIXTURE_DEPLOY_TOKEN", marker)
         .env("NXR_ASSUME_YES", "1")
         .env("NXR_TRUST_PROJECT", "1")
@@ -4681,9 +4686,13 @@ fn task_deploy_injects_env_secret_into_child() {
         return;
     }
 
+    let home = tempfile::TempDir::new().expect("temp home");
     let marker = "nxr-h3-runtime-marker";
     let output = cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("XDG_CONFIG_HOME", home.path().join("config"))
         .env("NXR_FIXTURE_DEPLOY_TOKEN", marker)
         .env("NXR_ASSUME_YES", "1")
         .env("NXR_TRUST_PROJECT", "1")
@@ -4718,9 +4727,13 @@ fn task_deploy_missing_secret_names_ref_and_slot() {
         return;
     }
 
+    let home = tempfile::TempDir::new().expect("temp home");
     cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
         .env_remove("NXR_FIXTURE_DEPLOY_TOKEN")
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("XDG_CONFIG_HOME", home.path().join("config"))
         .env("NXR_ASSUME_YES", "1")
         .env("NXR_TRUST_PROJECT", "1")
         .args(["--flake", "fixtures/contexts", "task", "deploy"])
@@ -4764,6 +4777,8 @@ fn task_deploy_requires_project_trust_without_override() {
     let temp = tempfile::tempdir().expect("tempdir");
     cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
+        .env("HOME", temp.path())
+        .env("XDG_CACHE_HOME", temp.path().join("cache"))
         .env("XDG_CONFIG_HOME", temp.path())
         .env("NXR_FIXTURE_DEPLOY_TOKEN", "marker")
         .env("NXR_ASSUME_YES", "1")
@@ -4822,8 +4837,12 @@ fn task_integration_shell_wraps_via_develop_in_dry_run_plan() {
         return;
     }
 
+    let home = tempfile::TempDir::new().expect("temp home");
     let assert = cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("XDG_CONFIG_HOME", home.path().join("config"))
         .args([
             "--flake",
             "fixtures/contexts",

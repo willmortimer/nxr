@@ -73,6 +73,8 @@ pub struct TaskRequest<'a> {
     pub nix_flags: &'a OptionalNixFlags,
     /// When set, overrides each task's declared `context` field.
     pub context_override: Option<String>,
+    /// Bypass nxr discovery cache for this invocation.
+    pub refresh_discovery: bool,
 }
 
 /// Errors while planning or running a task.
@@ -195,8 +197,12 @@ pub fn execute(
         None,
     )?;
     if !dry_run {
-        let mut state =
-            WorkspaceState::new(request.flake_arg, request.nix_override, request.nix_flags);
+        let mut state = WorkspaceState::with_refresh(
+            request.flake_arg,
+            request.nix_override,
+            request.nix_flags,
+            request.refresh_discovery,
+        );
         let discovery_context = state.discovery_context().ok();
         history::record_completed_run(
             started,
@@ -275,11 +281,12 @@ pub fn execute_with_control(
         let snapshot = if let Some(state) = workspace {
             state.snapshot(true).map_err(TaskError::Prepare)?
         } else {
-            owned_snapshot = WorkspaceSnapshot::load(
+            owned_snapshot = WorkspaceSnapshot::load_with_refresh(
                 request.flake_arg,
                 request.nix_override,
                 true,
                 request.nix_flags,
+                request.refresh_discovery,
             )?;
             &owned_snapshot
         };
@@ -1392,6 +1399,7 @@ mod tests {
             reports: ReportPaths::default(),
             nix_flags: &nix_flags,
             context_override: None,
+            refresh_discovery: false,
         };
         assert!(plan_uses_piped_stdio(&plan, &request));
     }
