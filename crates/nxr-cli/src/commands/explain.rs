@@ -609,6 +609,9 @@ mod tests {
                     "one".to_owned(),
                 ],
             },
+            context: None,
+            secrets: Vec::new(),
+            context_env_set: BTreeMap::new(),
             forwarded_arguments: vec!["one".to_owned()],
         }
     }

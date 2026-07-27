@@ -27,6 +27,7 @@ valid under pure `path:` flake refs (Nix 2.18+).
 | [diamond-dedupe](diamond-dedupe/) | Multi-root union with shared diamond ancestor |
 | [configurations](configurations/) | Minimal `nixosConfigurations` for list/inspect/build adapters |
 | [contexts](contexts/) | Named execution contexts with task `context` / `shell` refs (schema v2) |
+| [golden](golden/) | Reference flake: apps, tasks, categories, contexts (schema v2) |
 
 ## Try them (without nxr yet)
 

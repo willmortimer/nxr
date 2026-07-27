@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "projects": {
+    "api": {
+      "description": "API package (view only)",
+      "category": "backend",
+      "apps": ["api-test"],
+      "tasks": ["api-test", "ci"]
+    },
+    "web": {
+      "description": "Web package (view only)",
+      "category": "frontend",
+      "apps": ["web-test"],
+      "tasks": ["web-test", "ci"]
+    }
+  }
+}

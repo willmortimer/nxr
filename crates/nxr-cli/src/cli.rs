@@ -140,6 +140,10 @@ pub struct Cli {
     #[arg(long = "events", global = true, value_enum, value_name = "FORMAT")]
     pub events: Option<EventsFormat>,
 
+    /// Opt-in post-run report writers (`junit=PATH`, `sarif=PATH`, …)
+    #[arg(long = "report", global = true, value_name = "KIND=PATH")]
+    pub report: Vec<String>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -423,6 +427,18 @@ pub enum Command {
         /// Task names (union DAG; shared dependencies run once). Optional with `--affected`.
         #[arg(required_unless_present = "affected")]
         tasks: Vec<String>,
+        /// Write JUnit XML to PATH after the run
+        #[arg(long = "junit", value_name = "PATH")]
+        junit: Option<String>,
+        /// Write SARIF 2.1.0 to PATH after the run
+        #[arg(long = "sarif", value_name = "PATH")]
+        sarif: Option<String>,
+        /// Write coverage JSON stub to PATH after the run
+        #[arg(long = "coverage", value_name = "PATH")]
+        coverage: Option<String>,
+        /// Write benchmark JSON stub to PATH after the run
+        #[arg(long = "benchmark", value_name = "PATH")]
+        benchmark: Option<String>,
         /// Arguments forwarded to each root task's app only (MVP)
         #[arg(last = true, allow_hyphen_values = true)]
         args: Vec<String>,

@@ -2208,6 +2208,88 @@ fn task_ci_runs_apps_in_serial_order() {
 }
 
 #[test]
+fn task_junit_report_records_node_outcomes() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let junit_path = temp.path().join("report.xml");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/task-dag",
+            "task",
+            "ci",
+            "--junit",
+            junit_path.to_str().expect("utf-8 path"),
+        ])
+        .assert()
+        .success();
+
+    let xml = std::fs::read_to_string(&junit_path).expect("read junit");
+    assert!(xml.contains("<testsuites>"));
+    assert!(xml.contains("name=\"fmt\""));
+    assert!(xml.contains("name=\"test\""));
+    assert!(xml.contains("name=\"ci\""));
+    assert!(xml.contains("failures=\"0\""));
+}
+
+#[test]
+fn task_global_report_flag_writes_junit() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let junit_path = temp.path().join("global.xml");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/task-dag",
+            "--report",
+            &format!("junit={}", junit_path.display()),
+            "task",
+            "ci",
+        ])
+        .assert()
+        .success();
+
+    let xml = std::fs::read_to_string(&junit_path).expect("read junit");
+    assert!(xml.contains("<testcase"));
+}
+
+#[test]
+fn golden_fixture_evaluates_and_lists() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/golden", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("api-test"))
+        .stdout(predicate::str::contains("ci"));
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/golden", "inspect"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("backend"))
+        .stdout(predicate::str::contains("validation"));
+}
+
+#[test]
 fn task_rapid_exit_echo_delivers_stdout_chunks() {
     let Some(()) = require_nix() else {
         return;
