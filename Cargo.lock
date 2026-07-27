@@ -676,6 +676,8 @@ dependencies = [
 name = "nxr-core"
 version = "3.0.0"
 dependencies = [
+ "blake3",
+ "camino",
  "directories",
  "serde",
  "serde_json",
@@ -716,6 +718,7 @@ name = "nxr-task"
 version = "3.0.0"
 dependencies = [
  "base64",
+ "camino",
  "nxr-core",
  "serde",
  "serde_json",

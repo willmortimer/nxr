@@ -7,6 +7,7 @@
 //! - [`events`] — typed execution event bus (`Event` / [`EventSink`])
 //! - [`scheduler`] — ready-queue scheduler with job limit ([`Scheduler`])
 
+pub mod action_key;
 pub mod context;
 pub mod duration;
 pub mod events;
@@ -21,6 +22,7 @@ pub mod schema;
 pub mod secrets;
 pub mod selectors;
 
+pub use action_key::{WorkspaceCachePlan, build_workspace_cache_plan};
 pub use context::{
     AppliedTaskContext, ContextError, NXR_ASSUME_YES_ENV, PlanSecretEntry,
     PlanSecretValuePlaceholder, apply_task_context, enforce_context_confirm,

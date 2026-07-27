@@ -32,3 +32,4 @@ pub mod task;
 pub mod trust;
 pub mod views;
 pub mod watch;
+pub mod workspace_cache;

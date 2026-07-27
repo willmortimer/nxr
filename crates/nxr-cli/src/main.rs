@@ -476,6 +476,16 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 cache::status(cli.json, runner)?;
                 Ok(exit::SUCCESS)
             }
+            CacheSubcommand::Explain { task } => {
+                cache::explain_task(
+                    cli.flake.as_deref(),
+                    cli.nix.as_deref(),
+                    &task,
+                    cli.json,
+                    runner,
+                )?;
+                Ok(exit::SUCCESS)
+            }
         },
         Some(Command::Trust { action }) => match action {
             TrustSubcommand::Status => {

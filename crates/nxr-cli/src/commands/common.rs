@@ -18,7 +18,8 @@ use nxr_nix::{
 };
 use nxr_task::{
     ContextError, PlanSecretEntry, SchemaError, SecretDelivery, TaskDocument,
-    WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, apply_task_context,
+    WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, WorkspaceCachePlan,
+    apply_task_context, build_workspace_cache_plan,
 };
 
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
@@ -84,6 +85,10 @@ pub struct PreparedTaskNode {
     pub context_name: Option<String>,
     /// Whether this node requires interactive confirmation before spawn.
     pub confirm: bool,
+    /// Workspace CAS plan when this node is a cacheable workspace action.
+    pub workspace_cache: Option<WorkspaceCachePlan>,
+    /// Absolute flake root for workspace CAS paths.
+    pub flake_root: Utf8PathBuf,
 }
 
 /// Once-per-invocation workspace evaluation: flake, Nix adapter, apps, optional tasks.
@@ -263,6 +268,8 @@ pub enum PrepareError {
     TaskSchema(#[from] SchemaError),
     #[error(transparent)]
     Context(#[from] ContextError),
+    #[error("failed to build workspace cache plan: {0}")]
+    WorkspaceCache(#[source] io::Error),
 }
 
 impl PrepareError {
@@ -279,7 +286,9 @@ impl PrepareError {
             Self::Nix(error) => error.exit_code(),
             Self::NotFound(error) => error.exit_code(),
             Self::TaskDiscovery(error) => error.exit_code(),
-            Self::TaskSchema(_) | Self::Context(_) => nxr_core::diagnostics::exit::EVALUATION,
+            Self::TaskSchema(_) | Self::Context(_) | Self::WorkspaceCache(_) => {
+                nxr_core::diagnostics::exit::EVALUATION
+            }
         }
     }
 }
@@ -573,6 +582,12 @@ impl WorkspaceSnapshot {
         document.validate().map_err(PrepareError::TaskSchema)?;
         let apps: Vec<App> = self.apps.values().cloned().collect();
         let mut nodes = BTreeMap::new();
+        let mut upstream_keys = BTreeMap::new();
+        let flake_root = self
+            .flake
+            .local_root
+            .as_deref()
+            .unwrap_or(self.invocation_directory.as_path());
         for task_id in serial_order {
             let definition = document
                 .tasks
@@ -668,6 +683,20 @@ impl WorkspaceSnapshot {
                         message: error.to_string(),
                     })
                 })?;
+            let workspace_cache = build_workspace_cache_plan(
+                document,
+                task_id,
+                definition,
+                &self.nix.system,
+                flake_root,
+                execution_directory.as_str(),
+                context_name.as_deref(),
+                &upstream_keys,
+            )
+            .map_err(PrepareError::WorkspaceCache)?;
+            if let Some(key) = workspace_cache.action_key.as_ref() {
+                upstream_keys.insert(task_id.clone(), key.clone());
+            }
             nodes.insert(
                 task_id.clone(),
                 PreparedTaskNode {
@@ -681,6 +710,8 @@ impl WorkspaceSnapshot {
                     termination_grace,
                     context_name,
                     confirm,
+                    workspace_cache: Some(workspace_cache),
+                    flake_root: flake_root.to_path_buf(),
                 },
             );
         }
