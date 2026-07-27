@@ -2,6 +2,12 @@
 
 Baselines for the runner. App **execution** time is dominated by `nix run` and the app itself; `nxr` overhead is discovery, planning, and process supervision.
 
+## Process supervision
+
+Parallel and multiplexed `nxr task` runs pipe every supervised child's stdout/stderr through a single `mio` poll loop (kqueue on macOS, epoll on Linux) in `nxr-process`. One reusable 32 KiB read buffer is shared across all registered fds; compact `u32` node ids are used in the hot path and mapped back to task labels when emitting events. Per-node timeouts are tracked in a min-deadline heap so the poll interval can wake at the next timeout instead of scanning every running node each iteration.
+
+Windows builds still use one reader thread per pipe (Unix-first); the supervisor API is unchanged.
+
 ## Nix call budgets
 
 | Path | Expected Nix invocations | Notes |

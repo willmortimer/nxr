@@ -40,6 +40,7 @@ directories = "6"
 fs2 = "0.4"
 notify = "6.1"
 globset = "0.4"
+mio = { version = "1", default-features = false, features = ["os-poll", "os-ext"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

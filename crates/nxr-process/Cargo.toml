@@ -9,6 +9,7 @@ description = "Process supervision and signal handling for nxr"
 
 [dependencies]
 nxr-core = { path = "../nxr-core" }
+mio = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["signal"] }

@@ -1,15 +1,13 @@
 //! `nxr task` execution (serial inherit or parallel supervised).
 
 use std::collections::BTreeMap;
-use std::io::{self, Read, Write};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::thread;
+use std::io::{self, Write};
 use std::time::Duration;
 
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
 use nxr_nix::{NixError, OptionalNixFlags, TaskDiscoveryError};
-use nxr_process::{InterruptFlags, Supervisor};
+use nxr_process::{DeadlineQueue, InterruptFlags, PipeMultiplexer, PipeStream, Supervisor};
 use nxr_task::{
     Event, EventSink, ExecutionPlan, FailurePolicy, OutputPayload, PlanError, RunEventDecorator,
     Scheduler, SchedulerError, build_execution_plan_roots, resolve_task_name,
@@ -534,8 +532,10 @@ fn run_plan(
 ) -> Result<i32, TaskError> {
     let mut scheduler = Scheduler::new(plan, request.jobs)?;
     let mut supervisor = Supervisor::new();
+    let mut pipe_io = PipeMultiplexer::new();
+    let mut deadlines = DeadlineQueue::new();
+    let mut node_compact_ids: BTreeMap<String, u32> = BTreeMap::new();
     let interrupts = InterruptFlags::install().map_err(TaskError::Supervision)?;
-    let (io_tx, io_rx) = mpsc::channel::<IoChunk>();
 
     let mut first_failure: Option<i32> = None;
     let mut interrupted = false;
@@ -560,6 +560,10 @@ fn run_plan(
                     reason: Some("interrupted".to_owned()),
                     seq: None,
                 });
+                if let Some(compact) = node_compact_ids.remove(&id) {
+                    pipe_io.remove_node(compact);
+                    deadlines.cancel(compact);
+                }
                 let _ = scheduler.on_exit(&id, code);
             }
             break;
@@ -585,6 +589,10 @@ fn run_plan(
                         }),
                         seq: None,
                     });
+                    if let Some(compact) = node_compact_ids.remove(&stopped_id) {
+                        pipe_io.remove_node(compact);
+                        deadlines.cancel(compact);
+                    }
                     let _ = scheduler.on_exit(&stopped_id, stopped_code);
                 }
                 match signal {
@@ -597,15 +605,10 @@ fn run_plan(
         }
 
         // Enforce per-task timeouts before starting more work.
-        let timed_out: Vec<String> = started_at
-            .iter()
-            .filter_map(|(id, start)| {
-                let prepared = prepared_nodes.get(id)?;
-                let timeout = prepared.timeout?;
-                (start.elapsed() >= timeout).then(|| id.clone())
-            })
-            .collect();
-        for id in timed_out {
+        let now = std::time::Instant::now();
+        let timed_out = deadlines.pop_expired(now);
+        for compact in timed_out {
+            let id = pipe_io.node_label(compact).to_owned();
             // A peer timeout under fail-fast may have already shut this node down.
             if !started_at.contains_key(&id) {
                 continue;
@@ -631,6 +634,8 @@ fn run_plan(
                 reason: Some("timeout".to_owned()),
                 seq: None,
             });
+            node_compact_ids.remove(&id);
+            pipe_io.remove_node(compact);
             if first_failure.is_none() {
                 first_failure = Some(code);
             }
@@ -650,6 +655,10 @@ fn run_plan(
                         reason: Some("fail_fast".to_owned()),
                         seq: None,
                     });
+                    if let Some(compact) = node_compact_ids.remove(&stopped_id) {
+                        pipe_io.remove_node(compact);
+                        deadlines.cancel(compact);
+                    }
                     let _ = scheduler.on_exit(&stopped_id, stopped_code);
                 }
                 // Do not re-process remaining timed-out peers that fail-fast just cancelled.
@@ -664,19 +673,26 @@ fn run_plan(
                 request.output_mode,
                 request.events_format,
             );
-            spawn_node(
+            let compact = spawn_node(
                 prepared_nodes,
                 &node_id,
                 pipe_stdio,
                 &mut supervisor,
-                &io_tx,
+                &mut pipe_io,
                 sink,
                 runner,
             )?;
-            started_at.insert(node_id, std::time::Instant::now());
+            started_at.insert(node_id.clone(), std::time::Instant::now());
+            node_compact_ids.insert(node_id.clone(), compact);
+            if let Some(timeout) = prepared_nodes.get(&node_id).and_then(|node| node.timeout) {
+                deadlines.insert(compact, started_at[&node_id] + timeout);
+            }
         }
 
-        drain_io_chunks(&io_rx, sink, Duration::ZERO);
+        let poll_timeout = deadlines
+            .time_until_next(std::time::Instant::now())
+            .map_or(POLL_INTERVAL, |remaining| remaining.min(POLL_INTERVAL));
+        drain_pipe_chunks(&mut pipe_io, sink, poll_timeout);
 
         if let Some((id, code)) = supervisor.try_wait_any().map_err(TaskError::Supervision)? {
             let status = if code == exit::SUCCESS {
@@ -694,6 +710,10 @@ fn run_plan(
                 reason: None,
                 seq: None,
             });
+            if let Some(compact) = node_compact_ids.remove(&id) {
+                pipe_io.remove_node(compact);
+                deadlines.cancel(compact);
+            }
 
             if code != exit::SUCCESS && first_failure.is_none() {
                 first_failure = Some(code);
@@ -719,6 +739,10 @@ fn run_plan(
                         reason: Some("fail_fast".to_owned()),
                         seq: None,
                     });
+                    if let Some(compact) = node_compact_ids.remove(&stopped_id) {
+                        pipe_io.remove_node(compact);
+                        deadlines.cancel(compact);
+                    }
                     let _ = scheduler.on_exit(&stopped_id, stopped_code);
                 }
             }
@@ -729,11 +753,14 @@ fn run_plan(
             break;
         }
 
-        drain_io_chunks(&io_rx, sink, POLL_INTERVAL);
+        let idle_timeout = deadlines
+            .time_until_next(std::time::Instant::now())
+            .map_or(POLL_INTERVAL, |remaining| remaining.min(POLL_INTERVAL));
+        drain_pipe_chunks(&mut pipe_io, sink, idle_timeout);
     }
 
     // Flush any trailing pipe chunks after the last exit.
-    drain_io_chunks(&io_rx, sink, Duration::ZERO);
+    drain_pipe_chunks(&mut pipe_io, sink, Duration::ZERO);
 
     let outcome = scheduler.outcome();
     // Emit exactly one terminal event for nodes that never started (skipped /
@@ -802,10 +829,10 @@ fn spawn_node(
     node_id: &str,
     pipe_stdio: bool,
     supervisor: &mut Supervisor,
-    io_tx: &Sender<IoChunk>,
+    pipe_io: &mut PipeMultiplexer,
     sink: &mut dyn EventSink,
     runner: RunnerOutput,
-) -> Result<(), TaskError> {
+) -> Result<u32, TaskError> {
     let prepared = prepared_nodes
         .get(node_id)
         .expect("scheduler only starts ids prepared before run");
@@ -822,117 +849,41 @@ fn spawn_node(
     let args = &prepared.arguments;
     let cwd = Some(prepared.cwd.as_std_path());
     let env = &prepared.environment;
+    let compact = pipe_io.intern_node(node_id);
 
     if pipe_stdio {
         // PipeStdoutStderr closes stdin (parallel/multiplex ownership policy).
         let (_pgid, stdout, stderr) = supervisor
             .spawn_piped(node_id.to_owned(), program, args, cwd, env)
             .map_err(TaskError::Supervision)?;
-        spawn_pipe_reader(
-            node_id.to_owned(),
-            StreamKind::Stdout,
-            stdout,
-            io_tx.clone(),
-        );
-        spawn_pipe_reader(
-            node_id.to_owned(),
-            StreamKind::Stderr,
-            stderr,
-            io_tx.clone(),
-        );
+        pipe_io
+            .register_stdout(compact, stdout)
+            .map_err(TaskError::Supervision)?;
+        pipe_io
+            .register_stderr(compact, stderr)
+            .map_err(TaskError::Supervision)?;
     } else {
         supervisor
             .spawn(node_id.to_owned(), program, args, cwd, env)
             .map_err(TaskError::Supervision)?;
     }
 
-    Ok(())
+    Ok(compact)
 }
 
-#[derive(Clone, Copy, Debug)]
-enum StreamKind {
-    Stdout,
-    Stderr,
-}
-
-struct IoChunk {
-    node: String,
-    kind: StreamKind,
-    bytes: Vec<u8>,
-}
-
-fn spawn_pipe_reader(
-    node: String,
-    kind: StreamKind,
-    mut reader: impl Read + Send + 'static,
-    tx: Sender<IoChunk>,
-) {
-    thread::spawn(move || {
-        let mut buf = [0_u8; 4096];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    // Preserve raw bytes; UTF-8 decoding belongs to human renderers.
-                    if tx
-                        .send(IoChunk {
-                            node: node.clone(),
-                            kind,
-                            bytes: buf[..n].to_vec(),
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-                Err(_) => break,
-            }
-        }
-    });
-}
-
-fn drain_io_chunks(rx: &Receiver<IoChunk>, sink: &mut dyn EventSink, timeout: Duration) {
-    let mut deadline = if timeout.is_zero() {
-        None
-    } else {
-        Some(std::time::Instant::now() + timeout)
-    };
-
-    loop {
-        let chunk = if let Some(end) = deadline {
-            let remaining = end.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() {
-                match rx.try_recv() {
-                    Ok(chunk) => chunk,
-                    Err(_) => break,
-                }
-            } else {
-                match rx.recv_timeout(remaining) {
-                    Ok(chunk) => chunk,
-                    Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
-                }
-            }
-        } else {
-            match rx.try_recv() {
-                Ok(chunk) => chunk,
-                Err(_) => break,
-            }
-        };
-
-        // After the first timed wait, drain remaining without blocking.
-        deadline = None;
-
+fn drain_pipe_chunks(pipe_io: &mut PipeMultiplexer, sink: &mut dyn EventSink, timeout: Duration) {
+    let mut pending = Vec::new();
+    let poll_result = pipe_io.poll(timeout, |chunk| pending.push(chunk));
+    if let Err(error) = poll_result {
+        // Best-effort: pipe teardown during shutdown should not abort the run loop.
+        let _ = error;
+    }
+    for chunk in pending {
+        let node = pipe_io.node_label(chunk.node).to_owned();
         let payload = OutputPayload::from_bytes(chunk.bytes);
-        match chunk.kind {
-            StreamKind::Stdout => sink.emit(Event::StdoutChunk {
-                node: chunk.node,
-                payload,
-            }),
-            StreamKind::Stderr => sink.emit(Event::StderrChunk {
-                node: chunk.node,
-                payload,
-            }),
+        match chunk.stream {
+            PipeStream::Stdout => sink.emit(Event::StdoutChunk { node, payload }),
+            PipeStream::Stderr => sink.emit(Event::StderrChunk { node, payload }),
         }
     }
 }
