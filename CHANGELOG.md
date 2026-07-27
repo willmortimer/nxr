@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `nxr plan <app>` on app-only flakes no longer fails with `unknown selector or task`
+  (bare names were expanded as task selectors before app resolution).
+
 ## [3.1.2] - 2026-07-27
 
 ### Fixed
