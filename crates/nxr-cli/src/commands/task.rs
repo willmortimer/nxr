@@ -4,13 +4,15 @@ use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::time::Duration;
 
-use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
+use nxr_core::{EnvironmentPolicy, PlanSecretRef};
 use nxr_nix::{NixError, OptionalNixFlags, TaskDiscoveryError};
 use nxr_process::{DeadlineQueue, InterruptFlags, PipeMultiplexer, PipeStream, Supervisor};
 use nxr_task::{
-    Event, EventSink, ExecutionPlan, FailurePolicy, OutputPayload, PlanError, RunEventDecorator,
-    Scheduler, SchedulerError, build_execution_plan_roots, resolve_task_name,
+    ContextError, Event, EventSink, ExecutionPlan, FailurePolicy, OutputPayload, PlanError,
+    PlanSecretEntry, PlanSecretValuePlaceholder, RunEventDecorator, Scheduler, SchedulerError,
+    SecretDelivery, build_execution_plan_roots, merge_spawn_env_overrides,
+    resolve_env_provider_secrets, resolve_task_name,
 };
 
 use crate::commands::common::{PrepareError, PreparedTaskNode, WorkspaceSnapshot, WorkspaceState};
@@ -71,6 +73,8 @@ pub enum TaskError {
     PlanRender(#[from] PlanRenderError),
     #[error(transparent)]
     Scheduler(#[from] SchedulerError),
+    #[error(transparent)]
+    Context(#[from] ContextError),
     #[error("jobs must be >= 1 (got {0})")]
     InvalidJobs(usize),
     #[error(
@@ -99,6 +103,7 @@ impl TaskError {
             Self::Run(error) => error.exit_code(),
             Self::PlanRender(_) => exit::EVALUATION,
             Self::Scheduler(_) | Self::Supervision(_) | Self::Io(_) => exit::PROCESS_SUPERVISION,
+            Self::Context(_) => exit::EVALUATION,
             Self::InvalidJobs(_)
             | Self::RawConflictsWithMultiplex
             | Self::InteractiveConflictsWithMultiplex => exit::USAGE,
@@ -849,12 +854,20 @@ fn spawn_node(
     let args = &prepared.arguments;
     let cwd = Some(prepared.cwd.as_std_path());
     let env = &prepared.environment;
+    let env_overrides = build_spawn_env_overrides(&prepared.plan)?;
     let compact = pipe_io.intern_node(node_id);
 
     if pipe_stdio {
         // PipeStdoutStderr closes stdin (parallel/multiplex ownership policy).
         let (_pgid, stdout, stderr) = supervisor
-            .spawn_piped(node_id.to_owned(), program, args, cwd, env)
+            .spawn_piped(
+                node_id.to_owned(),
+                program,
+                args,
+                cwd,
+                env,
+                env_overrides.as_ref(),
+            )
             .map_err(TaskError::Supervision)?;
         pipe_io
             .register_stdout(compact, stdout)
@@ -864,11 +877,56 @@ fn spawn_node(
             .map_err(TaskError::Supervision)?;
     } else {
         supervisor
-            .spawn(node_id.to_owned(), program, args, cwd, env)
+            .spawn(
+                node_id.to_owned(),
+                program,
+                args,
+                cwd,
+                env,
+                env_overrides.as_ref(),
+            )
             .map_err(TaskError::Supervision)?;
     }
 
     Ok(compact)
+}
+
+fn build_spawn_env_overrides(
+    plan: &nxr_core::Plan,
+) -> Result<Option<std::collections::BTreeMap<String, String>>, TaskError> {
+    let secret_overrides = resolve_plan_secrets(&plan.secrets)?;
+    let merged = merge_spawn_env_overrides(&plan.context_env_set, &secret_overrides);
+    if merged.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(merged))
+    }
+}
+
+fn resolve_plan_secrets(
+    secrets: &[PlanSecretRef],
+) -> Result<std::collections::BTreeMap<String, String>, ContextError> {
+    if secrets.is_empty() {
+        return Ok(std::collections::BTreeMap::new());
+    }
+    let entries: Vec<PlanSecretEntry> = secrets
+        .iter()
+        .map(|secret| PlanSecretEntry {
+            name: secret.name.clone(),
+            reference: secret.reference.clone(),
+            delivery: parse_plan_secret_delivery(&secret.delivery),
+            value: PlanSecretValuePlaceholder::RUNTIME,
+        })
+        .collect();
+    resolve_env_provider_secrets(&entries)
+}
+
+fn parse_plan_secret_delivery(label: &str) -> SecretDelivery {
+    match label {
+        "file" => SecretDelivery::File,
+        "stdin" => SecretDelivery::Stdin,
+        _ => SecretDelivery::Env,
+    }
 }
 
 fn drain_pipe_chunks(pipe_io: &mut PipeMultiplexer, sink: &mut dyn EventSink, timeout: Duration) {

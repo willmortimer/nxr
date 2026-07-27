@@ -1,5 +1,7 @@
 //! Versioned plan envelope for `nxr plan --json` and `--dry-run`.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 pub use crate::env_policy::EnvironmentPolicy;
@@ -36,8 +38,27 @@ pub struct Plan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_shell: Option<String>,
     pub environment_policy: EnvironmentPolicy,
+    /// Execution context selected for this node (schema v2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// Logical secret refs required by [`Self::context`] (values never serialized).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<PlanSecretRef>,
+    /// Non-secret `environment.set` from inherit-mode contexts (applied at spawn).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub context_env_set: BTreeMap<String, String>,
     pub command: PlanCommand,
     pub forwarded_arguments: Vec<String>,
+}
+
+/// Secret metadata in app/task plans (never includes resolved values).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PlanSecretRef {
+    pub name: String,
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub delivery: String,
+    pub value: String,
 }
 
 impl Plan {

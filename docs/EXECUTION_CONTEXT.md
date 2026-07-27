@@ -1,8 +1,9 @@
 # Execution context and ecosystem expansion
 
 **Status:** design contract for post-2.6 work (2.7 → 3.1). Context flake-parts
-module options and schema v2 parse are implemented (H2); runtime secret delivery
-and `nxr context` CLI remain later milestones.
+module options and schema v2 parse are implemented (H2). **Runtime env-provider
+secret delivery** for `delivery = "env"` is implemented (H3); `file` / `stdin`,
+Home Manager / sops bindings, and `nxr context` CLI remain later milestones.
 **Companion:** [ROADMAP.md](ROADMAP.md) (scheduling), [CONTRACT_SUMMARY.md](CONTRACT_SUMMARY.md) (invariants), [ECOSYSTEM_SYNTHESIS.md](ECOSYSTEM_SYNTHESIS.md) (inheritance rules).
 
 ## Product identity
@@ -466,10 +467,24 @@ No secret **values** enter flake evaluation.
 
 | Provider | Role |
 |---|---|
-| `env` | Read an existing caller variable |
+| `env` | Read an existing caller variable (**implemented** — H3) |
 | `file` | Read or pass an existing runtime file |
 | `sops` | Decrypt a named key from an encrypted SOPS file |
 | `sops-nix` | Pass an activation-provisioned runtime path |
+
+#### Env provider (H3 — partial runtime)
+
+For `delivery = "env"`, nxr resolves the logical `ref` by reading a **caller
+environment variable whose name equals the `ref` string** (for example
+`ref = "NXR_DEPLOY_TOKEN"` → `std::env::var("NXR_DEPLOY_TOKEN")`). The resolved
+value is injected into the **child process only** under the context **slot name**
+(for example slot `DEPLOY_TOKEN` → `DEPLOY_TOKEN=<value>` in the app child env).
+
+- Missing required secret → hard error naming **slot** and **ref** (never the value).
+- `file` / `stdin` delivery → hard error (“not implemented yet”); never silently ignored.
+- Plans, events, and dry-run JSON show slot/ref/delivery with `"value": "<runtime>"` only.
+- Future `programs.nxr.secretBindings` (Home Manager / sops) will map logical refs
+  to provider-specific lookups; H3 does not implement those bindings.
 
 Optional later: a SecretSpec-compatible adapter. SecretSpec’s separation
 (project declares logical secrets; each environment chooses a provider) is the

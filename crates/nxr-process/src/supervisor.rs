@@ -18,6 +18,7 @@
 //! [`kill_all`] directly; the two-strike policy only applies through
 //! [`handle_interrupt`].
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io;
 use std::path::Path;
@@ -98,12 +99,21 @@ impl Supervisor {
         args: &[A],
         cwd: Option<&Path>,
         environment: &EnvironmentPolicy,
+        env_overrides: Option<&BTreeMap<String, String>>,
     ) -> io::Result<u32>
     where
         P: AsRef<OsStr>,
         A: AsRef<OsStr>,
     {
-        self.spawn_with(id, program, args, cwd, environment, SpawnStdio::Inherit)
+        self.spawn_with(
+            id,
+            program,
+            args,
+            cwd,
+            environment,
+            SpawnStdio::Inherit,
+            env_overrides,
+        )
     }
 
     /// Spawn with explicit stdio mode and track under `id`.
@@ -116,6 +126,7 @@ impl Supervisor {
     /// # Errors
     ///
     /// Propagates spawn errors.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_with<P, A>(
         &mut self,
         id: impl Into<String>,
@@ -124,12 +135,13 @@ impl Supervisor {
         cwd: Option<&Path>,
         environment: &EnvironmentPolicy,
         stdio: SpawnStdio,
+        env_overrides: Option<&BTreeMap<String, String>>,
     ) -> io::Result<u32>
     where
         P: AsRef<OsStr>,
         A: AsRef<OsStr>,
     {
-        let session = spawn_in_with(program, args, cwd, environment, stdio)?;
+        let session = spawn_in_with(program, args, cwd, environment, stdio, env_overrides)?;
         let pgid = session.pgid();
         self.add(id, session);
         Ok(pgid)
@@ -150,6 +162,7 @@ impl Supervisor {
         args: &[A],
         cwd: Option<&Path>,
         environment: &EnvironmentPolicy,
+        env_overrides: Option<&BTreeMap<String, String>>,
     ) -> io::Result<(u32, std::process::ChildStdout, std::process::ChildStderr)>
     where
         P: AsRef<OsStr>,
@@ -161,6 +174,7 @@ impl Supervisor {
             cwd,
             environment,
             SpawnStdio::PipeStdoutStderr,
+            env_overrides,
         )?;
         let stdout = session
             .take_stdout()
@@ -447,7 +461,7 @@ mod tests {
         for index in 0..child_count {
             let id = format!("sleep-{index}");
             let pgid = supervisor
-                .spawn(&id, &sleep, &["30"], None, &env)
+                .spawn(&id, &sleep, &["30"], None, &env, None)
                 .expect("spawn sleep");
             pgids.push(pgid);
         }
@@ -477,10 +491,10 @@ mod tests {
         let sleep = unix_util("sleep");
 
         let pgid_a = supervisor
-            .spawn("a", &sleep, &["30"], None, &env)
+            .spawn("a", &sleep, &["30"], None, &env, None)
             .expect("spawn sleep a");
         let pgid_b = supervisor
-            .spawn("b", &sleep, &["30"], None, &env)
+            .spawn("b", &sleep, &["30"], None, &env, None)
             .expect("spawn sleep b");
         assert_eq!(supervisor.len(), 2);
 
@@ -505,10 +519,10 @@ mod tests {
         let mut supervisor = Supervisor::new();
         let env = EnvironmentPolicy::Inherit;
         supervisor
-            .spawn("true", unix_util("true"), &[] as &[&str], None, &env)
+            .spawn("true", unix_util("true"), &[] as &[&str], None, &env, None)
             .expect("spawn true");
         supervisor
-            .spawn("sleep", unix_util("sleep"), &["30"], None, &env)
+            .spawn("sleep", unix_util("sleep"), &["30"], None, &env, None)
             .expect("spawn sleep");
 
         let mut finished = None;
@@ -539,10 +553,10 @@ mod tests {
         // briefly after the supervised bash is reaped (flaky on Linux CI).
         let ignore_term = ["-c", "trap '' TERM; while true; do true; done"];
         let pgid_a = supervisor
-            .spawn("a", &bash, &ignore_term, None, &env)
+            .spawn("a", &bash, &ignore_term, None, &env, None)
             .expect("spawn a");
         let pgid_b = supervisor
-            .spawn("b", &bash, &ignore_term, None, &env)
+            .spawn("b", &bash, &ignore_term, None, &env, None)
             .expect("spawn b");
         // Allow shells to install the TERM trap before the first SIGTERM.
         thread::sleep(Duration::from_millis(100));
@@ -582,7 +596,7 @@ mod tests {
         let sleep = unix_util("sleep");
 
         let pgid = supervisor
-            .spawn("sleep", &sleep, &["30"], None, &env)
+            .spawn("sleep", &sleep, &["30"], None, &env, None)
             .expect("spawn sleep");
 
         flags.trigger_for_test();
@@ -616,7 +630,7 @@ mod tests {
         let ignore_term = ["-c", "trap '' TERM; while true; do true; done"];
 
         let pgid = supervisor
-            .spawn("stubborn", &bash, &ignore_term, None, &env)
+            .spawn("stubborn", &bash, &ignore_term, None, &env, None)
             .expect("spawn");
         thread::sleep(Duration::from_millis(100));
 
@@ -650,7 +664,7 @@ mod tests {
         for index in 0..child_count {
             let id = format!("nested-{index}");
             let pgid = supervisor
-                .spawn(&id, &bash, &nested, None, &env)
+                .spawn(&id, &bash, &nested, None, &env, None)
                 .expect("spawn nested bash");
             pgids.push(pgid);
         }
@@ -674,7 +688,7 @@ mod tests {
         let ignore_term = ["-c", "trap '' TERM; while true; do true; done"];
 
         let pgid = supervisor
-            .spawn("stubborn", &bash, &ignore_term, None, &env)
+            .spawn("stubborn", &bash, &ignore_term, None, &env, None)
             .expect("spawn");
         thread::sleep(Duration::from_millis(100));
 

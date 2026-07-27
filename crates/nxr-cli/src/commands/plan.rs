@@ -223,6 +223,7 @@ fn write_human_execution_plan(writer: &mut impl Write, plan: &ExecutionPlan) -> 
 mod tests {
     use nxr_core::{EnvironmentPolicy, Plan, PlanCommand, PlanKind};
     use nxr_task::{FailurePolicy, build_serial_plan};
+    use std::collections::BTreeMap;
 
     use super::{write_execution_plan, write_plan};
 
@@ -239,6 +240,9 @@ mod tests {
             shell: None,
             active_shell: None,
             environment_policy: EnvironmentPolicy::Inherit,
+            context: None,
+            secrets: Vec::new(),
+            context_env_set: BTreeMap::new(),
             command: PlanCommand {
                 program: "/nix/bin/nix".to_owned(),
                 arguments: vec!["run".to_owned(), "/project#hello".to_owned()],

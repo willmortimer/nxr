@@ -4193,3 +4193,113 @@ fn inspect_configuration_json() {
         .stdout(predicate::str::contains("\"name\": \"dev\""))
         .stdout(predicate::str::contains("nixosConfigurations.dev"));
 }
+
+fn contexts_fixture_available(repo_root: &std::path::Path) -> bool {
+    let list = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root)
+        .args(["--flake", "fixtures/contexts", "list"])
+        .output()
+        .expect("spawn nxr list");
+    if !list.status.success() {
+        eprintln!("skipping contexts fixture test: app discovery failed on this host");
+        return false;
+    }
+    true
+}
+
+#[test]
+fn task_deploy_dry_run_plan_redacts_secret_values() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !contexts_fixture_available(&repo_root) {
+        return;
+    }
+
+    let marker = "nxr-h3-redaction-marker";
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_FIXTURE_DEPLOY_TOKEN", marker)
+        .args([
+            "--flake",
+            "fixtures/contexts",
+            "--dry-run",
+            "--json",
+            "task",
+            "deploy",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("NXR_FIXTURE_DEPLOY_TOKEN"),
+        "expected logical ref in dry-run plan:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("<runtime>"),
+        "expected runtime placeholder in dry-run plan:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains(marker),
+        "secret value must not appear in dry-run plan output:\n{stdout}"
+    );
+}
+
+#[test]
+fn task_deploy_injects_env_secret_into_child() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !contexts_fixture_available(&repo_root) {
+        return;
+    }
+
+    let marker = "nxr-h3-runtime-marker";
+    let output = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_FIXTURE_DEPLOY_TOKEN", marker)
+        .args(["--flake", "fixtures/contexts", "task", "deploy"])
+        .output()
+        .expect("spawn nxr task deploy");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "deploy should succeed when secret env is set\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("deploy ok"),
+        "expected deploy marker in stdout"
+    );
+    assert!(
+        !stdout.contains(marker) && !stderr.contains(marker),
+        "secret value must not appear in task output"
+    );
+}
+
+#[test]
+fn task_deploy_missing_secret_names_ref_and_slot() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !contexts_fixture_available(&repo_root) {
+        return;
+    }
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env_remove("NXR_FIXTURE_DEPLOY_TOKEN")
+        .args(["--flake", "fixtures/contexts", "task", "deploy"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("DEPLOY_TOKEN"))
+        .stderr(predicate::str::contains("NXR_FIXTURE_DEPLOY_TOKEN"));
+}

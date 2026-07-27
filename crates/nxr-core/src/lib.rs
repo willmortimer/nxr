@@ -17,7 +17,7 @@ pub use ecosystem::{
 };
 pub use env_policy::{CLEAN_ENV_ALLOWLIST, EnvironmentPolicy, parse_env_name, parse_set_env};
 pub use model::{App, AppList, FlakeOutput, FlakeRef, ListApp, OutputList};
-pub use plan::{Plan, PlanCommand, PlanKind};
+pub use plan::{Plan, PlanCommand, PlanKind, PlanSecretRef};
 pub use projects::{
     NXR_CATEGORY_KEY, PROJECTS_FILENAME, PROJECTS_SCHEMA_VERSION, ProjectDefinition,
     ProjectMemberKind, ProjectsDocument, ProjectsError, UnknownProjectMember, app_category,
@@ -122,6 +122,9 @@ mod tests {
             shell: None,
             active_shell: None,
             environment_policy: EnvironmentPolicy::Inherit,
+            context: None,
+            secrets: Vec::new(),
+            context_env_set: std::collections::BTreeMap::new(),
             command: PlanCommand {
                 program: "nix".to_owned(),
                 arguments: vec!["run".to_owned(), format!("{flake}#test"), "--".to_owned()],
@@ -172,6 +175,9 @@ mod tests {
             shell: None,
             active_shell: None,
             environment_policy: EnvironmentPolicy::Inherit,
+            context: None,
+            secrets: Vec::new(),
+            context_env_set: std::collections::BTreeMap::new(),
             command: PlanCommand {
                 program: "nix".to_owned(),
                 arguments: vec!["run".to_owned(), ".#lint".to_owned(), "--".to_owned()],

@@ -283,8 +283,10 @@ Schema v2 is documented at [`schemas/task-v2.schema.json`](../schemas/task-v2.sc
 `crates/nxr-task` accepts `schema_version: 2` with strict rejection of unknown
 fields. Named **contexts** can be authored via flake-parts
 (`perSystem.nxr.contexts.<name>` in `nix/modules/contexts.nix`) and are emitted on
-`nxr.<system>.contexts`. Runtime secret delivery and context application remain
-later work (see [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md)).
+`nxr.<system>.contexts`. Runtime **env-provider** secret delivery (`delivery =
+"env"`) and clean/inherit environment application for task nodes are implemented
+(H3); `file` / `stdin`, Home Manager bindings, and full inherit-mode env policy
+remain later work (see [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md)).
 
 See [TASK_SCHEMA_V2.md](TASK_SCHEMA_V2.md) for the full spec, ADR-0135/0138
 cross-links, and compatibility notes.
@@ -293,7 +295,7 @@ cross-links, and compatibility notes.
 
 - Schema v1 (frozen): [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json)
 - Schema v2 (partial): [`schemas/task-v2.schema.json`](../schemas/task-v2.schema.json) — [TASK_SCHEMA_V2.md](TASK_SCHEMA_V2.md)
-- Execution contexts: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) — module options + parse (runtime later)
+- Execution contexts: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) — module options + env-provider runtime (H3)
 - App authoring: [APP_AUTHORING.md](APP_AUTHORING.md)
 - Architecture (task model): [ARCHITECTURE.md](ARCHITECTURE.md) §6
 - Fixtures: [`fixtures/task-dag/`](../fixtures/task-dag/), [`fixtures/contexts/`](../fixtures/contexts/)

@@ -399,7 +399,7 @@ pub struct ContextSecretRef {
 }
 
 /// How a secret reference is delivered to a child process (schema v2).
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SecretDelivery {
     Env,
