@@ -165,6 +165,13 @@ pub enum InspectSubcommand {
         /// Configuration name
         name: String,
     },
+    /// Inspect a custom inventory role entry
+    Inventory {
+        /// Inventory role (flake output table name)
+        role: String,
+        /// Leaf entry name within the role
+        name: String,
+    },
 }
 
 /// `nxr explain` sub-targets.
@@ -553,6 +560,34 @@ pub enum Command {
     Trust {
         #[command(subcommand)]
         action: TrustSubcommand,
+    },
+    /// List schema-described flake inventory outputs
+    Inventory {
+        /// Filter to one inventory role (flake output table)
+        #[arg(long = "role", value_name = "ROLE")]
+        role: Option<String>,
+    },
+    /// Start long-running process nodes
+    Up {
+        /// Process names (all when omitted)
+        #[arg(value_name = "NAME")]
+        names: Vec<String>,
+    },
+    /// Show supervised process status
+    Status,
+    /// Tail logs for a supervised process
+    Logs {
+        /// Process name
+        name: String,
+        /// Follow log output
+        #[arg(long = "follow")]
+        follow: bool,
+    },
+    /// Stop supervised process nodes
+    Down {
+        /// Process names (all running when omitted)
+        #[arg(value_name = "NAME")]
+        names: Vec<String>,
     },
     /// Bare `nxr <app> [args…]` form (reserved names win first)
     #[command(external_subcommand)]

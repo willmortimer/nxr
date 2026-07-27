@@ -4973,6 +4973,60 @@ fn cache_explain_workspace_task_reports_tier_and_key() {
 }
 
 #[test]
+fn inventory_lists_custom_role() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/inventory-custom", "inventory"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("customWorkflow"),
+        "expected customWorkflow role in inventory output:\n{stdout}"
+    );
+}
+
+#[test]
+fn inventory_role_filter_lists_entries() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/configurations",
+            "--json",
+            "inventory",
+            "--role",
+            "nixosConfigurations",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse inventory json");
+    let entries = value
+        .get("entries")
+        .and_then(|entries| entries.as_array())
+        .expect("entries array");
+    assert!(!entries.is_empty());
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.get("name").and_then(|name| name.as_str()) == Some("dev"))
+    );
+}
+
+#[test]
 fn task_dry_run_notes_workspace_cache_lookup() {
     let Some(()) = require_nix() else {
         return;
@@ -4992,4 +5046,25 @@ fn task_dry_run_notes_workspace_cache_lookup() {
         .success()
         .stdout(predicate::str::contains("# cache codegen:"))
         .stdout(predicate::str::contains("workspace-action"));
+}
+
+#[test]
+fn process_status_lists_declared_processes() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/processes", "status"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("worker"),
+        "expected worker process in status output:\n{stdout}"
+    );
+    assert!(stdout.contains("stopped"));
 }

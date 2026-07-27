@@ -8,6 +8,7 @@ pub mod configurations;
 pub mod determinate;
 pub mod discovery;
 pub mod inventory;
+pub mod inventory_list;
 pub mod resolve;
 pub mod suggest;
 pub mod tasks;
@@ -51,6 +52,9 @@ pub use discovery::{
 pub use inventory::{
     FlakeInventory, InventoryNode, StandardOutputEntry, StandardOutputKind, list_standard_outputs,
     parse_flake_inventory,
+};
+pub use inventory_list::{
+    InventoryEntry, InventoryRole, list_inventory_entries, list_inventory_roles,
 };
 pub use resolve::{
     AppNotFoundError, OutputNotFoundError, resolve_app_by_name, resolve_output_by_name,

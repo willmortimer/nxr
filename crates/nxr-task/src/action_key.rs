@@ -207,6 +207,7 @@ mod tests {
             apps: BTreeMap::new(),
             discovery_inputs: Vec::new(),
             contexts: BTreeMap::new(),
+            processes: BTreeMap::new(),
         };
         let def = TaskDefinition::new("test");
         let plan = build_workspace_cache_plan(
@@ -235,6 +236,7 @@ mod tests {
             apps: BTreeMap::new(),
             discovery_inputs: Vec::new(),
             contexts: BTreeMap::new(),
+            processes: BTreeMap::new(),
         };
         let def = workspace_task();
         let plan = build_workspace_cache_plan(

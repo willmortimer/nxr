@@ -150,9 +150,29 @@ pub fn parse_flake_inventory(show: &JsonValue) -> FlakeInventory {
             inventory.outputs.entry(name).or_insert(node);
         }
         inventory.version = v2.version;
+        register_unknown_inventory_roles(show, &mut inventory);
     }
 
     inventory
+}
+
+fn register_unknown_inventory_roles(show: &JsonValue, inventory: &mut FlakeInventory) {
+    let Some(roles) = show.get("inventory").and_then(JsonValue::as_object) else {
+        return;
+    };
+    for (name, value) in roles {
+        if value
+            .get("unknown")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false)
+        {
+            inventory.outputs.entry(name.clone()).or_insert_with(|| {
+                let mut node = InventoryNode::leaf(vec![name.clone()]);
+                node.filtered = true;
+                node
+            });
+        }
+    }
 }
 
 /// List leaf entries for a standard output table and system from a parsed inventory.

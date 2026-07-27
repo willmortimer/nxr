@@ -637,6 +637,8 @@ dependencies = [
  "clap",
  "clap_mangen",
  "dialoguer",
+ "directories",
+ "nix",
  "nxr-affected",
  "nxr-completion",
  "nxr-core",

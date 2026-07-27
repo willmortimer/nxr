@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
+
+use crate::process::ProcessDefinition;
 use serde_json::Value as JsonValue;
 use thiserror::Error;
 
@@ -118,6 +120,9 @@ pub struct TaskDocument {
     /// Named execution contexts (schema v2).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub contexts: BTreeMap<String, ExecutionContext>,
+    /// Long-running process nodes (schema v2).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub processes: BTreeMap<String, ProcessDefinition>,
 }
 
 /// Listing-only metadata for a flake app leaf (not an operation definition).
@@ -140,6 +145,7 @@ impl TaskDocument {
             apps: BTreeMap::new(),
             discovery_inputs: Vec::new(),
             contexts: BTreeMap::new(),
+            processes: BTreeMap::new(),
         }
     }
 
@@ -707,6 +713,8 @@ struct TaskDocumentV2Strict {
     discovery_inputs: Vec<String>,
     #[serde(default)]
     contexts: BTreeMap<String, ExecutionContextV2Strict>,
+    #[serde(default)]
+    processes: BTreeMap<String, ProcessDefinition>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -875,6 +883,7 @@ impl From<TaskDocumentV2Strict> for TaskDocument {
                 .into_iter()
                 .map(|(name, context)| (name, context.into()))
                 .collect(),
+            processes: strict.processes,
         }
     }
 }
@@ -1177,6 +1186,7 @@ mod tests {
             apps: BTreeMap::new(),
             discovery_inputs: Vec::new(),
             contexts: BTreeMap::new(),
+            processes: BTreeMap::new(),
         };
         let err = doc.validate().expect_err("major 99 unsupported");
         assert!(matches!(

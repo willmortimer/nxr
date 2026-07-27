@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 use crate::plan_exec::{ExecutionPlan, FailurePolicy};
+use crate::resources::{NodeResources, ResourceLimits};
 
 /// Errors from constructing or driving a [`Scheduler`].
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
@@ -81,7 +82,9 @@ pub struct ScheduleOutcome {
 pub struct Scheduler {
     failure_policy: FailurePolicy,
     jobs: usize,
+    resource_limits: ResourceLimits,
     interactive: BTreeMap<String, bool>,
+    node_resources: BTreeMap<String, NodeResources>,
     states: BTreeMap<String, NodeState>,
     /// Remaining unsatisfied dependencies (decremented only on success).
     remaining_deps: BTreeMap<String, usize>,
@@ -89,6 +92,10 @@ pub struct Scheduler {
     dependents: BTreeMap<String, BTreeSet<String>>,
     ready: BTreeSet<String>,
     running: BTreeSet<String>,
+    /// lock name → holder node id
+    held_locks: BTreeMap<String, String>,
+    cpu_in_use: u32,
+    memory_in_use: u64,
     /// Fail-fast: stop starting new nodes after the first failure.
     fail_fast_tripped: bool,
 }
@@ -114,12 +121,14 @@ impl Scheduler {
         let mut dependents: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut ready = BTreeSet::new();
         let mut interactive = BTreeMap::new();
+        let mut node_resources = BTreeMap::new();
 
         for node in &plan.nodes {
             states.insert(node.id.clone(), NodeState::Pending);
             remaining_deps.insert(node.id.clone(), node.depends_on.len());
             dependents.entry(node.id.clone()).or_default();
             interactive.insert(node.id.clone(), node.interactive);
+            node_resources.insert(node.id.clone(), node.resources.clone());
         }
 
         for node in &plan.nodes {
@@ -141,14 +150,26 @@ impl Scheduler {
         Ok(Self {
             failure_policy: plan.failure_policy,
             jobs,
+            resource_limits: ResourceLimits::from_jobs(jobs),
             interactive,
+            node_resources,
             states,
             remaining_deps,
             dependents,
             ready,
             running: BTreeSet::new(),
+            held_locks: BTreeMap::new(),
+            cpu_in_use: 0,
+            memory_in_use: 0,
             fail_fast_tripped: false,
         })
+    }
+
+    /// Override soft resource pool limits (defaults from [`ResourceLimits::from_jobs`]).
+    #[must_use]
+    pub fn with_resource_limits(mut self, limits: ResourceLimits) -> Self {
+        self.resource_limits = limits;
+        self
     }
 
     /// Override the failure policy (defaults to the plan's policy).
@@ -234,7 +255,12 @@ impl Scheduler {
 
         let mut started = Vec::new();
         while self.running.len() < self.jobs {
-            let Some(id) = self.ready.iter().next().cloned() else {
+            let candidate = self
+                .ready
+                .iter()
+                .find(|id| self.can_acquire_resources(id))
+                .cloned();
+            let Some(id) = candidate else {
                 break;
             };
 
@@ -243,6 +269,7 @@ impl Scheduler {
                     break;
                 }
                 self.ready.remove(&id);
+                self.acquire_resources(&id);
                 self.states.insert(id.clone(), NodeState::Running);
                 self.running.insert(id.clone());
                 started.push(id);
@@ -250,6 +277,7 @@ impl Scheduler {
             }
 
             self.ready.remove(&id);
+            self.acquire_resources(&id);
             self.states.insert(id.clone(), NodeState::Running);
             self.running.insert(id.clone());
             started.push(id);
@@ -286,6 +314,8 @@ impl Scheduler {
         }
 
         self.running.remove(node);
+
+        self.release_resources(node);
 
         if code == 0 {
             self.states.insert(node.to_owned(), NodeState::Succeeded);
@@ -355,6 +385,46 @@ impl Scheduler {
             cancelled_nodes,
             skipped_nodes,
         }
+    }
+
+    fn resources_for(&self, node: &str) -> NodeResources {
+        self.node_resources.get(node).cloned().unwrap_or_default()
+    }
+
+    fn can_acquire_resources(&self, node: &str) -> bool {
+        let resources = self.resources_for(node);
+        let cpu_needed = resources.cpu_tokens();
+        if self.cpu_in_use.saturating_add(cpu_needed) > self.resource_limits.cpu_pool {
+            return false;
+        }
+        if resources.memory_bytes > 0
+            && self.resource_limits.memory_pool > 0
+            && self.memory_in_use.saturating_add(resources.memory_bytes)
+                > self.resource_limits.memory_pool
+        {
+            return false;
+        }
+        resources.exclusive.iter().all(|lock| {
+            self.held_locks
+                .get(lock)
+                .is_none_or(|holder| holder == node)
+        })
+    }
+
+    fn acquire_resources(&mut self, node: &str) {
+        let resources = self.resources_for(node);
+        self.cpu_in_use = self.cpu_in_use.saturating_add(resources.cpu_tokens());
+        self.memory_in_use = self.memory_in_use.saturating_add(resources.memory_bytes);
+        for lock in resources.exclusive {
+            self.held_locks.insert(lock, node.to_owned());
+        }
+    }
+
+    fn release_resources(&mut self, node: &str) {
+        let resources = self.resources_for(node);
+        self.cpu_in_use = self.cpu_in_use.saturating_sub(resources.cpu_tokens());
+        self.memory_in_use = self.memory_in_use.saturating_sub(resources.memory_bytes);
+        self.held_locks.retain(|_, holder| holder.as_str() != node);
     }
 
     fn unlock_dependents(&mut self, node: &str) {
@@ -432,13 +502,27 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan_exec::{FailurePolicy, build_execution_plan, build_serial_plan};
+    use crate::plan_exec::{
+        FailurePolicy, build_execution_plan, build_execution_plan_roots, build_serial_plan,
+    };
     use crate::schema::TaskDefinition;
     use std::collections::BTreeMap;
 
     fn task(deps: &[&str]) -> TaskDefinition {
         let mut def = TaskDefinition::new("app");
         def.depends_on = deps.iter().map(|s| (*s).to_owned()).collect();
+        def
+    }
+
+    fn task_with_exclusive(deps: &[&str], locks: &[&str]) -> TaskDefinition {
+        let mut def = task(deps);
+        def.resources = Some(crate::schema::TaskResources {
+            cpu: None,
+            memory: None,
+            io: None,
+            network: None,
+            exclusive: locks.iter().map(|lock| (*lock).to_owned()).collect(),
+        });
         def
     }
 
@@ -795,5 +879,81 @@ mod tests {
         assert!(sched.schedule_ready().is_empty());
         assert_eq!(sched.complete("c", 0).expect("c"), vec!["d".to_owned()]);
         assert!(sched.complete("d", 0).expect("d").is_empty());
+    }
+
+    #[test]
+    fn exclusive_lock_serializes_concurrent_ready_nodes() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert("a".to_owned(), task(&[]));
+        tasks.insert(
+            "b".to_owned(),
+            task_with_exclusive(&["a"], &["cargo-target"]),
+        );
+        tasks.insert(
+            "c".to_owned(),
+            task_with_exclusive(&["a"], &["cargo-target"]),
+        );
+        let plan = build_execution_plan_roots(&tasks, &["b", "c"], FailurePolicy::FailFast, None)
+            .expect("plan");
+
+        let mut sched = Scheduler::new(&plan, 2).expect("sched");
+        assert_eq!(sched.schedule_ready(), vec!["a".to_owned()]);
+        assert_eq!(sched.complete("a", 0).expect("a"), vec!["b".to_owned()]);
+        assert_eq!(sched.in_flight(), 1);
+        assert_eq!(sched.state("c"), Some(NodeState::Ready));
+        assert!(sched.schedule_ready().is_empty());
+        assert_eq!(sched.complete("b", 0).expect("b"), vec!["c".to_owned()]);
+        assert!(sched.complete("c", 0).expect("c").is_empty());
+        assert!(sched.outcome().success);
+    }
+
+    #[test]
+    fn exclusive_lock_waits_for_holder_under_fail_fast() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert("a".to_owned(), task_with_exclusive(&[], &["db"]));
+        tasks.insert("b".to_owned(), task_with_exclusive(&[], &["db"]));
+        let plan = build_execution_plan_roots(&tasks, &["a", "b"], FailurePolicy::FailFast, None)
+            .expect("plan");
+
+        let mut sched = Scheduler::new(&plan, 2).expect("sched");
+        assert_eq!(sched.schedule_ready(), vec!["a".to_owned()]);
+        assert_eq!(sched.state("b"), Some(NodeState::Ready));
+        assert!(sched.schedule_ready().is_empty());
+        assert_eq!(sched.complete("a", 0).expect("a"), vec!["b".to_owned()]);
+        assert!(sched.complete("b", 0).expect("b").is_empty());
+        assert!(sched.outcome().success);
+    }
+
+    #[test]
+    fn cpu_pool_limits_parallel_starts() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert("a".to_owned(), task(&[]));
+        let mut heavy = task(&["a"]);
+        heavy.resources = Some(crate::schema::TaskResources {
+            cpu: Some(2),
+            memory: None,
+            io: None,
+            network: None,
+            exclusive: Vec::new(),
+        });
+        tasks.insert("b".to_owned(), heavy.clone());
+        tasks.insert("c".to_owned(), heavy);
+        let plan = build_execution_plan_roots(&tasks, &["b", "c"], FailurePolicy::FailFast, None)
+            .expect("plan");
+
+        let limits = crate::resources::ResourceLimits {
+            cpu_pool: 2,
+            memory_pool: 0,
+        };
+        let mut sched = Scheduler::new(&plan, 3)
+            .expect("sched")
+            .with_resource_limits(limits);
+        assert_eq!(sched.schedule_ready(), vec!["a".to_owned()]);
+        assert_eq!(sched.complete("a", 0).expect("a"), vec!["b".to_owned()]);
+        assert_eq!(sched.in_flight(), 1);
+        assert_eq!(sched.state("c"), Some(NodeState::Ready));
+        assert!(sched.schedule_ready().is_empty());
+        assert_eq!(sched.complete("b", 0).expect("b"), vec!["c".to_owned()]);
+        assert!(sched.complete("c", 0).expect("c").is_empty());
     }
 }
