@@ -1,5 +1,7 @@
 //! Shared models, schema versions, diagnostics, and policy types.
 
+pub mod action;
+pub mod cas;
 pub mod config;
 pub mod diagnostics;
 pub mod ecosystem;
@@ -11,6 +13,13 @@ pub mod repo_path;
 pub mod sanitize;
 pub mod trust;
 
+pub use action::{ActionTier, cache_mode_enabled, classify_action_tier, workspace_cache_enabled};
+pub use cas::{
+    CAS_PROTOCOL_VERSION, CacheExplain, CacheLookupExplain, CasLookup, WORKSPACE_CAS_ENV,
+    clear_workspace_cas, digest_file, digest_repo_path, flake_lock_digest, hash_action_key,
+    lookup_outputs, restore_outputs, save_outputs, workspace_cas_dir, workspace_cas_enabled,
+    workspace_cas_status,
+};
 pub use config::{
     BindingProvider, ConfigError, NXR_CONFIG_DIR_ENV, SecretBinding, SecretBindings,
     TrustedProject, UserConfig, config_dir, load_secret_bindings, load_user_config,

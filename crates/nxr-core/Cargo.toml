@@ -8,6 +8,8 @@ publish.workspace = true
 description = "Shared models, schemas, and diagnostics for nxr"
 
 [dependencies]
+blake3 = { workspace = true }
+camino = { workspace = true }
 directories = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

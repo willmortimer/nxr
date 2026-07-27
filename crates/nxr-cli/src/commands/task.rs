@@ -22,6 +22,9 @@ use crate::commands::secrets::{
     SpawnSecrets, load_runtime_secret_config, prepare_spawn_secrets, project_identity,
 };
 use crate::commands::trust;
+use crate::commands::workspace_cache::{
+    explain_workspace_cache, save_workspace_cache, try_workspace_cache_restore,
+};
 use crate::flake::FlakeResolveError;
 use crate::output_task::{EventsFormat, TaskOutputMode, build_task_event_sink};
 use crate::reports::{ReportCollector, ReportPaths, ReportWriteError, write_all_reports};
@@ -578,6 +581,26 @@ fn dry_run_execute(
         let prepared = prepared_nodes
             .get(task_id)
             .expect("every serial_order id was prepared before dry-run");
+        let cache_explain = explain_workspace_cache(prepared);
+        let tier_label = match cache_explain.tier {
+            nxr_core::ActionTier::DerivationBacked => "derivation-backed",
+            nxr_core::ActionTier::WorkspaceAction => "workspace-action",
+        };
+        let lookup_label = match &cache_explain.lookup {
+            nxr_core::cas::CacheLookupExplain::Hit => "hit",
+            nxr_core::cas::CacheLookupExplain::Miss { reason } => reason.as_str(),
+            nxr_core::cas::CacheLookupExplain::Skipped { reason } => reason.as_str(),
+        };
+        writeln!(
+            stdout,
+            "# cache {}: tier={} enabled={} key={} lookup={}",
+            task_id,
+            tier_label,
+            cache_explain.cache_enabled,
+            cache_explain.action_key.as_deref().unwrap_or("-"),
+            lookup_label
+        )
+        .map_err(TaskError::Io)?;
         runner
             .verbose(format!(
                 "dry-run task {task_id} via app {}",
@@ -754,7 +777,36 @@ fn run_plan(
             }
         }
 
-        for node_id in to_start.drain(..) {
+        let ready: Vec<String> = to_start.drain(..).collect();
+        let mut spawn_queue = Vec::new();
+        for node_id in ready {
+            let prepared = prepared_nodes
+                .get(&node_id)
+                .expect("scheduler only starts ids prepared before run");
+            if try_workspace_cache_restore(prepared, &prepared.flake_root)
+                .map_err(TaskError::Supervision)?
+                .is_some()
+            {
+                runner
+                    .verbose(format!("cache hit for task {node_id}; skipping spawn"))
+                    .map_err(TaskError::Io)?;
+                sink.emit(Event::node_started(node_id.clone()));
+                sink.emit(Event::NodeExited {
+                    node: node_id.clone(),
+                    code: Some(exit::SUCCESS),
+                    status: Some(nxr_task::NodeOutcome::Succeeded),
+                    duration_ms: Some(0),
+                    started_at: None,
+                    finished_at: None,
+                    reason: Some("cache_hit".to_owned()),
+                    seq: None,
+                });
+                to_start = scheduler.complete(&node_id, exit::SUCCESS)?;
+                continue;
+            }
+            spawn_queue.push(node_id);
+        }
+        for node_id in spawn_queue {
             let pipe_stdio = node_uses_piped_stdio(
                 node_is_interactive(plan, &node_id),
                 request.jobs,
@@ -807,6 +859,13 @@ fn run_plan(
                 deadlines.cancel(compact);
             }
             node_secret_guards.remove(&id);
+
+            if code == exit::SUCCESS {
+                if let Some(prepared) = prepared_nodes.get(&id) {
+                    save_workspace_cache(prepared, &prepared.flake_root)
+                        .map_err(TaskError::Supervision)?;
+                }
+            }
 
             if code != exit::SUCCESS && first_failure.is_none() {
                 first_failure = Some(code);

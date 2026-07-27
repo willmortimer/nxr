@@ -9,6 +9,7 @@ description = "Task schema, graph, planning, and scheduling for nxr"
 
 [dependencies]
 base64 = { workspace = true }
+camino = { workspace = true }
 nxr-core = { path = "../nxr-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }

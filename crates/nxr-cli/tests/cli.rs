@@ -4940,3 +4940,56 @@ fn init_template_lists_apps_with_local_nxr_input() {
     assert!(stdout.contains("test"));
     assert!(stdout.contains("fmt"));
 }
+
+#[test]
+fn cache_explain_workspace_task_reports_tier_and_key() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/workspace-cache",
+            "cache",
+            "explain",
+            "codegen",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse cache explain json");
+    assert_eq!(value["tier"], "workspace-action");
+    assert_eq!(value["cache_enabled"], true);
+    assert!(
+        value["action_key"]
+            .as_str()
+            .is_some_and(|key| !key.is_empty())
+    );
+}
+
+#[test]
+fn task_dry_run_notes_workspace_cache_lookup() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/workspace-cache",
+            "task",
+            "codegen",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# cache codegen:"))
+        .stdout(predicate::str::contains("workspace-action"));
+}

@@ -638,10 +638,15 @@ pub enum MigrateSubcommand {
 /// `nxr cache` subcommands.
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 pub enum CacheSubcommand {
-    /// Remove discovery and capability cache entries
+    /// Remove discovery, capability, and workspace CAS entries
     Clear,
     /// Show cache locations and sizes
     Status,
+    /// Explain workspace action cache key and hit/miss for a task
+    Explain {
+        /// Task name
+        task: String,
+    },
 }
 
 /// `nxr trust` subcommands.
