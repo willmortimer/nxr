@@ -37,12 +37,37 @@ pub enum ContextError {
         reference: String,
         provider: SecretProvider,
     },
+    /// A binding provider (Keychain / 1Password / Vault) is not implemented.
+    UnsupportedBindingProvider {
+        slot: String,
+        reference: String,
+        provider: nxr_core::config::BindingProvider,
+    },
+    /// No user binding exists for a non-env logical ref.
+    MissingBinding { slot: String, reference: String },
+    /// Secret refs are not authorized for this project.
+    UnauthorizedSecrets {
+        project: String,
+        missing_refs: Vec<String>,
+    },
+    /// More than one secret declares `delivery = "stdin"`.
+    MultipleStdinSecrets,
+    /// Failed to read a file or tempfile during resolution.
+    ResolveIo { message: String },
+    /// `sops` decryption failed.
+    SopsDecrypt {
+        slot: String,
+        reference: String,
+        message: String,
+    },
     /// A context requires confirmation but stdin is not interactive.
     ConfirmRequiredNonInteractive { context: String, task: String },
     /// A context confirmation prompt was declined.
     ConfirmDeclined { context: String, task: String },
     /// Failed to read confirmation input from stdin.
     ConfirmIo { message: String },
+    /// User configuration could not be loaded.
+    Config { message: String },
 }
 
 impl fmt::Display for ContextError {
@@ -73,6 +98,42 @@ impl fmt::Display for ContextError {
                 "secret provider {:?} is not implemented yet (slot {slot}, ref {reference})",
                 provider_label(*provider)
             ),
+            Self::UnsupportedBindingProvider {
+                slot,
+                reference,
+                provider,
+            } => write!(
+                f,
+                "secret binding provider {:?} is not supported yet (slot {slot}, ref {reference})",
+                binding_provider_label(*provider)
+            ),
+            Self::MissingBinding { slot, reference } => write!(
+                f,
+                "no secret binding configured for logical ref {reference} (slot {slot})"
+            ),
+            Self::UnauthorizedSecrets {
+                project,
+                missing_refs,
+            } => write!(
+                f,
+                "project {project} is not authorized for secret refs: {}",
+                missing_refs.join(", ")
+            ),
+            Self::MultipleStdinSecrets => {
+                write!(
+                    f,
+                    "only one secret may use delivery = \"stdin\" per context"
+                )
+            }
+            Self::ResolveIo { message } => write!(f, "secret resolution failed: {message}"),
+            Self::SopsDecrypt {
+                slot,
+                reference,
+                message,
+            } => write!(
+                f,
+                "sops decrypt failed for slot {slot}, ref {reference}: {message}"
+            ),
             Self::ConfirmRequiredNonInteractive { context, task } => write!(
                 f,
                 "context {context} for task {task} requires confirmation but stdin is not interactive (set {NXR_ASSUME_YES_ENV}=1 or run in a terminal)"
@@ -83,6 +144,7 @@ impl fmt::Display for ContextError {
             Self::ConfirmIo { message } => {
                 write!(f, "failed to read context confirmation: {message}")
             }
+            Self::Config { message } => write!(f, "configuration error: {message}"),
         }
     }
 }
@@ -103,6 +165,18 @@ fn provider_label(provider: SecretProvider) -> &'static str {
         SecretProvider::File => "file",
         SecretProvider::Sops => "sops",
         SecretProvider::SopsNix => "sops-nix",
+    }
+}
+
+fn binding_provider_label(provider: nxr_core::config::BindingProvider) -> &'static str {
+    match provider {
+        nxr_core::config::BindingProvider::Env => "env",
+        nxr_core::config::BindingProvider::File => "file",
+        nxr_core::config::BindingProvider::Sops => "sops",
+        nxr_core::config::BindingProvider::SopsNix => "sops-nix",
+        nxr_core::config::BindingProvider::Keychain => "keychain",
+        nxr_core::config::BindingProvider::OnePassword => "1password",
+        nxr_core::config::BindingProvider::Vault => "vault",
     }
 }
 

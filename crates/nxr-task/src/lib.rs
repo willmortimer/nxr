@@ -18,6 +18,7 @@ pub mod resolve;
 pub mod run_events;
 pub mod scheduler;
 pub mod schema;
+pub mod secrets;
 pub mod selectors;
 
 pub use context::{
@@ -51,6 +52,10 @@ pub use schema::{
     TaskDefinition, TaskDocument, TaskInputBinding, TaskInputs, TaskOutput, TaskOutputMode,
     TaskResources, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, parse_task_document,
     validate_schema_version, validate_working_directory,
+};
+pub use secrets::{
+    ResolvedSecrets, SecureTempFile, authorize_secret_refs, resolve_context_secrets,
+    secret_refs_for_entries,
 };
 pub use selectors::{
     APP_PREFIX, CATEGORY_PREFIX, CHANGED_SELECTOR, ListSelectorResolution, ParsedSelector,

@@ -562,6 +562,7 @@ fn run_task_generation(
         events_format,
         reports,
         nix_flags: request.nix_flags,
+        context_override: None,
     };
 
     let reuse_from_cache = !invalidate_snapshot && caches.task_plan.is_some();

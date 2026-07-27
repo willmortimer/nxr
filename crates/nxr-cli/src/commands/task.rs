@@ -12,12 +12,15 @@ use nxr_task::{
     ContextError, Event, EventSink, ExecutionPlan, FailurePolicy, OutputPayload, PlanError,
     PlanSecretEntry, PlanSecretValuePlaceholder, RunEventDecorator, Scheduler, SchedulerError,
     SecretDelivery, SecretProvider, build_execution_plan_roots, enforce_context_confirm,
-    merge_spawn_env_overrides, resolve_env_provider_secrets, resolve_task_name,
+    merge_spawn_env_overrides, resolve_task_name,
 };
 
 use crate::commands::common::{PrepareError, PreparedTaskNode, WorkspaceSnapshot, WorkspaceState};
 use crate::commands::plan::{PlanRenderError, write_plan};
 use crate::commands::run::RunError;
+use crate::commands::secrets::{
+    SpawnSecrets, load_runtime_secret_config, prepare_spawn_secrets, project_identity,
+};
 use crate::flake::FlakeResolveError;
 use crate::output_task::{EventsFormat, TaskOutputMode, build_task_event_sink};
 use crate::reports::{ReportCollector, ReportPaths, ReportWriteError, write_all_reports};
@@ -63,6 +66,8 @@ pub struct TaskRequest<'a> {
     /// Opt-in post-run report output paths.
     pub reports: ReportPaths,
     pub nix_flags: &'a OptionalNixFlags,
+    /// When set, overrides each task's declared `context` field.
+    pub context_override: Option<String>,
 }
 
 /// Errors while planning or running a task.
@@ -294,6 +299,7 @@ pub fn execute_with_control(
             request.shell_mode,
             &request.environment_policy,
             request.nix_flags,
+            request.context_override.as_deref(),
         )?;
 
         let bundle = PreparedTaskGeneration {
@@ -594,6 +600,14 @@ fn run_plan(
     let mut restarted = false;
     let mut started_at: BTreeMap<String, std::time::Instant> = BTreeMap::new();
 
+    let (user_config, secret_bindings) = load_runtime_secret_config()?;
+    let project_id = prepared_nodes
+        .values()
+        .next()
+        .map(|node| project_identity(std::path::Path::new(node.cwd.as_str())))
+        .unwrap_or_else(|| "local".to_owned());
+    let mut node_secret_guards: BTreeMap<String, SpawnSecrets> = BTreeMap::new();
+
     let mut to_start = scheduler.schedule_ready();
     loop {
         if let Some(codes) = supervisor
@@ -744,6 +758,10 @@ fn run_plan(
                 &mut pipe_io,
                 sink,
                 runner,
+                &user_config,
+                &secret_bindings,
+                &project_id,
+                &mut node_secret_guards,
             )?;
             started_at.insert(node_id.clone(), std::time::Instant::now());
             node_compact_ids.insert(node_id.clone(), compact);
@@ -777,6 +795,7 @@ fn run_plan(
             if let Some(&compact) = node_compact_ids.get(&id) {
                 deadlines.cancel(compact);
             }
+            node_secret_guards.remove(&id);
 
             if code != exit::SUCCESS && first_failure.is_none() {
                 first_failure = Some(code);
@@ -893,6 +912,10 @@ fn spawn_node(
     pipe_io: &mut PipeMultiplexer,
     sink: &mut dyn EventSink,
     runner: RunnerOutput,
+    user_config: &nxr_core::config::UserConfig,
+    secret_bindings: &nxr_core::config::SecretBindings,
+    project_id: &str,
+    node_secret_guards: &mut BTreeMap<String, SpawnSecrets>,
 ) -> Result<u32, TaskError> {
     let prepared = prepared_nodes
         .get(node_id)
@@ -914,11 +937,19 @@ fn spawn_node(
     let args = &prepared.arguments;
     let cwd = Some(prepared.cwd.as_std_path());
     let env = &prepared.environment;
-    let env_overrides = build_spawn_env_overrides(&prepared.plan)?;
+    let (env_overrides, stdin_payload, spawn_secrets) =
+        build_spawn_env_overrides(&prepared.plan, user_config, secret_bindings, project_id)?;
+    if stdin_payload.is_some() && pipe_stdio {
+        return Err(TaskError::Context(ContextError::UnsupportedDelivery {
+            slot: "stdin".to_owned(),
+            reference: "stdin".to_owned(),
+            delivery: SecretDelivery::Stdin,
+        }));
+    }
+    node_secret_guards.insert(node_id.to_owned(), spawn_secrets);
     let compact = pipe_io.intern_node(node_id);
 
     if pipe_stdio {
-        // PipeStdoutStderr closes stdin (parallel/multiplex ownership policy).
         let (_pgid, stdout, stderr) = supervisor
             .spawn_piped(
                 node_id.to_owned(),
@@ -944,6 +975,7 @@ fn spawn_node(
                 cwd,
                 env,
                 env_overrides.as_ref(),
+                stdin_payload,
             )
             .map_err(TaskError::Supervision)?;
     }
@@ -953,23 +985,47 @@ fn spawn_node(
 
 fn build_spawn_env_overrides(
     plan: &nxr_core::Plan,
-) -> Result<Option<std::collections::BTreeMap<String, String>>, TaskError> {
-    let secret_overrides = resolve_plan_secrets(&plan.secrets)?;
-    let merged = merge_spawn_env_overrides(&plan.context_env_set, &secret_overrides);
-    if merged.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(merged))
+    user_config: &nxr_core::config::UserConfig,
+    secret_bindings: &nxr_core::config::SecretBindings,
+    project_id: &str,
+) -> Result<
+    (
+        Option<std::collections::BTreeMap<String, String>>,
+        Option<Vec<u8>>,
+        SpawnSecrets,
+    ),
+    TaskError,
+> {
+    if plan.secrets.is_empty() {
+        let merged = merge_spawn_env_overrides(&plan.context_env_set, &BTreeMap::new());
+        let empty = SpawnSecrets::empty();
+        return Ok((
+            if merged.is_empty() {
+                None
+            } else {
+                Some(merged)
+            },
+            None,
+            empty,
+        ));
     }
+    let entries = plan_secret_entries_from_core(&plan.secrets);
+    let spawn_secrets = prepare_spawn_secrets(&entries, project_id, user_config, secret_bindings)?;
+    let merged = merge_spawn_env_overrides(&plan.context_env_set, &spawn_secrets.env_overrides);
+    let env_overrides = if merged.is_empty() {
+        None
+    } else {
+        Some(merged)
+    };
+    Ok((
+        env_overrides,
+        spawn_secrets.stdin_payload.clone(),
+        spawn_secrets,
+    ))
 }
 
-fn resolve_plan_secrets(
-    secrets: &[PlanSecretRef],
-) -> Result<std::collections::BTreeMap<String, String>, ContextError> {
-    if secrets.is_empty() {
-        return Ok(std::collections::BTreeMap::new());
-    }
-    let entries: Vec<PlanSecretEntry> = secrets
+fn plan_secret_entries_from_core(secrets: &[PlanSecretRef]) -> Vec<PlanSecretEntry> {
+    secrets
         .iter()
         .map(|secret| PlanSecretEntry {
             name: secret.name.clone(),
@@ -978,8 +1034,7 @@ fn resolve_plan_secrets(
             provider: parse_plan_secret_provider(&secret.provider),
             value: PlanSecretValuePlaceholder::RUNTIME,
         })
-        .collect();
-    resolve_env_provider_secrets(&entries)
+        .collect()
 }
 
 fn parse_plan_secret_delivery(label: &str) -> SecretDelivery {
@@ -1245,6 +1300,7 @@ mod tests {
             events_format: None,
             reports: ReportPaths::default(),
             nix_flags: &nix_flags,
+            context_override: None,
         };
         assert!(plan_uses_piped_stdio(&plan, &request));
     }

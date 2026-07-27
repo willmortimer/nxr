@@ -676,10 +676,12 @@ dependencies = [
 name = "nxr-core"
 version = "2.8.0"
 dependencies = [
+ "directories",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
+ "toml",
 ]
 
 [[package]]
@@ -717,6 +719,7 @@ dependencies = [
  "nxr-core",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
 ]
 

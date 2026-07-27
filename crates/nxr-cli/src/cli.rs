@@ -529,6 +529,11 @@ pub enum Command {
         #[command(subcommand)]
         source: MigrateSubcommand,
     },
+    /// Named execution contexts (list, inspect, run)
+    Context {
+        #[command(subcommand)]
+        action: ContextSubcommand,
+    },
     /// Ergonomic dev-shell prefix: `nxr in <shell> <app|task|…>` (alias of `--shell`)
     In {
         /// Development shell name
@@ -547,6 +552,26 @@ pub enum Command {
     /// Bare `nxr <app> [args…]` form (reserved names win first)
     #[command(external_subcommand)]
     External(Vec<String>),
+}
+
+/// `nxr context` subcommands.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum ContextSubcommand {
+    /// List defined execution contexts
+    List,
+    /// Inspect a single context (names and refs only)
+    Inspect {
+        /// Context name
+        name: String,
+    },
+    /// Run a task under a named context
+    Run {
+        /// Context name
+        context: String,
+        /// `task <name>`, or shorthand `<task-name>`, plus forwarded args
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
 }
 
 /// `nxr ci` subcommands.

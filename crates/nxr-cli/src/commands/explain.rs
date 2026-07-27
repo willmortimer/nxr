@@ -285,6 +285,7 @@ fn explain_task(request: &ExplainRequest<'_>) -> Result<ExplainReport, ExplainEr
         request.shell_mode,
         &request.environment_policy,
         request.nix_flags,
+        None,
     )?;
 
     let workspace =

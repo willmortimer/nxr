@@ -4581,6 +4581,105 @@ fn task_deploy_missing_secret_names_ref_and_slot() {
 }
 
 #[test]
+fn context_list_names_contexts() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !contexts_fixture_available(&repo_root) {
+        return;
+    }
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/contexts", "context", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("backend"))
+        .stdout(predicate::str::contains("release"));
+}
+
+#[test]
+fn context_inspect_shows_refs_not_values() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !contexts_fixture_available(&repo_root) {
+        return;
+    }
+
+    let marker = "nxr-context-inspect-marker";
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_FIXTURE_DEPLOY_TOKEN", marker)
+        .args([
+            "--flake",
+            "fixtures/contexts",
+            "--json",
+            "context",
+            "inspect",
+            "release",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("NXR_FIXTURE_DEPLOY_TOKEN"),
+        "expected logical ref in inspect output:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains(marker),
+        "secret value must not appear in inspect output:\n{stdout}"
+    );
+}
+
+#[test]
+fn context_run_deploys_with_env_secret() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !contexts_fixture_available(&repo_root) {
+        return;
+    }
+
+    let marker = "nxr-context-run-marker";
+    let output = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_FIXTURE_DEPLOY_TOKEN", marker)
+        .env("NXR_ASSUME_YES", "1")
+        .args([
+            "--flake",
+            "fixtures/contexts",
+            "context",
+            "run",
+            "release",
+            "deploy",
+        ])
+        .output()
+        .expect("spawn nxr context run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "context run should succeed when secret env is set\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("deploy ok"),
+        "expected deploy marker in stdout"
+    );
+    assert!(
+        !stdout.contains(marker),
+        "secret value must not appear in output"
+    );
+}
+
+#[test]
 fn init_without_template_is_usage_error() {
     cargo_bin_cmd!("nxr")
         .arg("init")

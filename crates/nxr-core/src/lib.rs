@@ -10,6 +10,10 @@ pub mod projects;
 pub mod repo_path;
 pub mod sanitize;
 
+pub use config::{
+    BindingProvider, ConfigError, NXR_CONFIG_DIR_ENV, SecretBinding, SecretBindings,
+    TrustedProject, UserConfig, config_dir, load_secret_bindings, load_user_config,
+};
 pub use diagnostics::{Diagnostic, DiagnosticLevel};
 pub use ecosystem::{
     AdapterError, ECOSYSTEM_GRAPH_SCHEMA_VERSION, EcosystemGraph, EcosystemGraphAdapter,
