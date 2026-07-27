@@ -9,7 +9,7 @@ Baselines for the runner. App **execution** time is dominated by `nix run` and t
 | Bare `nxr <app>` / `nxr run <app>` (success or ordinary app failure) | **exactly 1×** `nix` (`nix run`); **0×** probes / `flake show` | Locate-only prepare; no `currentSystem` / capability probes unless `--offline` / `--accept-flake-config`; TTY stderr is inherited (no capture) |
 | Bare app missing installable (non-TTY stderr) | **1×** `nix run` + optional diagnostic discovery | Bounded stderr tail (~128 KiB); suggestion discovery only when stderr indicates installable-resolution failure |
 | Bare app on a TTY | **1×** `nix run`; inherit stderr | Prefer transparent rendering over typo suggestions |
-| Adapter init (list/task/doctor) | **1×** `nix eval` (`currentSystem`) + capability probes (`--version`, config/help) | Shared via `WorkspaceSnapshot` / `NixAdapter`; capability probes persist across invocations (`~/.cache/nxr/capabilities/`); not repeated per task node |
+| Adapter init (list/task/doctor) | **1×** `nix eval` (`currentSystem`) + capability probes (`--version`, config/help) | Shared via `WorkspaceSnapshot` / `NixAdapter`; warm capability cache still probes **config once** for digest validity, then skips version/help/system |
 | `nxr task` with **N** nodes | **N×** `nix run` + **O(1)** discovery | One `flake show` (apps) + one task `eval` (or warm combined cache); **not** N× `flake show` |
 | `nxr list --refresh-discovery` | Dominated by `nix flake show` | Catalog commands still discover |
 | Named `nxr build` / `check` / `shell` | Direct installable argv (no whole-output discovery up front) | Adapter init still probes once for system / flags |
@@ -25,9 +25,9 @@ Instrumented integration tests wrap `NXR_NIX` with a counting shim to assert the
 | Warm `nxr list` (cache hit) | Interactive (tens of ms) | Combined apps+tasks discovery cache |
 | Cold `nxr list --refresh-discovery` | Dominated by `nix flake show` + one task eval | Nix eval/store caches still apply |
 
-Discovery cache **schema v3** invalidates on:
+Discovery cache **schema v5** (incremental fingerprint index) invalidates on:
 
-- **Content** of every `*.nix` file under the local flake root (path-scoped walk), plus `flake.lock` when present — not mtime/size, and not arbitrary non-Nix sources
+- **Content** of every `*.nix` file under the local flake root (path-scoped walk), plus `flake.lock` when present — not arbitrary non-Nix sources. Unchanged files reuse a prior BLAKE3 when **device/inode/size/nanosecond mtime** match (metadata-gated reuse, not a full re-read). Tools that rewrite bytes while preserving those metadata fields can theoretically evade rehash until TTL/`--refresh-discovery`; that is uncommon and tracked for stronger wording or periodic forced rehash.
 - **Nix identity**: canonical Nix executable path + version string
 - **Discovery schema version** (`nxr.<system>` / task document major)
 - **Sorted `discoveryInputs`**: content hashes of paths declared via `perSystem.nxr.discoveryInputs` (emitted on `nxr.<system>.discoveryInputs`; hashed on store/load without a second eval on warm hits)
@@ -35,7 +35,7 @@ Discovery cache **schema v3** invalidates on:
 
 Built-in ignores cover `.git`, `result`, `target`, and similar trees. Set `NXR_CACHE_FINGERPRINT_IGNORE` to a colon-separated list of globs to skip huge vendored `.nix` trees. Remote flakes are never cached.
 
-Capability cache invalidates on Nix executable identity (canonical path + device/inode + size + mtime), with a 7-day TTL backstop (`NXR_CAPABILITY_CACHE_TTL_SECS`; `0` disables). Set `NXR_CAPABILITY_CACHE=off` to bypass. `nxr cache clear` removes capability entries alongside discovery cache.
+Capability cache (schema **v2**) invalidates on Nix executable identity (canonical path + device/inode + size + mtime) **and** an effective-configuration digest (`NIX_CONFIG` / `NIX_USER_CONF_FILES` / `NIX_CONF_DIR` plus `nix config show --json`), with a 7-day TTL backstop (`NXR_CAPABILITY_CACHE_TTL_SECS`; `0` disables). Warm hits therefore still run one config probe to validate the digest, then skip version/help/system. Set `NXR_CAPABILITY_CACHE=off` to bypass. `nxr cache clear` removes capability entries alongside discovery cache.
 
 ## Measured baselines
 
@@ -52,7 +52,7 @@ Artifact: [`scripts/perf/baseline-aarch64-darwin.json`](../scripts/perf/baseline
 | Warm `plan hello` (`fixtures/basic-apps`) | **≤ 0.01 s** | Resolve + plan only |
 | Warm `list` (this repo) | **0.01 s** | Three-run spot check after `--refresh-discovery` |
 
-Warm list is ~5× faster than the prior **debug** baseline (~0.05 s) on the same host class, and capability-cache integration tests assert zero `version`/`config`/`help` reprobes on warm `list`.
+Warm list is ~5× faster than the prior **debug** baseline (~0.05 s) on the same host class. Capability-cache integration tests assert warm `list` Nix call budgets (`version=0`, `help=0`, `config=1` for digest validity, `flake-show=0`). CI enforces warm/cold p50 ceilings via [`scripts/perf/measure-release.sh --enforce`](../scripts/perf/measure-release.sh) and [`scripts/perf/ci-thresholds.json`](../scripts/perf/ci-thresholds.json).
 
 ### Debug (historical, 2026-07-18)
 
@@ -82,9 +82,10 @@ cargo build -p nxr-cli --quiet
 
 ```bash
 ./scripts/perf/measure-release.sh
+./scripts/perf/measure-release.sh --enforce   # fail if p50 exceeds ci-thresholds.json
 ```
 
-The script prefers `nix build .#nxr` and falls back to `cargo build -p nxr-cli --release`. It times cold/warm `list` and warm `plan` over `NXR_PERF_RUNS` (default 5) and prints per-run wall times plus **p50**. Compare p50 across commits; use p95/max to spot filesystem or Nix daemon outliers.
+The script prefers `nix build .#nxr` and falls back to `cargo build -p nxr-cli --release`. It isolates cache homes, times cold/warm `list` and warm `plan` over `NXR_PERF_RUNS` (default 5), and prints per-run wall times plus **p50**. Compare p50 across commits; use p95/max to spot filesystem or Nix daemon outliers.
 
 Suggested release p50 targets on a local SSD (order-of-magnitude; see also nxr-next performance foundations):
 
@@ -92,6 +93,8 @@ Suggested release p50 targets on a local SSD (order-of-magnitude; see also nxr-n
 |---|---:|
 | Warm `nxr list` (small fixture) | < 25 ms |
 | Warm `nxr plan <app>` | < 75 ms |
+
+CI hosted-runner ceilings (see `scripts/perf/ci-thresholds.json`) are intentionally looser so the gate catches order-of-magnitude regressions without flaking on noisy VMs.
 
 ## Interpretation
 

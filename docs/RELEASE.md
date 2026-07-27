@@ -19,15 +19,19 @@ stages the Nix package layout (`bin/nxr`, man pages, shell completions, and
 
 | File | Contents |
 |---|---|
-| `nxr-<version>-<system>.tar.gz` | `nxr-<version>-<system>/` with `bin/`, `share/man/`, completion scripts, and `share/nxr/shell/` |
+| `nxr-<version>-<system>-nix-package.tar.gz` | Nix package layout (`bin/`, `share/`, plus `README.txt`) — **not** a portable standalone binary |
 | `SHA256SUMS` | `sha256sum` lines for every tarball |
 | `nxr-cargo.cdx.json` | CycloneDX SBOM for the `nxr` CLI binary (`cargo-cyclonedx --describe binaries`) |
 | `nxr-syft.cdx.json` | CycloneDX SBOM from the built Nix package (`syft dir:result`) |
 
-Release archives ship the Nix package layout (`bin/nxr`, man, completions,
-shell integration) for inspection and asset reuse. The `nxr` ELF is a normal
-Nix build product: it needs its `/nix/store` runtime closure, so extracting the
-tarball alone is not enough to execute `bin/nxr` even when `nix` is on `PATH`.
+### Nix-package archives are not portable
+
+Release archives ship the Nix package layout for inspection and asset reuse. The
+`nxr` binary is a normal Nix build product: it needs its `/nix/store` runtime
+closure, so extracting the tarball alone is not enough to execute `bin/nxr`
+even when `nix` is on `PATH`. Each archive includes a `README.txt` that states
+this explicitly. The release smoke job compares the archived binary to a fresh
+`nix build` and runs fixture checks through the **store-backed** result path.
 
 Prefer installing from the flake when you want a runnable binary:
 
@@ -37,6 +41,9 @@ nix profile install github:willmortimer/nxr#packages.x86_64-linux.nxr
 nix build github:willmortimer/nxr#packages.x86_64-linux.nxr
 ./result/bin/nxr --version
 ```
+
+Portable (non-`/nix/store`) CLI archives remain tracked as ADR-0141 and are
+**not** published by the current workflow.
 
 Systems match the root flake outputs:
 
@@ -53,17 +60,18 @@ After downloading a tarball:
 
 ```bash
 sha256sum -c SHA256SUMS --ignore-missing
-tar -xzf nxr-<version>-<system>.tar.gz
+tar -xzf nxr-<version>-<system>-nix-package.tar.gz
 # Layout check (ELF needs a Nix store closure to execute):
-test -x ./nxr-<version>-<system>/bin/nxr
-ls ./nxr-<version>-<system>/share/nxr/shell/
+test -x ./nxr-<version>-<system>-nix-package/bin/nxr
+test -f ./nxr-<version>-<system>-nix-package/README.txt
+ls ./nxr-<version>-<system>-nix-package/share/nxr/shell/
 ```
 
-The release workflow extract-and-smoke job verifies archive layout, asserts the
-tag/package version match on every matrix build, `cmp`s the uploaded `bin/nxr`
-against a fresh `nix build` of the tagged flake (same content-addressed output),
-then runs `--version`, completion generation, and fixture app/task invocations
-through that store-backed binary.
+The release workflow extract-and-smoke job verifies archive layout and labeling,
+asserts the tag/package version match on every matrix build, `cmp`s the uploaded
+`bin/nxr` against a fresh `nix build` of the tagged flake (same content-addressed
+output), then runs `--version`, completion generation, and fixture app/task
+invocations through that store-backed binary.
 
 ## Signing gap
 

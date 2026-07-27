@@ -5,7 +5,7 @@
 This index lists decisions that should be captured as individual Architecture Decision Records as implementation proceeds.
 
 V3-era ADRs (0201–0412) remain **Deferred** unless pulled forward by
-[ROADMAP.md](../ROADMAP.md). Active delivery follows that roadmap (3.0 → 3.1).
+[ROADMAP.md](../ROADMAP.md). Active delivery follows that roadmap (2.7 → 3.1).
 Execution-context design: [EXECUTION_CONTEXT.md](../EXECUTION_CONTEXT.md).
 
 An ADR is required when a decision:
@@ -86,24 +86,25 @@ Rejected   considered and explicitly not chosen
 | ADR-0130 | Do not reconstruct shells via print-dev-env | Proposed | 3.0 |
 | ADR-0131 | Configuration adapters inspect/build only; never switch/activate | Proposed | 2.6 |
 | ADR-0132 | Process nodes after task I/O; no built-in service module zoo | Proposed | 3.1 |
-| ADR-0133 | Persist Nix capability detection | Proposed | 2.6 |
-| ADR-0134 | Use an incremental content-correct workspace fingerprint | Proposed | 2.6 |
+| ADR-0133 | Persist Nix capability detection | Accepted (v2 config digest) | 2.6 / 2.7 |
+| ADR-0134 | Use an incremental content-correct workspace fingerprint | Accepted (2.7: skip unchanged rewrite; discoveryInputs) | 2.6 |
 | ADR-0135 | Opt-in task result caching for declared workspace outputs | Proposed | Later (post-3.0) |
-| ADR-0136 | Export and consume custom flake schemas | Proposed | 2.6 |
-| ADR-0137 | Treat Determinate Nix as a negotiated capability provider | Proposed | 2.6 |
+| ADR-0136 | Export and consume custom flake schemas | Accepted (NXR schema; generic inventory Later) | 2.6 |
+| ADR-0137 | Treat Determinate Nix as a negotiated capability provider | Accepted (doctor determinate v1; deepen Later) | 2.6 |
 | ADR-0138 | Task resource declarations and cooperative job control | Proposed | 3.0 |
 | ADR-0139 | Use one provider-neutral CI plan | Proposed | Later |
 | ADR-0140 | Delegate derivation execution placement to Nix | Proposed | Later |
-| ADR-0141 | Publish separate Nix-native and portable release artifacts | Proposed | 2.6 |
-| ADR-0142 | Generate and test user reference documentation | Proposed | 2.6 |
+| ADR-0141 | Publish separate Nix-native and portable release artifacts | Proposed (Nix-package archives labeled; portable still open) | 2.7 |
+| ADR-0142 | Generate and test user reference documentation | Accepted (guided path / example repo Later) | 2.6 |
 
-Notes on ADR-0133–0142 (from the internal `nxr-next` plan, remapped to local `main` at **2.5.0**):
+Notes on ADR-0133–0142 (from the internal `nxr-next` plan; 2.6 re-audit at `v2.6.0`):
 
-- Package baseline was remote **2.4.1**; local already shipped **2.5.0** affected execution — do not re-plan that milestone.
-- Warm discovery already content-hashes Nix trees (cache v4 / BLAKE3); ADR-0134 is the *incremental index* follow-on, not first content correctness.
-- ADR-0135 **supersedes ADR-0117 for schema v2 only**; schema v1 keeps “no general task-result caching.” Runtime stays deferred until after 3.0 contexts/I/O land (local roadmap “Later”), not ahead of 3.1 process workflows.
+- Package baseline was remote **2.4.1**; local shipped **2.5.0** affected execution then **2.6.0** latency + ergonomics.
+- Warm discovery content-hashes Nix trees (cache v4 / BLAKE3); ADR-0134 incremental index shipped in 2.6 — remaining polish is in ROADMAP 2.7.
+- ADR-0135 **supersedes ADR-0117 for schema v2 only**; schema v1 keeps “no general task-result caching.” Runtime stays deferred until after 3.0 contexts/I/O land.
 - ADR-0139 / ADR-0140 pull forward intent from deferred ADR-0214 / ADR-0215 / ADR-0304; they do not schedule the V3 control plane early.
-- Source packet (gitignored): `docs/internal/nxr-next-improvements/`.
+- ADR-0141 slipped from the 2.6 cut; track under ROADMAP 2.7 release blockers.
+- Source packets (gitignored): `docs/internal/nxr-next-improvements/`, `docs/internal/nxr-2.6-reaudit.md`.
 
 ## 4. V3 monorepo and action ADRs (deferred)
 

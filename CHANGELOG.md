@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.6.0] - 2026-07-26
+### Fixed
+
+- Capability cache (schema **v2**) keys on effective Nix configuration
+  (`NIX_CONFIG` / `NIX_USER_CONF_FILES` / `NIX_CONF_DIR` plus `nix config show`
+  JSON) so config changes under the same binary cannot reuse stale capabilities.
+  Warm hits still probe config once for digest validity, then skip
+  version/help/system.
+
+### Changed
+
+- GitHub release archives are named `nxr-<version>-<system>-nix-package.tar.gz`
+  and include `README.txt` stating they are Nix-package layouts, not portable
+  standalone binaries (`docs/RELEASE.md`).
+- CI builds `checks.<system>.flake-schema` on every quality matrix job.
+- CI enforces warm-path p50 ceilings via
+  `scripts/perf/measure-release.sh --enforce` and
+  `scripts/perf/ci-thresholds.json` (ubuntu + Nix latest). Warm `list` Nix
+  call-count budgets (`version=0`, `help=0`, `config=1`, `flake-show=0`) stay
+  gated by CLI integration tests.
 
 Feature release: warm-path latency foundations and ecosystem ergonomics.
 

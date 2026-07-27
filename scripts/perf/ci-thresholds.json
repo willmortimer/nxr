@@ -1,0 +1,6 @@
+{
+  "cold_list_p50_max_seconds": 45.0,
+  "warm_list_p50_max_seconds": 2.0,
+  "warm_plan_p50_max_seconds": 2.0,
+  "notes": "CI ceilings for GitHub-hosted runners (order-of-magnitude regression gate). Local SSD guidance remains in docs/PERFORMANCE.md (<25ms warm list / <75ms warm plan). Nix call-count budgets are enforced by CLI integration tests."
+}

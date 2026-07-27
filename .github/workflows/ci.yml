@@ -75,6 +75,20 @@ jobs:
       - name: Dependency policy
         run: nix run .#deny
 
+      - name: Flake schema check
+        run: |
+          set -euo pipefail
+          system="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
+          nix build ".#checks.${system}.flake-schema" -L
+
+      - name: Warm-path latency thresholds
+        if: matrix.os == 'ubuntu-latest' && matrix.nix_label == 'latest'
+        env:
+          NXR_BIN: ${{ steps.nxr.outputs.bin }}
+          NXR_PERF_RUNS: "3"
+          NXR_PERF_ENFORCE: "1"
+        run: ./scripts/perf/measure-release.sh --enforce
+
       - name: Fixture smoke (basic-apps)
         env:
           NXR: ${{ steps.nxr.outputs.bin }}

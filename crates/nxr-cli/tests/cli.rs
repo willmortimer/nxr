@@ -2576,8 +2576,22 @@ fn warm_list_reuses_capability_cache_without_reprobing() {
         0,
         "warm list should not re-probe version; cold version={cold_version} config={cold_config} help={cold_help}; log={warm_log}"
     );
-    assert_eq!(counter.count("config"), 0, "log={warm_log}");
-    assert_eq!(counter.count("help"), 0, "log={warm_log}");
+    // Warm hits still run one config probe to validate the effective-config digest.
+    assert_eq!(
+        counter.count("config"),
+        1,
+        "warm list should probe config exactly once for digest validity; log={warm_log}"
+    );
+    assert_eq!(
+        counter.count("help"),
+        0,
+        "warm list should not re-probe help; log={warm_log}"
+    );
+    assert_eq!(
+        counter.count("flake-show"),
+        0,
+        "warm list should reuse discovery cache (no flake show); log={warm_log}"
+    );
 }
 
 #[test]
@@ -3717,12 +3731,7 @@ fn fmt_dry_run_invokes_nix_fmt() {
 
     cargo_bin_cmd!("nxr")
         .current_dir(repo_root())
-        .args([
-            "--flake",
-            "fixtures/standard-outputs",
-            "--dry-run",
-            "fmt",
-        ])
+        .args(["--flake", "fixtures/standard-outputs", "--dry-run", "fmt"])
         .assert()
         .success()
         .stdout(predicate::str::contains("fmt"));
@@ -3923,7 +3932,12 @@ fn list_configurations_fixture() {
 
     cargo_bin_cmd!("nxr")
         .current_dir(repo_root())
-        .args(["--flake", "fixtures/configurations", "list", "configurations"])
+        .args([
+            "--flake",
+            "fixtures/configurations",
+            "list",
+            "configurations",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("dev"))

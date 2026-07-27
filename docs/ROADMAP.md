@@ -33,6 +33,37 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 ## Active roadmap
 
 Design detail for everything below lives in [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).
+Post-2.6 static re-audit (gitignored): `docs/internal/nxr-2.6-reaudit.md`.
+
+### 2.7 — Correctness, CI contract, and warm-path polish
+
+Ship before expanding schema-v2 runtime. Priority order from the 2.6 re-audit:
+
+**Blockers**
+
+1. ~~Capability-cache validity must include effective Nix configuration~~ — done
+   (schema v2: env + `nix config show` digest; warm hits still probe config once).
+2. ~~Release artifacts clearly labeled as Nix-package layouts~~ — done
+   (`*-nix-package.tar.gz` + in-archive `README.txt`; portable split remains ADR-0141).
+3. ~~CI builds `checks.*.flake-schema`~~ — done
+   (explicit `nix build .#checks.<system>.flake-schema`; hermetic fmt/clippy/test
+   remain via apps to avoid duplicating `nix flake check` wall time).
+4. ~~CI / harness thresholds for warm-path latency and Nix-call-count regressions~~ —
+   done (`measure-release.sh --enforce` + `ci-thresholds.json` on ubuntu/latest;
+   warm list call budgets in CLI tests).
+
+**Warm-path polish**
+
+5. Skip rewriting an unchanged fingerprint index; incrementally cover
+   `discoveryInputs`; avoid double fingerprint work in status/explain paths.
+6. Large-monorepo / high-file-count benchmarks; qualify fingerprint “content”
+   invalidation wording vs inode/size/mtime reuse.
+7. Optional: `watch` lightweight name resolution / explicit `app:` form when
+   task discovery is expensive.
+
+**Not in 2.7** (keep deferred): thread-per-pipe multiplexing (before high-concurrency
+runner claims), generic inventory/role CLI, expanded Determinate doctor depth,
+task-result caching, resource-aware scheduling — see Later / 3.0.
 
 ### 3.0 — Execution-context schema
 
@@ -72,6 +103,10 @@ Only after the above stabilize:
 
 - shell descriptions and optional shell-entry command menu;
 - treefmt / git-hooks recognition via standard flake outputs and checks;
+- generic inventory / role-based custom-schema inspection (`nxr inventory` …);
+- expanded `doctor determinate` (effective features, FlakeHub auth, builders);
+- mio/kqueue/epoll process output multiplexing and deadline heaps;
+- dogfood repository CI through one canonical NXR task DAG;
 - artifact restoration;
 - task result caching;
 - remote workspace execution;

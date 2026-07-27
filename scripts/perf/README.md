@@ -7,6 +7,7 @@ artifact; fall back to `cargo build --release` when Nix is unavailable.
 
 - `nix` (recommended) or Rust toolchain
 - `/usr/bin/time` (macOS) or GNU `time` on Linux
+- `jq` or `python3` when enforcing thresholds
 
 ## Build the binary
 
@@ -24,7 +25,12 @@ From the repository root:
 
 ```bash
 ./scripts/perf/measure-release.sh
+# Fail CI-style when p50 exceeds scripts/perf/ci-thresholds.json:
+./scripts/perf/measure-release.sh --enforce
 ```
+
+The harness isolates `HOME` / `XDG_CACHE_HOME` so cold vs warm cache behavior is
+stable. It prints per-run wall times and a p50 summary.
 
 Environment overrides:
 
@@ -34,13 +40,25 @@ Environment overrides:
 | `NXR_PERF_RUNS` | `5` | Repetitions per scenario |
 | `NXR_PERF_FIXTURE` | `fixtures/basic-apps` | Flake for list/plan scenarios |
 | `NXR_PERF_PLAN_APP` | `hello` | App name for `plan` |
+| `NXR_PERF_ENFORCE` | `0` | `1` → fail when p50 exceeds thresholds |
+| `NXR_PERF_THRESHOLDS` | `scripts/perf/ci-thresholds.json` | Thresholds JSON |
+| `NXR_PERF_MAX_WARM_LIST_S` | from JSON | Override warm list p50 ceiling (seconds) |
+| `NXR_PERF_MAX_WARM_PLAN_S` | from JSON | Override warm plan p50 ceiling |
+| `NXR_PERF_MAX_COLD_LIST_S` | from JSON | Override cold list p50 ceiling |
 
-The script prints per-run wall times and a p50 summary. Compare p50 across
-commits; use p95/max to spot filesystem or Nix daemon outliers (see
-[docs/PERFORMANCE.md](../../docs/PERFORMANCE.md)).
+## CI gate
+
+GitHub Actions (`ci.yml`, ubuntu + Nix latest) runs
+`measure-release.sh --enforce` against the Nix-built `nxr` with
+[`ci-thresholds.json`](ci-thresholds.json). Those ceilings are **order-of-magnitude**
+guards for hosted runners, not the local SSD targets in
+[docs/PERFORMANCE.md](../../docs/PERFORMANCE.md).
+
+Nix **call-count** budgets (warm list: `version=0`, `help=0`, `config=1`,
+`flake-show=0`) are enforced by CLI integration tests that already run in CI.
 
 ## Baseline artifact
 
 [`baseline-aarch64-darwin.json`](baseline-aarch64-darwin.json) records sample
-p50 values for regression triage. Update it when remeasuring on a reference
-host; do not treat it as a CI gate.
+p50 values for local regression triage on a reference host. Update it when
+remeasuring; do not treat it as the CI gate (use `ci-thresholds.json` instead).

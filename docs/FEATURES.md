@@ -454,7 +454,7 @@ The command reports normalized configuration after defaults and capability resol
 
 ## 3. Planned expansion (committed roadmap)
 
-Scheduled work is in [ROADMAP.md](ROADMAP.md) (3.0 → 3.1) with full design in
+Scheduled work is in [ROADMAP.md](ROADMAP.md) (2.7 → 3.1) with full design in
 [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md):
 
 Shipped in **2.6** (see [ROADMAP.md](ROADMAP.md)):

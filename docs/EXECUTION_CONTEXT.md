@@ -1,6 +1,6 @@
 # Execution context and ecosystem expansion
 
-**Status:** design contract for post-2.6 work (3.0 → 3.1). Not yet implemented.
+**Status:** design contract for post-2.6 work (2.7 → 3.1). Not yet implemented.
 **Companion:** [ROADMAP.md](ROADMAP.md) (scheduling), [CONTRACT_SUMMARY.md](CONTRACT_SUMMARY.md) (invariants), [ECOSYSTEM_SYNTHESIS.md](ECOSYSTEM_SYNTHESIS.md) (inheritance rules).
 
 ## Product identity
