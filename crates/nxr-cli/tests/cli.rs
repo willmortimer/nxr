@@ -3210,7 +3210,12 @@ fn doctor_all_does_not_double_capability_probes() {
         1,
         "single version probe; log={log}"
     );
-    assert_eq!(counter.count("config"), 1, "single config probe; log={log}");
+    // `probe_config_json` tries `nix config show` then `show-config`; both log as
+    // "config", so a single logical probe may appear as 1 or 2 lines.
+    assert!(
+        (1..=2).contains(&counter.count("config")),
+        "config probe (with optional show-config fallback); log={log}"
+    );
     assert!(
         (1..=2).contains(&counter.count("eval")),
         "system probe plus at most one discovery eval; log={log}"
@@ -4854,9 +4859,15 @@ fn context_run_deploys_with_env_secret() {
         return;
     }
 
+    // Isolate discovery/capability caches so parallel tests cannot poison shell
+    // metadata for this flake (empty dev_shells → unknown shell on context run).
+    let home = tempfile::TempDir::new().expect("temp home");
     let marker = "nxr-context-run-marker";
     let output = cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("XDG_CONFIG_HOME", home.path().join("config"))
         .env("NXR_FIXTURE_DEPLOY_TOKEN", marker)
         .env("NXR_ASSUME_YES", "1")
         .env("NXR_TRUST_PROJECT", "1")
@@ -4872,13 +4883,14 @@ fn context_run_deploys_with_env_secret() {
         .expect("spawn nxr context run");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "context run should succeed when secret env is set\nstdout: {stdout}"
+        "context run should succeed when secret env is set\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
         stdout.contains("deploy ok"),
-        "expected deploy marker in stdout"
+        "expected deploy marker in stdout:\n{stdout}\nstderr: {stderr}"
     );
     assert!(
         !stdout.contains(marker),

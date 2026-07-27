@@ -1201,12 +1201,14 @@ mod tests {
     fn discovery_input_content_change_invalidates() {
         let temp = TempDir::new().expect("tempdir");
         let root = utf8_root(&temp);
-        fs::write(root.join("extra.txt"), "one\n").expect("write");
-        let inputs = vec!["extra.txt".to_owned()];
-        let initial = discovery_inputs_fingerprint(&root, &inputs).expect("initial");
-        fs::write(root.join("extra.txt"), "two\n").expect("rewrite");
-        let updated = discovery_inputs_fingerprint(&root, &inputs).expect("updated");
-        assert_ne!(initial, updated);
+        with_fingerprint_index_dir(&temp, || {
+            fs::write(root.join("extra.txt"), "one\n").expect("write");
+            let inputs = vec!["extra.txt".to_owned()];
+            let initial = discovery_inputs_fingerprint(&root, &inputs).expect("initial");
+            fs::write(root.join("extra.txt"), "two\n").expect("rewrite");
+            let updated = discovery_inputs_fingerprint(&root, &inputs).expect("updated");
+            assert_ne!(initial, updated);
+        });
     }
 
     #[test]
