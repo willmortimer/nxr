@@ -42,7 +42,7 @@ Ship before expanding schema-v2 runtime. Priority order from the 2.6 re-audit:
 **Blockers**
 
 1. ~~Capability-cache validity must include effective Nix configuration~~ — done
-   (schema v2: env + `nix config show` digest; warm hits still probe config once).
+   (schema v3: binary + env layers; warm hits skip all probes when env digest matches).
 2. ~~Release artifacts clearly labeled as Nix-package layouts~~ — done
    (`*-nix-package.tar.gz` + in-archive `README.txt`; portable split remains ADR-0141).
 3. ~~CI builds `checks.*.flake-schema`~~ — done

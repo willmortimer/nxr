@@ -12,8 +12,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::NixError;
 use crate::capabilities::{
-    CapabilityEvidence, CapabilityProvenance, NixCapabilities, detect_capabilities_with_evidence,
-    detect_system, probe_config_json,
+    CapabilityEvidence, CapabilityProvenance, NixCapabilities,
+    detect_capabilities_with_known_version, detect_capabilities_with_preprobed_config,
+    detect_system, probe_config_json, probe_version_banner,
 };
 
 /// Environment variable disabling the capability cache (`off`, `0`, or `false`).
@@ -29,9 +30,10 @@ pub const DEFAULT_CACHE_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// On-disk schema for capability cache entries.
 ///
-/// v2 adds [`CachedEntry::config_digest`] so effective Nix configuration changes
-/// (env and `nix config show`) invalidate warm hits under the same binary.
-const CACHE_SCHEMA_VERSION: u32 = 2;
+/// v3 splits the cache into two layers keyed by binary identity:
+/// - Layer 1 (binary): version banner + help/version-derived capability flags + system.
+/// - Layer 2 (environment): `env_digest` / `config_digest` for config-derived fields.
+const CACHE_SCHEMA_VERSION: u32 = 3;
 
 /// Environment variables that reshape effective Nix configuration without
 /// changing the `nix` executable identity.
@@ -81,7 +83,9 @@ struct ExecutableIdentity {
 struct CachedEntry {
     schema_version: u32,
     identity: StoredNixIdentity,
-    /// Digest of effective Nix configuration at store time (see [`effective_config_digest`]).
+    /// Digest of config-shaping environment variables only (no `nix config` probe).
+    env_digest: String,
+    /// Digest of env vars plus `nix config show` JSON at store time.
     config_digest: String,
     current_system: String,
     capabilities: NixCapabilities,
@@ -118,35 +122,42 @@ pub fn capability_cache_dir() -> Option<PathBuf> {
 
 /// Detect the current system and capabilities, using the on-disk cache when valid.
 ///
-/// Warm hits still probe `nix config show` once to compute
-/// [`effective_config_digest`], then skip version/help/system when the digest
-/// matches. That keeps config-derived flags (`flakes_enabled`, …) correct when
-/// `NIX_CONFIG` or user/daemon Nix configuration changes under the same binary.
+/// Warm hits with a matching environment digest skip all Nix probes (version,
+/// config, help, and system). When the binary cache is warm but the environment
+/// digest changed, only `nix config show` is re-probed; version/help/system are
+/// taken from the binary layer.
 ///
 /// # Errors
 ///
 /// Returns [`NixError`] when detection or cache I/O fails fatally.
 pub fn detect_nix_environment(nix: &Utf8Path, refresh: bool) -> Result<NixEnvironment, NixError> {
     let executable = executable_identity(nix)?;
-    let config_digest = effective_config_digest(nix);
+    let env_digest = env_config_digest();
 
-    if capability_cache_enabled()
-        && !refresh
-        && let Some(entry) = load_cached_entry(&executable, &config_digest)
-    {
-        return Ok(NixEnvironment {
-            system: entry.current_system,
-            capabilities: entry.capabilities,
-            provenance: CapabilityProvenance {
-                from_cache: true,
-                evidence: vec![CapabilityEvidence::Cache, CapabilityEvidence::Config],
-            },
-        });
+    if capability_cache_enabled() && !refresh {
+        if let Some(entry) = load_cached_entry(&executable) {
+            if entry.env_digest == env_digest {
+                return Ok(NixEnvironment {
+                    system: entry.current_system,
+                    capabilities: entry.capabilities,
+                    provenance: CapabilityProvenance {
+                        from_cache: true,
+                        evidence: vec![CapabilityEvidence::Cache],
+                    },
+                });
+            }
+
+            return Ok(reprobe_config_layer(nix, &executable, &entry, &env_digest)?);
+        }
     }
 
+    let version_banner = probe_version_banner(nix)?;
+    let config_json = probe_config_json(nix);
+    let config_digest =
+        config_digest_from_parts(|key| std::env::var(key).ok(), config_json.as_deref());
+    let (capabilities, evidence) =
+        detect_capabilities_with_preprobed_config(nix, &version_banner, config_json.as_deref())?;
     let system = detect_system(nix)?;
-    let (capabilities, evidence) = detect_capabilities_with_evidence(nix)?;
-    let version_banner = capabilities.version.to_string();
 
     if capability_cache_enabled() {
         let identity = StoredNixIdentity {
@@ -157,13 +168,14 @@ pub fn detect_nix_environment(nix: &Utf8Path, refresh: bool) -> Result<NixEnviro
         let entry = CachedEntry {
             schema_version: CACHE_SCHEMA_VERSION,
             identity,
-            config_digest: config_digest.clone(),
+            env_digest: env_digest.clone(),
+            config_digest,
             current_system: system.clone(),
             capabilities: capabilities.clone(),
             evidence: evidence.clone(),
             recorded_at: unix_now_secs(),
         };
-        let _ = store_cached_entry(&executable, &config_digest, &entry);
+        let _ = store_cached_entry(&executable, &entry);
     }
 
     Ok(NixEnvironment {
@@ -171,6 +183,44 @@ pub fn detect_nix_environment(nix: &Utf8Path, refresh: bool) -> Result<NixEnviro
         capabilities,
         provenance: CapabilityProvenance {
             from_cache: false,
+            evidence,
+        },
+    })
+}
+
+/// Re-probe config when the binary cache is warm but the environment digest changed.
+fn reprobe_config_layer(
+    nix: &Utf8Path,
+    executable: &ExecutableIdentity,
+    entry: &CachedEntry,
+    env_digest: &str,
+) -> Result<NixEnvironment, NixError> {
+    let config_json = probe_config_json(nix);
+    let config_digest =
+        config_digest_from_parts(|key| std::env::var(key).ok(), config_json.as_deref());
+    let (capabilities, mut evidence) = detect_capabilities_with_known_version(
+        &entry.identity.version_banner,
+        config_json.as_deref(),
+    )?;
+    evidence.insert(0, CapabilityEvidence::Cache);
+
+    let updated = CachedEntry {
+        schema_version: CACHE_SCHEMA_VERSION,
+        identity: entry.identity.clone(),
+        env_digest: env_digest.to_owned(),
+        config_digest,
+        current_system: entry.current_system.clone(),
+        capabilities: capabilities.clone(),
+        evidence: evidence.clone(),
+        recorded_at: unix_now_secs(),
+    };
+    let _ = store_cached_entry(executable, &updated);
+
+    Ok(NixEnvironment {
+        system: entry.current_system.clone(),
+        capabilities,
+        provenance: CapabilityProvenance {
+            from_cache: true,
             evidence,
         },
     })
@@ -285,8 +335,8 @@ fn system_time_to_parts(time: SystemTime) -> Option<(u64, u32)> {
     Some((duration.as_secs(), duration.subsec_nanos()))
 }
 
-fn load_cached_entry(executable: &ExecutableIdentity, config_digest: &str) -> Option<CachedEntry> {
-    let path = cache_file_path(executable, config_digest)?;
+fn load_cached_entry(executable: &ExecutableIdentity) -> Option<CachedEntry> {
+    let path = cache_file_path(executable)?;
     if !path.is_file() {
         return None;
     }
@@ -303,9 +353,6 @@ fn load_cached_entry(executable: &ExecutableIdentity, config_digest: &str) -> Op
     if cached.identity.file != executable.file {
         return None;
     }
-    if cached.config_digest != config_digest {
-        return None;
-    }
     if let Some(ttl) = cache_ttl_secs()
         && unix_now_secs().saturating_sub(cached.recorded_at) > ttl
     {
@@ -315,12 +362,8 @@ fn load_cached_entry(executable: &ExecutableIdentity, config_digest: &str) -> Op
     Some(cached)
 }
 
-fn store_cached_entry(
-    executable: &ExecutableIdentity,
-    config_digest: &str,
-    entry: &CachedEntry,
-) -> io::Result<()> {
-    let path = cache_file_path(executable, config_digest)
+fn store_cached_entry(executable: &ExecutableIdentity, entry: &CachedEntry) -> io::Result<()> {
+    let path = cache_file_path(executable)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "cache directory unavailable"))?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -356,15 +399,9 @@ fn store_cached_entry(
     Ok(())
 }
 
-/// Digest of effective Nix configuration used for capability-cache validity.
-///
-/// Includes config-shaping environment variables and the JSON from
-/// `nix config show` / `show-config` when available.
-fn effective_config_digest(nix: &Utf8Path) -> String {
-    config_digest_from_parts(
-        |key| std::env::var(key).ok(),
-        probe_config_json(nix).as_deref(),
-    )
+/// Digest of config-shaping environment variables (no `nix config` probe).
+fn env_config_digest() -> String {
+    config_digest_from_parts(|key| std::env::var(key).ok(), None)
 }
 
 fn config_digest_from_parts(
@@ -398,7 +435,7 @@ fn config_digest_from_parts(
     hasher.finalize().to_hex().to_string()
 }
 
-fn cache_file_path(executable: &ExecutableIdentity, config_digest: &str) -> Option<PathBuf> {
+fn cache_file_path(executable: &ExecutableIdentity) -> Option<PathBuf> {
     let root = cache_root()?;
     let mut hasher = Hasher::new();
     hasher.update(executable.canonical_path.as_bytes());
@@ -411,8 +448,6 @@ fn cache_file_path(executable: &ExecutableIdentity, config_digest: &str) -> Opti
         hasher.update(&executable.file.dev.to_le_bytes());
         hasher.update(&executable.file.ino.to_le_bytes());
     }
-    hasher.update(&[0]);
-    hasher.update(config_digest.as_bytes());
     Some(root.join(format!("{}.json", hasher.finalize().to_hex())))
 }
 
@@ -448,11 +483,12 @@ mod tests {
 
     use super::{
         CAPABILITY_CACHE_ENV, CachedEntry, StoredNixIdentity, TEST_CACHE_ROOT,
-        cache_enabled_for_env, clear_capability_cache, detect_nix_environment,
-        effective_config_digest, executable_identity, load_cached_entry, store_cached_entry,
+        cache_enabled_for_env, clear_capability_cache, detect_nix_environment, env_config_digest,
+        executable_identity, load_cached_entry, store_cached_entry,
     };
     use crate::capabilities::{
-        NixCapabilities, TESTED_NIX_SUPPORT_FLOOR, detect_capabilities_with_evidence,
+        CapabilityEvidence, NixCapabilities, TESTED_NIX_SUPPORT_FLOOR,
+        detect_capabilities_with_evidence, reset_test_config_probe_count, test_config_probe_count,
     };
 
     fn with_cache_dir<T>(temp: &TempDir, f: impl FnOnce() -> T) -> T {
@@ -472,18 +508,19 @@ mod tests {
         executable_identity(path).expect("identity")
     }
 
-    fn sample_entry(executable: &super::ExecutableIdentity, config_digest: &str) -> CachedEntry {
+    fn sample_entry(executable: &super::ExecutableIdentity, env_digest: &str) -> CachedEntry {
         CachedEntry {
             schema_version: super::CACHE_SCHEMA_VERSION,
             identity: StoredNixIdentity {
                 canonical_path: executable.canonical_path.clone(),
                 file: executable.file.clone(),
-                version_banner: TESTED_NIX_SUPPORT_FLOOR.to_string(),
+                version_banner: format!("nix (Nix) {}\n", TESTED_NIX_SUPPORT_FLOOR),
             },
-            config_digest: config_digest.to_owned(),
+            env_digest: env_digest.to_owned(),
+            config_digest: env_digest.to_owned(),
             current_system: "aarch64-darwin".to_owned(),
             capabilities: NixCapabilities::all_supported_for_tests(TESTED_NIX_SUPPORT_FLOOR),
-            evidence: vec![crate::capabilities::CapabilityEvidence::Config],
+            evidence: vec![CapabilityEvidence::Config],
             recorded_at: super::unix_now_secs(),
         }
     }
@@ -511,12 +548,19 @@ mod tests {
 
         with_cache_dir(&temp, || {
             let executable = sample_executable(&nix);
-            let digest = effective_config_digest(&nix);
-            store_cached_entry(&executable, &digest, &sample_entry(&executable, &digest))
+            let env_digest = env_config_digest();
+            store_cached_entry(&executable, &sample_entry(&executable, &env_digest))
                 .expect("store");
 
+            reset_test_config_probe_count();
             let env = detect_nix_environment(&nix, false).expect("detect");
             assert!(env.provenance.from_cache);
+            assert_eq!(env.provenance.evidence, vec![CapabilityEvidence::Cache]);
+            assert_eq!(
+                test_config_probe_count(),
+                0,
+                "warm env hit must not probe config"
+            );
             assert_eq!(
                 env.system, "aarch64-darwin",
                 "cached system should be returned"
@@ -536,15 +580,20 @@ mod tests {
         };
 
         with_cache_dir(&temp, || {
+            reset_test_config_probe_count();
             let env = detect_nix_environment(&nix, false).expect("detect");
             assert!(!env.provenance.from_cache);
+            assert!(
+                test_config_probe_count() >= 1,
+                "cold detect should probe config at least once"
+            );
 
             let executable = sample_executable(&nix);
-            let digest = effective_config_digest(&nix);
-            let cached = load_cached_entry(&executable, &digest).expect("cache entry");
+            let env_digest = env_config_digest();
+            let cached = load_cached_entry(&executable).expect("cache entry");
             assert_eq!(cached.current_system, env.system);
             assert_eq!(cached.capabilities.version, env.capabilities.version);
-            assert_eq!(cached.config_digest, digest);
+            assert_eq!(cached.env_digest, env_digest);
         });
     }
 
@@ -561,20 +610,20 @@ mod tests {
 
         with_cache_dir(&temp, || {
             let executable = sample_executable(&nix);
-            let digest = effective_config_digest(&nix);
-            let mut stale = sample_entry(&executable, &digest);
+            let env_digest = env_config_digest();
+            let mut stale = sample_entry(&executable, &env_digest);
             stale.identity.file.size = executable.file.size.saturating_add(1);
-            store_cached_entry(&executable, &digest, &stale).expect("store stale");
+            store_cached_entry(&executable, &stale).expect("store stale");
 
             assert!(
-                load_cached_entry(&executable, &digest).is_none(),
+                load_cached_entry(&executable).is_none(),
                 "stale file identity should miss"
             );
         });
     }
 
     #[test]
-    fn nix_config_env_change_misses_cache() {
+    fn nix_config_env_change_misses_env_digest() {
         let temp = TempDir::new().expect("tempdir");
         let nix = which::which("nix")
             .ok()
@@ -586,8 +635,8 @@ mod tests {
 
         with_cache_dir(&temp, || {
             let executable = sample_executable(&nix);
-            let digest = effective_config_digest(&nix);
-            store_cached_entry(&executable, &digest, &sample_entry(&executable, &digest))
+            let env_digest = env_config_digest();
+            store_cached_entry(&executable, &sample_entry(&executable, &env_digest))
                 .expect("store");
 
             let changed = super::config_digest_from_parts(
@@ -598,15 +647,71 @@ mod tests {
                         std::env::var(key).ok()
                     }
                 },
-                Some(r#"{"experimental-features":{"value":["nix-command"]}}"#),
+                None,
             );
             assert_ne!(
-                digest, changed,
-                "effective config should reshape the digest"
+                env_digest, changed,
+                "NIX_CONFIG should reshape the env digest"
+            );
+            assert_ne!(sample_entry(&executable, &env_digest).env_digest, changed);
+        });
+    }
+
+    #[test]
+    fn nix_config_change_reprobes_config_not_help() {
+        let temp = TempDir::new().expect("tempdir");
+        let nix = which::which("nix")
+            .ok()
+            .and_then(|path| Utf8PathBuf::from_path_buf(path).ok());
+        let Some(nix) = nix else {
+            eprintln!("skipping: nix not on PATH");
+            return;
+        };
+
+        with_cache_dir(&temp, || {
+            let executable = sample_executable(&nix);
+            let current_env_digest = env_config_digest();
+            let stale_env_digest = super::config_digest_from_parts(
+                |key| {
+                    if key == "NIX_CONFIG" {
+                        Some("experimental-features = nix-command\nwarn-dirty = false".to_owned())
+                    } else {
+                        std::env::var(key).ok()
+                    }
+                },
+                None,
+            );
+            assert_ne!(current_env_digest, stale_env_digest);
+            store_cached_entry(&executable, &sample_entry(&executable, &stale_env_digest))
+                .expect("store");
+
+            reset_test_config_probe_count();
+            let env = detect_nix_environment(&nix, false).expect("detect after env digest miss");
+
+            assert!(env.provenance.from_cache);
+            assert!(
+                env.provenance.evidence.contains(&CapabilityEvidence::Cache),
+                "binary layer should still be warm: {:?}",
+                env.provenance.evidence
             );
             assert!(
-                load_cached_entry(&executable, &changed).is_none(),
-                "digest change must miss the prior entry"
+                env.provenance
+                    .evidence
+                    .contains(&CapabilityEvidence::Config),
+                "config should be re-probed: {:?}",
+                env.provenance.evidence
+            );
+            assert!(
+                !env.provenance
+                    .evidence
+                    .contains(&CapabilityEvidence::HelpProbe),
+                "help must not be re-probed when version is cached: {:?}",
+                env.provenance.evidence
+            );
+            assert_eq!(
+                test_config_probe_count(),
+                1,
+                "exactly one config probe on env digest miss"
             );
         });
     }
@@ -619,6 +724,7 @@ mod tests {
         let other = super::config_digest_from_parts(|_| None, Some(r#"{"a":2}"#));
         assert_ne!(left, other);
     }
+
     #[test]
     fn refresh_bypasses_cache() {
         let temp = TempDir::new().expect("tempdir");
@@ -632,9 +738,8 @@ mod tests {
 
         with_cache_dir(&temp, || {
             let executable = sample_executable(&nix);
-            let digest = effective_config_digest(&nix);
-            store_cached_entry(&executable, &digest, &sample_entry(&executable, &digest))
-                .expect("seed");
+            let env_digest = env_config_digest();
+            store_cached_entry(&executable, &sample_entry(&executable, &env_digest)).expect("seed");
 
             let env = detect_nix_environment(&nix, true).expect("refresh detect");
             assert!(!env.provenance.from_cache);
@@ -654,12 +759,11 @@ mod tests {
 
         with_cache_dir(&temp, || {
             let executable = sample_executable(&nix);
-            let digest = effective_config_digest(&nix);
-            store_cached_entry(&executable, &digest, &sample_entry(&executable, &digest))
-                .expect("seed");
+            let env_digest = env_config_digest();
+            store_cached_entry(&executable, &sample_entry(&executable, &env_digest)).expect("seed");
             let removed = clear_capability_cache().expect("clear");
             assert_eq!(removed, 1);
-            assert!(load_cached_entry(&executable, &digest).is_none());
+            assert!(load_cached_entry(&executable).is_none());
         });
     }
 
@@ -674,9 +778,9 @@ mod tests {
         };
 
         let (_, evidence) = detect_capabilities_with_evidence(&nix).expect("detect");
-        if evidence.contains(&crate::capabilities::CapabilityEvidence::Config) {
+        if evidence.contains(&CapabilityEvidence::Config) {
             assert!(
-                !evidence.contains(&crate::capabilities::CapabilityEvidence::HelpProbe),
+                !evidence.contains(&CapabilityEvidence::HelpProbe),
                 "help probes should be skipped when config is available: {evidence:?}"
             );
         }

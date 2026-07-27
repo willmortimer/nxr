@@ -54,7 +54,7 @@ GitHub Actions (`ci.yml`, ubuntu + Nix latest) runs
 guards for hosted runners, not the local SSD targets in
 [docs/PERFORMANCE.md](../../docs/PERFORMANCE.md).
 
-Nix **call-count** budgets (warm list: `version=0`, `help=0`, `config=1`,
+Nix **call-count** budgets (warm list: `version=0`, `help=0`, `config=0`,
 `flake-show=0`) are enforced by CLI integration tests that already run in CI.
 
 ## Baseline artifact
