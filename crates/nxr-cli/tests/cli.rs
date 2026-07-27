@@ -1934,6 +1934,153 @@ fn list_category_filter_limits_tasks_section() {
 }
 
 #[test]
+fn list_category_selector_limits_tasks_section() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !task_dag_discovery_available(&repo_root) {
+        return;
+    }
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/task-dag",
+            "list",
+            "category:validation",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ci  CI gate"))
+        .stdout(predicate::str::contains("fmt  Format sources").not());
+}
+
+#[test]
+fn task_category_selector_runs_matching_tasks() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !task_dag_discovery_available(&repo_root) {
+        return;
+    }
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/task-dag",
+            "--dry-run",
+            "task",
+            "category:validation",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("#ci"),
+        "expected ci root from category selector:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("serial schedule: fmt -> test -> ci"),
+        "category selector should still run ci dependencies:\n{stdout}"
+    );
+}
+
+#[test]
+fn plan_category_selector_emits_execution_plan() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !task_dag_discovery_available(&repo_root) {
+        return;
+    }
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/task-dag",
+            "plan",
+            "category:validation",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).expect("parse execution plan json");
+    assert_eq!(value["root"], "ci");
+    assert_eq!(value["schema_version"], 1);
+}
+
+#[test]
+fn task_changed_selector_runs_affected_union() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/affected-deps",
+            "--dry-run",
+            "task",
+            "changed",
+            "--path",
+            "shared/lib.txt",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8 stderr");
+    assert!(
+        stderr.contains("running affected tasks:"),
+        "expected affected roots log:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("serial schedule: shared-lib -> api-test -> web-test -> ci"),
+        "expected affected union from changed selector:\n{stdout}"
+    );
+}
+
+#[test]
+fn ci_plan_json_exports_ci_plan_schema() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !task_dag_discovery_available(&repo_root) {
+        return;
+    }
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/task-dag", "--json", "ci", "plan"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse ci plan json");
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["roots"], serde_json::json!(["ci"]));
+    assert_eq!(value["execution_plan"]["schema_version"], 1);
+    assert_eq!(value["execution_plan"]["root"], "ci");
+    assert!(value.get("affected").is_none_or(|v| v.is_null()));
+}
+
+#[test]
 fn list_namespace_filter_limits_monorepo_fixture() {
     let Some(()) = require_nix() else {
         return;

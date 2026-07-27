@@ -11,9 +11,10 @@ use nxr_completion::cache::{
 use nxr_core::sanitize::sanitize_terminal_text;
 use nxr_core::{App, AppList, FlakeOutput, OutputList, ProjectsError};
 use nxr_nix::{NixError, OptionalNixFlags, OutputTable, TaskDiscoveryError};
-use nxr_task::{TaskDefinition, TaskDocument};
+use nxr_task::{TaskDefinition, TaskDocument, resolve_list_selector};
 use serde::Serialize;
 
+use crate::commands::affected::{AffectedCommandError, AffectedPathSources, select_for_flake};
 use crate::commands::common::{PrepareError, build_adapter, current_invocation_directory};
 use crate::commands::views::ViewFilter;
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
@@ -58,6 +59,10 @@ pub enum ListError {
     Io(#[from] io::Error),
     #[error(transparent)]
     Configuration(#[from] crate::commands::configurations::ConfigurationError),
+    #[error(transparent)]
+    Selector(#[from] nxr_task::SelectorError),
+    #[error(transparent)]
+    Affected(#[from] AffectedCommandError),
 }
 
 impl ListError {
@@ -71,6 +76,8 @@ impl ListError {
             Self::Projects(error) => error.exit_code(),
             Self::Json(_) | Self::Io(_) => nxr_core::diagnostics::exit::EVALUATION,
             Self::Configuration(error) => error.exit_code(),
+            Self::Selector(_) => nxr_core::diagnostics::exit::USAGE,
+            Self::Affected(error) => error.exit_code(),
         }
     }
 }
@@ -89,22 +96,42 @@ pub fn run(
     json: bool,
     refresh_discovery: bool,
     nix_flags: &OptionalNixFlags,
-    kind: Option<ListKind>,
+    filter: Option<&str>,
     category: Option<&str>,
     namespace: Option<&str>,
+    path_sources: &AffectedPathSources,
+    paths: &[String],
     runner: RunnerOutput,
 ) -> Result<(), ListError> {
+    let (kind, selector_category, affected_only) = resolve_list_filter(filter)?;
+    let category = category.map(str::to_owned).or(selector_category);
+    let category_ref = category.as_deref();
+
     let invocation_cwd = current_invocation_directory()?;
     let flake = resolve_flake(flake_arg, &invocation_cwd)?;
     let adapter = build_adapter(nix_override)?;
-    let filter = ViewFilter::resolve(
+    let view_filter = ViewFilter::resolve(
         flake
             .local_root
             .as_deref()
             .map(camino::Utf8Path::as_std_path),
-        category,
+        category_ref,
         namespace,
     )?;
+
+    let affected_names = if affected_only {
+        Some(load_affected_names(
+            flake_arg,
+            nix_override,
+            refresh_discovery,
+            nix_flags,
+            path_sources,
+            paths,
+            runner.clone(),
+        )?)
+    } else {
+        None
+    };
 
     match kind {
         Some(ListKind::Apps) => {
@@ -113,7 +140,11 @@ pub fn run(
                 .map_err(ListError::Io)?;
             let apps_only = discover_apps(&flake, &adapter, refresh_discovery, nix_flags)?;
             let task_doc = discover_tasks_best_effort(&flake, &adapter, nix_flags);
-            let apps = filter.filter_apps(&apps_only, &task_doc);
+            let mut apps = view_filter.filter_apps(&apps_only, &task_doc);
+            if let Some(names) = &affected_names {
+                let mut tasks = view_filter.filter_tasks(&task_doc);
+                apply_affected_filter(&mut apps, &mut tasks, names);
+            }
             runner
                 .verbose(format!(
                     "found {} app(s) for system {}",
@@ -150,12 +181,15 @@ pub fn run(
                     discover_tasks_required(&flake, &adapter, refresh_discovery, nix_flags)?;
                 (Vec::new(), task_doc)
             };
-            let apps = if include_apps {
-                filter.filter_apps(&apps_discovered, &task_doc)
+            let mut apps = if include_apps {
+                view_filter.filter_apps(&apps_discovered, &task_doc)
             } else {
                 Vec::new()
             };
-            let tasks = filter.filter_tasks(&task_doc);
+            let mut tasks = view_filter.filter_tasks(&task_doc);
+            if let Some(names) = &affected_names {
+                apply_affected_filter(&mut apps, &mut tasks, names);
+            }
             runner
                 .verbose(format!(
                     "found {} app(s) and {} task(s) for system {}",
@@ -223,6 +257,61 @@ pub fn run(
     }
 
     Ok(())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AffectedNameSets {
+    apps: std::collections::BTreeSet<String>,
+    tasks: std::collections::BTreeSet<String>,
+}
+
+fn resolve_list_filter(
+    filter: Option<&str>,
+) -> Result<(Option<ListKind>, Option<String>, bool), ListError> {
+    let Some(filter) = filter else {
+        return Ok((None, None, false));
+    };
+
+    if let Ok(kind) = ListKind::from_str(filter, true) {
+        return Ok((Some(kind), None, false));
+    }
+
+    let selector = resolve_list_selector(filter)?;
+    Ok((None, selector.category, selector.affected_only))
+}
+
+fn load_affected_names(
+    flake_arg: Option<&str>,
+    nix_override: Option<&str>,
+    refresh_discovery: bool,
+    nix_flags: &OptionalNixFlags,
+    path_sources: &AffectedPathSources,
+    paths: &[String],
+    runner: RunnerOutput,
+) -> Result<AffectedNameSets, ListError> {
+    let selection = select_for_flake(
+        flake_arg,
+        nix_override,
+        refresh_discovery,
+        nix_flags,
+        path_sources,
+        true,
+        paths,
+        runner,
+    )?;
+    Ok(AffectedNameSets {
+        apps: selection.analysis.apps.into_iter().collect(),
+        tasks: selection.analysis.tasks.into_iter().collect(),
+    })
+}
+
+fn apply_affected_filter(
+    apps: &mut Vec<App>,
+    tasks: &mut BTreeMap<String, TaskDefinition>,
+    names: &AffectedNameSets,
+) {
+    apps.retain(|app| names.apps.contains(&app.name));
+    tasks.retain(|name, _| names.tasks.contains(name));
 }
 
 #[allow(clippy::too_many_arguments)]

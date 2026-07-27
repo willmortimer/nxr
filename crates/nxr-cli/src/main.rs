@@ -21,14 +21,14 @@ use nxr_core::diagnostics::exit;
 use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
 
 use crate::cli::{
-    BuildSubcommand, CacheSubcommand, Cli, Command, DoctorSubcommand, ExplainSubcommand,
-    InspectSubcommand,
+    BuildSubcommand, CacheSubcommand, CiSubcommand, Cli, Command, DoctorSubcommand,
+    ExplainSubcommand, InspectSubcommand,
 };
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
-    affected, cache, complete, completion, configurations, doctor, doctor_builders, doctor_cache,
-    doctor_determinate, doctor_env, envrc, explain, fmt, graph, inspect, list, manpage, nix_op,
-    plan, run, select, task, watch,
+    affected, cache, ci, complete, completion, configurations, doctor, doctor_builders,
+    doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt, graph, inspect, list,
+    manpage, nix_op, plan, run, select, selectors, task, watch,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -106,6 +106,10 @@ enum RunError {
     Cache(#[from] cache::CacheError),
     #[error(transparent)]
     Affected(#[from] affected::AffectedCommandError),
+    #[error(transparent)]
+    Ci(#[from] ci::CiPlanError),
+    #[error(transparent)]
+    Selector(#[from] selectors::SelectorCommandError),
 }
 
 impl RunError {
@@ -134,6 +138,8 @@ impl RunError {
             Self::Watch(error) => error.exit_code(),
             Self::Cache(error) => error.exit_code(),
             Self::Affected(error) => error.exit_code(),
+            Self::Ci(error) => error.exit_code(),
+            Self::Selector(error) => error.exit_code(),
             Self::MissingAppName | Self::Usage(_) | Self::FlakeAppRef(_) => exit::USAGE,
         }
     }
@@ -155,17 +161,36 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
     let nix_flags = nix_flags_from_cli(cli).map_err(RunError::Usage)?;
     match &cli.command {
         None if cli.select => run_with_selected_app(cli, &nix_flags, &[], runner),
-        None => run_list(cli, &nix_flags, None, None, None, runner),
+        None => run_list(
+            cli,
+            &nix_flags,
+            None,
+            None,
+            None,
+            &affected::AffectedPathSources::default(),
+            &[],
+            runner,
+        ),
         Some(Command::List {
-            kind,
+            filter,
             category,
             namespace,
+            base,
+            working_tree,
+            all_changes,
+            paths,
         }) => run_list(
             cli,
             &nix_flags,
-            kind.as_ref().copied(),
+            filter.as_deref(),
             category.as_deref(),
             namespace.as_deref(),
+            &affected::AffectedPathSources {
+                base: base.clone(),
+                working_tree: *working_tree,
+                all_changes: all_changes.clone(),
+            },
+            paths,
             runner,
         ),
         Some(Command::Select) => run_with_selected_app(cli, &nix_flags, &[], runner),
@@ -204,11 +229,29 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             paths,
             args,
         }) => {
-            if *affected {
+            let mut tokens = Vec::new();
+            if let Some(name) = app {
+                tokens.push(name.clone());
+            }
+            let use_affected = *affected || selectors::tokens_request_affected(&tokens);
+            if use_affected {
+                let requested = if tokens.is_empty() {
+                    Vec::new()
+                } else {
+                    selectors::expand_task_tokens(
+                        cli.flake.as_deref(),
+                        cli.nix.as_deref(),
+                        cli.refresh_discovery,
+                        &nix_flags,
+                        &tokens,
+                    )
+                    .map_err(RunError::from)?
+                    .tasks
+                };
                 dispatch_plan_affected(
                     cli,
                     &nix_flags,
-                    app.as_deref(),
+                    requested,
                     *no_strict,
                     &affected::AffectedPathSources {
                         base: base.clone(),
@@ -219,11 +262,32 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                     args,
                     runner,
                 )
+            } else if tokens.is_empty() {
+                Err(RunError::Usage(
+                    "plan requires an app, task, or selector (or --affected / changed)".to_owned(),
+                ))
             } else {
-                let app = app.as_deref().ok_or_else(|| {
-                    RunError::Usage("plan requires an app or task name (or --affected)".to_owned())
-                })?;
-                dispatch_plan(cli, &nix_flags, app, args, runner)
+                let resolved = selectors::expand_task_tokens(
+                    cli.flake.as_deref(),
+                    cli.nix.as_deref(),
+                    cli.refresh_discovery,
+                    &nix_flags,
+                    &tokens,
+                )
+                .map_err(RunError::from)?;
+                if resolved.tasks.is_empty() {
+                    return Err(RunError::Usage(
+                        "plan requires an app, task, or selector".to_owned(),
+                    ));
+                }
+                let used_selector = tokens
+                    .iter()
+                    .any(|token| selectors::token_is_selector(token));
+                if resolved.tasks.len() == 1 && !used_selector {
+                    dispatch_plan(cli, &nix_flags, &resolved.tasks[0], args, runner)
+                } else {
+                    dispatch_plan_multi(cli, &nix_flags, &resolved.tasks, runner)
+                }
             }
         }
         Some(Command::Task {
@@ -251,11 +315,25 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 coverage: coverage.clone(),
                 benchmark: benchmark.clone(),
             };
-            if *affected {
+            let use_affected = *affected || selectors::tokens_request_affected(tasks);
+            if use_affected {
+                let requested = if tasks.is_empty() {
+                    Vec::new()
+                } else {
+                    selectors::expand_task_tokens(
+                        cli.flake.as_deref(),
+                        cli.nix.as_deref(),
+                        cli.refresh_discovery,
+                        &nix_flags,
+                        tasks,
+                    )
+                    .map_err(RunError::from)?
+                    .tasks
+                };
                 dispatch_task_affected(
                     cli,
                     &nix_flags,
-                    tasks,
+                    &requested,
                     args,
                     *jobs,
                     *keep_going,
@@ -283,10 +361,23 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 )?;
                 watch::run(&request, runner).map_err(RunError::from)
             } else {
+                let resolved = selectors::expand_task_tokens(
+                    cli.flake.as_deref(),
+                    cli.nix.as_deref(),
+                    cli.refresh_discovery,
+                    &nix_flags,
+                    tasks,
+                )
+                .map_err(RunError::from)?;
+                if resolved.tasks.is_empty() {
+                    return Err(RunError::Usage(
+                        "task requires a name or selector (or --affected / changed)".to_owned(),
+                    ));
+                }
                 let request = task_request(
                     cli,
                     &nix_flags,
-                    tasks.clone(),
+                    resolved.tasks,
                     args,
                     *jobs,
                     *keep_going,
@@ -424,6 +515,37 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
         Some(Command::In { shell, verb, rest }) => {
             dispatch_in(cli, &nix_flags, shell, verb, rest, runner)
         }
+        Some(Command::Ci {
+            action:
+                CiSubcommand::Plan {
+                    roots,
+                    base,
+                    working_tree,
+                    all_changes,
+                    strict: _,
+                    no_strict,
+                    paths,
+                },
+        }) => {
+            let strict_policy = !*no_strict;
+            let request = ci::CiPlanRequest {
+                flake_arg: cli.flake.as_deref(),
+                nix_override: cli.nix.as_deref(),
+                refresh_discovery: cli.refresh_discovery,
+                json: cli.json,
+                nix_flags: &nix_flags,
+                path_sources: &affected::AffectedPathSources {
+                    base: base.clone(),
+                    working_tree: *working_tree,
+                    all_changes: all_changes.clone(),
+                },
+                strict: strict_policy,
+                paths,
+                roots,
+            };
+            ci::plan_run(&request, runner).map_err(RunError::from)?;
+            Ok(exit::SUCCESS)
+        }
     }
 }
 
@@ -443,7 +565,7 @@ fn dispatch_plan(
 fn dispatch_plan_affected(
     cli: &Cli,
     nix_flags: &nxr_nix::OptionalNixFlags,
-    requested: Option<&str>,
+    requested: Vec<String>,
     no_strict: bool,
     sources: &affected::AffectedPathSources,
     paths: &[String],
@@ -461,10 +583,6 @@ fn dispatch_plan_affected(
         paths,
         runner,
     )?;
-    let requested = match requested {
-        Some(name) => vec![name.to_owned()],
-        None => Vec::new(),
-    };
     let roots = affected::resolve_affected_task_roots(
         &selection.document,
         &selection.analysis,
@@ -505,6 +623,23 @@ fn report_paths_from_cli(
         paths.set(ReportKind::Benchmark, PathBuf::from(path));
     }
     Ok(paths)
+}
+
+fn dispatch_plan_multi(
+    cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
+    roots: &[String],
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    let document = selectors::load_task_document(
+        cli.flake.as_deref(),
+        cli.nix.as_deref(),
+        cli.refresh_discovery,
+        nix_flags,
+    )
+    .map_err(RunError::from)?;
+    plan::run_affected_tasks(&document, roots, cli.json, runner)?;
+    Ok(exit::SUCCESS)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -878,9 +1013,11 @@ fn dispatch_graph(
 fn run_list(
     cli: &Cli,
     nix_flags: &nxr_nix::OptionalNixFlags,
-    kind: Option<list::ListKind>,
+    filter: Option<&str>,
     category: Option<&str>,
     namespace: Option<&str>,
+    path_sources: &affected::AffectedPathSources,
+    paths: &[String],
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
     list::run(
@@ -889,9 +1026,11 @@ fn run_list(
         cli.json,
         cli.refresh_discovery,
         nix_flags,
-        kind,
+        filter,
         category,
         namespace,
+        path_sources,
+        paths,
         runner,
     )?;
     Ok(exit::SUCCESS)

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/ci-plan-v1.schema.json",
+  "title": "nxr CI plan",
+  "description": "Provider-neutral CI plan export from `nxr ci plan --json` (schema version 1).",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "flake",
+    "system",
+    "roots",
+    "execution_plan"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "flake": {
+      "type": "string",
+      "description": "Selected flake reference."
+    },
+    "system": {
+      "type": "string",
+      "description": "Nix system string for the planned tasks."
+    },
+    "roots": {
+      "type": "array",
+      "description": "Task roots included in the CI plan.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "execution_plan": {
+      "$ref": "execution-plan-v1.schema.json"
+    },
+    "affected": {
+      "description": "Present when the plan was narrowed by affected analysis.",
+      "$ref": "affected-v2.schema.json"
+    }
+  }
+}
