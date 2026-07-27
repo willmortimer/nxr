@@ -21,22 +21,22 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 |---|---|---|
 | **V1.0**–**V2.5** | Runner → affected execution | See git tags `v1.0.0` … `v2.5.0`. |
 | **V2.6** | Latency + ecosystem ergonomics | Capability cache, fingerprints, watch reuse, schema export, HM, `fmt`/`in`/`envrc`, doctor — `v2.6.0`. |
-| **V2.7** | Correctness + warm-path polish | Cap-cache layers, portable archives, flake check CI, thresholds, fingerprint/watch polish, mio multiplex, doctor depth, schema v2 parse, contexts module, env-provider secrets — unreleased tree through `a040e50`; **cut as 2.7.0 then immediately 2.7.1 correctness**. |
+| **V2.7.1** | Correctness + 2.7 polish | Cap-cache layers/v4 file digests, portable archives, flake check CI, mio drain/EOF, schema v2 auto-emit, contexts, env-provider secrets, confirm/shell — `v2.7.1`. |
 
 ## Active roadmap
 
 Design: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md). ADRs: [adr/README.md](adr/README.md) (0143–0150 absorb the 2026-07 audit).
 
-### 2.7.1 — Correctness (blocks declaring 2.7 complete)
+### 2.7.1 — Correctness — shipped as `v2.7.1`
 
-1. Mio: `O_NONBLOCK`, drain-until-WouldBlock, fairness budget; pipes live until EOF after exit; propagate poll errors ([ADR-0143](adr/0143-mio-pipe-drain.md)).
-2. Auto-emit `schema_version = 2` when contexts/security fields are used ([ADR-0144](adr/0144-auto-schema-v2.md)).
-3. Honor or hard-fail `confirm` / `context.shell` / `task.shell` ([ADR-0149](adr/0149-context-shell-confirm.md)).
-4. Capability-cache config-file identity hashing ([ADR-0145](adr/0145-capability-config-files.md)).
-5. Secret `provider` + `ref` distinction for env provider ([ADR-0146](adr/0146-secret-provider-ref.md)).
-6. DeadlineQueue nearest-deadline O(log n); high-volume/rapid-exit output tests.
-7. Authoritative schema-v2 shipped/partial/planned matrix; PERFORMANCE accuracy.
-8. Tag **v2.7.1** after green CI on the release commit.
+1. ~~Mio: `O_NONBLOCK`, drain-until-WouldBlock, fairness budget; pipes live until EOF after exit; propagate poll errors~~ ([ADR-0143](adr/0143-mio-pipe-drain.md)).
+2. ~~Auto-emit `schema_version = 2` when contexts/security fields are used~~ ([ADR-0144](adr/0144-auto-schema-v2.md)).
+3. ~~Honor or hard-fail `confirm` / `context.shell` / `task.shell`~~ ([ADR-0149](adr/0149-context-shell-confirm.md)).
+4. ~~Capability-cache config-file identity hashing~~ ([ADR-0145](adr/0145-capability-config-files.md)).
+5. ~~Secret `provider` + `ref` distinction for env provider~~ ([ADR-0146](adr/0146-secret-provider-ref.md)).
+6. ~~DeadlineQueue nearest-deadline O(log n); high-volume/rapid-exit output tests~~.
+7. ~~Authoritative schema-v2 shipped/partial/planned matrix; PERFORMANCE accuracy~~.
+8. ~~Tag **v2.7.1**~~.
 
 ### 2.8 — Automation ergonomics
 

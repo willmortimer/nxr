@@ -7,15 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.1] - 2026-07-27
+
+Correctness release: closes the 2.7 batch that was never tagged as 2.7.0, plus
+audit-driven mio/schema/cache/context fixes (ADR-0143–0146, ADR-0149).
+
 ### Fixed
 
-- Capability cache (schema **v3**) splits binary vs environment layers so a warm
-  hit with matching env digest skips **all** version/config/help probes; config
-  changes under the same binary still invalidate the env layer.
-- Fingerprint index skips rewrite when unchanged; `discoveryInputs` use the same
-  metadata-gated incremental index; explain/doctor cache status fingerprints the
-  Nix tree once per operation. Compact serialization, ctime invalidation, and
-  optional `NXR_FINGERPRINT_FORCE_REHASH_SECS` land for large trees.
+- Mio pipe multiplexing: `O_NONBLOCK`, drain-until-WouldBlock with 1 MiB
+  fairness budget, keep pipes until EOF after process exit, propagate poll
+  errors (ADR-0143).
+- Capability cache (schema **v4**): env-layer digest includes Nix config file
+  identity (size/mtime/ctime/content), not only env-var strings (ADR-0145).
+- DeadlineQueue nearest-deadline lookup is O(log n) via lazy cancelled prune.
+- Context `confirm` / `shell` are enforced (TTY/`NXR_ASSUME_YES`, develop wrap)
+  instead of silently ignored (ADR-0149).
 
 ### Added
 
@@ -27,32 +33,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Synthetic monorepo fingerprint warm-path bench
   (`scripts/perf/measure-fingerprint.sh`).
 - mio-backed pipe multiplexing for piped task stdout/stderr (Unix).
-- Expanded `nxr doctor determinate` finding IDs (experimental features,
-  substituters/trusted keys, Wasm flags, CI detection, builder heuristics) with
-  warm capability-cache reuse.
-- Task schema **v2** strict parse (`inputs` / `outputs` / `cache` / `resources`,
-  `contexts`, `task.context` / `task.shell`); unknown execution-affecting fields
-  fail closed. v1 remains tolerant.
-- `perSystem.nxr.contexts` flake-parts module; inspect/doctor list context names
-  (no secret values).
-- Env-provider secret delivery at task spawn: context `secrets.*.delivery =
-  "env"` resolves `ref` from the caller environment into the child slot; plans
-  show `"<runtime>"` only. `file` / `stdin` delivery hard-error until later.
+- Expanded `nxr doctor determinate` finding IDs with warm capability-cache reuse.
+- Task schema **v2** strict parse; `perSystem.nxr.contexts`; env-provider secrets
+  at spawn; optional secret `provider` (default `env`).
+- Flake-parts auto-emits `schema_version: 2` when contexts/security fields are
+  present (ADR-0144); `nxr.schemaVersion` override with fail-closed rules.
+- Audit ADRs 0143–0150 and remapped roadmap through 3.1.
 
 ### Changed
 
-- GitHub release archives are named `nxr-<version>-<system>-nix-package.tar.gz`
-  and include `README.txt` stating they are Nix-package layouts, not portable
-  standalone binaries (`docs/RELEASE.md`).
-- CI runs `nix flake check -L` on ubuntu/latest (other matrix cells keep app
-  gates and explicit `checks.*.flake-schema`).
-- CI enforces warm-path p50 ceilings via
-  `scripts/perf/measure-release.sh --enforce` and
-  `scripts/perf/ci-thresholds.json` (ubuntu + Nix latest). Warm `list` Nix
-  call-count budgets stay gated by CLI integration tests (full warm hit:
-  `version=0`, `help=0`, `config=0`, `flake-show=0`).
-- PERFORMANCE docs clarify content-correct hashes under inode/size/mtime reuse
-  and note Git fsmonitor as future work.
+- Capability cache schema **v3→v4**; warm hits still skip all probes when the
+  env digest (now including conf files) matches.
+- Fingerprint index: skip unchanged rewrite; compact serialization; ctime;
+  `NXR_FINGERPRINT_FORCE_REHASH_SECS`.
+- CI runs `nix flake check -L` on ubuntu/latest; warm-path threshold enforcement.
+- Workspace and Nix package version **2.7.1**.
+
+## [2.6.0] - 2026-07-26
 
 Feature release: warm-path latency foundations and ecosystem ergonomics.
 

@@ -206,10 +206,9 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**2.6.0** — warm-path latency foundations (capability cache, incremental
-fingerprints, watch snapshot reuse, inventory/schema export, doctor determinate)
-plus ecosystem ergonomics (`homeManagerModules.default`, `fmt` / `in` / `envrc`,
-doctor env/cache/builders, generic build/`--attr`, configuration adapters).
+**2.7.1** — correctness cut: mio drain/EOF, schema v2 auto-promotion, capability
+cache config-file digests, context confirm/shell enforcement, plus the 2.7
+polish batch (portable archives, contexts, env-provider secrets, doctor depth).
 
 History: [CHANGELOG.md](CHANGELOG.md). Next: [docs/ROADMAP.md](docs/ROADMAP.md)
-(2.7 cache/CI/release hardening → 3.0 execution-context schema).
+(2.8 automation → 3.1).
