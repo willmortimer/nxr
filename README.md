@@ -206,7 +206,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**3.0.0** — secure execution contexts: env policy, trust, secret bindings/delivery, `nxr context`.
+**3.1.0** — workspace CAS/actions, resource scheduling, process MVP, inventory CLI, history, coalesced discovery.
 
 History: [CHANGELOG.md](CHANGELOG.md). Next: [docs/ROADMAP.md](docs/ROADMAP.md)
-(3.1 workspace actions + process MVP).
+(Later: remote CAS, workers).

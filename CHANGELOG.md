@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-07-27
+
+Workspace actions (“Nix Turborepo”) MVP plus process and inventory foundations.
+
+### Added
+
+- Two-tier actions and local workspace CAS with `nxr cache explain <task>` (ADR-0147).
+- Resource-aware scheduling (exclusive locks + soft CPU/memory pools).
+- Process MVP: `nxr up` / `status` / `logs` / `down`.
+- `nxr inventory` / `--role` and inspect inventory entries.
+- `nxr history list|clear`; coalesced cold discovery when Determinate parallel eval is available.
+
+### Changed
+
+- Workspace and Nix package version **3.1.0**.
+
 ## [3.0.0] - 2026-07-27
 
 Secure execution contexts: full env policy, trust, secret bindings/delivery, and context CLI.

@@ -22,6 +22,8 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 | **V1.0**–**V2.5** | Runner → affected execution | See git tags `v1.0.0` … `v2.5.0`. |
 | **V2.6** | Latency + ecosystem ergonomics | Capability cache, fingerprints, watch reuse, schema export, HM, `fmt`/`in`/`envrc`, doctor — `v2.6.0`. |
 | **V2.7.1** | Correctness + 2.7 polish | Cap-cache layers/v4 file digests, portable archives, flake check CI, mio drain/EOF, schema v2 auto-emit, contexts, env-provider secrets, confirm/shell — `v2.7.1`. |
+| **V3.0** | Secure execution contexts | Env policy, trust, secret bindings/delivery, `nxr context` — `v3.0.0`. |
+| **V3.1** | Workspace actions + process MVP | Local CAS, resources, `up`/`status`/`logs`/`down`, inventory, history, coalesced discovery — `v3.1.0`. |
 
 ## Active roadmap
 
@@ -59,7 +61,7 @@ Finish the security boundary before result caching:
 - `nxr context list|inspect|run`; one-shell DAG optimization
 - Semantic v2 validation (paths, cache policy, resources, secret slots)
 
-### 3.1 — Workspace actions (“Nix Turborepo”) + process MVP
+### 3.1 — Workspace actions (“Nix Turborepo”) + process MVP — shipped as `v3.1.0`
 
 Two execution tiers ([ADR-0147](adr/0147-two-tier-actions.md)):
 
