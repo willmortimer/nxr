@@ -31,6 +31,7 @@ nxr task <task> [args...]
 nxr watch <app-or-task>
 nxr watch app:<name>
 nxr watch task:<name>
+nxr ci plan [--json]
 nxr graph <task>
 ```
 
@@ -442,6 +443,24 @@ with names, roots are the intersection (unaffected named tasks are skipped). An
 empty affected set is a successful no-op (exit 0). `task --affected` conflicts
 with `--watch`. Prefer `--path` on these commands (not positional paths) so task
 names stay unambiguous.
+
+Task selectors (2.8): `category:<name>` expands to listable tasks in that
+category; `changed` is equivalent to `--affected` (requires `--base`,
+`--working-tree`, `--all-changes`, or `--path`). Existing `app:` / `task:`
+prefixes are unchanged. Selectors work on `nxr list`, `nxr task`, and `nxr plan`
+where natural.
+
+```bash
+nxr list category:validation
+nxr task category:validation
+nxr plan changed --path shared/lib.txt
+nxr ci plan --json
+```
+
+`nxr ci plan --json` emits [`ci-plan-v1`](../schemas/ci-plan-v1.schema.json):
+flake/system, task roots, nested [`execution-plan-v1`](../schemas/execution-plan-v1.schema.json),
+and optional [`affected-v2`](../schemas/affected-v2.schema.json) when path sources
+narrow the plan.
 
 Stdin: serial interactive runs and `--output raw` (`-j 1`, no `--events`) inherit
 caller stdin; parallel or multiplex (`live` / `grouped` / `failures` / `--events`)

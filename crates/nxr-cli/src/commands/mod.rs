@@ -2,6 +2,7 @@
 
 pub mod affected;
 pub mod cache;
+pub mod ci;
 pub mod common;
 pub mod complete;
 pub mod completion;
@@ -22,6 +23,7 @@ pub mod nix_op;
 pub mod plan;
 pub mod run;
 pub mod select;
+pub mod selectors;
 pub mod task;
 pub mod views;
 pub mod watch;

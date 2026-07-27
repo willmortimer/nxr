@@ -5,7 +5,6 @@ use clap::{ArgAction, Parser, Subcommand};
 use nxr_completion::{CompleteTarget, Shell};
 
 use crate::commands::graph::GraphFormat;
-use crate::commands::list::ListKind;
 use crate::output_options::{ColorWhen, LogFormat};
 use crate::output_task::{EventsFormat, TaskOutputMode};
 use crate::shell_mode::ShellMode;
@@ -220,16 +219,31 @@ pub enum BuildSubcommand {
 pub enum Command {
     /// List available flake apps (and tasks), or a specific output kind
     List {
-        /// Catalog to list (`apps`, `checks`, `packages`, `shells`, `tasks`).
-        /// Default: apps + tasks.
-        #[arg(value_enum)]
-        kind: Option<ListKind>,
+        /// Catalog (`apps`, `tasks`, …) or selector (`category:<name>`, `changed`)
+        #[arg(value_name = "KIND_OR_SELECTOR")]
+        filter: Option<String>,
         /// Include only apps/tasks in this category
         #[arg(long = "category", value_name = "NAME")]
         category: Option<String>,
         /// Include only apps/tasks in this project namespace (`nxr.projects.json`)
         #[arg(long = "namespace", value_name = "NAME")]
         namespace: Option<String>,
+        /// Collect changed paths from `git diff --name-only <base>...HEAD` (`changed` selector)
+        #[arg(long = "base", value_name = "REF", conflicts_with = "all_changes")]
+        base: Option<String>,
+        /// Include unstaged, staged, and untracked working-tree paths (`changed` selector)
+        #[arg(long = "working-tree", conflicts_with = "all_changes")]
+        working_tree: bool,
+        /// Union of `--base <ref>` range and `--working-tree` (`changed` selector)
+        #[arg(
+            long = "all-changes",
+            value_name = "REF",
+            conflicts_with_all = ["base", "working_tree"]
+        )]
+        all_changes: Option<String>,
+        /// Explicit repository-relative changed paths (`changed` selector)
+        #[arg(long = "path", value_name = "PATH")]
+        paths: Vec<String>,
     },
     /// Run a flake app
     Run {
@@ -275,25 +289,15 @@ pub enum Command {
         #[arg(long = "affected")]
         affected: bool,
         /// Collect changed paths from `git diff --name-only <base>...HEAD`
-        #[arg(
-            long = "base",
-            value_name = "REF",
-            requires = "affected",
-            conflicts_with = "all_changes"
-        )]
+        #[arg(long = "base", value_name = "REF", conflicts_with = "all_changes")]
         base: Option<String>,
         /// Include unstaged, staged, and untracked working-tree paths
-        #[arg(
-            long = "working-tree",
-            requires = "affected",
-            conflicts_with = "all_changes"
-        )]
+        #[arg(long = "working-tree", conflicts_with = "all_changes")]
         working_tree: bool,
         /// Union of `--base <ref>` range and `--working-tree`
         #[arg(
             long = "all-changes",
             value_name = "REF",
-            requires = "affected",
             conflicts_with_all = ["base", "working_tree"]
         )]
         all_changes: Option<String>,
@@ -308,10 +312,9 @@ pub enum Command {
             conflicts_with = "strict"
         )]
         no_strict: bool,
-        /// Explicit repository-relative changed paths (`--affected` only)
-        #[arg(long = "path", value_name = "PATH", requires = "affected")]
+        /// Explicit repository-relative changed paths (with `--affected` or `changed`)
+        #[arg(long = "path", value_name = "PATH")]
         paths: Vec<String>,
-        /// Arguments included in the plan (pass after `--`)
         #[arg(last = true)]
         args: Vec<String>,
     },
@@ -384,25 +387,15 @@ pub enum Command {
         #[arg(long = "affected")]
         affected: bool,
         /// Collect changed paths from `git diff --name-only <base>...HEAD`
-        #[arg(
-            long = "base",
-            value_name = "REF",
-            requires = "affected",
-            conflicts_with = "all_changes"
-        )]
+        #[arg(long = "base", value_name = "REF", conflicts_with = "all_changes")]
         base: Option<String>,
         /// Include unstaged, staged, and untracked working-tree paths
-        #[arg(
-            long = "working-tree",
-            requires = "affected",
-            conflicts_with = "all_changes"
-        )]
+        #[arg(long = "working-tree", conflicts_with = "all_changes")]
         working_tree: bool,
         /// Union of `--base <ref>` range and `--working-tree`
         #[arg(
             long = "all-changes",
             value_name = "REF",
-            requires = "affected",
             conflicts_with_all = ["base", "working_tree"]
         )]
         all_changes: Option<String>,
@@ -417,10 +410,10 @@ pub enum Command {
             conflicts_with = "strict"
         )]
         no_strict: bool,
-        /// Explicit repository-relative changed paths (`--affected` only)
-        #[arg(long = "path", value_name = "PATH", requires = "affected")]
+        /// Explicit repository-relative changed paths (with `--affected` or `changed`)
+        #[arg(long = "path", value_name = "PATH")]
         paths: Vec<String>,
-        /// Task names (union DAG; shared dependencies run once). Optional with `--affected`.
+        /// Task names (union DAG; shared dependencies run once). Optional with `--affected` / `changed`.
         #[arg(required_unless_present = "affected")]
         tasks: Vec<String>,
         /// Arguments forwarded to each root task's app only (MVP)
@@ -510,9 +503,47 @@ pub enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         rest: Vec<String>,
     },
+    /// CI planning helpers
+    Ci {
+        #[command(subcommand)]
+        action: CiSubcommand,
+    },
     /// Bare `nxr <app> [args…]` form (reserved names win first)
     #[command(external_subcommand)]
     External(Vec<String>),
+}
+
+/// `nxr ci` subcommands.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum CiSubcommand {
+    /// Export a provider-neutral CI execution plan
+    Plan {
+        /// Optional task roots (default: `ci` task or sink tasks)
+        #[arg(value_name = "TASK")]
+        roots: Vec<String>,
+        /// Collect changed paths from `git diff --name-only <base>...HEAD`
+        #[arg(long = "base", value_name = "REF", conflicts_with = "all_changes")]
+        base: Option<String>,
+        /// Include unstaged, staged, and untracked working-tree paths
+        #[arg(long = "working-tree", conflicts_with = "all_changes")]
+        working_tree: bool,
+        /// Union of `--base <ref>` range and `--working-tree`
+        #[arg(
+            long = "all-changes",
+            value_name = "REF",
+            conflicts_with_all = ["base", "working_tree"]
+        )]
+        all_changes: Option<String>,
+        /// Include unknown tasks in the affected set (default unless `--no-strict`)
+        #[arg(long = "strict", action = ArgAction::SetTrue)]
+        strict: bool,
+        /// Omit unknown tasks from the affected set
+        #[arg(long = "no-strict", action = ArgAction::SetTrue, conflicts_with = "strict")]
+        no_strict: bool,
+        /// Explicit repository-relative changed paths
+        #[arg(long = "path", value_name = "PATH")]
+        paths: Vec<String>,
+    },
 }
 
 /// `nxr cache` subcommands.
