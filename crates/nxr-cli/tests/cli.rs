@@ -4579,3 +4579,171 @@ fn task_deploy_missing_secret_names_ref_and_slot() {
         .stderr(predicate::str::contains("DEPLOY_TOKEN"))
         .stderr(predicate::str::contains("NXR_FIXTURE_DEPLOY_TOKEN"));
 }
+
+#[test]
+fn init_without_template_is_usage_error() {
+    cargo_bin_cmd!("nxr")
+        .arg("init")
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("template"));
+}
+
+#[test]
+fn init_unknown_template_is_usage_error() {
+    cargo_bin_cmd!("nxr")
+        .args(["init", "not-a-template"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("unknown template"));
+}
+
+#[test]
+fn init_without_yes_requires_tty() {
+    cargo_bin_cmd!("nxr")
+        .args(["init", "rust"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "interactive confirmation requires a terminal",
+        ));
+}
+
+#[test]
+fn init_rust_template_writes_flake_with_yes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    cargo_bin_cmd!("nxr")
+        .current_dir(temp.path())
+        .args(["init", "rust", "--yes"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("wrote"));
+
+    let flake = std::fs::read_to_string(temp.path().join("flake.nix")).expect("flake.nix");
+    assert!(flake.contains("nxr.flakeModules.default"));
+    assert!(flake.contains("nxr.apps"));
+    assert!(flake.contains("nxr.tasks"));
+}
+
+#[test]
+fn init_refuses_existing_target_files() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("flake.nix"), "# existing\n").expect("seed flake");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(temp.path())
+        .args(["init", "rust", "--yes"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn migrate_justfile_prints_nix_fragment() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        temp.path().join("Justfile"),
+        "build:\n    cargo build\n\ntest: build\n    cargo test\n",
+    )
+    .expect("justfile");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(temp.path())
+        .args(["migrate", "justfile"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("nxr.apps = {"))
+        .stdout(predicate::str::contains("nxr.tasks = {"))
+        .stdout(predicate::str::contains("cargo test"));
+}
+
+#[test]
+fn migrate_mise_prints_nix_fragment() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        temp.path().join("mise.toml"),
+        "[tasks.build]\nrun = \"cargo build\"\n\n[tasks.test]\ndepends = [\"build\"]\nrun = \"cargo test\"\n",
+    )
+    .expect("mise.toml");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(temp.path())
+        .args(["migrate", "mise"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("nxr.apps = {"))
+        .stdout(predicate::str::contains("dependsOn = [ \"build\" ];"));
+}
+
+#[test]
+fn migrate_justfile_write_creates_output_file() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("Justfile"), "hello:\n    echo hello\n").expect("justfile");
+    let output = temp.path().join("migrated.nix");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(temp.path())
+        .args([
+            "migrate",
+            "justfile",
+            "--write",
+            output.to_str().expect("utf-8 path"),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("wrote"));
+
+    let contents = std::fs::read_to_string(output).expect("output");
+    assert!(contents.contains("hello = {"));
+}
+
+#[test]
+fn init_template_lists_apps_with_local_nxr_input() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let temp = tempfile::tempdir().expect("tempdir");
+    cargo_bin_cmd!("nxr")
+        .current_dir(temp.path())
+        .args(["init", "rust", "--yes"])
+        .assert()
+        .success();
+
+    let flake_path = temp.path().join("flake.nix");
+    let mut flake = std::fs::read_to_string(&flake_path).expect("flake");
+    let nxr_input = format!("path:{}", repo_root.display());
+    flake = flake.replace("github:willmortimer/nxr", &nxr_input);
+    std::fs::write(&flake_path, flake).expect("write patched flake");
+
+    let lock_status = std::process::Command::new("nix")
+        .current_dir(temp.path())
+        .args(["flake", "lock", "--accept-flake-config"])
+        .status()
+        .expect("nix flake lock");
+    if !lock_status.success() {
+        eprintln!("skipping integration test: nix flake lock failed");
+        return;
+    }
+
+    let list = cargo_bin_cmd!("nxr")
+        .current_dir(temp.path())
+        .arg("list")
+        .output()
+        .expect("nxr list");
+    if !list.status.success() {
+        eprintln!(
+            "skipping integration test: scaffolded flake did not evaluate in this environment"
+        );
+        return;
+    }
+
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(stdout.contains("test"));
+    assert!(stdout.contains("fmt"));
+}

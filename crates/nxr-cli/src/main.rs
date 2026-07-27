@@ -22,13 +22,13 @@ use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
 
 use crate::cli::{
     BuildSubcommand, CacheSubcommand, CiSubcommand, Cli, Command, DoctorSubcommand,
-    ExplainSubcommand, InspectSubcommand,
+    ExplainSubcommand, InspectSubcommand, MigrateSubcommand,
 };
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
     affected, cache, ci, complete, completion, configurations, doctor, doctor_builders,
-    doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt, graph, inspect, list,
-    manpage, nix_op, plan, run, select, selectors, task, watch,
+    doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt, graph, init, inspect, list,
+    manpage, migrate, nix_op, plan, run, select, selectors, task, watch,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -81,6 +81,10 @@ enum RunError {
     #[error(transparent)]
     Envrc(#[from] envrc::EnvrcError),
     #[error(transparent)]
+    Init(#[from] init::InitError),
+    #[error(transparent)]
+    Migrate(#[from] migrate::MigrateError),
+    #[error(transparent)]
     Configuration(#[from] configurations::ConfigurationError),
     #[error(transparent)]
     Explain(#[from] explain::ExplainError),
@@ -128,6 +132,8 @@ impl RunError {
             Self::DoctorBuilders(error) => error.exit_code(),
             Self::Fmt(error) => error.exit_code(),
             Self::Envrc(error) => error.exit_code(),
+            Self::Init(error) => error.exit_code(),
+            Self::Migrate(error) => error.exit_code(),
             Self::Configuration(error) => error.exit_code(),
             Self::Explain(error) => error.exit_code(),
             Self::Completion(_) => completion::CompletionError::exit_code(),
@@ -512,6 +518,20 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             };
             envrc::run(request, runner).map_err(RunError::from)
         }
+        Some(Command::Init {
+            template,
+            template_long,
+            dir,
+            yes,
+        }) => {
+            let request = init::InitRequest {
+                template: template.as_deref().or(template_long.as_deref()),
+                target_dir: dir.as_deref().map(camino::Utf8Path::new),
+                yes: *yes,
+            };
+            init::run(request, runner).map_err(RunError::from)
+        }
+        Some(Command::Migrate { source }) => dispatch_migrate(source, runner),
         Some(Command::In { shell, verb, rest }) => {
             dispatch_in(cli, &nix_flags, shell, verb, rest, runner)
         }
@@ -761,6 +781,27 @@ fn dispatch_doctor_subcommand(
             doctor_builders::run(request, cli.json, runner).map_err(RunError::from)
         }
     }
+}
+
+fn dispatch_migrate(source: &MigrateSubcommand, runner: RunnerOutput) -> Result<i32, RunError> {
+    let (migrate_source, path, write) = match source {
+        MigrateSubcommand::Justfile { path, write } => (
+            migrate::MigrateSource::Justfile,
+            path.as_deref(),
+            write.as_deref(),
+        ),
+        MigrateSubcommand::Mise { path, write } => (
+            migrate::MigrateSource::Mise,
+            path.as_deref(),
+            write.as_deref(),
+        ),
+    };
+    let request = migrate::MigrateRequest {
+        source: migrate_source,
+        input: path.map(camino::Utf8Path::new),
+        write: write.map(camino::Utf8Path::new),
+    };
+    migrate::run(request, runner).map_err(RunError::from)
 }
 
 fn dispatch_in(

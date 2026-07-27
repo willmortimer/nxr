@@ -506,7 +506,25 @@ Parsing invariant preserved: runner options stay before the target name
 `nxr envrc` uses the global `--shell` flag for a named shell (`nxr --shell backend envrc`).
 `--write` refuses to overwrite an existing `.envrc` without `--force` (exit 2).
 
-## 15. Planned command surface (not yet shipped)
+## 15. Automation scaffolding (2.8)
+
+Design authority: [ADR-0148](adr/0148-automation-ergonomics.md).
+
+```bash
+nxr init <rust|node|mixed|monorepo> [--template <name>] [--dir PATH] [--yes]
+nxr migrate justfile [PATH] [--write PATH]
+nxr migrate mise [PATH] [--write PATH]
+```
+
+`nxr init` writes embedded flake templates using `nxr.flakeModules.default`. Without
+`--yes`, interactive confirmation is required (exit 2 when stdin/stderr are not TTYs).
+Existing target paths are never overwritten.
+
+`nxr migrate` reads Justfile or `mise.toml` and prints a suggested `perSystem`
+fragment (`nxr.apps` and optional `nxr.tasks`). It never executes migrated recipes.
+Output is best-effort; review limitations in the generated comments before committing.
+
+## 16. Planned command surface (not yet shipped)
 
 Design authority: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) and [ROADMAP.md](ROADMAP.md).
 Do not treat these as stable until the named release ships.
