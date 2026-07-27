@@ -12,8 +12,8 @@ use nxr_core::diagnostics::exit;
 use nxr_core::{App, EnvironmentPolicy, Plan, PlanCommand, PlanKind};
 use nxr_nix::{
     AppNotFoundError, NixAdapter, NixCapabilities, NixError, OptionalNixFlags,
-    TESTED_NIX_SUPPORT_FLOOR, detect_capabilities, locate_nix, nix_develop_wrap_run_args,
-    nix_run_args, resolve_app_by_name,
+    TESTED_NIX_SUPPORT_FLOOR, detect_capabilities, flake_show_has_nxr_for_system, locate_nix,
+    nix_develop_wrap_run_args, nix_run_args, parse_apps_from_flake_show, resolve_app_by_name,
 };
 use nxr_task::{
     SchemaError, TaskDocument, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION,
@@ -204,6 +204,25 @@ impl<'a> WorkspaceState<'a> {
     pub fn invalidate_snapshots(&mut self) {
         self.snapshot_apps = None;
         self.snapshot_tasks = None;
+    }
+
+    /// Discovery cache lookup context for the current invocation inputs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrepareError`] when directories, flake selection, or Nix probing fail.
+    pub fn discovery_context(&mut self) -> Result<DiscoveryContext, PrepareError> {
+        let invocation_directory = current_invocation_directory()?;
+        let flake = resolve_flake(self.flake_arg, &invocation_directory)?;
+        let adapter = self.adapter().map_err(PrepareError::Nix)?;
+        Ok(DiscoveryContext {
+            flake_ref: flake.nix_ref.clone(),
+            local_root: flake.local_root.clone(),
+            system: adapter.system.clone(),
+            nix_path: adapter.nix.as_str().to_owned(),
+            nix_version: adapter.capabilities.version.to_string(),
+            discovery_inputs: Vec::new(),
+        })
     }
 }
 
@@ -411,16 +430,20 @@ impl WorkspaceSnapshot {
                 require_tasks: load_tasks,
             },
             || {
-                let apps = nix
-                    .discover_apps(&flake_ref, nix_flags)
+                let show = nix
+                    .flake_show_json(&flake_ref, nix_flags)
                     .map_err(PrepareError::Nix)?;
+                let apps = parse_apps_from_flake_show(&show, &flake_ref, &nix.system)
+                    .map_err(|error| PrepareError::Nix(error.into()))?;
                 let tasks = if load_tasks {
                     Some(
                         nix.discover_tasks(&flake_ref, nix_flags)
                             .map_err(PrepareError::TaskDiscovery)?,
                     )
-                } else {
+                } else if flake_show_has_nxr_for_system(&show, &nix.system) {
                     None
+                } else {
+                    Some(TaskDocument::new(BTreeMap::new()))
                 };
                 Ok::<WorkspaceDiscovery, PrepareError>(WorkspaceDiscovery { apps, tasks })
             },

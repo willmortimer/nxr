@@ -4,6 +4,7 @@ use std::io::{self, Write};
 use std::time::Duration;
 
 use camino::Utf8PathBuf;
+use nxr_completion::cache::{WorkspaceDiscovery, cached_workspace};
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
 use nxr_nix::{AppNotFoundError, NixError, TaskDiscoveryError, resolve_app_by_name};
@@ -15,8 +16,8 @@ use nxr_watch::{
 };
 
 use crate::commands::common::{
-    AppRequest, PrepareError, PreparedPlan, WorkspaceState, current_invocation_directory,
-    prepare_app_plan_in_state,
+    AppRequest, PrepareError, PreparedPlan, WorkspaceSnapshot, WorkspaceState,
+    current_invocation_directory, prepare_app_plan_in_state,
 };
 use crate::commands::task::{self, PreparedTaskGeneration, TaskError, TaskRequest, plan_exit_code};
 use crate::flake::{FlakeResolveError, resolve_flake};
@@ -277,24 +278,7 @@ fn resolve_target(
             if request.force_app {
                 return resolve_app_target(workspace, name);
             }
-            // Default: task wins when both exist — requires a task-inclusive snapshot.
-            let snapshot = workspace.snapshot(true)?;
-            let document = snapshot
-                .tasks
-                .as_ref()
-                .expect("load_tasks=true always populates tasks");
-
-            if resolve_task_name(document, name).is_ok() {
-                Ok(WatchTarget::Task {
-                    name: name.to_owned(),
-                })
-            } else {
-                let apps: Vec<_> = snapshot.apps.values().cloned().collect();
-                let app = resolve_app_by_name(&apps, name)?;
-                Ok(WatchTarget::App {
-                    name: app.name.clone(),
-                })
-            }
+            resolve_unprefixed_target(workspace, name)
         }
     }
 }
@@ -305,11 +289,78 @@ fn resolve_app_target(
 ) -> Result<WatchTarget, WatchCommandError> {
     // Apps-only snapshot avoids task evaluation when the caller disambiguates.
     let snapshot = workspace.snapshot(false)?;
+    resolve_app_target_from_snapshot(snapshot, name)
+}
+
+fn resolve_app_target_from_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    name: &str,
+) -> Result<WatchTarget, WatchCommandError> {
     let apps: Vec<_> = snapshot.apps.values().cloned().collect();
     let app = resolve_app_by_name(&apps, name)?;
     Ok(WatchTarget::App {
         name: app.name.clone(),
     })
+}
+
+/// Resolve an unprefixed watch name with task-wins when both exist.
+///
+/// Uses the discovery cache task-name set when present so app-only targets (for
+/// example `hello` on `fixtures/basic-apps`) avoid task `eval` on first generation.
+/// When task metadata is unknown (`nxr` may exist), loads tasks before deciding.
+fn resolve_unprefixed_target(
+    workspace: &mut WorkspaceState<'_>,
+    name: &str,
+) -> Result<WatchTarget, WatchCommandError> {
+    if let Some(cached) = cached_discovery(workspace)? {
+        if let Some(document) = cached.tasks.as_ref() {
+            if resolve_task_name(document, name).is_ok() {
+                return Ok(WatchTarget::Task {
+                    name: name.to_owned(),
+                });
+            }
+            return resolve_app_target(workspace, name);
+        }
+    }
+
+    let snapshot = workspace.snapshot(false)?;
+    if let Some(document) = snapshot.tasks.as_ref() {
+        if resolve_task_name(document, name).is_ok() {
+            return Ok(WatchTarget::Task {
+                name: name.to_owned(),
+            });
+        }
+        return resolve_app_target_from_snapshot(snapshot, name);
+    }
+
+    resolve_unprefixed_after_tasks_loaded(workspace, name)
+}
+
+fn cached_discovery(
+    workspace: &mut WorkspaceState<'_>,
+) -> Result<Option<WorkspaceDiscovery>, WatchCommandError> {
+    let context = workspace
+        .discovery_context()
+        .map_err(WatchCommandError::Prepare)?;
+    Ok(cached_workspace(&context))
+}
+
+fn resolve_unprefixed_after_tasks_loaded(
+    workspace: &mut WorkspaceState<'_>,
+    name: &str,
+) -> Result<WatchTarget, WatchCommandError> {
+    let snapshot = workspace.snapshot(true)?;
+    let document = snapshot
+        .tasks
+        .as_ref()
+        .expect("load_tasks=true always populates tasks");
+    if resolve_task_name(document, name).is_ok() {
+        Ok(WatchTarget::Task {
+            name: name.to_owned(),
+        })
+    } else {
+        resolve_app_target_from_snapshot(snapshot, name)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
