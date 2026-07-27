@@ -114,6 +114,27 @@ pub fn parse_outputs_from_flake_show(
         .collect())
 }
 
+/// Whether `nix flake show --json` exposes an `nxr` output (task documents may exist).
+///
+/// Used to skip task `eval` when the flake has no `nxr` output (apps-only flakes).
+/// Inventory v2 may list `nxr` without `output.children` (`unknown: true`); consult
+/// the raw `inventory.nxr` key as well as the parsed inventory tree.
+#[must_use]
+pub fn flake_show_has_nxr_for_system(show: &JsonValue, system: &str) -> bool {
+    let inventory = parse_flake_inventory(show);
+    if inventory.outputs.contains_key("nxr") {
+        return true;
+    }
+    if show
+        .get("inventory")
+        .and_then(|inv| inv.get("nxr"))
+        .is_some()
+    {
+        return true;
+    }
+    show.get("nxr").and_then(|nxr| nxr.get(system)).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -173,6 +194,41 @@ mod tests {
         let show = json!({ "apps": { "x86_64-linux": {} } });
         let apps = parse_apps_from_flake_show(&show, ".", "aarch64-darwin").expect("parse apps");
         assert!(apps.is_empty());
+    }
+
+    #[test]
+    fn flake_show_has_nxr_for_system_detects_legacy_and_inventory_shapes() {
+        let basic: serde_json::Value =
+            serde_json::from_str(BASIC_APPS_SHOW).expect("parse basic-apps fixture");
+        assert!(!super::flake_show_has_nxr_for_system(
+            &basic,
+            "aarch64-darwin"
+        ));
+
+        let with_nxr = json!({
+            "nxr": {
+                "aarch64-darwin": { "schema_version": 1, "tasks": {} }
+            }
+        });
+        assert!(super::flake_show_has_nxr_for_system(
+            &with_nxr,
+            "aarch64-darwin"
+        ));
+        assert!(super::flake_show_has_nxr_for_system(
+            &with_nxr,
+            "x86_64-linux"
+        ));
+
+        let inventory_unknown_nxr = json!({
+            "version": 2,
+            "inventory": {
+                "nxr": { "unknown": true }
+            }
+        });
+        assert!(super::flake_show_has_nxr_for_system(
+            &inventory_unknown_nxr,
+            "aarch64-darwin"
+        ));
     }
 
     #[test]

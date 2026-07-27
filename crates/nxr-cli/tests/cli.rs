@@ -2823,6 +2823,120 @@ fn watch_app_does_not_double_workspace_init_on_first_generation() {
     );
 }
 
+#[test]
+fn watch_unprefixed_app_skips_task_eval_on_first_generation() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    use assert_cmd::cargo::CommandCargoExt;
+
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let repo_root = repo_root();
+    let mut child = Command::cargo_bin("nxr")
+        .expect("nxr binary")
+        .current_dir(&repo_root)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "watch", "hello"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn watch");
+
+    let mut stdout = child.stdout.take().expect("stdout pipe");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut output = Vec::new();
+    let mut buf = [0_u8; 256];
+    loop {
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!(
+                "watch timed out before first generation; output={}",
+                String::from_utf8_lossy(&output)
+            );
+        }
+        match stdout.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                output.extend_from_slice(&buf[..n]);
+                if String::from_utf8_lossy(&output).contains("hello from basic-apps") {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => panic!("read watch stdout: {error}"),
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(
+        counter.count("eval"),
+        1,
+        "only currentSystem eval; task metadata eval is skipped; log={log}"
+    );
+}
+
+#[test]
+fn watch_unprefixed_prefers_task_when_app_and_task_share_name() {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    use assert_cmd::cargo::CommandCargoExt;
+
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let fixture = isolated_task_dag_flake();
+    let flake_dir = fixture.path().join("task-dag");
+    let flake = flake_dir.to_string_lossy().into_owned();
+
+    let counter = NixCallCounter::install();
+    let repo_root = repo_root();
+    let mut child = Command::cargo_bin("nxr")
+        .expect("nxr binary")
+        .current_dir(&repo_root)
+        .env("NXR_NIX", &counter.wrapper)
+        .args([
+            "--flake",
+            flake.as_str(),
+            "watch",
+            "ci",
+            "--debounce",
+            "100",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn watch");
+
+    let stdout = child.stdout.take().expect("stdout pipe");
+    let rx = start_watch_stdout_reader(stdout);
+    let mut output = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(90);
+    wait_for_watch_occurrences(&rx, &mut output, "fmt", 1, deadline);
+    wait_for_watch_occurrences(&rx, &mut output, "test", 1, deadline);
+    wait_for_watch_occurrences(&rx, &mut output, "ci", 1, deadline);
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert!(
+        counter.count("eval") >= 2,
+        "task collision path loads task metadata; log={log}"
+    );
+}
+
 fn start_watch_stdout_reader(
     stdout: impl std::io::Read + Send + 'static,
 ) -> std::sync::mpsc::Receiver<Vec<u8>> {
@@ -2880,6 +2994,14 @@ fn isolated_basic_apps_flake() -> tempfile::TempDir {
     let src = repo_root().join("fixtures/basic-apps");
     let dst = temp.path().join("basic-apps");
     copy_dir_recursive(&src, &dst).expect("copy basic-apps fixture");
+    temp
+}
+
+fn isolated_task_dag_flake() -> tempfile::TempDir {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let src = repo_root().join("fixtures/task-dag");
+    let dst = temp.path().join("task-dag");
+    copy_dir_recursive(&src, &dst).expect("copy task-dag fixture");
     temp
 }
 

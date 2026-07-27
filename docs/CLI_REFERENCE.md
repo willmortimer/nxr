@@ -96,7 +96,7 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr run <app> --watch [--debounce <ms>]` | Alias into watch for a single app |
 | `nxr task <name> --watch [--debounce <ms>]` | Alias into watch for a task (serial chain) |
 
-When `nxr watch` / name resolution finds both a task and an app with the same name, the **task** wins. Disambiguate with `app:<name>` or `task:<name>` (apps-only snapshot for `app:`; `nxr run --watch` also skips task discovery).
+When `nxr watch` / name resolution finds both a task and an app with the same name, the **task** wins. Disambiguate with `app:<name>` or `task:<name>` (apps-only snapshot for `app:`; `nxr run --watch` also skips task discovery). Unprefixed app-only names use the discovery cache task-name set when present (or an empty task document when the flake has no `nxr` output) so watch avoids task `eval` until task metadata is needed.
 
 `--include` restricts restarts to paths matching at least one glob; `--exclude` adds ignores on top of built-in skips (`.git`, `target`, `result*`, `/nix/store`). With no `--include`, any non-ignored path under the flake root can trigger a restart.
 

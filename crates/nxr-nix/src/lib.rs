@@ -43,8 +43,8 @@ pub use determinate::{
     probe_distribution_context, probe_nixd, probe_performance_features, redact_sensitive_text,
 };
 pub use discovery::{
-    OutputTable, discover_apps, discover_outputs_with_args, parse_apps_from_flake_show,
-    parse_outputs_from_flake_show,
+    OutputTable, discover_apps, discover_outputs_with_args, flake_show_has_nxr_for_system,
+    parse_apps_from_flake_show, parse_outputs_from_flake_show,
 };
 pub use inventory::{
     FlakeInventory, InventoryNode, StandardOutputEntry, StandardOutputKind, list_standard_outputs,
