@@ -26,5 +26,16 @@
 
   documentSupportedSchemaVersion =
     document:
-    (document.schema_version or 1) == 1;
+    let
+      version = document.schema_version or 1;
+    in
+    version == 1 || version == 2;
+
+  taskContextExists =
+    task: document:
+    let
+      context = task.context or null;
+      contexts = document.contexts or { };
+    in
+    context == null || builtins.hasAttr context contexts;
 }

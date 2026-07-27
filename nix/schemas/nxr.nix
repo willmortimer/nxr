@@ -47,6 +47,7 @@ in
                     dependenciesExist = validation.taskDependenciesExist task document;
                     validWorkingDirectory = validation.taskValidWorkingDirectory task;
                     supportedSchemaVersion = validation.documentSupportedSchemaVersion document;
+                    contextExists = validation.taskContextExists task document;
                   };
                 }
               ) (document.tasks or { });

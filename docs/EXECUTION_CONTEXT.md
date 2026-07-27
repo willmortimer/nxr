@@ -1,6 +1,8 @@
 # Execution context and ecosystem expansion
 
-**Status:** design contract for post-2.6 work (2.7 → 3.1). Not yet implemented.
+**Status:** design contract for post-2.6 work (2.7 → 3.1). Context flake-parts
+module options and schema v2 parse are implemented (H2); runtime secret delivery
+and `nxr context` CLI remain later milestones.
 **Companion:** [ROADMAP.md](ROADMAP.md) (scheduling), [CONTRACT_SUMMARY.md](CONTRACT_SUMMARY.md) (invariants), [ECOSYSTEM_SYNTHESIS.md](ECOSYSTEM_SYNTHESIS.md) (inheritance rules).
 
 ## Product identity

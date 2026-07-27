@@ -61,6 +61,9 @@ pub enum SchemaError {
     /// JSON did not deserialize into a supported task document shape.
     #[error("task document did not match schema: {message}")]
     InvalidDocument { message: String },
+    /// Task references a context name that is not defined in `contexts`.
+    #[error("task {task}: unknown context `{context}`")]
+    UnknownContext { task: String, context: String },
 }
 
 /// Versioned task document: `schema_version` plus named task definitions.
@@ -82,6 +85,9 @@ pub struct TaskDocument {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub discovery_inputs: Vec<String>,
+    /// Named execution contexts (schema v2).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub contexts: BTreeMap<String, ExecutionContext>,
 }
 
 /// Listing-only metadata for a flake app leaf (not an operation definition).
@@ -103,6 +109,7 @@ impl TaskDocument {
             tasks,
             apps: BTreeMap::new(),
             discovery_inputs: Vec::new(),
+            contexts: BTreeMap::new(),
         }
     }
 
@@ -123,6 +130,14 @@ impl TaskDocument {
             })?;
         }
         for (task, definition) in &self.tasks {
+            if let Some(context) = &definition.context
+                && !self.contexts.contains_key(context)
+            {
+                return Err(SchemaError::UnknownContext {
+                    task: task.clone(),
+                    context: context.clone(),
+                });
+            }
             if let Some(working_directory) = &definition.working_directory {
                 validate_working_directory(task, working_directory)?;
             }
@@ -219,6 +234,14 @@ pub struct TaskDefinition {
     /// Resource reservations and exclusivity locks (schema v2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<TaskResources>,
+
+    /// Optional devShell name for a shell-only execution context (schema v2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+
+    /// Optional named execution context reference (schema v2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
 }
 
 /// Declared inputs for cache-key fingerprinting and structured wiring (schema v2).
@@ -333,6 +356,57 @@ pub enum IoIntensity {
     Heavy,
 }
 
+/// Named execution context bundling shell, environment, secrets, and confirm (schema v2).
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExecutionContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<ContextEnvironment>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secrets: BTreeMap<String, ContextSecretRef>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub confirm: bool,
+}
+
+/// Environment policy for an execution context (schema v2).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContextEnvironment {
+    pub mode: ContextEnvironmentMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keep: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub set: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unset: Vec<String>,
+}
+
+/// Environment inheritance mode for execution contexts (schema v2).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContextEnvironmentMode {
+    Inherit,
+    Clean,
+}
+
+/// Logical secret reference for an execution context (schema v2).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContextSecretRef {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<SecretDelivery>,
+}
+
+/// How a secret reference is delivered to a child process (schema v2).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SecretDelivery {
+    Env,
+    File,
+    Stdin,
+}
+
 impl TaskDefinition {
     /// Create a minimal task that runs `app` with no dependencies.
     #[must_use]
@@ -353,6 +427,8 @@ impl TaskDefinition {
             outputs: Vec::new(),
             cache: None,
             resources: None,
+            shell: None,
+            context: None,
         }
     }
 }
@@ -465,6 +541,8 @@ struct TaskDocumentV2Strict {
     apps: BTreeMap<String, AppListingMetadata>,
     #[serde(default, rename = "discoveryInputs")]
     discovery_inputs: Vec<String>,
+    #[serde(default)]
+    contexts: BTreeMap<String, ExecutionContextV2Strict>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -499,6 +577,10 @@ struct TaskDefinitionV2Strict {
     cache: Option<TaskCacheV2Strict>,
     #[serde(default)]
     resources: Option<TaskResourcesV2Strict>,
+    #[serde(default)]
+    shell: Option<String>,
+    #[serde(default)]
+    context: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -577,6 +659,40 @@ struct TaskResourcesV2Strict {
     exclusive: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionContextV2Strict {
+    #[serde(default)]
+    shell: Option<String>,
+    #[serde(default)]
+    environment: Option<ContextEnvironmentV2Strict>,
+    #[serde(default)]
+    secrets: BTreeMap<String, ContextSecretRefV2Strict>,
+    #[serde(default)]
+    confirm: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContextEnvironmentV2Strict {
+    mode: ContextEnvironmentMode,
+    #[serde(default)]
+    keep: Vec<String>,
+    #[serde(default)]
+    set: BTreeMap<String, String>,
+    #[serde(default)]
+    unset: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContextSecretRefV2Strict {
+    #[serde(rename = "ref")]
+    reference: String,
+    #[serde(default)]
+    delivery: Option<SecretDelivery>,
+}
+
 impl From<TaskDocumentV2Strict> for TaskDocument {
     fn from(strict: TaskDocumentV2Strict) -> Self {
         Self {
@@ -588,6 +704,11 @@ impl From<TaskDocumentV2Strict> for TaskDocument {
                 .collect(),
             apps: strict.apps,
             discovery_inputs: strict.discovery_inputs,
+            contexts: strict
+                .contexts
+                .into_iter()
+                .map(|(name, context)| (name, context.into()))
+                .collect(),
         }
     }
 }
@@ -610,6 +731,8 @@ impl From<TaskDefinitionV2Strict> for TaskDefinition {
             outputs: strict.outputs.into_iter().map(Into::into).collect(),
             cache: strict.cache.map(Into::into),
             resources: strict.resources.map(Into::into),
+            shell: strict.shell,
+            context: strict.context,
         }
     }
 }
@@ -688,6 +811,41 @@ impl From<TaskResourcesV2Strict> for TaskResources {
     }
 }
 
+impl From<ExecutionContextV2Strict> for ExecutionContext {
+    fn from(strict: ExecutionContextV2Strict) -> Self {
+        Self {
+            shell: strict.shell,
+            environment: strict.environment.map(Into::into),
+            secrets: strict
+                .secrets
+                .into_iter()
+                .map(|(name, secret)| (name, secret.into()))
+                .collect(),
+            confirm: strict.confirm,
+        }
+    }
+}
+
+impl From<ContextEnvironmentV2Strict> for ContextEnvironment {
+    fn from(strict: ContextEnvironmentV2Strict) -> Self {
+        Self {
+            mode: strict.mode,
+            keep: strict.keep,
+            set: strict.set,
+            unset: strict.unset,
+        }
+    }
+}
+
+impl From<ContextSecretRefV2Strict> for ContextSecretRef {
+    fn from(strict: ContextSecretRefV2Strict) -> Self {
+        Self {
+            reference: strict.reference,
+            delivery: strict.delivery,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -714,6 +872,8 @@ mod tests {
                 outputs: Vec::new(),
                 cache: None,
                 resources: None,
+                shell: None,
+                context: None,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -849,6 +1009,7 @@ mod tests {
             tasks: BTreeMap::new(),
             apps: BTreeMap::new(),
             discovery_inputs: Vec::new(),
+            contexts: BTreeMap::new(),
         };
         let err = doc.validate().expect_err("major 99 unsupported");
         assert!(matches!(
@@ -954,6 +1115,92 @@ mod tests {
     }
 
     #[test]
+    fn v2_accepts_contexts_and_task_context_ref() {
+        let value = json!({
+            "schema_version": 2,
+            "contexts": {
+                "backend": {
+                    "shell": "backend",
+                    "environment": {
+                        "mode": "inherit",
+                        "set": { "RUST_LOG": "debug" }
+                    }
+                },
+                "release": {
+                    "shell": "release",
+                    "environment": {
+                        "mode": "clean",
+                        "keep": ["HOME", "SSH_AUTH_SOCK"],
+                        "set": { "RELEASE_CHANNEL": "stable" }
+                    },
+                    "secrets": {
+                        "DEPLOY_TOKEN": {
+                            "ref": "fixture/prod/deploy-token",
+                            "delivery": "env"
+                        }
+                    },
+                    "confirm": true
+                }
+            },
+            "tasks": {
+                "deploy": {
+                    "app": "deploy",
+                    "context": "release"
+                },
+                "integration": {
+                    "app": "test",
+                    "shell": "backend"
+                }
+            }
+        });
+        let doc = parse_task_document(&value).expect("v2 contexts accepted");
+        assert_eq!(doc.contexts.len(), 2);
+        assert_eq!(
+            doc.contexts["release"].secrets["DEPLOY_TOKEN"].reference,
+            "fixture/prod/deploy-token"
+        );
+        assert_eq!(doc.tasks["deploy"].context.as_deref(), Some("release"));
+        assert_eq!(doc.tasks["integration"].shell.as_deref(), Some("backend"));
+    }
+
+    #[test]
+    fn v2_rejects_unknown_context_field() {
+        let value = json!({
+            "schema_version": 2,
+            "contexts": {
+                "backend": {
+                    "shell": "backend",
+                    "futureField": true
+                }
+            },
+            "tasks": {}
+        });
+        let err = parse_task_document(&value).expect_err("v2 unknown context field rejected");
+        assert!(matches!(err, SchemaError::InvalidDocument { .. }));
+    }
+
+    #[test]
+    fn validate_rejects_unknown_task_context_reference() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "deploy": {
+                    "app": "deploy",
+                    "context": "missing"
+                }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("unknown context rejected");
+        assert!(matches!(
+            err,
+            SchemaError::UnknownContext {
+                task,
+                context
+            } if task == "deploy" && context == "missing"
+        ));
+    }
+
+    #[test]
     fn validate_working_directory_accepts_tokens_and_relative_paths() {
         validate_working_directory("fmt", WORKING_DIRECTORY_INVOCATION).expect("invocation");
         validate_working_directory("fmt", WORKING_DIRECTORY_FLAKE_ROOT).expect("flake-root");
@@ -1024,6 +1271,8 @@ mod tests {
                 outputs: Vec::new(),
                 cache: None,
                 resources: None,
+                shell: None,
+                context: None,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1055,6 +1304,8 @@ mod tests {
                 outputs: Vec::new(),
                 cache: None,
                 resources: None,
+                shell: None,
+                context: None,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1090,6 +1341,8 @@ mod tests {
                 outputs: Vec::new(),
                 cache: None,
                 resources: None,
+                shell: None,
+                context: None,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1120,6 +1373,8 @@ mod tests {
                 outputs: Vec::new(),
                 cache: None,
                 resources: None,
+                shell: None,
+                context: None,
             },
         );
         let value = serde_json::to_value(TaskDocument::new(tasks)).expect("serialize");

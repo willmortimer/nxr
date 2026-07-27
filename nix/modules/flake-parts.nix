@@ -41,7 +41,45 @@ let
     }
     // lib.optionalAttrs (task.terminationGracePeriod != null) {
       terminationGracePeriod = task.terminationGracePeriod;
+    }
+    // lib.optionalAttrs (task.shell != null) {
+      shell = task.shell;
+    }
+    // lib.optionalAttrs (task.context != null) {
+      context = task.context;
     };
+
+  contextEnvironmentToJson =
+    env:
+    {
+      mode = env.mode;
+    }
+    // lib.optionalAttrs (env.keep != [ ]) {
+      keep = env.keep;
+    }
+    // lib.optionalAttrs (env.set != { }) {
+      set = env.set;
+    }
+    // lib.optionalAttrs (env.unset != [ ]) {
+      unset = env.unset;
+    };
+
+  contextToJson =
+    ctx:
+    lib.filterAttrs (_: v: v != null && v != { } && v != false) (
+      {
+        shell = ctx.shell;
+        environment = if ctx.environment != null then contextEnvironmentToJson ctx.environment else null;
+        secrets = lib.mapAttrs (
+          _name: secret:
+          {
+            ref = secret.ref;
+            delivery = secret.delivery;
+          }
+        ) ctx.secrets;
+        confirm = ctx.confirm;
+      }
+    );
 
   appListingToJson =
     app:
@@ -55,6 +93,7 @@ let
       appsMeta = lib.filterAttrs (_: meta: meta != { }) (
         lib.mapAttrs (_name: appListingToJson) cfg.nxr.apps
       );
+      contextsJson = lib.mapAttrs (_name: contextToJson) cfg.nxr.contexts;
     in
     {
       schema_version = 1;
@@ -62,6 +101,9 @@ let
     }
     // lib.optionalAttrs (appsMeta != { }) {
       apps = appsMeta;
+    }
+    // lib.optionalAttrs (contextsJson != { }) {
+      contexts = contextsJson;
     }
     // lib.optionalAttrs (cfg.nxr.discoveryInputs != [ ]) {
       discoveryInputs = cfg.nxr.discoveryInputs;
@@ -76,11 +118,12 @@ in
     imports = [
       ./apps.nix
       ./tasks.nix
+      ./contexts.nix
       ./shell-integration.nix
       ./discovery.nix
     ];
   };
 
-  # `nxr.<system>` → { schema_version = 1; tasks = { ... }; apps?; discoveryInputs?; }
+  # `nxr.<system>` → { schema_version = 1; tasks = { ... }; apps?; contexts?; discoveryInputs?; }
   flake.nxr = lib.mapAttrs (_system: cfg: nxrDocument cfg) config.allSystems;
 }

@@ -103,6 +103,25 @@ let
           (e.g. `5s`). Defaults to the runner's built-in grace when unset.
         '';
       };
+
+      shell = lib.mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          Optional `devShells.<name>` for this task (shell-only context).
+          CLI `--shell` / `nxr in` overrides this field.
+        '';
+      };
+
+      context = lib.mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          Optional named execution context (`perSystem.nxr.contexts.<name>`).
+          Overrides `shell` when both are set. CLI context/shell flags override
+          task metadata.
+        '';
+      };
     };
   };
 in
