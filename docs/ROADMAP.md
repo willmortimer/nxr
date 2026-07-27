@@ -46,11 +46,10 @@ Ship before expanding schema-v2 runtime. Priority order from the 2.6 re-audit:
 2. ~~Release artifacts clearly labeled as Nix-package layouts~~ — done
    (`*-nix-package.tar.gz` + in-archive `README.txt`; portable `*-portable.tar.gz`
    per ADR-0141).
-3. ~~CI builds `checks.*.flake-schema`~~ — done
-   (explicit `nix build .#checks.<system>.flake-schema`; hermetic fmt/clippy/test
-   remain via apps to avoid duplicating `nix flake check` wall time).
-4. ~~CI / harness thresholds for warm-path latency and Nix-call-count regressions~~ —
-   done (`measure-release.sh --enforce` + `ci-thresholds.json` on ubuntu/latest;
+3. ~~CI dogfoods hermetic flake checks~~ — done
+   (`nix flake check -L` on ubuntu/latest; other matrix cells keep app gates and
+   explicit `checks.*.flake-schema`).
+4. ~~CI / harness thresholds for warm-path latency and Nix-call-count regressions~~ —   done (`measure-release.sh --enforce` + `ci-thresholds.json` on ubuntu/latest;
    warm list call budgets in CLI tests).
 
 **Warm-path polish**
