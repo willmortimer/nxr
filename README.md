@@ -18,6 +18,9 @@ nix profile install github:willmortimer/nxr#nxr
 # or: nix shell github:willmortimer/nxr#nxr
 ```
 
+Pre-built release tarballs (Nix-package layout vs portable cargo binary) are
+documented in [docs/RELEASE.md](docs/RELEASE.md).
+
 For flake-parts projects, enable session-local completion and PATH wiring
 (no duplicated package wiring required when the flake input is named `nxr`):
 
