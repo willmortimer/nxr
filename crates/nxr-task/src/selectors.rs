@@ -98,6 +98,11 @@ pub fn parse_selector(token: &str) -> ParsedSelector {
 /// # Errors
 ///
 /// Returns [`SelectorError`] when a selector cannot be expanded.
+///
+/// # Panics
+///
+/// Panics only if `parse_selector` reports [`ParsedSelector::App`] for a token
+/// that does not start with [`APP_PREFIX`] (internal invariant).
 pub fn resolve_task_targets(
     doc: &TaskDocument,
     tokens: &[String],

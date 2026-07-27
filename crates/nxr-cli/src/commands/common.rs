@@ -415,7 +415,6 @@ fn coalesced_discovery_error(error: nxr_nix::CoalescedDiscoveryError) -> Prepare
 
 pub(crate) struct ColdWorkspaceDiscovery {
     pub(crate) discovery: WorkspaceDiscovery,
-    pub(crate) dev_shells: BTreeSet<String>,
     pub(crate) used_coalesced: bool,
 }
 
@@ -427,7 +426,6 @@ pub(crate) fn cold_discover_workspace(
     nix_flags: &OptionalNixFlags,
 ) -> Result<ColdWorkspaceDiscovery, PrepareError> {
     let use_coalesced = load_tasks && nxr_nix::coalesced_discovery_available(&nix.version_banner);
-    let mut dev_shells = BTreeSet::new();
 
     if use_coalesced {
         let mut discovery_flags = nix_flags.clone();
@@ -443,14 +441,12 @@ pub(crate) fn cold_discover_workspace(
                 let workspace = coalesced
                     .into_workspace(flake_ref, &nix.system, load_tasks)
                     .map_err(coalesced_discovery_error)?;
-                dev_shells = workspace.dev_shells.clone().into_iter().collect();
                 return Ok(ColdWorkspaceDiscovery {
                     discovery: WorkspaceDiscovery {
                         apps: workspace.apps,
                         tasks: workspace.tasks,
                         dev_shells: workspace.dev_shells,
                     },
-                    dev_shells,
                     used_coalesced: true,
                 });
             }
@@ -463,12 +459,12 @@ pub(crate) fn cold_discover_workspace(
     let show = nix
         .flake_show_json(flake_ref, nix_flags)
         .map_err(PrepareError::Nix)?;
-    dev_shells =
+    let dev_shells =
         parse_outputs_from_flake_show(&show, flake_ref, &nix.system, OutputTable::DevShells)
             .map_err(|error| PrepareError::Nix(error.into()))?
             .into_iter()
             .map(|shell| shell.name)
-            .collect();
+            .collect::<Vec<_>>();
     let apps = parse_apps_from_flake_show(&show, flake_ref, &nix.system)
         .map_err(|error| PrepareError::Nix(error.into()))?;
     let tasks = if load_tasks {
@@ -486,9 +482,8 @@ pub(crate) fn cold_discover_workspace(
         discovery: WorkspaceDiscovery {
             apps,
             tasks,
-            dev_shells: dev_shells.iter().cloned().collect(),
+            dev_shells,
         },
-        dev_shells,
         used_coalesced: false,
     })
 }
@@ -552,22 +547,22 @@ impl WorkspaceSnapshot {
             },
         )?;
         let mut dev_shells: BTreeSet<String> = discovery.dev_shells.iter().cloned().collect();
-        let dev_shells = if load_tasks
-            && dev_shells.is_empty()
-            && !used_coalesced.get()
-            && discovery.tasks.is_none()
+        if load_tasks && dev_shells.is_empty() && !used_coalesced.get() && discovery.tasks.is_none()
         {
             let show = nix
                 .flake_show_json(&flake_ref, nix_flags)
                 .map_err(PrepareError::Nix)?;
-            parse_outputs_from_flake_show(&show, &flake_ref, &nix.system, OutputTable::DevShells)
-                .map_err(|error| PrepareError::Nix(error.into()))?
-                .into_iter()
-                .map(|shell| shell.name)
-                .collect()
-        } else {
-            dev_shells
-        };
+            dev_shells = parse_outputs_from_flake_show(
+                &show,
+                &flake_ref,
+                &nix.system,
+                OutputTable::DevShells,
+            )
+            .map_err(|error| PrepareError::Nix(error.into()))?
+            .into_iter()
+            .map(|shell| shell.name)
+            .collect();
+        }
         let apps = discovery
             .apps
             .into_iter()
@@ -699,13 +694,13 @@ impl WorkspaceSnapshot {
             };
             let effective_shell =
                 resolve_effective_shell(shell, context_shell, definition.shell.clone());
-            if let Some(shell_name) = effective_shell_wrap(effective_shell.as_deref(), shell_mode) {
-                if !self.dev_shells.contains(shell_name) {
-                    return Err(PrepareError::UnknownDevShell {
-                        task: task_id.clone(),
-                        shell: shell_name.to_owned(),
-                    });
-                }
+            if let Some(shell_name) = effective_shell_wrap(effective_shell.as_deref(), shell_mode)
+                && !self.dev_shells.contains(shell_name)
+            {
+                return Err(PrepareError::UnknownDevShell {
+                    task: task_id.clone(),
+                    shell: shell_name.to_owned(),
+                });
             }
             let app_request = AppRequest {
                 flake_arg: None,

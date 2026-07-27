@@ -109,21 +109,11 @@ impl DiscoveryCacheOptions {
 }
 
 /// Apps plus optional tasks discovered for one flake/system.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct WorkspaceDiscovery {
     pub apps: Vec<App>,
     pub tasks: Option<TaskDocument>,
     pub dev_shells: Vec<String>,
-}
-
-impl Default for WorkspaceDiscovery {
-    fn default() -> Self {
-        Self {
-            apps: Vec::new(),
-            tasks: None,
-            dev_shells: Vec::new(),
-        }
-    }
 }
 
 /// Return cached apps when the on-disk entry is still valid.
@@ -495,9 +485,8 @@ fn diagnose_cache_miss(
     }
 
     let context = cache_context_key(context);
-    let path = match cache_file_path(&context) {
-        Some(path) => path,
-        None => return Ok(vec![DiscoveryCacheMissReason::CacheUnavailable]),
+    let Some(path) = cache_file_path(&context) else {
+        return Ok(vec![DiscoveryCacheMissReason::CacheUnavailable]);
     };
 
     let contents = match fs::read_to_string(&path) {

@@ -13,7 +13,7 @@ pub enum ActionTier {
 /// Whether schema v2 cache policy enables local NXR CAS restore/save.
 #[must_use]
 pub fn cache_mode_enabled(mode: Option<&str>) -> bool {
-    matches!(mode, Some("local") | Some("shared-read") | Some("shared"))
+    matches!(mode, Some("local" | "shared-read" | "shared"))
 }
 
 /// Classify a task from its declared outputs.

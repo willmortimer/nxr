@@ -69,14 +69,15 @@ pub const NXR_CONFIG_DIR_ENV: &str = "NXR_CONFIG_DIR";
 /// Resolve the nxr config directory (`$XDG_CONFIG_HOME/nxr` or platform default).
 #[must_use]
 pub fn config_dir() -> PathBuf {
-    if let Ok(override_dir) = std::env::var(NXR_CONFIG_DIR_ENV) {
-        if !override_dir.is_empty() {
-            return PathBuf::from(override_dir);
-        }
+    if let Ok(override_dir) = std::env::var(NXR_CONFIG_DIR_ENV)
+        && !override_dir.is_empty()
+    {
+        return PathBuf::from(override_dir);
     }
-    directories::ProjectDirs::from("", "", "nxr")
-        .map(|dirs| dirs.config_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from(".config/nxr"))
+    directories::ProjectDirs::from("", "", "nxr").map_or_else(
+        || PathBuf::from(".config/nxr"),
+        |dirs| dirs.config_dir().to_path_buf(),
+    )
 }
 
 /// Load `config.toml` when present; otherwise return defaults.

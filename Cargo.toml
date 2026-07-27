@@ -48,4 +48,8 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
+# Pedantic stays allowed until a dedicated cleanup; CI denies warnings via -D warnings.
+pedantic = { level = "allow", priority = -1 }
+# Structural surface area from task/process/CLI growth — tighten when APIs stabilize.
+too_many_arguments = "allow"
+type_complexity = "allow"

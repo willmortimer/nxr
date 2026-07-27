@@ -191,7 +191,7 @@ pub fn explain_task(
         .map_err(PrepareError::NotFound)?;
     let prepared = snapshot.prepare_task_nodes(
         document,
-        &[canonical.clone()],
+        std::slice::from_ref(&canonical),
         &plan.serial_order,
         &[],
         false,
@@ -220,7 +220,7 @@ pub fn explain_task(
 fn render_cache_explain(
     explain: &CacheExplain,
     task: &str,
-    mut runner: RunnerOutput,
+    runner: RunnerOutput,
 ) -> Result<(), CacheError> {
     runner
         .info(format!("cache explain for task {task}"))
@@ -240,9 +240,7 @@ fn render_cache_explain(
         .info(format!("  lookup: {:?}", explain.lookup))
         .map_err(CacheError::Io)?;
     if !explain.key_components.is_empty() {
-        runner
-            .info("  key_components:".to_owned())
-            .map_err(CacheError::Io)?;
+        runner.info("  key_components:").map_err(CacheError::Io)?;
         for (label, value) in &explain.key_components {
             runner
                 .info(format!("    {label}: {value}"))

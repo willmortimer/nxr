@@ -459,70 +459,23 @@ mod tests {
         ];
 
         let mut tasks = BTreeMap::new();
-        tasks.insert(
-            "shared-lib".to_owned(),
-            TaskDefinition {
-                description: None,
-                depends_on: Vec::new(),
-                app: "shared-check".to_owned(),
-                working_directory: None,
-                hidden: false,
-                category: None,
-                aliases: Vec::new(),
-                interactive: false,
-                paths: vec!["shared".to_owned()],
-                timeout: None,
-                termination_grace_period: None,
-            },
-        );
-        tasks.insert(
-            "api-test".to_owned(),
-            TaskDefinition {
-                description: None,
-                depends_on: vec!["shared-lib".to_owned()],
-                app: "api-test".to_owned(),
-                working_directory: Some("crates/api".to_owned()),
-                hidden: false,
-                category: None,
-                aliases: Vec::new(),
-                interactive: false,
-                paths: Vec::new(),
-                timeout: None,
-                termination_grace_period: None,
-            },
-        );
-        tasks.insert(
-            "web-test".to_owned(),
-            TaskDefinition {
-                description: None,
-                depends_on: vec!["shared-lib".to_owned()],
-                app: "web-test".to_owned(),
-                working_directory: Some("crates/web".to_owned()),
-                hidden: false,
-                category: None,
-                aliases: Vec::new(),
-                interactive: false,
-                paths: Vec::new(),
-                timeout: None,
-                termination_grace_period: None,
-            },
-        );
-        tasks.insert(
-            "ci".to_owned(),
-            TaskDefinition {
-                description: None,
-                depends_on: vec!["api-test".to_owned(), "web-test".to_owned()],
-                app: "ci".to_owned(),
-                working_directory: None,
-                hidden: false,
-                category: None,
-                aliases: Vec::new(),
-                interactive: false,
-                paths: Vec::new(),
-                timeout: None,
-                termination_grace_period: None,
-            },
-        );
+        let mut shared = TaskDefinition::new("shared-check");
+        shared.paths = vec!["shared".to_owned()];
+        tasks.insert("shared-lib".to_owned(), shared);
+
+        let mut api = TaskDefinition::new("api-test");
+        api.depends_on = vec!["shared-lib".to_owned()];
+        api.working_directory = Some("crates/api".to_owned());
+        tasks.insert("api-test".to_owned(), api);
+
+        let mut web = TaskDefinition::new("web-test");
+        web.depends_on = vec!["shared-lib".to_owned()];
+        web.working_directory = Some("crates/web".to_owned());
+        tasks.insert("web-test".to_owned(), web);
+
+        let mut ci = TaskDefinition::new("ci");
+        ci.depends_on = vec!["api-test".to_owned(), "web-test".to_owned()];
+        tasks.insert("ci".to_owned(), ci);
 
         (apps, TaskDocument::new(tasks))
     }

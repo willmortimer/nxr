@@ -314,15 +314,15 @@ fn resolve_unprefixed_target(
     workspace: &mut WorkspaceState<'_>,
     name: &str,
 ) -> Result<WatchTarget, WatchCommandError> {
-    if let Some(cached) = cached_discovery(workspace)? {
-        if let Some(document) = cached.tasks.as_ref() {
-            if resolve_task_name(document, name).is_ok() {
-                return Ok(WatchTarget::Task {
-                    name: name.to_owned(),
-                });
-            }
-            return resolve_app_target(workspace, name);
+    if let Some(cached) = cached_discovery(workspace)?
+        && let Some(document) = cached.tasks.as_ref()
+    {
+        if resolve_task_name(document, name).is_ok() {
+            return Ok(WatchTarget::Task {
+                name: name.to_owned(),
+            });
         }
+        return resolve_app_target(workspace, name);
     }
 
     let snapshot = workspace.snapshot(false)?;

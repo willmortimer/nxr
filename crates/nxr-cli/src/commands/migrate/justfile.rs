@@ -69,17 +69,17 @@ fn parse_justfile(contents: &str) -> Vec<JustRecipe> {
             continue;
         }
 
-        if let Some(recipe) = current.as_mut() {
-            if line.starts_with('\t') || line.starts_with("    ") {
-                let body_line = line
-                    .strip_prefix('\t')
-                    .or_else(|| line.strip_prefix("    "));
-                if let Some(body_line) = body_line {
-                    if !recipe.body.is_empty() {
-                        recipe.body.push('\n');
-                    }
-                    recipe.body.push_str(body_line);
+        if let Some(recipe) = current.as_mut()
+            && (line.starts_with('\t') || line.starts_with("    "))
+        {
+            let body_line = line
+                .strip_prefix('\t')
+                .or_else(|| line.strip_prefix("    "));
+            if let Some(body_line) = body_line {
+                if !recipe.body.is_empty() {
+                    recipe.body.push('\n');
                 }
+                recipe.body.push_str(body_line);
             }
         }
     }

@@ -86,7 +86,6 @@ pub fn up(
     let context = discover_process_context(flake_arg, nix_override, nix_flags)?;
     let targets = resolve_targets(&context.document.processes, names)?;
     let mut state = load_state(&context.project_id)?;
-    let mut started = 0usize;
 
     for name in targets {
         if state.processes.contains_key(&name) {
@@ -109,15 +108,10 @@ pub fn up(
             .map_err(ProcessError::Io)?;
         let record = spawn_process(&context, &name, definition)?;
         state.processes.insert(name.clone(), record);
-        started += 1;
     }
 
     save_state(&context.project_id, &state)?;
-    Ok(if started == 0 {
-        exit::SUCCESS
-    } else {
-        exit::SUCCESS
-    })
+    Ok(exit::SUCCESS)
 }
 
 /// Show supervised process status.
@@ -131,7 +125,7 @@ pub fn status(
     let context = discover_process_context(flake_arg, nix_override, nix_flags)?;
     let state = load_state(&context.project_id)?;
     runner
-        .info("checking process status".to_string())
+        .info("checking process status")
         .map_err(ProcessError::Io)?;
 
     let mut stdout = io::stdout().lock();

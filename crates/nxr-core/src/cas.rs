@@ -111,7 +111,7 @@ pub fn hash_action_key(key_material: &serde_json::Value) -> String {
 pub fn digest_file(path: &Path) -> io::Result<String> {
     let mut file = File::open(path)?;
     let mut hasher = Hasher::new();
-    let mut buffer = [0u8; 65_536];
+    let mut buffer = vec![0u8; 65_536];
     loop {
         let read = file.read(&mut buffer)?;
         if read == 0 {

@@ -261,8 +261,10 @@ mod tests {
             fixture.canonicalize().expect("fixture").display()
         );
         let args = coalesced_discovery_args(&flake_ref, &adapter.system);
-        let mut flags = OptionalNixFlags::default();
-        flags.no_write_lock_file = true;
+        let flags = OptionalNixFlags {
+            no_write_lock_file: true,
+            ..Default::default()
+        };
         let args = adapter
             .compatible_argv(args, &flags)
             .expect("compatible argv");

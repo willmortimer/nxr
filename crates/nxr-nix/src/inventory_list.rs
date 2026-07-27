@@ -73,7 +73,7 @@ fn count_role_entries(node: &InventoryNode, system: Option<&str>) -> usize {
     if node.children.is_empty() {
         return 0;
     }
-    if is_configuration_output_key(node.path.first().map(String::as_str).unwrap_or("")) {
+    if is_configuration_output_key(node.path.first().map_or("", String::as_str)) {
         return node
             .children
             .values()

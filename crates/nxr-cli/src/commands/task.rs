@@ -384,7 +384,7 @@ pub fn execute_with_control(
         return dry_run_execute(&prepared_nodes, &plan, &waves, request, json, runner);
     }
 
-    let run_result = if pipe_stdio {
+    if pipe_stdio {
         let mut stdout = io::stdout().lock();
         let mut stderr = io::stderr().lock();
         let inner = build_task_event_sink(
@@ -413,9 +413,7 @@ pub fn execute_with_control(
         let result = run_plan(request, &plan, &prepared_nodes, &mut sink, runner, control);
         report_sink_error(&sink)?;
         result
-    };
-
-    Ok(run_result?)
+    }
 }
 
 fn wrap_report_sink<S: EventSink>(
@@ -794,7 +792,7 @@ fn run_plan(
             }
         }
 
-        let ready: Vec<String> = to_start.drain(..).collect();
+        let ready: Vec<String> = std::mem::take(&mut to_start);
         let mut spawn_queue = Vec::new();
         for node_id in ready {
             let prepared = prepared_nodes
@@ -877,11 +875,11 @@ fn run_plan(
             }
             node_secret_guards.remove(&id);
 
-            if code == exit::SUCCESS {
-                if let Some(prepared) = prepared_nodes.get(&id) {
-                    save_workspace_cache(prepared, &prepared.flake_root)
-                        .map_err(TaskError::Supervision)?;
-                }
+            if code == exit::SUCCESS
+                && let Some(prepared) = prepared_nodes.get(&id)
+            {
+                save_workspace_cache(prepared, &prepared.flake_root)
+                    .map_err(TaskError::Supervision)?;
             }
 
             if code != exit::SUCCESS && first_failure.is_none() {

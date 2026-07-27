@@ -85,13 +85,12 @@ This file is generated from Clap help output. Regenerate with:\n\n\
 <!-- END GENERATED -->\n"
     );
 
-    if let Some(parent) = out_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            if let Err(error) = fs::create_dir_all(parent) {
-                eprintln!("failed to create {}: {error}", parent.display());
-                return ExitCode::from(1);
-            }
-        }
+    if let Some(parent) = out_path.parent()
+        && !parent.as_os_str().is_empty()
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        eprintln!("failed to create {}: {error}", parent.display());
+        return ExitCode::from(1);
     }
 
     if let Err(error) = fs::write(&out_path, rendered) {

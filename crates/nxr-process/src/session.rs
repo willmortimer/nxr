@@ -285,13 +285,13 @@ mod unix {
         environment.apply_with_overrides(&mut command, env_overrides);
 
         let mut child = command.spawn()?;
-        if let Some(bytes) = stdin_input {
-            if let Some(mut stdin) = child.stdin.take() {
-                thread::spawn(move || {
-                    let _ = stdin.write_all(&bytes);
-                    let _ = stdin.flush();
-                });
-            }
+        if let Some(bytes) = stdin_input
+            && let Some(mut stdin) = child.stdin.take()
+        {
+            thread::spawn(move || {
+                let _ = stdin.write_all(&bytes);
+                let _ = stdin.flush();
+            });
         }
         let pgid = child.id();
         Ok(ChildSession { child, pgid })

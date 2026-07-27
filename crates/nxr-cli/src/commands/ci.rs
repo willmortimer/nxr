@@ -118,7 +118,7 @@ pub fn plan_run(request: &CiPlanRequest<'_>, runner: RunnerOutput) -> Result<(),
             request.path_sources,
             request.strict,
             request.paths,
-            runner.clone(),
+            runner,
         )?;
         let requested = if request.roots.is_empty() {
             Vec::new()

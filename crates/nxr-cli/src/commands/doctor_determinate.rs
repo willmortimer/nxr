@@ -140,7 +140,7 @@ fn collect_findings(
                 format!("nix executable: {}", adapter.nix),
             );
             collect_determinate_feature_findings(
-                &adapter,
+                adapter,
                 &distribution,
                 adapter.config_json.as_deref(),
                 findings,
@@ -151,7 +151,7 @@ fn collect_findings(
             collect_nixd_findings(&nixd_probe, findings);
             if request.all {
                 collect_builder_findings(
-                    &adapter,
+                    adapter,
                     adapter.config_json.as_deref(),
                     nixd_probe.is_some(),
                     findings,

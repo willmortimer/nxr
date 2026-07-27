@@ -3065,7 +3065,8 @@ fn coalesced_cold_task_discovery_uses_single_eval_when_forced() {
         .env("NXR_FORCE_COALESCED_DISCOVERY", "1")
         .env("NXR_NIX", &counter.wrapper)
         .args(["--flake", "fixtures/task-dag", "list"])
-        .assert();
+        .assert()
+        .success();
 
     // Reset log after capability probes so only cold task discovery is measured.
     std::fs::write(&counter.log, "").expect("reset log");

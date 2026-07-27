@@ -19,10 +19,13 @@ pub struct NodeResources {
     pub exclusive: Vec<String>,
 }
 
+// serde `skip_serializing_if` requires `fn(&T) -> bool`.
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_zero_u32(value: &u32) -> bool {
     *value == 0
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }

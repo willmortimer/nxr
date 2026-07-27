@@ -92,6 +92,7 @@ impl Supervisor {
     ///
     /// Propagates spawn errors. On Windows, returns
     /// [`io::ErrorKind::Unsupported`].
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn<P, A>(
         &mut self,
         id: impl Into<String>,

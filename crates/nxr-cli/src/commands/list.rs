@@ -127,7 +127,7 @@ pub fn run(
             nix_flags,
             path_sources,
             paths,
-            runner.clone(),
+            runner,
         )?)
     } else {
         None

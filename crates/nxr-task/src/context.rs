@@ -540,8 +540,9 @@ fn merge_policy_fields(
 
 fn inherit_policy_set(policy: &EnvironmentPolicy) -> BTreeMap<String, String> {
     match policy {
-        EnvironmentPolicy::InheritWith { set, .. } => set.clone(),
-        EnvironmentPolicy::Clean { set, .. } => set.clone(),
+        EnvironmentPolicy::InheritWith { set, .. } | EnvironmentPolicy::Clean { set, .. } => {
+            set.clone()
+        }
         EnvironmentPolicy::Inherit => BTreeMap::new(),
     }
 }

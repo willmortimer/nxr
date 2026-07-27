@@ -109,11 +109,9 @@ pub fn discovery_inputs_fingerprint(
     let compatible = loaded
         .as_ref()
         .filter(|index| discovery_inputs_index_compatible(index, &root));
-    let force_rehash = compatible
-        .map(|index| should_force_rehash(index.last_rehash_ns))
-        .unwrap_or(false);
+    let force_rehash = compatible.is_some_and(|index| should_force_rehash(index.last_rehash_ns));
     let prior = if force_rehash { None } else { compatible };
-    let last_rehash_ns = resolve_last_rehash_ns(prior, force_rehash)?;
+    let last_rehash_ns = resolve_last_rehash_ns(prior, force_rehash);
 
     let mut entries = BTreeMap::new();
     for relative in paths {
@@ -198,11 +196,9 @@ fn compute_workspace_fingerprint(
     loaded: Option<&WorkspaceFingerprintIndex>,
 ) -> io::Result<(String, WorkspaceFingerprintIndex)> {
     let compatible = loaded.filter(|index| index_is_compatible(index, root, ignore_policy_hash));
-    let force_rehash = compatible
-        .map(|index| should_force_rehash(index.last_rehash_ns))
-        .unwrap_or(false);
+    let force_rehash = compatible.is_some_and(|index| should_force_rehash(index.last_rehash_ns));
     let prior = if force_rehash { None } else { compatible };
-    let last_rehash_ns = resolve_last_rehash_ns(prior, force_rehash)?;
+    let last_rehash_ns = resolve_last_rehash_ns(prior, force_rehash);
 
     let mut entries = BTreeMap::new();
     let mut nix_paths = Vec::new();
@@ -273,31 +269,30 @@ fn force_rehash_interval_secs() -> Option<u64> {
         .filter(|&secs| secs > 0)
 }
 
-fn now_ns() -> io::Result<u128> {
-    let duration = SystemTime::now()
+fn now_ns() -> u128 {
+    SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    Ok(duration.as_nanos())
+        .unwrap_or_default()
+        .as_nanos()
 }
 
 fn should_force_rehash(last_rehash_ns: u128) -> bool {
     let Some(interval_secs) = force_rehash_interval_secs() else {
         return false;
     };
-    let Ok(now_ns) = now_ns() else {
-        return false;
-    };
-    now_ns.saturating_sub(last_rehash_ns) >= u128::from(interval_secs) * 1_000_000_000
+    now_ns().saturating_sub(last_rehash_ns) >= u128::from(interval_secs) * 1_000_000_000
 }
 
-fn resolve_last_rehash_ns<T>(prior: Option<&T>, force_rehash: bool) -> io::Result<u128>
+fn resolve_last_rehash_ns<T>(prior: Option<&T>, force_rehash: bool) -> u128
 where
     T: LastRehashNs,
 {
-    if force_rehash || prior.is_none() {
+    if force_rehash {
         now_ns()
+    } else if let Some(prior) = prior {
+        prior.last_rehash_ns()
     } else {
-        Ok(prior.expect("prior checked").last_rehash_ns())
+        now_ns()
     }
 }
 
@@ -343,7 +338,7 @@ fn fingerprint_entry_for_file(
     let file_identity = file_identity(metadata);
     let size = metadata.len();
     let modified_ns = modified_ns(metadata)?;
-    let changed_ns = changed_ns(metadata)?;
+    let changed_ns = changed_ns(metadata);
 
     if let Some(prior) = prior
         && prior.matches_metadata(file_identity, size, modified_ns, changed_ns)
@@ -369,7 +364,7 @@ fn fingerprint_lock_entry(
     let file_identity = file_identity(metadata);
     let size = metadata.len();
     let modified_ns = modified_ns(metadata)?;
-    let changed_ns = changed_ns(metadata)?;
+    let changed_ns = changed_ns(metadata);
 
     if let Some(prior) = prior
         && prior.matches_metadata(file_identity, size, modified_ns, changed_ns)
@@ -470,31 +465,28 @@ fn file_identity(metadata: &fs::Metadata) -> Option<FileIdentity> {
 }
 
 fn modified_ns(metadata: &fs::Metadata) -> io::Result<u128> {
-    system_time_ns(metadata.modified()?)
+    Ok(system_time_ns(metadata.modified()?))
 }
 
-fn changed_ns(metadata: &fs::Metadata) -> io::Result<Option<u128>> {
+fn changed_ns(metadata: &fs::Metadata) -> Option<u128> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let nanos = (metadata.ctime() as i128) * 1_000_000_000 + (metadata.ctime_nsec() as i128);
-        if nanos < 0 {
-            return Ok(None);
-        }
-        Ok(Some(nanos as u128))
+        let nanos =
+            i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec());
+        u128::try_from(nanos).ok()
     }
     #[cfg(not(unix))]
     {
         let _ = metadata;
-        Ok(None)
+        None
     }
 }
 
-fn system_time_ns(time: SystemTime) -> io::Result<u128> {
-    let duration = time
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    Ok(duration.as_nanos())
+fn system_time_ns(time: SystemTime) -> u128 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
 }
 
 fn ctime_matches(stored: Option<u128>, current: Option<u128>) -> bool {
@@ -1273,9 +1265,9 @@ mod tests {
                 .and_then(|value| value.as_object_mut())
             {
                 for entry in entries.values_mut() {
-                    entry.as_object_mut().map(|object| {
+                    if let Some(object) = entry.as_object_mut() {
                         object.remove("changed_ns");
-                    });
+                    }
                 }
             }
             let pretty = serde_json::to_string_pretty(&index).expect("pretty legacy index");

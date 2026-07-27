@@ -26,6 +26,7 @@ pub struct WorkspaceCachePlan {
 /// # Errors
 ///
 /// Returns [`std::io::Error`] when path or lockfile digests cannot be computed.
+#[allow(clippy::too_many_arguments)]
 pub fn build_workspace_cache_plan(
     document: &TaskDocument,
     task_id: &str,
