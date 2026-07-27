@@ -4940,3 +4940,78 @@ fn init_template_lists_apps_with_local_nxr_input() {
     assert!(stdout.contains("test"));
     assert!(stdout.contains("fmt"));
 }
+
+#[test]
+fn inventory_lists_custom_role() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/inventory-custom", "inventory"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("customWorkflow"),
+        "expected customWorkflow role in inventory output:\n{stdout}"
+    );
+}
+
+#[test]
+fn inventory_role_filter_lists_entries() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/configurations",
+            "--json",
+            "inventory",
+            "--role",
+            "nixosConfigurations",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse inventory json");
+    let entries = value
+        .get("entries")
+        .and_then(|entries| entries.as_array())
+        .expect("entries array");
+    assert!(!entries.is_empty());
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.get("name").and_then(|name| name.as_str()) == Some("dev"))
+    );
+}
+
+#[test]
+fn process_status_lists_declared_processes() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--flake", "fixtures/processes", "status"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("worker"),
+        "expected worker process in status output:\n{stdout}"
+    );
+    assert!(stdout.contains("stopped"));
+}

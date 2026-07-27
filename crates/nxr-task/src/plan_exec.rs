@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::events::{Event, EventSink};
 use crate::graph::TaskGraph;
 use crate::planner::{PlanError, plan_serial_union};
+use crate::resources::NodeResources;
 use crate::schema::TaskDefinition;
 
 /// Supported major version for the execution-plan envelope.
@@ -71,6 +72,9 @@ pub struct PlanNode {
     /// When true, the scheduler runs this node exclusively (no concurrent peers).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub interactive: bool,
+    /// Soft CPU/memory reservations and named exclusivity locks.
+    #[serde(default, skip_serializing_if = "NodeResources::is_empty")]
+    pub resources: NodeResources,
 }
 
 /// Versioned, immutable execution plan for a chosen root.
@@ -175,6 +179,11 @@ pub fn build_execution_plan_roots(
                     .map(<[String]>::to_vec)
                     .unwrap_or_default(),
                 interactive: definition.interactive,
+                resources: definition
+                    .resources
+                    .as_ref()
+                    .map(NodeResources::from_task_resources)
+                    .unwrap_or_default(),
             })
         })
         .collect();

@@ -27,8 +27,9 @@ use crate::cli::{
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
     affected, cache, ci, complete, completion, configurations, context, doctor, doctor_builders,
-    doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt, graph, init, inspect, list,
-    manpage, migrate, nix_op, plan, run, select, selectors, task, trust, watch,
+    doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt, graph, init, inspect,
+    inventory, list, manpage, migrate, nix_op, plan, process_cmd, run, select, selectors, task,
+    trust, watch,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -118,6 +119,10 @@ enum RunError {
     Context(#[from] context::ContextCommandError),
     #[error(transparent)]
     Trust(#[from] trust::TrustCommandError),
+    #[error(transparent)]
+    Inventory(#[from] inventory::InventoryError),
+    #[error(transparent)]
+    Process(#[from] process_cmd::ProcessError),
 }
 
 impl RunError {
@@ -152,6 +157,8 @@ impl RunError {
             Self::Selector(error) => error.exit_code(),
             Self::Context(error) => error.exit_code(),
             Self::Trust(error) => error.exit_code(),
+            Self::Inventory(error) => error.exit_code(),
+            Self::Process(error) => error.exit_code(),
             Self::MissingAppName | Self::Usage(_) | Self::FlakeAppRef(_) => exit::USAGE,
         }
     }
@@ -491,6 +498,46 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 Ok(exit::SUCCESS)
             }
         },
+        Some(Command::Inventory { role }) => {
+            inventory::run(
+                cli.flake.as_deref(),
+                cli.nix.as_deref(),
+                role.as_deref(),
+                cli.json,
+                &nix_flags,
+                runner,
+            )?;
+            Ok(exit::SUCCESS)
+        }
+        Some(Command::Up { names }) => Ok(process_cmd::up(
+            cli.flake.as_deref(),
+            cli.nix.as_deref(),
+            names,
+            &nix_flags,
+            runner,
+        )?),
+        Some(Command::Status) => Ok(process_cmd::status(
+            cli.flake.as_deref(),
+            cli.nix.as_deref(),
+            cli.json,
+            &nix_flags,
+            runner,
+        )?),
+        Some(Command::Logs { name, follow }) => Ok(process_cmd::logs(
+            cli.flake.as_deref(),
+            cli.nix.as_deref(),
+            name,
+            *follow,
+            &nix_flags,
+            runner,
+        )?),
+        Some(Command::Down { names }) => Ok(process_cmd::down(
+            cli.flake.as_deref(),
+            cli.nix.as_deref(),
+            names,
+            &nix_flags,
+            runner,
+        )?),
         Some(Command::Affected {
             base,
             working_tree,
@@ -1117,6 +1164,18 @@ fn run_inspect(
             configurations::inspect(
                 cli.flake.as_deref(),
                 cli.nix.as_deref(),
+                name,
+                cli.json,
+                nix_flags,
+                runner,
+            )?;
+            return Ok(exit::SUCCESS);
+        }
+        Some(InspectSubcommand::Inventory { role, name }) => {
+            inventory::inspect_entry(
+                cli.flake.as_deref(),
+                cli.nix.as_deref(),
+                role,
                 name,
                 cli.json,
                 nix_flags,
