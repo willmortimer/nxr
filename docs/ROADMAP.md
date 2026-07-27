@@ -63,29 +63,39 @@ Ship before expanding schema-v2 runtime. Priority order from the 2.6 re-audit:
 7. ~~Optional: `watch` lightweight name resolution / explicit `app:` form~~ —
    done (`app:` / `task:` prefixes; `nxr run --watch` forces apps-only snapshot).
 
-**Not in 2.7** (keep deferred): thread-per-pipe multiplexing (before high-concurrency
-runner claims), generic inventory/role CLI, expanded Determinate doctor depth,
-task-result caching, resource-aware scheduling — see Later / 3.0.
+**Also landed on `feat/2.7-correctness-ci` (critique residual polish):**
+
+- mio/kqueue/epoll pipe multiplexing for piped task children (replaces
+  thread-per-pipe on Unix).
+- Expanded `doctor determinate` findings + warm capability-cache reuse
+  (0 version/config probes on hit).
+- Compact fingerprint index + ctime invalidation +
+  `NXR_FINGERPRINT_FORCE_REHASH_SECS` (full Git fsmonitor still deferred).
+
+**Still deferred:** generic inventory/role CLI, task-result caching,
+resource-aware scheduling, Git fsmonitor fingerprint invalidation — see Later / 3.0.
 
 ### 3.0 — Execution-context schema
 
 Major release: **task document schema v2**. Old runners must not silently ignore
 security or execution semantics.
 
-Schema v2 covers:
+**Partial on `feat/2.7-correctness-ci` (foundations):**
 
-- named contexts (`perSystem.nxr.contexts`);
-- `task.context` / `task.shell`;
-- environment requirements;
-- secret **references** + provider bindings (user/HM side);
-- confirmation policy;
-- structured task inputs / outputs;
+- ~~Strict v2 document parse~~ (`deny_unknown_fields`; v1 unchanged).
+- ~~`perSystem.nxr.contexts` module + emit~~; inspect/doctor list context names.
+- ~~Env-provider secret delivery at spawn~~ (ref → caller env; plans show
+  `<runtime>` only). `file` / `stdin` / sops / HM bindings still hard-error.
+
+Still open for the 3.0 cut:
+
+- confirmation policy / project trust approvals;
+- full environment policy at runtime (inherit keep/unset completeness);
+- structured task I/O runtime (cache/resources remain parse-only);
 - dependency states (`name@ready`, `@succeeded`, `@completed`);
-- strict rejection of unknown execution-affecting fields;
-
-Plus runtime: secret delivery (`env` / `file` / `stdin`), project trust approvals,
-one-shell DAG optimization when all nodes share a context, and
-`nxr context <name> …`.
+- `nxr context <name> …` CLI;
+- one-shell DAG optimization when all nodes share a context;
+- flake-parts default emit of `schema_version: 2` when contexts are used.
 
 ### 3.1 — Process workflows
 

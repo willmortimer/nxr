@@ -9,34 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Capability cache (schema **v2**) keys on effective Nix configuration
-  (`NIX_CONFIG` / `NIX_USER_CONF_FILES` / `NIX_CONF_DIR` plus `nix config show`
-  JSON) so config changes under the same binary cannot reuse stale capabilities.
-  Warm hits still probe config once for digest validity, then skip
-  version/help/system.
-- Fingerprint index skips pretty-JSON rewrite when unchanged; `discoveryInputs`
-  use the same metadata-gated incremental index; explain/doctor cache status
-  fingerprints the Nix tree once per operation.
+- Capability cache (schema **v3**) splits binary vs environment layers so a warm
+  hit with matching env digest skips **all** version/config/help probes; config
+  changes under the same binary still invalidate the env layer.
+- Fingerprint index skips rewrite when unchanged; `discoveryInputs` use the same
+  metadata-gated incremental index; explain/doctor cache status fingerprints the
+  Nix tree once per operation. Compact serialization, ctime invalidation, and
+  optional `NXR_FINGERPRINT_FORCE_REHASH_SECS` land for large trees.
 
 ### Added
 
+- Portable release archives `nxr-<version>-<system>-portable.tar.gz` (ADR-0141)
+  alongside labeled `*-nix-package.tar.gz` layouts.
 - `nxr watch app:<name>` / `task:<name>` disambiguation; `nxr run --watch`
-  resolves apps without loading tasks.
+  resolves apps without loading tasks; unprefixed watch skips task eval when the
+  name is app-only.
 - Synthetic monorepo fingerprint warm-path bench
   (`scripts/perf/measure-fingerprint.sh`).
+- mio-backed pipe multiplexing for piped task stdout/stderr (Unix).
+- Expanded `nxr doctor determinate` finding IDs (experimental features,
+  substituters/trusted keys, Wasm flags, CI detection, builder heuristics) with
+  warm capability-cache reuse.
+- Task schema **v2** strict parse (`inputs` / `outputs` / `cache` / `resources`,
+  `contexts`, `task.context` / `task.shell`); unknown execution-affecting fields
+  fail closed. v1 remains tolerant.
+- `perSystem.nxr.contexts` flake-parts module; inspect/doctor list context names
+  (no secret values).
+- Env-provider secret delivery at task spawn: context `secrets.*.delivery =
+  "env"` resolves `ref` from the caller environment into the child slot; plans
+  show `"<runtime>"` only. `file` / `stdin` delivery hard-error until later.
 
 ### Changed
 
 - GitHub release archives are named `nxr-<version>-<system>-nix-package.tar.gz`
   and include `README.txt` stating they are Nix-package layouts, not portable
   standalone binaries (`docs/RELEASE.md`).
-- CI builds `checks.<system>.flake-schema` on every quality matrix job.
+- CI runs `nix flake check -L` on ubuntu/latest (other matrix cells keep app
+  gates and explicit `checks.*.flake-schema`).
 - CI enforces warm-path p50 ceilings via
   `scripts/perf/measure-release.sh --enforce` and
   `scripts/perf/ci-thresholds.json` (ubuntu + Nix latest). Warm `list` Nix
-  call-count budgets (`version=0`, `help=0`, `config=1`, `flake-show=0`) stay
-  gated by CLI integration tests.
-- PERFORMANCE docs clarify content-correct hashes under inode/size/mtime reuse.
+  call-count budgets stay gated by CLI integration tests (full warm hit:
+  `version=0`, `help=0`, `config=0`, `flake-show=0`).
+- PERFORMANCE docs clarify content-correct hashes under inode/size/mtime reuse
+  and note Git fsmonitor as future work.
 
 Feature release: warm-path latency foundations and ecosystem ergonomics.
 
