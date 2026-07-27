@@ -15,9 +15,9 @@ when security/execution fields are used is required as of 2.7.1 ([ADR-0144](adr/
 | `provider` ≠ env / file / stdin delivery | **Planned 3.0** | Hard-error until implemented |
 | `confirm` enforcement | **2.7.1** | TTY / `NXR_ASSUME_YES`; trust DB → 3.0 |
 | `context.shell` / `task.shell` | **2.7.1** | Via existing `nix develop` wrap path |
-| Full env keep/set/unset (inherit) | **Partial → 3.0** | Clean mode stronger; inherit unset → 3.0 |
+| Full env keep/set/unset (inherit) | **3.0** | Clean and inherit modes apply keep/set/unset at spawn |
 | Project trust / `nxr context` CLI | **Planned 3.0** | |
-| Semantic validation (globs, CPU, locks) | **Planned 3.0** | |
+| Semantic validation (paths, CPU, locks) | **3.0** | Rejects invalid v2 metadata at load |
 | Result cache + resource scheduler | **Planned 3.1** | [ADR-0147](adr/0147-two-tier-actions.md) |
 
 Related ADRs: [0122](adr/README.md), [0144](adr/0144-auto-schema-v2.md),

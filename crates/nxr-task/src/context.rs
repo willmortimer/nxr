@@ -193,13 +193,8 @@ pub fn apply_task_context(
         .environment
         .as_ref()
         .map_or(EnvironmentPolicy::Inherit, context_environment_to_policy);
-    let spawn_env_set = context
-        .environment
-        .as_ref()
-        .filter(|env| env.mode == ContextEnvironmentMode::Inherit)
-        .map(|env| env.set.clone())
-        .unwrap_or_default();
     let environment_policy = merge_environment_policies(cli_policy, &context_policy);
+    let spawn_env_set = inherit_policy_set(&environment_policy);
     let plan_secrets = plan_secret_entries(&context.secrets);
 
     Ok(AppliedTaskContext {
@@ -356,7 +351,11 @@ fn plan_secret_entries(secrets: &BTreeMap<String, ContextSecretRef>) -> Vec<Plan
 
 fn context_environment_to_policy(environment: &ContextEnvironment) -> EnvironmentPolicy {
     match environment.mode {
-        ContextEnvironmentMode::Inherit => EnvironmentPolicy::Inherit,
+        ContextEnvironmentMode::Inherit => EnvironmentPolicy::inherit_with(
+            environment.keep.clone(),
+            environment.set.clone(),
+            environment.unset.clone(),
+        ),
         ContextEnvironmentMode::Clean => EnvironmentPolicy::clean(
             environment.keep.clone(),
             environment.set.clone(),
@@ -365,13 +364,27 @@ fn context_environment_to_policy(environment: &ContextEnvironment) -> Environmen
     }
 }
 
+/// Merge CLI and context environment policies.
+///
+/// Precedence (highest first):
+/// 1. Explicit CLI `--clean-env` (or keep/set/unset flags) when the context is plain inherit.
+/// 2. Context policy when the CLI is plain inherit.
+/// 3. When both sides specify a mode, **clean beats inherit**.
+/// 4. When both sides share the same configured mode, `keep`/`unset` accumulate and context
+///    `set` overrides CLI `set` on key conflicts.
 fn merge_environment_policies(
     cli: &EnvironmentPolicy,
     context: &EnvironmentPolicy,
 ) -> EnvironmentPolicy {
+    if context.is_plain_inherit() {
+        return cli.clone();
+    }
+    if cli.is_plain_inherit() {
+        return context.clone();
+    }
     match (cli, context) {
-        (cli_policy, EnvironmentPolicy::Inherit) => cli_policy.clone(),
-        (EnvironmentPolicy::Inherit, context_policy) => context_policy.clone(),
+        (EnvironmentPolicy::Clean { .. }, EnvironmentPolicy::InheritWith { .. }) => cli.clone(),
+        (EnvironmentPolicy::InheritWith { .. }, EnvironmentPolicy::Clean { .. }) => context.clone(),
         (
             EnvironmentPolicy::Clean {
                 keep: cli_keep,
@@ -383,23 +396,79 @@ fn merge_environment_policies(
                 set: ctx_set,
                 unset: ctx_unset,
             },
-        ) => {
-            let mut keep = cli_keep.clone();
-            for name in ctx_keep {
-                if !keep.contains(name) {
-                    keep.push(name.clone());
-                }
-            }
-            let mut set = cli_set.clone();
-            set.extend(ctx_set.iter().map(|(k, v)| (k.clone(), v.clone())));
-            let mut unset = cli_unset.clone();
-            for name in ctx_unset {
-                if !unset.contains(name) {
-                    unset.push(name.clone());
-                }
-            }
-            EnvironmentPolicy::Clean { keep, set, unset }
+        ) => merge_policy_fields(
+            EnvironmentPolicyMode::Clean,
+            cli_keep,
+            cli_set,
+            cli_unset,
+            ctx_keep,
+            ctx_set,
+            ctx_unset,
+        ),
+        (
+            EnvironmentPolicy::InheritWith {
+                keep: cli_keep,
+                set: cli_set,
+                unset: cli_unset,
+            },
+            EnvironmentPolicy::InheritWith {
+                keep: ctx_keep,
+                set: ctx_set,
+                unset: ctx_unset,
+            },
+        ) => merge_policy_fields(
+            EnvironmentPolicyMode::Inherit,
+            cli_keep,
+            cli_set,
+            cli_unset,
+            ctx_keep,
+            ctx_set,
+            ctx_unset,
+        ),
+        _ => unreachable!("plain inherit policies are handled before match"),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EnvironmentPolicyMode {
+    Inherit,
+    Clean,
+}
+
+fn merge_policy_fields(
+    mode: EnvironmentPolicyMode,
+    cli_keep: &[String],
+    cli_set: &BTreeMap<String, String>,
+    cli_unset: &[String],
+    ctx_keep: &[String],
+    ctx_set: &BTreeMap<String, String>,
+    ctx_unset: &[String],
+) -> EnvironmentPolicy {
+    let mut keep = cli_keep.to_vec();
+    for name in ctx_keep {
+        if !keep.contains(name) {
+            keep.push(name.clone());
         }
+    }
+    let mut set = cli_set.clone();
+    set.extend(ctx_set.iter().map(|(k, v)| (k.clone(), v.clone())));
+    let mut unset = cli_unset.to_vec();
+    for name in ctx_unset {
+        if !unset.contains(name) {
+            unset.push(name.clone());
+        }
+    }
+    match mode {
+        EnvironmentPolicyMode::Inherit => EnvironmentPolicy::inherit_with(keep, set, unset),
+        EnvironmentPolicyMode::Clean => EnvironmentPolicy::clean(keep, set, unset),
+    }
+}
+
+fn inherit_policy_set(policy: &EnvironmentPolicy) -> BTreeMap<String, String> {
+    match policy {
+        EnvironmentPolicy::InheritWith { set, .. } => set.clone(),
+        EnvironmentPolicy::Clean { set, .. } => set.clone(),
+        EnvironmentPolicy::Inherit => BTreeMap::new(),
     }
 }
 
@@ -562,6 +631,41 @@ mod tests {
         assert_eq!(value["value"], "<runtime>");
         assert_eq!(value["ref"], "NXR_TEST_DEPLOY_TOKEN");
         assert_eq!(value["provider"], "env");
+    }
+
+    #[test]
+    fn inherit_context_unset_merges_into_policy() {
+        let context = ContextEnvironment {
+            mode: ContextEnvironmentMode::Inherit,
+            keep: Vec::new(),
+            set: BTreeMap::from([("RELEASE_CHANNEL".to_owned(), "stable".to_owned())]),
+            unset: vec!["PATH".to_owned()],
+        };
+        let merged = merge_environment_policies(
+            &EnvironmentPolicy::Inherit,
+            &context_environment_to_policy(&context),
+        );
+        let EnvironmentPolicy::InheritWith { set, unset, .. } = merged else {
+            panic!("expected inherit-with policy");
+        };
+        assert_eq!(
+            set.get("RELEASE_CHANNEL").map(String::as_str),
+            Some("stable")
+        );
+        assert!(unset.contains(&"PATH".to_owned()));
+    }
+
+    #[test]
+    fn cli_clean_beats_context_inherit_with() {
+        let context = ContextEnvironment {
+            mode: ContextEnvironmentMode::Inherit,
+            keep: Vec::new(),
+            set: BTreeMap::new(),
+            unset: vec!["PATH".to_owned()],
+        };
+        let cli = EnvironmentPolicy::clean(["HOME".to_owned()], [], []);
+        let merged = merge_environment_policies(&cli, &context_environment_to_policy(&context));
+        assert!(matches!(merged, EnvironmentPolicy::Clean { .. }));
     }
 
     #[test]

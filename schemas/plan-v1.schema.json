@@ -60,7 +60,7 @@
       "description": "Active dev shell from `NXR_DEV_SHELL` when set in the caller environment."
     },
     "environment_policy": {
-      "description": "Child environment policy. Either the string \"inherit\" or a clean-env object.",
+      "description": "Child environment policy. Either the string \"inherit\" or a policy object with mode inherit|clean.",
       "oneOf": [
         {
           "type": "string",
@@ -73,7 +73,7 @@
           "properties": {
             "mode": {
               "type": "string",
-              "const": "clean"
+              "enum": ["inherit", "clean"]
             },
             "keep": {
               "type": "array",

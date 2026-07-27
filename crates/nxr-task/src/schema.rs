@@ -64,6 +64,36 @@ pub enum SchemaError {
     /// Task references a context name that is not defined in `contexts`.
     #[error("task {task}: unknown context `{context}`")]
     UnknownContext { task: String, context: String },
+    /// A task `inputs.paths` entry is not a valid repository-relative path.
+    #[error("task {task}: inputs.paths[{index}]: {message}")]
+    InvalidInputPath {
+        task: String,
+        index: usize,
+        message: String,
+    },
+    /// A task `outputs` path is not a valid repository-relative path.
+    #[error("task {task}: outputs[{index}].path: {message}")]
+    InvalidOutputPath {
+        task: String,
+        index: usize,
+        message: String,
+    },
+    /// Task resource metadata is invalid.
+    #[error("task {task}: {message}")]
+    InvalidResources { task: String, message: String },
+    /// Context metadata is invalid.
+    #[error("context {context}: {message}")]
+    InvalidContext { context: String, message: String },
+    /// Context secret slot metadata is invalid.
+    #[error("context {context}: secrets.{slot}: {message}")]
+    InvalidSecret {
+        context: String,
+        slot: String,
+        message: String,
+    },
+    /// Task or context shell name is invalid.
+    #[error("{scope}: {message}")]
+    InvalidShell { scope: String, message: String },
 }
 
 /// Versioned task document: `schema_version` plus named task definitions.
@@ -129,6 +159,11 @@ impl TaskDocument {
                 }
             })?;
         }
+        if self.schema_version == SCHEMA_VERSION_V2 {
+            for (context_name, context) in &self.contexts {
+                validate_execution_context(context_name, context)?;
+            }
+        }
         for (task, definition) in &self.tasks {
             if let Some(context) = &definition.context
                 && !self.contexts.contains_key(context)
@@ -137,6 +172,9 @@ impl TaskDocument {
                     task: task.clone(),
                     context: context.clone(),
                 });
+            }
+            if self.schema_version == SCHEMA_VERSION_V2 {
+                validate_task_v2_semantics(task, definition)?;
             }
             if let Some(working_directory) = &definition.working_directory {
                 validate_working_directory(task, working_directory)?;
@@ -151,15 +189,19 @@ impl TaskDocument {
                 })?;
             }
             if let Some(timeout) = &definition.timeout {
-                crate::parse_duration(timeout).map_err(|error| SchemaError::InvalidTimeout {
-                    task: task.clone(),
-                    message: error.to_string(),
+                crate::duration::parse_duration(timeout).map_err(|error| {
+                    SchemaError::InvalidTimeout {
+                        task: task.clone(),
+                        message: error.to_string(),
+                    }
                 })?;
             }
             if let Some(grace) = &definition.termination_grace_period {
-                crate::parse_duration(grace).map_err(|error| SchemaError::InvalidTimeout {
-                    task: task.clone(),
-                    message: error.to_string(),
+                crate::duration::parse_duration(grace).map_err(|error| {
+                    SchemaError::InvalidTimeout {
+                        task: task.clone(),
+                        message: error.to_string(),
+                    }
                 })?;
             }
         }
@@ -445,6 +487,114 @@ impl TaskDefinition {
             context: None,
         }
     }
+}
+
+fn validate_task_v2_semantics(task: &str, definition: &TaskDefinition) -> Result<(), SchemaError> {
+    if let Some(shell) = &definition.shell {
+        validate_shell_name(&format!("task {task}"), shell)?;
+    }
+    if let Some(inputs) = &definition.inputs {
+        for (index, path) in inputs.paths.iter().enumerate() {
+            nxr_core::validate_repo_relative_path("inputs.paths", path).map_err(|error| {
+                SchemaError::InvalidInputPath {
+                    task: task.to_owned(),
+                    index,
+                    message: error.to_string(),
+                }
+            })?;
+        }
+    }
+    for (index, output) in definition.outputs.iter().enumerate() {
+        nxr_core::validate_repo_relative_path("outputs.path", &output.path).map_err(|error| {
+            SchemaError::InvalidOutputPath {
+                task: task.to_owned(),
+                index,
+                message: error.to_string(),
+            }
+        })?;
+    }
+    if let Some(resources) = &definition.resources {
+        validate_task_resources(task, resources)?;
+    }
+    Ok(())
+}
+
+fn validate_execution_context(
+    context_name: &str,
+    context: &ExecutionContext,
+) -> Result<(), SchemaError> {
+    if let Some(shell) = &context.shell {
+        validate_shell_name(&format!("context {context_name}"), shell)?;
+    }
+    if let Some(environment) = &context.environment {
+        validate_context_environment(context_name, environment)?;
+    }
+    for (slot, secret) in &context.secrets {
+        if secret.reference.trim().is_empty() {
+            return Err(SchemaError::InvalidSecret {
+                context: context_name.to_owned(),
+                slot: slot.clone(),
+                message: "ref must not be empty".to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_context_environment(
+    context_name: &str,
+    environment: &ContextEnvironment,
+) -> Result<(), SchemaError> {
+    for name in environment
+        .keep
+        .iter()
+        .chain(environment.unset.iter())
+        .chain(environment.set.keys())
+    {
+        if name.trim().is_empty() {
+            return Err(SchemaError::InvalidContext {
+                context: context_name.to_owned(),
+                message: "environment variable names must not be empty".to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_task_resources(task: &str, resources: &TaskResources) -> Result<(), SchemaError> {
+    if let Some(cpu) = resources.cpu
+        && cpu == 0
+    {
+        return Err(SchemaError::InvalidResources {
+            task: task.to_owned(),
+            message: "resources.cpu must be greater than zero when set".to_owned(),
+        });
+    }
+    if let Some(memory) = &resources.memory {
+        crate::parse_memory(memory).map_err(|error| SchemaError::InvalidResources {
+            task: task.to_owned(),
+            message: error.to_string(),
+        })?;
+    }
+    for (index, lock) in resources.exclusive.iter().enumerate() {
+        if lock.trim().is_empty() {
+            return Err(SchemaError::InvalidResources {
+                task: task.to_owned(),
+                message: format!("resources.exclusive[{index}] must not be empty"),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_shell_name(scope: &str, shell: &str) -> Result<(), SchemaError> {
+    if shell.trim().is_empty() {
+        return Err(SchemaError::InvalidShell {
+            scope: scope.to_owned(),
+            message: "shell name must not be empty".to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// Validate a task `workingDirectory` token or relative path.
@@ -1400,5 +1550,100 @@ mod tests {
         assert!(task.get("workingDirectory").is_some());
         assert!(task.get("depends_on").is_none());
         assert_eq!(task["hidden"], Value::Bool(true));
+    }
+
+    #[test]
+    fn v2_rejects_invalid_resources_cpu() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "build": {
+                    "app": "build",
+                    "resources": { "cpu": 0 }
+                }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("cpu zero rejected");
+        assert!(matches!(err, SchemaError::InvalidResources { .. }));
+    }
+
+    #[test]
+    fn v2_rejects_invalid_memory_and_output_escape() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "build": {
+                    "app": "build",
+                    "outputs": [{ "path": "../outside" }],
+                    "resources": { "memory": "not-memory" }
+                }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("invalid v2 semantics");
+        assert!(
+            matches!(
+                err,
+                SchemaError::InvalidOutputPath { .. } | SchemaError::InvalidResources { .. }
+            ),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn v2_rejects_empty_exclusive_lock_and_secret_ref() {
+        let value = json!({
+            "schema_version": 2,
+            "contexts": {
+                "release": {
+                    "secrets": {
+                        "TOKEN": { "ref": "" }
+                    }
+                }
+            },
+            "tasks": {
+                "build": {
+                    "app": "build",
+                    "resources": { "exclusive": [""] }
+                }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("empty metadata rejected");
+        assert!(
+            matches!(
+                err,
+                SchemaError::InvalidSecret { .. } | SchemaError::InvalidResources { .. }
+            ),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn v2_rejects_empty_shell_name() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "build": {
+                    "app": "build",
+                    "shell": "  "
+                }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("empty shell rejected");
+        assert!(matches!(err, SchemaError::InvalidShell { .. }));
+    }
+
+    #[test]
+    fn v2_rejects_input_path_escape() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "build": {
+                    "app": "build",
+                    "inputs": { "paths": ["../escape"] }
+                }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("input escape rejected");
+        assert!(matches!(err, SchemaError::InvalidInputPath { .. }));
     }
 }
