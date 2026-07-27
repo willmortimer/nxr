@@ -11,6 +11,7 @@ pub mod context;
 pub mod duration;
 pub mod events;
 pub mod graph;
+pub mod memory;
 pub mod plan_exec;
 pub mod planner;
 pub mod resolve;
@@ -26,12 +27,12 @@ pub use context::{
     resolve_task_context, secret_delivery_mode, secret_provider_mode,
     serialized_plan_excludes_value,
 };
-pub use duration::{DurationParseError, format_duration, parse_duration};
 pub use events::{
     ChunkEncoding, Event, EventSink, NodeOutcome, NullSink, OutputPayload, RecordingSink,
     RunOutcome, event_kind,
 };
 pub use graph::{GraphError, TaskGraph, render_dot, render_mermaid, render_text};
+pub use memory::{MemoryParseError, parse_memory};
 pub use plan_exec::{
     ArgumentForwarding, EXECUTION_PLAN_SCHEMA_VERSION, ExecutionPlan, FailurePolicy, PlanNode,
     build_execution_plan, build_execution_plan_roots, build_serial_plan,

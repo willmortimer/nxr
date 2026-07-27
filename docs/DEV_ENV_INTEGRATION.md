@@ -363,7 +363,9 @@ nxr dev
 
 ### inherit
 
-Default behavior. Use caller environment.
+Default behavior. Use caller environment. Context `environment.mode = "inherit"`
+may apply `set` and `unset` at spawn; `keep` is retained for merge/round-trip but is
+a no-op in inherit mode (caller variables remain unless `unset`).
 
 ### clean
 
@@ -375,6 +377,21 @@ nxr plan --clean-env test --json   # environment_policy is a clean object
 ```
 
 `--keep-env`, `--set-env`, and `--unset-env` require `--clean-env`.
+
+### CLI + context precedence
+
+When a task references a named context, effective policy merges CLI flags with
+context metadata:
+
+1. Plain CLI inherit (`--clean-env` absent) defers to the context policy.
+2. Plain context inherit defers to explicit CLI `--clean-env` / keep / set / unset.
+3. When both sides specify a mode, **clean beats inherit**.
+4. When both sides share the same configured mode, `keep` and `unset` accumulate;
+   context `set` overrides CLI `set` on key conflicts.
+
+Serialized plans record the merged policy (`"inherit"` when empty, otherwise
+`{ "mode": "inherit"|"clean", "keep", "set", "unset" }`). Resolved secret values
+are applied at spawn only and never appear in plans.
 
 ### shell
 

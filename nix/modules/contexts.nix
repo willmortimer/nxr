@@ -51,7 +51,10 @@ let
       unset = lib.mkOption {
         type = types.listOf types.str;
         default = [ ];
-        description = "Environment variable names removed before spawn in `clean` mode.";
+        description = ''
+          Environment variable names removed before spawn. Applies in both
+          `inherit` and `clean` modes.
+        '';
       };
     };
   };

@@ -570,6 +570,7 @@ fn write_command(writer: &mut impl Write, command: &PlanCommand) -> io::Result<(
 fn environment_policy_label(policy: &EnvironmentPolicy) -> &'static str {
     match policy {
         EnvironmentPolicy::Inherit => "inherit",
+        EnvironmentPolicy::InheritWith { .. } => "inherit",
         EnvironmentPolicy::Clean { .. } => "clean",
     }
 }
