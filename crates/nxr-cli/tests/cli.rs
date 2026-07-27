@@ -4496,6 +4496,7 @@ fn task_deploy_dry_run_plan_redacts_secret_values() {
         .current_dir(&repo_root)
         .env("NXR_FIXTURE_DEPLOY_TOKEN", marker)
         .env("NXR_ASSUME_YES", "1")
+        .env("NXR_TRUST_PROJECT", "1")
         .args([
             "--flake",
             "fixtures/contexts",
@@ -4538,6 +4539,7 @@ fn task_deploy_injects_env_secret_into_child() {
         .current_dir(&repo_root)
         .env("NXR_FIXTURE_DEPLOY_TOKEN", marker)
         .env("NXR_ASSUME_YES", "1")
+        .env("NXR_TRUST_PROJECT", "1")
         .args(["--flake", "fixtures/contexts", "task", "deploy"])
         .output()
         .expect("spawn nxr task deploy");
@@ -4573,6 +4575,7 @@ fn task_deploy_missing_secret_names_ref_and_slot() {
         .current_dir(&repo_root)
         .env_remove("NXR_FIXTURE_DEPLOY_TOKEN")
         .env("NXR_ASSUME_YES", "1")
+        .env("NXR_TRUST_PROJECT", "1")
         .args(["--flake", "fixtures/contexts", "task", "deploy"])
         .assert()
         .failure()
@@ -4598,6 +4601,30 @@ fn context_list_names_contexts() {
         .success()
         .stdout(predicate::str::contains("backend"))
         .stdout(predicate::str::contains("release"));
+}
+
+#[test]
+fn task_deploy_requires_project_trust_without_override() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !contexts_fixture_available(&repo_root) {
+        return;
+    }
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("XDG_CONFIG_HOME", temp.path())
+        .env("NXR_FIXTURE_DEPLOY_TOKEN", "marker")
+        .env("NXR_ASSUME_YES", "1")
+        .env_remove("NXR_TRUST_PROJECT")
+        .args(["--flake", "fixtures/contexts", "task", "deploy"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires trust approval"));
 }
 
 #[test]
@@ -4638,6 +4665,43 @@ fn context_inspect_shows_refs_not_values() {
 }
 
 #[test]
+fn task_integration_shell_wraps_via_develop_in_dry_run_plan() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !contexts_fixture_available(&repo_root) {
+        return;
+    }
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/contexts",
+            "--shell-mode",
+            "always",
+            "--dry-run",
+            "--json",
+            "task",
+            "integration",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("develop"),
+        "expected nix develop wrap in dry-run plan:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("#backend"),
+        "expected backend devShell in dry-run plan:\n{stdout}"
+    );
+}
+
+#[test]
 fn context_run_deploys_with_env_secret() {
     let Some(()) = require_nix() else {
         return;
@@ -4653,6 +4717,7 @@ fn context_run_deploys_with_env_secret() {
         .current_dir(&repo_root)
         .env("NXR_FIXTURE_DEPLOY_TOKEN", marker)
         .env("NXR_ASSUME_YES", "1")
+        .env("NXR_TRUST_PROJECT", "1")
         .args([
             "--flake",
             "fixtures/contexts",
@@ -4677,6 +4742,35 @@ fn context_run_deploys_with_env_secret() {
         !stdout.contains(marker),
         "secret value must not appear in output"
     );
+}
+
+#[test]
+fn trust_add_marks_contexts_fixture_as_trusted() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !contexts_fixture_available(&repo_root) {
+        return;
+    }
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("XDG_CONFIG_HOME", temp.path())
+        .args(["--flake", "fixtures/contexts", "trust", "add"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("trusted project"));
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("XDG_CONFIG_HOME", temp.path())
+        .args(["--flake", "fixtures/contexts", "trust", "status"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("trusted:"));
 }
 
 #[test]

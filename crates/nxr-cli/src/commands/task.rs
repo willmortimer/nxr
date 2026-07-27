@@ -21,6 +21,7 @@ use crate::commands::run::RunError;
 use crate::commands::secrets::{
     SpawnSecrets, load_runtime_secret_config, prepare_spawn_secrets, project_identity,
 };
+use crate::commands::trust;
 use crate::flake::FlakeResolveError;
 use crate::output_task::{EventsFormat, TaskOutputMode, build_task_event_sink};
 use crate::reports::{ReportCollector, ReportPaths, ReportWriteError, write_all_reports};
@@ -91,6 +92,8 @@ pub enum TaskError {
     Scheduler(#[from] SchedulerError),
     #[error(transparent)]
     Context(#[from] ContextError),
+    #[error(transparent)]
+    Trust(#[from] trust::TrustCommandError),
     #[error("jobs must be >= 1 (got {0})")]
     InvalidJobs(usize),
     #[error(
@@ -123,7 +126,7 @@ impl TaskError {
             Self::Scheduler(_) | Self::Supervision(_) | Self::Io(_) | Self::Report(_) => {
                 exit::PROCESS_SUPERVISION
             }
-            Self::Context(_) => exit::EVALUATION,
+            Self::Context(_) | Self::Trust(_) => exit::EVALUATION,
             Self::InvalidJobs(_)
             | Self::RawConflictsWithMultiplex
             | Self::InteractiveConflictsWithMultiplex => exit::USAGE,
@@ -301,6 +304,14 @@ pub fn execute_with_control(
             request.nix_flags,
             request.context_override.as_deref(),
         )?;
+
+        if !dry_run && requires_project_trust(&prepared_nodes) {
+            trust::enforce_for_execution(
+                &snapshot.flake.display,
+                snapshot.flake.local_root.as_deref(),
+                &snapshot.flake.nix_ref,
+            )?;
+        }
 
         let bundle = PreparedTaskGeneration {
             document,
@@ -902,6 +913,12 @@ fn run_plan(
 
 fn duration_ms_since(start: std::time::Instant) -> u64 {
     u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn requires_project_trust(prepared_nodes: &BTreeMap<String, PreparedTaskNode>) -> bool {
+    prepared_nodes
+        .values()
+        .any(|node| node.confirm || !node.plan.secrets.is_empty())
 }
 
 fn spawn_node(

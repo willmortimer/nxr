@@ -58,9 +58,28 @@ pub fn effective_shell_wrap(requested: Option<&str>, mode: ShellMode) -> Option<
     }
 }
 
+/// Resolve shell precedence for task execution: CLI `--shell` > `context.shell` > `task.shell`.
+///
+/// Each prepared node currently wraps independently via `nix develop` when shell-mode allows.
+/// TODO(3.0): When every node in a DAG shares the same resolved shell, enter develop once and
+/// run the inner graph without per-node re-entry when that is cheap to detect safely.
+#[must_use]
+pub fn resolve_effective_shell(
+    cli_shell: Option<&str>,
+    context_shell: Option<String>,
+    task_shell: Option<String>,
+) -> Option<String> {
+    cli_shell
+        .map(str::to_owned)
+        .or(context_shell)
+        .or(task_shell)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ShellMode, effective_shell_wrap, should_wrap_shell_with_active};
+    use super::{
+        ShellMode, effective_shell_wrap, resolve_effective_shell, should_wrap_shell_with_active,
+    };
 
     #[test]
     fn smart_mode_skips_wrap_when_marker_matches() {
@@ -100,6 +119,26 @@ mod tests {
         assert_eq!(
             effective_shell_wrap(Some("backend"), ShellMode::Never),
             None
+        );
+    }
+
+    #[test]
+    fn resolve_effective_shell_prefers_cli_then_context_then_task() {
+        assert_eq!(
+            resolve_effective_shell(
+                Some("cli"),
+                Some("context".to_owned()),
+                Some("task".to_owned())
+            ),
+            Some("cli".to_owned())
+        );
+        assert_eq!(
+            resolve_effective_shell(None, Some("context".to_owned()), Some("task".to_owned())),
+            Some("context".to_owned())
+        );
+        assert_eq!(
+            resolve_effective_shell(None, None, Some("task".to_owned())),
+            Some("task".to_owned())
         );
     }
 }

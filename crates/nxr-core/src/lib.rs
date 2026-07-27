@@ -9,6 +9,7 @@ pub mod plan;
 pub mod projects;
 pub mod repo_path;
 pub mod sanitize;
+pub mod trust;
 
 pub use config::{
     BindingProvider, ConfigError, NXR_CONFIG_DIR_ENV, SecretBinding, SecretBindings,
@@ -29,6 +30,10 @@ pub use projects::{
 };
 pub use repo_path::{RepoPathError, normalize_repo_relative_path, validate_repo_relative_path};
 pub use sanitize::sanitize_terminal_text;
+pub use trust::{
+    NXR_TRUST_PROJECT_ENV, TrustDatabase, TrustError, canonical_project_key, enforce_project_trust,
+    project_trust_key, trust_project_env_enabled,
+};
 
 #[cfg(test)]
 mod tests {

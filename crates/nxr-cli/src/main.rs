@@ -22,13 +22,13 @@ use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
 
 use crate::cli::{
     BuildSubcommand, CacheSubcommand, CiSubcommand, Cli, Command, ContextSubcommand,
-    DoctorSubcommand, ExplainSubcommand, InspectSubcommand, MigrateSubcommand,
+    DoctorSubcommand, ExplainSubcommand, InspectSubcommand, MigrateSubcommand, TrustSubcommand,
 };
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
     affected, cache, ci, complete, completion, configurations, context, doctor, doctor_builders,
     doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt, graph, init, inspect, list,
-    manpage, migrate, nix_op, plan, run, select, selectors, task, watch,
+    manpage, migrate, nix_op, plan, run, select, selectors, task, trust, watch,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -116,6 +116,8 @@ enum RunError {
     Selector(#[from] selectors::SelectorCommandError),
     #[error(transparent)]
     Context(#[from] context::ContextCommandError),
+    #[error(transparent)]
+    Trust(#[from] trust::TrustCommandError),
 }
 
 impl RunError {
@@ -149,6 +151,7 @@ impl RunError {
             Self::Ci(error) => error.exit_code(),
             Self::Selector(error) => error.exit_code(),
             Self::Context(error) => error.exit_code(),
+            Self::Trust(error) => error.exit_code(),
             Self::MissingAppName | Self::Usage(_) | Self::FlakeAppRef(_) => exit::USAGE,
         }
     }
@@ -471,6 +474,20 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             }
             CacheSubcommand::Status => {
                 cache::status(cli.json, runner)?;
+                Ok(exit::SUCCESS)
+            }
+        },
+        Some(Command::Trust { action }) => match action {
+            TrustSubcommand::Status => {
+                trust::status(cli.flake.as_deref(), cli.json, runner)?;
+                Ok(exit::SUCCESS)
+            }
+            TrustSubcommand::Add => {
+                trust::add(cli.flake.as_deref(), runner)?;
+                Ok(exit::SUCCESS)
+            }
+            TrustSubcommand::Revoke => {
+                trust::revoke(cli.flake.as_deref(), runner)?;
                 Ok(exit::SUCCESS)
             }
         },

@@ -22,7 +22,9 @@ use nxr_task::{
 };
 
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
-use crate::shell_mode::{ShellMode, active_dev_shell, effective_shell_wrap};
+use crate::shell_mode::{
+    ShellMode, active_dev_shell, effective_shell_wrap, resolve_effective_shell,
+};
 
 /// Inputs shared by `run`, bare-app, and `plan` preparation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -592,19 +594,23 @@ impl WorkspaceSnapshot {
             let mut context_name = None;
             let mut confirm = false;
             let effective_context = context_override.or(definition.context.as_deref());
-            let effective_shell = shell
-                .map(str::to_owned)
-                .or_else(|| {
-                    if let Some(name) = effective_context {
-                        document
-                            .contexts
-                            .get(name)
-                            .and_then(|context| context.shell.clone())
-                    } else {
-                        None
-                    }
-                })
-                .or_else(|| definition.shell.clone());
+            let applied_context = effective_context
+                .map(|name| apply_task_context(document, task_id, name, environment_policy))
+                .transpose()?;
+            let context_shell = applied_context
+                .as_ref()
+                .and_then(|applied| applied.shell.clone());
+            if let Some(applied) = &applied_context {
+                context_name = Some(applied.context_name.clone());
+                confirm = applied.confirm;
+            }
+            let node_environment = if let Some(applied) = &applied_context {
+                applied.environment_policy.clone()
+            } else {
+                environment_policy.clone()
+            };
+            let effective_shell =
+                resolve_effective_shell(shell, context_shell, definition.shell.clone());
             if let Some(shell_name) = effective_shell_wrap(effective_shell.as_deref(), shell_mode) {
                 if !self.dev_shells.contains(shell_name) {
                     return Err(PrepareError::UnknownDevShell {
@@ -634,18 +640,12 @@ impl WorkspaceSnapshot {
                 &execution_directory,
                 &strip_one_separator(forwarded),
             )?;
-            let node_environment = if let Some(name) = effective_context {
-                let applied = apply_task_context(document, task_id, name, environment_policy)?;
-                context_name = Some(applied.context_name.clone());
-                confirm = applied.confirm;
+            if let Some(applied) = applied_context {
                 plan.context = Some(applied.context_name);
                 plan.secrets = plan_secrets_for_core(&applied.plan_secrets);
                 plan.context_env_set = applied.spawn_env_set.clone();
                 plan.environment_policy = applied.environment_policy.clone();
-                applied.environment_policy
-            } else {
-                environment_policy.clone()
-            };
+            }
             let timeout = definition
                 .timeout
                 .as_deref()
