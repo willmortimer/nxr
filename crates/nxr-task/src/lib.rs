@@ -28,6 +28,7 @@ pub use context::{
     resolve_task_context, secret_delivery_mode, secret_provider_mode,
     serialized_plan_excludes_value,
 };
+pub use duration::{format_duration, parse_duration};
 pub use events::{
     ChunkEncoding, Event, EventSink, NodeOutcome, NullSink, OutputPayload, RecordingSink,
     RunOutcome, event_kind,
