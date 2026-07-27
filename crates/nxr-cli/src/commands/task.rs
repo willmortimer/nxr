@@ -776,7 +776,7 @@ fn run_plan(
             if first_failure.is_none() {
                 first_failure = Some(code);
             }
-            to_start = scheduler.complete(&id, code)?;
+            to_start.extend(scheduler.complete(&id, code)?);
             if scheduler.failure_policy() == FailurePolicy::FailFast && !supervisor.is_empty() {
                 let shut = supervisor
                     .shutdown_all(SHUTDOWN_GRACE)
@@ -823,7 +823,7 @@ fn run_plan(
                     reason: Some("cache_hit".to_owned()),
                     seq: None,
                 });
-                to_start = scheduler.complete(&node_id, exit::SUCCESS)?;
+                to_start.extend(scheduler.complete(&node_id, exit::SUCCESS)?);
                 continue;
             }
             spawn_queue.push(node_id);
@@ -1247,7 +1247,10 @@ mod tests {
     use crate::reports::ReportPaths;
     use nxr_core::EnvironmentPolicy;
     use nxr_core::diagnostics::exit;
-    use nxr_task::{FailurePolicy, PlanError, TaskDefinition, build_execution_plan};
+    use nxr_task::{
+        FailurePolicy, PlanError, TaskDefinition, build_execution_plan,
+        build_execution_plan_roots,
+    };
     use std::collections::BTreeMap;
 
     #[test]
@@ -1402,5 +1405,46 @@ mod tests {
             refresh_discovery: false,
         };
         assert!(plan_uses_piped_stdio(&plan, &request));
+    }
+
+    /// Mirrors the task run loop when multiple ready nodes are cache hits in one
+    /// batch: each `complete` must extend `to_start`, not overwrite it.
+    #[test]
+    fn cache_hit_ready_batch_accumulates_unlocked_nodes() {
+        use nxr_task::Scheduler;
+
+        let mut tasks = BTreeMap::new();
+        tasks.insert("root1".to_owned(), TaskDefinition::new("root1"));
+        tasks.insert("root2".to_owned(), TaskDefinition::new("root2"));
+        let mut child1 = TaskDefinition::new("child1");
+        child1.depends_on = vec!["root1".to_owned()];
+        tasks.insert("child1".to_owned(), child1);
+        let mut child2 = TaskDefinition::new("child2");
+        child2.depends_on = vec!["root2".to_owned()];
+        tasks.insert("child2".to_owned(), child2);
+
+        let plan = build_execution_plan_roots(
+            &tasks,
+            &["child1", "child2"],
+            FailurePolicy::FailFast,
+            None,
+        )
+        .expect("plan");
+        let mut scheduler = Scheduler::new(&plan, 2).expect("scheduler");
+        let ready = scheduler.schedule_ready();
+        assert_eq!(ready, vec!["root1".to_owned(), "root2".to_owned()]);
+
+        let mut to_start = Vec::new();
+        for node_id in ready {
+            to_start.extend(
+                scheduler
+                    .complete(&node_id, exit::SUCCESS)
+                    .expect("cache-hit complete"),
+            );
+        }
+
+        let mut unlocked: Vec<_> = to_start;
+        unlocked.sort();
+        assert_eq!(unlocked, vec!["child1".to_owned(), "child2".to_owned()]);
     }
 }
