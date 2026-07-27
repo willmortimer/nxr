@@ -26,7 +26,12 @@
       "cache_file": "/tmp/nxr-cache/deadbeef.json",
       "hit": false,
       "invalidation_key": "99",
-      "cached_invalidation_key": "88"
+      "cached_invalidation_key": "88",
+      "miss_reasons": [
+        {
+          "kind": "fingerprint_mismatch"
+        }
+      ]
     },
     "invocation_directory": "/work",
     "requested_shell": null,

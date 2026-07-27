@@ -167,7 +167,7 @@ fn collect_findings(
         );
         push_capability_findings(adapter, findings);
         if adapter.capabilities.flakes_enabled {
-            collect_flake_findings(request, adapter, findings);
+            collect_flake_findings(request, findings, workspace);
         }
     }
 
@@ -209,8 +209,8 @@ fn push_capability_findings(adapter: &NixAdapter, findings: &mut Vec<Diagnostic>
 
 fn collect_flake_findings(
     request: DoctorRequest<'_>,
-    adapter: &NixAdapter,
     findings: &mut Vec<Diagnostic>,
+    workspace: &mut WorkspaceState<'_>,
 ) {
     let invocation_cwd = match current_invocation_directory() {
         Ok(cwd) => cwd,
@@ -245,32 +245,64 @@ fn collect_flake_findings(
         format!("flake discovered: {}", flake.display),
     );
 
-    match adapter.discover_apps(&flake.nix_ref, &OptionalNixFlags::default()) {
+    let apps_result = if request.all {
+        workspace.snapshot(true).map(|snapshot| {
+            snapshot
+                .apps
+                .values()
+                .cloned()
+                .collect::<Vec<nxr_core::App>>()
+        })
+    } else {
+        match workspace.adapter() {
+            Ok(adapter) => adapter
+                .discover_apps(&flake.nix_ref, &OptionalNixFlags::default())
+                .map_err(PrepareError::Nix),
+            Err(error) => Err(PrepareError::Nix(error)),
+        }
+    };
+
+    match apps_result {
         Ok(apps) => {
             if apps.is_empty() {
                 push_finding(
                     findings,
                     DiagnosticLevel::Warning,
                     "apps.empty",
-                    format!("no apps found for system {}", adapter.system),
+                    format!(
+                        "no apps found for system {}",
+                        workspace
+                            .adapter()
+                            .map(|adapter| adapter.system.as_str())
+                            .unwrap_or("unknown")
+                    ),
                 );
             } else {
                 push_finding(
                     findings,
                     DiagnosticLevel::Info,
                     "apps.listed",
-                    format!("listed {} app(s) for system {}", apps.len(), adapter.system),
+                    format!(
+                        "listed {} app(s) for system {}",
+                        apps.len(),
+                        workspace
+                            .adapter()
+                            .map(|adapter| adapter.system.clone())
+                            .unwrap_or_else(|_| "unknown".to_owned())
+                    ),
                 );
             }
 
             if request.all {
                 collect_app_quality_findings(&apps, findings);
-                collect_workspace_cache_findings(&flake, adapter, findings);
+                if let Ok(adapter) = workspace.adapter() {
+                    collect_workspace_cache_findings(&flake, adapter, findings);
+                }
             }
 
-            collect_task_context_findings(adapter, &flake.nix_ref, findings);
+            collect_task_context_findings(request, workspace, &flake.nix_ref, findings);
 
-            collect_projects_member_findings(&flake, adapter, &apps, findings);
+            collect_projects_member_findings(&flake, workspace, &apps, findings);
 
             if let Some(app_name) = request.app {
                 match resolve_app_by_name(&apps, app_name) {
@@ -298,44 +330,78 @@ fn collect_flake_findings(
                 findings,
                 DiagnosticLevel::Error,
                 "apps.unavailable",
-                error.user_message(),
+                prepare_error_message(&error),
             );
         }
     }
 }
 
 fn collect_task_context_findings(
-    adapter: &NixAdapter,
+    request: DoctorRequest<'_>,
+    workspace: &mut WorkspaceState<'_>,
     flake_ref: &str,
     findings: &mut Vec<Diagnostic>,
 ) {
-    match adapter.discover_tasks(flake_ref, &OptionalNixFlags::default()) {
-        Ok(task_doc) => {
-            if task_doc.contexts.is_empty() {
+    let task_doc = if request.all {
+        match workspace.snapshot(true) {
+            Ok(snapshot) => snapshot.tasks.clone(),
+            Err(error) => {
+                push_finding(
+                    findings,
+                    DiagnosticLevel::Warning,
+                    "contexts.unavailable",
+                    format!(
+                        "task metadata unavailable: {}",
+                        prepare_error_message(&error)
+                    ),
+                );
                 return;
             }
-            let names: Vec<String> = task_doc.contexts.keys().cloned().collect();
-            push_finding(
-                findings,
-                DiagnosticLevel::Info,
-                "contexts.defined",
-                format!("defined {} context(s): {}", names.len(), names.join(", ")),
-            );
         }
-        Err(error) => {
-            push_finding(
-                findings,
-                DiagnosticLevel::Warning,
-                "contexts.unavailable",
-                format!("task metadata unavailable: {}", error.user_message()),
-            );
+    } else {
+        match workspace.adapter() {
+            Ok(adapter) => match adapter.discover_tasks(flake_ref, &OptionalNixFlags::default()) {
+                Ok(doc) => Some(doc),
+                Err(error) => {
+                    push_finding(
+                        findings,
+                        DiagnosticLevel::Warning,
+                        "contexts.unavailable",
+                        format!("task metadata unavailable: {}", error.user_message()),
+                    );
+                    return;
+                }
+            },
+            Err(error) => {
+                push_finding(
+                    findings,
+                    DiagnosticLevel::Warning,
+                    "contexts.unavailable",
+                    format!("task metadata unavailable: {}", error.user_message()),
+                );
+                return;
+            }
         }
+    };
+
+    let Some(task_doc) = task_doc else {
+        return;
+    };
+    if task_doc.contexts.is_empty() {
+        return;
     }
+    let names: Vec<String> = task_doc.contexts.keys().cloned().collect();
+    push_finding(
+        findings,
+        DiagnosticLevel::Info,
+        "contexts.defined",
+        format!("defined {} context(s): {}", names.len(), names.join(", ")),
+    );
 }
 
 fn collect_projects_member_findings(
     flake: &crate::flake::FlakeSelection,
-    adapter: &NixAdapter,
+    workspace: &mut WorkspaceState<'_>,
     apps: &[nxr_core::App],
     findings: &mut Vec<Diagnostic>,
 ) {
@@ -348,10 +414,12 @@ fn collect_projects_member_findings(
     };
 
     let known_apps = apps.iter().map(|app| app.name.clone()).collect();
-    let known_tasks = match adapter.discover_tasks(&flake.nix_ref, &OptionalNixFlags::default()) {
-        Ok(task_doc) => task_doc.tasks.keys().cloned().collect(),
-        Err(_) => std::collections::BTreeSet::new(),
-    };
+    let known_tasks = workspace
+        .snapshot(true)
+        .ok()
+        .and_then(|snapshot| snapshot.tasks.as_ref())
+        .map(|task_doc| task_doc.tasks.keys().cloned().collect())
+        .unwrap_or_default();
 
     for unknown in doc.unknown_members(&known_apps, &known_tasks) {
         let kind = match unknown.kind {

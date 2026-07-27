@@ -3205,13 +3205,20 @@ fn doctor_all_does_not_double_capability_probes() {
         .success();
 
     let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
-    assert_eq!(counter.count("eval"), 1, "single system probe; log={log}");
     assert_eq!(
         counter.count("version"),
         1,
         "single version probe; log={log}"
     );
     assert_eq!(counter.count("config"), 1, "single config probe; log={log}");
+    assert!(
+        (1..=2).contains(&counter.count("eval")),
+        "system probe plus at most one discovery eval; log={log}"
+    );
+    assert!(
+        counter.count("flake-show") <= 1,
+        "at most one flake-show for doctor --all; log={log}"
+    );
 }
 
 #[test]

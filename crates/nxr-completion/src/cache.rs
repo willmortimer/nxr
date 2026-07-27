@@ -220,7 +220,7 @@ struct CachedDiscovery {
     dev_shells: Vec<String>,
 }
 
-const CACHE_SCHEMA_VERSION: u32 = 5;
+const CACHE_SCHEMA_VERSION: u32 = 6;
 
 #[cfg(test)]
 thread_local! {

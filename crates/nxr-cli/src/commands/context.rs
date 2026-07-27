@@ -18,7 +18,9 @@ use nxr_task::{
 };
 use serde::Serialize;
 
-use crate::commands::common::{PrepareError, build_adapter, current_invocation_directory};
+use crate::commands::common::{
+    PrepareError, build_adapter, cold_discover_workspace, current_invocation_directory,
+};
 use crate::commands::secrets::project_identity;
 use crate::commands::task::{TaskError, TaskRequest};
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
@@ -307,17 +309,9 @@ fn discover_workspace(
         &context,
         DiscoveryCacheOptions::with_tasks(refresh_discovery),
         || {
-            let apps = adapter
-                .discover_apps(&flake_ref, nix_flags)
-                .map_err(PrepareError::Nix)?;
-            let tasks = adapter
-                .discover_tasks(&flake_ref, nix_flags)
-                .map_err(PrepareError::TaskDiscovery)?;
-            Ok(WorkspaceDiscovery {
-                apps,
-                tasks: Some(tasks),
-                ..Default::default()
-            })
+            // Share cold discovery with task execution so cached entries include
+            // apps, tasks, and dev shells (context shell validation needs shells).
+            cold_discover_workspace(adapter, &flake_ref, true, nix_flags).map(|cold| cold.discovery)
         },
     )
     .map_err(ContextCommandError::Prepare)

@@ -415,7 +415,6 @@ fn coalesced_discovery_error(error: nxr_nix::CoalescedDiscoveryError) -> Prepare
 
 pub(crate) struct ColdWorkspaceDiscovery {
     pub(crate) discovery: WorkspaceDiscovery,
-    pub(crate) used_coalesced: bool,
 }
 
 /// Discover apps and optional tasks, preferring coalesced eval when available.
@@ -447,7 +446,6 @@ pub(crate) fn cold_discover_workspace(
                         tasks: workspace.tasks,
                         dev_shells: workspace.dev_shells,
                     },
-                    used_coalesced: true,
                 });
             }
             Err(error) => {
@@ -484,7 +482,6 @@ pub(crate) fn cold_discover_workspace(
             tasks,
             dev_shells,
         },
-        used_coalesced: false,
     })
 }
 
@@ -533,7 +530,6 @@ impl WorkspaceSnapshot {
             discovery_inputs: Vec::new(),
         };
         let flake_ref = flake.nix_ref.clone();
-        let used_coalesced = std::cell::Cell::new(false);
         let discovery = discover_workspace_with_cache(
             &context,
             DiscoveryCacheOptions {
@@ -542,27 +538,10 @@ impl WorkspaceSnapshot {
             },
             || {
                 let cold = cold_discover_workspace(&nix, &flake_ref, load_tasks, nix_flags)?;
-                used_coalesced.set(cold.used_coalesced);
                 Ok::<WorkspaceDiscovery, PrepareError>(cold.discovery)
             },
         )?;
-        let mut dev_shells: BTreeSet<String> = discovery.dev_shells.iter().cloned().collect();
-        if load_tasks && dev_shells.is_empty() && !used_coalesced.get() && discovery.tasks.is_none()
-        {
-            let show = nix
-                .flake_show_json(&flake_ref, nix_flags)
-                .map_err(PrepareError::Nix)?;
-            dev_shells = parse_outputs_from_flake_show(
-                &show,
-                &flake_ref,
-                &nix.system,
-                OutputTable::DevShells,
-            )
-            .map_err(|error| PrepareError::Nix(error.into()))?
-            .into_iter()
-            .map(|shell| shell.name)
-            .collect();
-        }
+        let dev_shells: BTreeSet<String> = discovery.dev_shells.iter().cloned().collect();
         let apps = discovery
             .apps
             .into_iter()
