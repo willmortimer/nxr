@@ -122,6 +122,12 @@ impl PipeMultiplexer {
         self.inner.remove_node(node);
     }
 
+    /// Whether `node` still has registered stdout/stderr pipes.
+    #[must_use]
+    pub fn has_pipes(&self, node: u32) -> bool {
+        self.inner.has_pipes(node)
+    }
+
     /// Wait up to `timeout` for readable pipes and deliver chunks to `on_chunk`.
     ///
     /// # Errors
@@ -142,14 +148,18 @@ mod unix {
     use mio::{Events, Interest, Poll, Registry, Token};
     use std::collections::HashMap;
     use std::io::{self, Read};
+    use std::os::fd::AsFd;
     use std::os::unix::io::AsRawFd;
     use std::process::{ChildStderr, ChildStdout};
     use std::time::Duration;
 
     use mio::unix::SourceFd;
+    use nix::fcntl::{FcntlArg, OFlag, fcntl};
 
     /// Reusable read buffer size (within the 16–64 KiB guidance).
     const READ_BUFFER_SIZE: usize = 32 * 1024;
+    /// Max bytes to read from one fd per poll wake so peers get a turn.
+    const READ_FAIRNESS_BUDGET: usize = 1024 * 1024;
 
     enum PipeReader {
         Stdout(ChildStdout),
@@ -236,10 +246,12 @@ mod unix {
         }
 
         pub(super) fn register_stdout(&mut self, node: u32, pipe: ChildStdout) -> io::Result<()> {
+            set_nonblocking(&pipe)?;
             self.register(node, PipeStream::Stdout, PipeReader::Stdout(pipe))
         }
 
         pub(super) fn register_stderr(&mut self, node: u32, pipe: ChildStderr) -> io::Result<()> {
+            set_nonblocking(&pipe)?;
             self.register(node, PipeStream::Stderr, PipeReader::Stderr(pipe))
         }
 
@@ -277,6 +289,10 @@ mod unix {
             }
         }
 
+        pub(super) fn has_pipes(&self, node: u32) -> bool {
+            self.node_tokens.contains_key(&node)
+        }
+
         pub(super) fn poll<F>(&mut self, timeout: Duration, on_chunk: &mut F) -> io::Result<()>
         where
             F: FnMut(PipeChunk),
@@ -298,30 +314,43 @@ mod unix {
         where
             F: FnMut(PipeChunk),
         {
-            let Some(source) = self.sources.get_mut(token_index).and_then(Option::as_mut) else {
-                return Ok(());
-            };
-            let node = source.node;
-            let stream = source.stream;
-            match source.reader.read(&mut self.buffer[..]) {
-                Ok(0) => {
-                    self.close_source(token_index);
+            let mut budget = READ_FAIRNESS_BUDGET;
+            loop {
+                if budget == 0 {
+                    break;
                 }
-                Ok(count) => {
-                    on_chunk(PipeChunk {
-                        node,
-                        stream,
-                        bytes: self.buffer[..count].to_vec(),
-                    });
-                }
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                    ) => {}
-                Err(error) => {
-                    self.close_source(token_index);
-                    return Err(error);
+
+                let Some(source) = self.sources.get_mut(token_index).and_then(Option::as_mut)
+                else {
+                    return Ok(());
+                };
+                let node = source.node;
+                let stream = source.stream;
+                match source.reader.read(&mut self.buffer[..]) {
+                    Ok(0) => {
+                        self.close_source(token_index);
+                        break;
+                    }
+                    Ok(count) => {
+                        budget = budget.saturating_sub(count);
+                        on_chunk(PipeChunk {
+                            node,
+                            stream,
+                            bytes: self.buffer[..count].to_vec(),
+                        });
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(error) => {
+                        self.close_source(token_index);
+                        return Err(error);
+                    }
                 }
             }
             Ok(())
@@ -337,6 +366,14 @@ mod unix {
                 .for_each(|tokens| tokens.retain(|index| *index != token_index));
             self.node_tokens.retain(|_, tokens| !tokens.is_empty());
         }
+    }
+
+    fn set_nonblocking(pipe: &impl AsFd) -> io::Result<()> {
+        let borrowed = pipe.as_fd();
+        let flags = fcntl(borrowed, FcntlArg::F_GETFL).map_err(io::Error::other)?;
+        let new_flags = OFlag::from_bits_truncate(flags) | OFlag::O_NONBLOCK;
+        fcntl(borrowed, FcntlArg::F_SETFL(new_flags)).map_err(io::Error::other)?;
+        Ok(())
     }
 }
 
@@ -441,6 +478,10 @@ mod fallback {
                     let _ = self.readers.remove(index);
                 }
             }
+        }
+
+        pub(super) fn has_pipes(&self, node: u32) -> bool {
+            self.node_readers.contains_key(&node)
         }
 
         pub(super) fn poll<F>(&mut self, timeout: Duration, on_chunk: &mut F) -> io::Result<()>
@@ -553,5 +594,96 @@ mod tests {
         }
 
         assert_eq!(seen.len(), child_count);
+    }
+
+    #[test]
+    fn drains_more_than_one_buffer_per_poll_wake() {
+        const READ_BUFFER_SIZE: usize = 32 * 1024;
+        let payload_size = READ_BUFFER_SIZE * 2 + 100;
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", &format!("perl -e 'print \"x\" x {payload_size}'")])
+            .stdout(Stdio::piped())
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("spawn sh");
+
+        let stdout = child.stdout.take().expect("stdout");
+        let mut mux = PipeMultiplexer::new();
+        let node = mux.intern_node("large");
+        mux.register_stdout(node, stdout).expect("register stdout");
+
+        let mut chunk_sizes = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            mux.poll(Duration::from_millis(20), |chunk| {
+                chunk_sizes.push(chunk.bytes.len());
+            })
+            .expect("poll");
+            if chunk_sizes.iter().sum::<usize>() >= payload_size {
+                break;
+            }
+        }
+        let _ = child.wait();
+
+        assert_eq!(
+            chunk_sizes.iter().sum::<usize>(),
+            payload_size,
+            "incomplete drain: {chunk_sizes:?}"
+        );
+        assert!(
+            chunk_sizes.len() > 1,
+            "expected multiple reads per poll wake: {chunk_sizes:?}"
+        );
+    }
+
+    #[test]
+    fn poll_returns_without_blocking_when_child_has_no_output() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "sleep 2"])
+            .stdout(Stdio::piped())
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("spawn sh");
+
+        let stdout = child.stdout.take().expect("stdout");
+        let mut mux = PipeMultiplexer::new();
+        let node = mux.intern_node("quiet");
+        mux.register_stdout(node, stdout).expect("register stdout");
+
+        let start = std::time::Instant::now();
+        mux.poll(Duration::ZERO, |_| panic!("unexpected chunk"))
+            .expect("poll");
+        assert!(
+            start.elapsed() < Duration::from_millis(200),
+            "poll blocked for {:?}",
+            start.elapsed()
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn has_pipes_tracks_registration_and_eof() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "printf done"])
+            .stdout(Stdio::piped())
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("spawn sh");
+
+        let stdout = child.stdout.take().expect("stdout");
+        let mut mux = PipeMultiplexer::new();
+        let node = mux.intern_node("demo");
+        mux.register_stdout(node, stdout).expect("register stdout");
+        assert!(mux.has_pipes(node));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while mux.has_pipes(node) && std::time::Instant::now() < deadline {
+            mux.poll(Duration::from_millis(20), |_| {}).expect("poll");
+        }
+        let _ = child.wait();
+
+        assert!(!mux.has_pipes(node));
     }
 }

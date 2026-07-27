@@ -12,7 +12,7 @@ nxr-core = { path = "../nxr-core" }
 mio = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-nix = { workspace = true, features = ["signal"] }
+nix = { workspace = true, features = ["fs", "signal"] }
 signal-hook = { workspace = true }
 
 [lints]
