@@ -9,7 +9,7 @@ nix develop          # optional: project shell
 nix build .#nxr      # package the CLI
 ```
 
-Quality apps (same ones CI runs):
+Quality apps (CI runs `nix flake check` on ubuntu/latest; other matrix cells use these apps):
 
 ```bash
 nix run .#fmt        # rustfmt (add -- --check in CI)
