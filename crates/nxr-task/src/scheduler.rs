@@ -30,6 +30,26 @@ pub enum SchedulerError {
     /// `on_exit` referenced a node id absent from the plan.
     #[error("unknown node `{node}`")]
     UnknownNode { node: String },
+
+    /// A node's CPU demand exceeds the configured pool (can never start).
+    #[error(
+        "task `{task}` requests {requested_cpu} CPU token(s) but the pool only provides {available_cpu}"
+    )]
+    UnschedulableCpu {
+        task: String,
+        requested_cpu: u32,
+        available_cpu: u32,
+    },
+
+    /// A node's memory demand exceeds the configured pool (can never start).
+    #[error(
+        "task `{task}` requests {requested_memory} of memory but the pool only provides {available_memory}"
+    )]
+    UnschedulableMemory {
+        task: String,
+        requested_memory: String,
+        available_memory: String,
+    },
 }
 
 /// Lifecycle state of one plan node inside the scheduler.
@@ -110,11 +130,15 @@ impl Scheduler {
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError::InvalidJobs`] when `jobs == 0`.
+    /// Returns [`SchedulerError::InvalidJobs`] when `jobs == 0`, or
+    /// [`SchedulerError::UnschedulableCpu`] / [`SchedulerError::UnschedulableMemory`]
+    /// when any node requests more than the pool can ever provide.
     pub fn new(plan: &ExecutionPlan, jobs: usize) -> Result<Self, SchedulerError> {
         if jobs == 0 {
             return Err(SchedulerError::InvalidJobs { jobs: 0 });
         }
+
+        let resource_limits = ResourceLimits::from_jobs(jobs);
 
         let mut states = BTreeMap::new();
         let mut remaining_deps = BTreeMap::new();
@@ -147,10 +171,10 @@ impl Scheduler {
             }
         }
 
-        Ok(Self {
+        let scheduler = Self {
             failure_policy: plan.failure_policy,
             jobs,
-            resource_limits: ResourceLimits::from_jobs(jobs),
+            resource_limits,
             interactive,
             node_resources,
             states,
@@ -162,14 +186,21 @@ impl Scheduler {
             cpu_in_use: 0,
             memory_in_use: 0,
             fail_fast_tripped: false,
-        })
+        };
+        scheduler.validate_schedulability()?;
+        Ok(scheduler)
     }
 
     /// Override soft resource pool limits (defaults from [`ResourceLimits::from_jobs`]).
-    #[must_use]
-    pub fn with_resource_limits(mut self, limits: ResourceLimits) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::UnschedulableCpu`] or [`SchedulerError::UnschedulableMemory`]
+    /// when any node requests more than the new pool can provide.
+    pub fn with_resource_limits(mut self, limits: ResourceLimits) -> Result<Self, SchedulerError> {
         self.resource_limits = limits;
-        self
+        self.validate_schedulability()?;
+        Ok(self)
     }
 
     /// Override the failure policy (defaults to the plan's policy).
@@ -391,6 +422,30 @@ impl Scheduler {
         self.node_resources.get(node).cloned().unwrap_or_default()
     }
 
+    fn validate_schedulability(&self) -> Result<(), SchedulerError> {
+        for (task, resources) in &self.node_resources {
+            let cpu_needed = resources.cpu_tokens();
+            if cpu_needed > self.resource_limits.cpu_pool {
+                return Err(SchedulerError::UnschedulableCpu {
+                    task: task.clone(),
+                    requested_cpu: cpu_needed,
+                    available_cpu: self.resource_limits.cpu_pool,
+                });
+            }
+            if resources.memory_bytes > 0
+                && self.resource_limits.memory_pool > 0
+                && resources.memory_bytes > self.resource_limits.memory_pool
+            {
+                return Err(SchedulerError::UnschedulableMemory {
+                    task: task.clone(),
+                    requested_memory: format_memory_bytes(resources.memory_bytes),
+                    available_memory: format_memory_bytes(self.resource_limits.memory_pool),
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn can_acquire_resources(&self, node: &str) -> bool {
         let resources = self.resources_for(node);
         let cpu_needed = resources.cpu_tokens();
@@ -496,6 +551,21 @@ impl Scheduler {
                 | NodeState::Skipped => {}
             }
         }
+    }
+}
+
+fn format_memory_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    const GIB: u64 = MIB * 1024;
+    if bytes >= GIB && bytes.is_multiple_of(GIB) {
+        format!("{}GiB", bytes / GIB)
+    } else if bytes >= MIB && bytes.is_multiple_of(MIB) {
+        format!("{}MiB", bytes / MIB)
+    } else if bytes >= KIB && bytes.is_multiple_of(KIB) {
+        format!("{}KiB", bytes / KIB)
+    } else {
+        format!("{bytes}B")
     }
 }
 
@@ -925,6 +995,78 @@ mod tests {
     }
 
     #[test]
+    fn rejects_cpu_request_exceeding_jobs_pool() {
+        let mut tasks = BTreeMap::new();
+        let mut heavy = task(&[]);
+        heavy.resources = Some(crate::schema::TaskResources {
+            cpu: Some(8),
+            memory: None,
+            io: None,
+            network: None,
+            exclusive: Vec::new(),
+        });
+        tasks.insert("heavy".to_owned(), heavy);
+        let plan = build_execution_plan_roots(&tasks, &["heavy"], FailurePolicy::FailFast, None)
+            .expect("plan");
+
+        let err = Scheduler::new(&plan, 4).expect_err("oversized cpu");
+        assert_eq!(
+            err,
+            SchedulerError::UnschedulableCpu {
+                task: "heavy".to_owned(),
+                requested_cpu: 8,
+                available_cpu: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn default_cpu_one_schedules_with_jobs_four() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert("a".to_owned(), task(&[]));
+        let plan = build_execution_plan_roots(&tasks, &["a"], FailurePolicy::FailFast, None)
+            .expect("plan");
+
+        let mut sched = Scheduler::new(&plan, 4).expect("sched");
+        assert_eq!(sched.schedule_ready(), vec!["a".to_owned()]);
+        assert!(sched.complete("a", 0).expect("a").is_empty());
+        assert!(sched.outcome().success);
+    }
+
+    #[test]
+    fn rejects_memory_request_exceeding_pool() {
+        let mut tasks = BTreeMap::new();
+        let mut heavy = task(&[]);
+        heavy.resources = Some(crate::schema::TaskResources {
+            cpu: None,
+            memory: Some("2GiB".to_owned()),
+            io: None,
+            network: None,
+            exclusive: Vec::new(),
+        });
+        tasks.insert("heavy".to_owned(), heavy);
+        let plan = build_execution_plan_roots(&tasks, &["heavy"], FailurePolicy::FailFast, None)
+            .expect("plan");
+
+        let limits = crate::resources::ResourceLimits {
+            cpu_pool: 4,
+            memory_pool: 1024 * 1024 * 1024,
+        };
+        let err = Scheduler::new(&plan, 4)
+            .expect("sched")
+            .with_resource_limits(limits)
+            .expect_err("oversized memory");
+        assert_eq!(
+            err,
+            SchedulerError::UnschedulableMemory {
+                task: "heavy".to_owned(),
+                requested_memory: "2GiB".to_owned(),
+                available_memory: "1GiB".to_owned(),
+            }
+        );
+    }
+
+    #[test]
     fn cpu_pool_limits_parallel_starts() {
         let mut tasks = BTreeMap::new();
         tasks.insert("a".to_owned(), task(&[]));
@@ -947,7 +1089,8 @@ mod tests {
         };
         let mut sched = Scheduler::new(&plan, 3)
             .expect("sched")
-            .with_resource_limits(limits);
+            .with_resource_limits(limits)
+            .expect("limits");
         assert_eq!(sched.schedule_ready(), vec!["a".to_owned()]);
         assert_eq!(sched.complete("a", 0).expect("a"), vec!["b".to_owned()]);
         assert_eq!(sched.in_flight(), 1);

@@ -387,8 +387,10 @@ pub struct TaskResources {
     pub cpu: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<String>,
+    /// Informational only; does not affect scheduling today.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub io: Option<IoIntensity>,
+    /// Informational only; does not affect scheduling today.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
