@@ -81,6 +81,7 @@ pub fn run(
     Ok(exit_code)
 }
 
+#[allow(clippy::too_many_lines)]
 fn collect_findings(
     request: DoctorEnvRequest<'_>,
     findings: &mut Vec<Diagnostic>,
@@ -170,14 +171,14 @@ fn collect_findings(
                 findings,
                 DiagnosticLevel::Info,
                 "env.envrc.present",
-                format!(".envrc present at {}", envrc),
+                format!(".envrc present at {envrc}"),
             );
         } else {
             push_finding(
                 findings,
                 DiagnosticLevel::Info,
                 "env.envrc.missing",
-                format!(".envrc not found at {}", envrc),
+                format!(".envrc not found at {envrc}"),
             );
         }
 

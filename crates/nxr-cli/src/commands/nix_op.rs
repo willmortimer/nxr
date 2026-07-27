@@ -182,7 +182,7 @@ pub fn execute_build(request: &NixOpRequest<'_>, runner: RunnerOutput) -> Result
     let flake = resolve_flake(request.flake_arg, &invocation_cwd)?;
     let adapter = build_adapter(request.nix_override)?;
 
-    let (target, attr_path, installable) = resolve_build_target(request, &flake, &adapter)?;
+    let (target, attr_path, installable) = resolve_build_target(request, &flake, &adapter);
 
     let arguments = adapter.nix_build_argv(&installable, request.nix_flags)?;
     if write_dry_run(
@@ -274,11 +274,11 @@ fn resolve_build_target(
     request: &NixOpRequest<'_>,
     flake: &FlakeSelection,
     adapter: &nxr_nix::NixAdapter,
-) -> Result<(Option<String>, Option<String>, String), NixOpError> {
+) -> (Option<String>, Option<String>, String) {
     if let Some(attr) = request.attr {
         let attr_path = attr.to_owned();
         let installable = attr_installable(&flake.nix_ref, attr);
-        return Ok((None, Some(attr_path), installable));
+        return (None, Some(attr_path), installable);
     }
 
     if let Some(name) = request.name {
@@ -287,15 +287,15 @@ fn resolve_build_target(
                 .split_once('#')
                 .map(|(_, attr)| attr.to_owned())
                 .or_else(|| Some(name.to_owned()));
-            return Ok((None, attr_path, name.to_owned()));
+            return (None, attr_path, name.to_owned());
         }
 
         let attr_path = format!("packages.{}.{name}", adapter.system);
         let installable = package_installable(&flake.nix_ref, &adapter.system, name);
-        return Ok((Some(name.to_owned()), Some(attr_path), installable));
+        return (Some(name.to_owned()), Some(attr_path), installable);
     }
 
-    Ok((None, None, flake.nix_ref.clone()))
+    (None, None, flake.nix_ref.clone())
 }
 
 /// `nxr check [name]` → named check via `nix build`, or `nix flake check` when omitted.

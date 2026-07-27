@@ -196,14 +196,7 @@ fn collect_nxr_cache_findings(
     };
 
     if let Ok(entry) = discovery_cache_entry(&context) {
-        if !entry.available {
-            push_finding(
-                findings,
-                DiagnosticLevel::Info,
-                "cache.discovery.remote",
-                "discovery cache disabled for remote flakes".to_owned(),
-            );
-        } else {
+        if entry.available {
             push_finding(
                 findings,
                 DiagnosticLevel::Info,
@@ -217,6 +210,13 @@ fn collect_nxr_cache_findings(
                 } else {
                     "discovery cache miss for current flake inputs".to_owned()
                 },
+            );
+        } else {
+            push_finding(
+                findings,
+                DiagnosticLevel::Info,
+                "cache.discovery.remote",
+                "discovery cache disabled for remote flakes".to_owned(),
             );
         }
 

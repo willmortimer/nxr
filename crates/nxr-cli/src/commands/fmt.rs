@@ -67,7 +67,7 @@ struct FmtDryRunCommand {
 /// # Errors
 ///
 /// Returns [`FmtError`] when flake resolution, Nix invocation, or output fails.
-pub fn run(request: FmtRequest<'_>, runner: RunnerOutput) -> Result<i32, FmtError> {
+pub fn run(request: &FmtRequest<'_>, runner: RunnerOutput) -> Result<i32, FmtError> {
     let invocation_cwd = current_invocation_directory()?;
     let flake = resolve_flake(request.flake_arg, &invocation_cwd)?;
     let adapter = build_adapter(request.nix_override)?;

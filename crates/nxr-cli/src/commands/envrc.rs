@@ -82,13 +82,13 @@ pub fn run(request: EnvrcRequest<'_>, runner: RunnerOutput) -> Result<i32, Envrc
         }
         fs::write(path.as_std_path(), format!("{content}\n"))?;
         runner
-            .info(format!("wrote {}", path))
+            .info(format!("wrote {path}"))
             .map_err(EnvrcError::Io)?;
         return Ok(exit::SUCCESS);
     }
 
     let mut stdout = io::stdout().lock();
-    write!(stdout, "{content}\n")?;
+    writeln!(stdout, "{content}")?;
     Ok(exit::SUCCESS)
 }
 

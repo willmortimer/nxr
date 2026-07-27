@@ -380,7 +380,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 json: cli.json,
                 nix_flags: &nix_flags,
             };
-            fmt::run(request, runner).map_err(RunError::from)
+            fmt::run(&request, runner).map_err(RunError::from)
         }
         Some(Command::Envrc { write, force }) => {
             let request = envrc::EnvrcRequest {
@@ -615,6 +615,7 @@ fn dispatch_in(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_run_command_in_shell(
     cli: &Cli,
     nix_flags: &nxr_nix::OptionalNixFlags,
@@ -839,7 +840,7 @@ fn run_inspect(
                 cli.nix.as_deref(),
                 name,
                 cli.json,
-                &nix_flags,
+                nix_flags,
                 runner,
             )?;
             return Ok(exit::SUCCESS);
