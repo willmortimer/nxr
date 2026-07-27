@@ -22,6 +22,7 @@ use crate::commands::common::{
 use crate::commands::task::{self, PreparedTaskGeneration, TaskError, TaskRequest, plan_exit_code};
 use crate::flake::{FlakeResolveError, resolve_flake};
 use crate::output_task::{EventsFormat, TaskOutputMode};
+use crate::reports::ReportPaths;
 use crate::runner_output::RunnerOutput;
 
 /// Default debounce when the CLI omits `--debounce`.
@@ -71,6 +72,7 @@ pub struct TaskWatchSettings {
     pub keep_going: bool,
     pub output_mode: Option<TaskOutputMode>,
     pub events_format: Option<EventsFormat>,
+    pub reports: ReportPaths,
 }
 
 /// Inputs for watch mode.
@@ -522,7 +524,7 @@ fn run_task_generation(
     runner: RunnerOutput,
 ) -> Result<GenerationOutcome, WatchCommandError> {
     let single_root;
-    let (tasks, jobs, keep_going, output_mode, events_format) =
+    let (tasks, jobs, keep_going, output_mode, events_format, reports) =
         if let Some(settings) = &request.task_settings {
             (
                 settings.tasks.as_slice(),
@@ -530,6 +532,7 @@ fn run_task_generation(
                 settings.keep_going,
                 settings.output_mode,
                 settings.events_format,
+                settings.reports.clone(),
             )
         } else {
             single_root = vec![resolved_name.to_owned()];
@@ -539,6 +542,7 @@ fn run_task_generation(
                 false,
                 request.output_mode,
                 request.events_format,
+                ReportPaths::default(),
             )
         };
 
@@ -556,6 +560,7 @@ fn run_task_generation(
         keep_going,
         output_mode,
         events_format,
+        reports,
         nix_flags: request.nix_flags,
     };
 

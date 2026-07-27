@@ -40,6 +40,12 @@ impl<S> RunEventDecorator<S> {
         &self.run_id
     }
 
+    /// Borrow the wrapped sink.
+    #[must_use]
+    pub fn inner(&self) -> &S {
+        &self.inner
+    }
+
     /// Recover the wrapped sink.
     #[must_use]
     pub fn into_inner(self) -> S {

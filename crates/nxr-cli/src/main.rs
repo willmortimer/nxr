@@ -8,10 +8,12 @@ mod nix_flags;
 mod output;
 mod output_options;
 mod output_task;
+mod reports;
 mod runner_output;
 mod shell_mode;
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::process;
 
 use clap::Parser;
@@ -32,6 +34,7 @@ use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
 use crate::nix_flags::nix_flags_from_cli;
 use crate::output_options::OutputOptions;
+use crate::reports::{ReportKind, ReportPaths, parse_report_spec};
 use crate::runner_output::RunnerOutput;
 
 fn main() {
@@ -236,8 +239,18 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             no_strict,
             paths,
             tasks,
+            junit,
+            sarif,
+            coverage,
+            benchmark,
             args,
         }) => {
+            let report_options = TaskReportOptions {
+                junit: junit.clone(),
+                sarif: sarif.clone(),
+                coverage: coverage.clone(),
+                benchmark: benchmark.clone(),
+            };
             if *affected {
                 dispatch_task_affected(
                     cli,
@@ -253,16 +266,32 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                         all_changes: all_changes.clone(),
                     },
                     paths,
+                    &report_options,
                     runner,
                 )
             } else if *watch {
                 let options = watch_options_from_debounce(*debounce);
-                let request =
-                    watch_task_request(cli, &nix_flags, tasks, args, *jobs, *keep_going, options)?;
+                let request = watch_task_request(
+                    cli,
+                    &nix_flags,
+                    tasks,
+                    args,
+                    *jobs,
+                    *keep_going,
+                    options,
+                    &report_options,
+                )?;
                 watch::run(&request, runner).map_err(RunError::from)
             } else {
-                let request =
-                    task_request(cli, &nix_flags, tasks.clone(), args, *jobs, *keep_going)?;
+                let request = task_request(
+                    cli,
+                    &nix_flags,
+                    tasks.clone(),
+                    args,
+                    *jobs,
+                    *keep_going,
+                    &report_options,
+                )?;
                 task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
             }
         }
@@ -445,6 +474,39 @@ fn dispatch_plan_affected(
     Ok(exit::SUCCESS)
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct TaskReportOptions {
+    junit: Option<String>,
+    sarif: Option<String>,
+    coverage: Option<String>,
+    benchmark: Option<String>,
+}
+
+fn report_paths_from_cli(
+    cli: &Cli,
+    task_reports: &TaskReportOptions,
+) -> Result<ReportPaths, RunError> {
+    let mut paths = ReportPaths::default();
+    for spec in &cli.report {
+        let (kind, path) =
+            parse_report_spec(spec).map_err(|error| RunError::Usage(error.to_string()))?;
+        paths.set(kind, path);
+    }
+    if let Some(path) = &task_reports.junit {
+        paths.set(ReportKind::Junit, PathBuf::from(path));
+    }
+    if let Some(path) = &task_reports.sarif {
+        paths.set(ReportKind::Sarif, PathBuf::from(path));
+    }
+    if let Some(path) = &task_reports.coverage {
+        paths.set(ReportKind::Coverage, PathBuf::from(path));
+    }
+    if let Some(path) = &task_reports.benchmark {
+        paths.set(ReportKind::Benchmark, PathBuf::from(path));
+    }
+    Ok(paths)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn dispatch_task_affected(
     cli: &Cli,
@@ -456,6 +518,7 @@ fn dispatch_task_affected(
     strict: bool,
     sources: &affected::AffectedPathSources,
     paths: &[String],
+    report_options: &TaskReportOptions,
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
     let selection = affected::select_for_flake(
@@ -475,7 +538,15 @@ fn dispatch_task_affected(
         return Ok(exit::SUCCESS);
     }
     let _ = runner.info(format!("running affected tasks: {}", roots.join(", ")));
-    let request = task_request(cli, nix_flags, roots, args, jobs, keep_going)?;
+    let request = task_request(
+        cli,
+        nix_flags,
+        roots,
+        args,
+        jobs,
+        keep_going,
+        report_options,
+    )?;
     task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
 }
 
@@ -730,6 +801,7 @@ fn task_request_in_shell<'a>(
         keep_going,
         output_mode: cli.output,
         events_format: cli.events,
+        reports: report_paths_from_cli(cli, &TaskReportOptions::default())?,
         nix_flags,
     })
 }
@@ -917,6 +989,7 @@ fn task_request<'a>(
     args: &'a [String],
     jobs: usize,
     keep_going: bool,
+    report_options: &TaskReportOptions,
 ) -> Result<task::TaskRequest<'a>, RunError> {
     Ok(task::TaskRequest {
         flake_arg: cli.flake.as_deref(),
@@ -932,6 +1005,7 @@ fn task_request<'a>(
         keep_going,
         output_mode: cli.output,
         events_format: cli.events,
+        reports: report_paths_from_cli(cli, report_options)?,
         nix_flags,
     })
 }
@@ -1109,10 +1183,12 @@ fn watch_task_request<'a>(
     jobs: usize,
     keep_going: bool,
     options: watch::WatchOptions,
+    report_options: &TaskReportOptions,
 ) -> Result<watch::WatchRequest<'a>, RunError> {
     let name = tasks
         .first()
         .ok_or(RunError::Usage("task name required".to_owned()))?;
+    let reports = report_paths_from_cli(cli, report_options)?;
     Ok(watch::WatchRequest {
         flake_arg: cli.flake.as_deref(),
         nix_override: cli.nix.as_deref(),
@@ -1132,6 +1208,7 @@ fn watch_task_request<'a>(
             keep_going,
             output_mode: cli.output,
             events_format: cli.events,
+            reports,
         }),
         force_app: false,
         nix_flags,

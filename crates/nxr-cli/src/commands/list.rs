@@ -549,38 +549,13 @@ mod tests {
     #[test]
     fn listable_tasks_honor_hidden_and_category() {
         let mut tasks = BTreeMap::new();
-        tasks.insert(
-            "ci".to_owned(),
-            TaskDefinition {
-                description: None,
-                depends_on: Vec::new(),
-                app: "ci".to_owned(),
-                working_directory: None,
-                hidden: false,
-                category: Some("validation".to_owned()),
-                aliases: Vec::new(),
-                interactive: false,
-                paths: Vec::new(),
-                timeout: None,
-                termination_grace_period: None,
-            },
-        );
-        tasks.insert(
-            "hidden".to_owned(),
-            TaskDefinition {
-                description: None,
-                depends_on: Vec::new(),
-                app: "x".to_owned(),
-                working_directory: None,
-                hidden: true,
-                category: Some("validation".to_owned()),
-                aliases: Vec::new(),
-                interactive: false,
-                paths: Vec::new(),
-                timeout: None,
-                termination_grace_period: None,
-            },
-        );
+        let mut ci = TaskDefinition::new("ci");
+        ci.category = Some("validation".to_owned());
+        tasks.insert("ci".to_owned(), ci);
+        let mut hidden = TaskDefinition::new("x");
+        hidden.hidden = true;
+        hidden.category = Some("validation".to_owned());
+        tasks.insert("hidden".to_owned(), hidden);
         let doc = TaskDocument::new(tasks);
         let filtered = listable_tasks(&doc, Some("validation"));
         assert_eq!(filtered.len(), 1);

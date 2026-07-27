@@ -20,6 +20,7 @@ use crate::commands::plan::{PlanRenderError, write_plan};
 use crate::commands::run::RunError;
 use crate::flake::FlakeResolveError;
 use crate::output_task::{EventsFormat, TaskOutputMode, build_task_event_sink};
+use crate::reports::{ReportCollector, ReportPaths, ReportWriteError, write_all_reports};
 use crate::runner_output::RunnerOutput;
 
 /// Grace window for Ctrl-C / fail-fast shutdown of in-flight children.
@@ -59,6 +60,8 @@ pub struct TaskRequest<'a> {
     pub output_mode: Option<TaskOutputMode>,
     /// Parsed from global `--events`.
     pub events_format: Option<EventsFormat>,
+    /// Opt-in post-run report output paths.
+    pub reports: ReportPaths,
     pub nix_flags: &'a OptionalNixFlags,
 }
 
@@ -97,6 +100,8 @@ pub enum TaskError {
     Supervision(#[source] io::Error),
     #[error("failed to write runner diagnostics: {0}")]
     Io(#[source] io::Error),
+    #[error(transparent)]
+    Report(#[from] ReportWriteError),
 }
 
 impl TaskError {
@@ -110,7 +115,9 @@ impl TaskError {
             Self::Plan(error) => plan_exit_code(error),
             Self::Run(error) => error.exit_code(),
             Self::PlanRender(_) => exit::EVALUATION,
-            Self::Scheduler(_) | Self::Supervision(_) | Self::Io(_) => exit::PROCESS_SUPERVISION,
+            Self::Scheduler(_) | Self::Supervision(_) | Self::Io(_) | Self::Report(_) => {
+                exit::PROCESS_SUPERVISION
+            }
             Self::Context(_) => exit::EVALUATION,
             Self::InvalidJobs(_)
             | Self::RawConflictsWithMultiplex
@@ -334,18 +341,22 @@ pub fn execute_with_control(
     )?;
 
     if dry_run {
+        if !request.reports.is_empty() {
+            write_all_reports(&request.reports, &[], None)?;
+        }
         return dry_run_execute(&prepared_nodes, &plan, &waves, request, json, runner);
     }
 
-    if pipe_stdio {
+    let run_result = if pipe_stdio {
         let mut stdout = io::stdout().lock();
         let mut stderr = io::stderr().lock();
-        let mut sink = RunEventDecorator::new(build_task_event_sink(
+        let inner = build_task_event_sink(
             effective_output,
             request.events_format,
             &mut stdout,
             &mut stderr,
-        ));
+        );
+        let mut sink = wrap_report_sink(inner, &request.reports);
         sink.emit(Event::plan_created(
             plan.root.clone(),
             if plan.roots.is_empty() {
@@ -355,12 +366,40 @@ pub fn execute_with_control(
             },
             plan.nodes.len(),
         ));
-        run_plan(request, &plan, &prepared_nodes, &mut sink, runner, control)
+        let result = run_plan(request, &plan, &prepared_nodes, &mut sink, runner, control);
+        report_sink_error(&sink)?;
+        result
     } else {
         // Inherit stdio for interactivity / --output raw: do not hold stdout/stderr locks.
-        let mut sink = RunEventDecorator::new(nxr_task::NullSink);
-        run_plan(request, &plan, &prepared_nodes, &mut sink, runner, control)
+        let inner = nxr_task::NullSink;
+        let mut sink = wrap_report_sink(inner, &request.reports);
+        let result = run_plan(request, &plan, &prepared_nodes, &mut sink, runner, control);
+        report_sink_error(&sink)?;
+        result
+    };
+
+    Ok(run_result?)
+}
+
+fn wrap_report_sink<S: EventSink>(
+    inner: S,
+    reports: &ReportPaths,
+) -> RunEventDecorator<ReportCollector<S>> {
+    let inner = if reports.is_empty() {
+        ReportCollector::new(inner, ReportPaths::default())
+    } else {
+        ReportCollector::new(inner, reports.clone())
+    };
+    RunEventDecorator::new(inner)
+}
+
+fn report_sink_error<S>(sink: &RunEventDecorator<ReportCollector<S>>) -> Result<(), TaskError> {
+    if let Some(message) = sink.inner().write_error() {
+        return Err(TaskError::Report(ReportWriteError::Serialize(
+            message.to_owned(),
+        )));
     }
+    Ok(())
 }
 
 /// Reject multiplex output/events when the plan contains interactive nodes.
@@ -1052,6 +1091,7 @@ mod tests {
         plan_uses_piped_stdio, task_inherits_stdin,
     };
     use crate::output_task::{EventsFormat, TaskOutputMode};
+    use crate::reports::ReportPaths;
     use nxr_core::EnvironmentPolicy;
     use nxr_core::diagnostics::exit;
     use nxr_task::{FailurePolicy, PlanError, TaskDefinition, build_execution_plan};
@@ -1203,6 +1243,7 @@ mod tests {
             keep_going: false,
             output_mode: None,
             events_format: None,
+            reports: ReportPaths::default(),
             nix_flags: &nix_flags,
         };
         assert!(plan_uses_piped_stdio(&plan, &request));
