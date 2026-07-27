@@ -44,7 +44,8 @@ Ship before expanding schema-v2 runtime. Priority order from the 2.6 re-audit:
 1. ~~Capability-cache validity must include effective Nix configuration~~ — done
    (schema v2: env + `nix config show` digest; warm hits still probe config once).
 2. ~~Release artifacts clearly labeled as Nix-package layouts~~ — done
-   (`*-nix-package.tar.gz` + in-archive `README.txt`; portable split remains ADR-0141).
+   (`*-nix-package.tar.gz` + in-archive `README.txt`; portable `*-portable.tar.gz`
+   per ADR-0141).
 3. ~~CI builds `checks.*.flake-schema`~~ — done
    (explicit `nix build .#checks.<system>.flake-schema`; hermetic fmt/clippy/test
    remain via apps to avoid duplicating `nix flake check` wall time).

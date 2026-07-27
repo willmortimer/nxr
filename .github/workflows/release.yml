@@ -89,8 +89,8 @@ jobs:
             echo "  nix build github:willmortimer/nxr#packages.${system}.nxr"
             echo "  ./result/bin/nxr --version"
             echo
-            echo "See docs/RELEASE.md. Portable (non-/nix/store) archives are tracked"
-            echo "separately (ADR-0141) and are not published by this workflow."
+            echo "See docs/RELEASE.md for the matching portable cargo binary archive"
+            echo "(nxr-${version}-${system}-portable.tar.gz)."
           } > "$staging/README.txt"
           test -x "$staging/bin/nxr"
           test -d "$staging/share/man"
@@ -104,6 +104,116 @@ jobs:
         with:
           name: nxr-${{ matrix.system }}
           path: nxr-*.tar.gz
+          if-no-files-found: error
+
+  build-portable:
+    name: build portable (${{ matrix.system }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            system: x86_64-linux
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-latest
+            system: aarch64-darwin
+            target: aarch64-apple-darwin
+          - runner: macos-latest
+            system: x86_64-darwin
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal
+          rustup default "$channel"
+
+      - name: Add Rust target
+        run: rustup target add "${{ matrix.target }}"
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          fi
+          pkg_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [[ "$version" != "$pkg_version" ]]; then
+            echo "tag/package version mismatch: archive=$version package=$pkg_version" >&2
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build portable nxr binary
+        run: cargo build -p nxr-cli --release --target "${{ matrix.target }}"
+
+      - name: Assert no /nix/store linker dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/nxr"
+          test -x "$bin"
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            if ldd "$bin" | grep -q '/nix/store'; then
+              echo "portable binary links to /nix/store:" >&2
+              ldd "$bin" | grep '/nix/store' >&2
+              exit 1
+            fi
+          else
+            if otool -L "$bin" | grep -q '/nix/store'; then
+              echo "portable binary links to /nix/store:" >&2
+              otool -L "$bin" | grep '/nix/store' >&2
+              exit 1
+            fi
+          fi
+
+      - name: Package portable release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.value }}"
+          system="${{ matrix.system }}"
+          bin="target/${{ matrix.target }}/release/nxr"
+          staging="nxr-${version}-${system}-portable"
+          mkdir -p "$staging/bin"
+          cp "$bin" "$staging/bin/nxr"
+          {
+            echo "nxr ${version} (${system}) — portable CLI binary"
+            echo
+            echo "This archive ships a cargo release build of the nxr CLI. The binary"
+            echo "does not link against /nix/store paths and can be executed directly"
+            echo "after extraction (Nix must still be on PATH for nxr to invoke flakes)."
+            echo
+            echo "For man pages, shell completions, and the Nix-closure layout, use"
+            echo "the matching nxr-${version}-${system}-nix-package.tar.gz archive or"
+            echo "install from the flake:"
+            echo
+            echo "  nix profile install github:willmortimer/nxr#packages.${system}.nxr"
+            echo
+            echo "See docs/RELEASE.md."
+          } > "$staging/README.txt"
+          test -x "$staging/bin/nxr"
+          test -f "$staging/README.txt"
+          archive="${staging}.tar.gz"
+          tar -czf "$archive" "$staging"
+          echo "Wrote ${archive} (portable cargo release binary)"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nxr-${{ matrix.system }}-portable
+          path: nxr-*-portable.tar.gz
           if-no-files-found: error
 
   sbom:
@@ -198,9 +308,38 @@ jobs:
           "$nxr" --flake fixtures/task-dag task ci --dry-run
           "$nxr" --flake fixtures/task-dag task ci
 
+  smoke-portable:
+    name: portable smoke
+    needs: build-portable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: nxr-x86_64-linux-portable
+          path: artifact
+
+      - name: Extract and smoke test portable archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(find artifact -name '*-portable.tar.gz' -print -quit)"
+          test -n "$archive"
+          tar -xzf "$archive"
+          staging="$(find . -maxdepth 1 -type d -name 'nxr-*-x86_64-linux-portable' -print -quit)"
+          bin="$staging/bin/nxr"
+          test -x "$bin"
+          test -f "$staging/README.txt"
+          grep -q 'portable CLI binary' "$staging/README.txt"
+          if ldd "$bin" | grep -q '/nix/store'; then
+            echo "portable binary links to /nix/store:" >&2
+            ldd "$bin" | grep '/nix/store' >&2
+            exit 1
+          fi
+          "$bin" --version
+
   checksums:
     name: checksums
-    needs: build
+    needs: [build, build-portable]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -224,7 +363,7 @@ jobs:
 
   release:
     name: github-release
-    needs: [build, sbom, checksums, smoke]
+    needs: [build, build-portable, sbom, checksums, smoke, smoke-portable]
     if: github.event_name != 'workflow_dispatch' || inputs.dry_run != true
     runs-on: ubuntu-latest
     permissions:
@@ -264,5 +403,8 @@ jobs:
             nix profile install github:willmortimer/nxr#nxr
             ```
 
+            Archives named `nxr-*-portable.tar.gz` are **portable cargo release**
+            builds (`bin/nxr` only). They do not link against `/nix/store` and run
+            directly after extraction (Nix must still be on `PATH`).
+
             See [docs/RELEASE.md](https://github.com/willmortimer/nxr/blob/main/docs/RELEASE.md).
-            Portable CLI archives (ADR-0141) are not published yet.

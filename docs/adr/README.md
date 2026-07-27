@@ -94,7 +94,7 @@ Rejected   considered and explicitly not chosen
 | ADR-0138 | Task resource declarations and cooperative job control | Proposed | 3.0 |
 | ADR-0139 | Use one provider-neutral CI plan | Proposed | Later |
 | ADR-0140 | Delegate derivation execution placement to Nix | Proposed | Later |
-| ADR-0141 | Publish separate Nix-native and portable release artifacts | Proposed (Nix-package archives labeled; portable still open) | 2.7 |
+| ADR-0141 | Publish separate Nix-native and portable release artifacts | Accepted (`*-nix-package.tar.gz` + `*-portable.tar.gz`) | 2.7 |
 | ADR-0142 | Generate and test user reference documentation | Accepted (guided path / example repo Later) | 2.6 |
 
 Notes on ADR-0133–0142 (from the internal `nxr-next` plan; 2.6 re-audit at `v2.6.0`):
@@ -103,7 +103,7 @@ Notes on ADR-0133–0142 (from the internal `nxr-next` plan; 2.6 re-audit at `v2
 - Warm discovery content-hashes Nix trees (cache v4 / BLAKE3); ADR-0134 incremental index shipped in 2.6 — remaining polish is in ROADMAP 2.7.
 - ADR-0135 **supersedes ADR-0117 for schema v2 only**; schema v1 keeps “no general task-result caching.” Runtime stays deferred until after 3.0 contexts/I/O land.
 - ADR-0139 / ADR-0140 pull forward intent from deferred ADR-0214 / ADR-0215 / ADR-0304; they do not schedule the V3 control plane early.
-- ADR-0141 slipped from the 2.6 cut; track under ROADMAP 2.7 release blockers.
+- ADR-0141 portable cargo archives ship alongside Nix-package layouts in the release workflow (2.7).
 - Source packets (gitignored): `docs/internal/nxr-next-improvements/`, `docs/internal/nxr-2.6-reaudit.md`.
 
 ## 4. V3 monorepo and action ADRs (deferred)
