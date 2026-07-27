@@ -5,7 +5,7 @@ daemon, remote workers, IDE fabric). It is **not** the active delivery plan.
 
 **Committed expansion** (contexts, secrets delivery, Home Manager, processes)
 lives in [EXECUTION_CONTEXT.md](../EXECUTION_CONTEXT.md) and is scheduled in
-[ROADMAP.md](../ROADMAP.md) as **2.6 → 3.0 → 3.1**. Revisit *this* file’s
+[ROADMAP.md](../ROADMAP.md) as **3.0 → 3.1**. Revisit *this* file’s
 control-plane ideas only after that line is trustworthy on real flakes.
 
 See also [FEATURES.md](../FEATURES.md) §3.

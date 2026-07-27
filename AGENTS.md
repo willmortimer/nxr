@@ -21,7 +21,7 @@ Do not contradict [docs/CONTRACT_SUMMARY.md](docs/CONTRACT_SUMMARY.md). In short
 - Secret values never appear in plans/events; execution-affecting schema fields must not be silently ignored (schema v2).
 
 Accepted foundational ADRs are listed in [docs/adr/README.md](docs/adr/README.md).
-Active roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) (2.6 → 3.1).
+Active roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) (3.0 → 3.1).
 
 ## Working agreements
 

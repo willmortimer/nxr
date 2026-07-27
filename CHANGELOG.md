@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-07-26
+
+Feature release: warm-path latency foundations and ecosystem ergonomics.
+
+### Added
+
+#### Latency and discovery
+
+- Persistent Nix **capability cache** (keyed by executable identity); warm
+  `list`/`plan` skip version/config/help reprobes (`NXR_CAPABILITY_CACHE`,
+  `nxr cache status`/`clear` cover discovery + capabilities).
+- **Incremental fingerprint index** for warm discovery (cache schema v5);
+  unchanged `.nix` files are not re-read.
+- Per-invocation **`WorkspaceState`** so doctor/watch avoid double adapter init.
+- Watch **source-only snapshot reuse** (metadata edits still rediscover).
+- Generic flake **inventory AST** (legacy + Determinate inventory v2).
+- **`exportedSchemas.nxr`** and optional `flake-schemas` merge via the
+  flake-parts module.
+- **`nxr doctor determinate`** with stable finding IDs and redaction.
+- Release perf harness (`scripts/perf/measure-release.sh`) and recorded p50
+  baselines (warm fixture `list`/`plan` ≈ 10 ms).
+- Draft **task schema v2** docs/schema only (`schemas/task-v2.schema.json`,
+  `docs/TASK_SCHEMA_V2.md`) — not implemented by the runner.
+
+#### Ecosystem ergonomics
+
+- **`homeManagerModules.default`** (`programs.nxr`: package, completions,
+  `config.toml` defaults, optional direnv; no `homeConfigurations` / secrets).
+- **`nxr fmt`** — thin `nix fmt` wrapper.
+- **`nxr in <shell> <target>`** — ergonomic `--shell` form (reserved command).
+- **`nxr envrc`** / `--write` / `--force` — generate `.envrc` only (never
+  activates direnv).
+- **`nxr doctor env`**, **`doctor cache`**, **`doctor builders`**.
+- Generic **`nxr build`** installables and **`--attr`** escape hatch.
+- Read-only **configuration** adapters: `list` / `inspect` / `build
+  configuration` for `nixosConfigurations` / `darwinConfigurations` /
+  `homeConfigurations` (build only; never switch/activate).
+
+### Changed
+
+- Workspace and Nix package version **2.6.0**.
+- README / CLI contract / reference updated for the new surface.
+- Active roadmap advances past 2.6 shipped items toward 3.0 execution-context
+  schema.
+
 ## [2.5.0] - 2026-07-26
 
 Feature release: affected execution for tasks and plans.
@@ -346,6 +391,7 @@ First taggable V1 prerelease: a standard Nix flake app runner through Phase 5 of
 - [Compatibility matrix](docs/COMPATIBILITY.md), [CLI reference](docs/CLI_REFERENCE.md), and [telemetry decision](docs/TELEMETRY.md) (default: none).
 - Tag-triggered [release workflow](.github/workflows/release.yml) (quality gate only; no publish secrets).
 
+[2.6.0]: https://github.com/willmortimer/nxr/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/willmortimer/nxr/compare/v2.4.1...v2.5.0
 [2.4.1]: https://github.com/willmortimer/nxr/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/willmortimer/nxr/compare/v2.3.3...v2.4.0

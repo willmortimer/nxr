@@ -28,24 +28,11 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 | **V2.3.3** | Correctness cut | Watch ↔ task pipeline parity, empty affected = all unaffected, path validation, apps↔tasks decoupling, cache v4 BLAKE3 — shipped as `v2.3.3`. |
 | **V2.4** | Run model + UX | Structured run results / `--output summary`, per-task timeouts, richer completion — shipped as `v2.4.0`; patch `v2.4.1` finishes module API, terminals, events, and shell routing. |
 | **V2.5** | Affected execution | `task --affected` / `plan --affected` wired to existing path analysis — shipped as `v2.5.0`. |
+| **V2.6** | Latency + ecosystem ergonomics | Capability cache, incremental fingerprints, watch reuse, schema export, HM module, `fmt`/`in`/`envrc`, doctor env/cache/builders, installables, configuration adapters — shipped as `v2.6.0`. |
 
 ## Active roadmap
 
 Design detail for everything below lives in [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).
-
-### 2.6 — Ecosystem ergonomics
-
-Low-risk, non-schema-breaking work:
-
-- `homeManagerModules.default` (install, completion, hooks, user config; no secret values);
-- `nxr fmt` (thin `nix fmt` / flake formatter wrapper);
-- `nxr in <shell> <target>` (ergonomic alias of `--shell`; keep low-level flag);
-- `nxr envrc` / `nxr envrc --write` (generator only; never overwrite without force);
-- `nxr doctor env` and `nxr doctor cache` / `doctor builders`;
-- generic `nxr build` installables / `--attr` escape hatch;
-- read-only configuration / devenv / devshell adapters (`list`/`inspect`/`build`, not activate);
-- shell descriptions and optional shell-entry command menu;
-- treefmt / git-hooks recognition via standard flake outputs and checks.
 
 ### 3.0 — Execution-context schema
 
@@ -83,6 +70,8 @@ Services remain flake apps (or devenv-authored). No built-in Postgres/Redis modu
 
 Only after the above stabilize:
 
+- shell descriptions and optional shell-entry command menu;
+- treefmt / git-hooks recognition via standard flake outputs and checks;
 - artifact restoration;
 - task result caching;
 - remote workspace execution;
