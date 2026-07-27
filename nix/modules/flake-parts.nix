@@ -75,6 +75,7 @@ let
           {
             ref = secret.ref;
             delivery = secret.delivery;
+            provider = secret.provider;
           }
         ) ctx.secrets;
         confirm = ctx.confirm;
@@ -87,6 +88,10 @@ let
       category = app.category;
     };
 
+  taskUsesSchemaV2 =
+    task:
+    task.shell != null || task.context != null;
+
   nxrDocument =
     cfg:
     let
@@ -94,9 +99,22 @@ let
         lib.mapAttrs (_name: appListingToJson) cfg.nxr.apps
       );
       contextsJson = lib.mapAttrs (_name: contextToJson) cfg.nxr.contexts;
+      hasV2Fields =
+        contextsJson != { }
+        || lib.any taskUsesSchemaV2 cfg.nxr.tasks;
+      forcedVersion = cfg.nxr.schemaVersion;
+      schema_version =
+        if forcedVersion == 2 then
+          2
+        else if forcedVersion == 1 && hasV2Fields then
+          throw "nxr.schemaVersion = 1 but the nxr document uses schema v2 fields (contexts, task.shell, task.context, …). Set schemaVersion = 2 or remove v2 fields."
+        else if hasV2Fields then
+          2
+        else
+          1;
     in
     {
-      schema_version = 1;
+      schema_version = schema_version;
       tasks = lib.mapAttrs (_name: taskToJson) cfg.nxr.tasks;
     }
     // lib.optionalAttrs (appsMeta != { }) {
@@ -124,6 +142,6 @@ in
     ];
   };
 
-  # `nxr.<system>` → { schema_version = 1; tasks = { ... }; apps?; contexts?; discoveryInputs?; }
+  # `nxr.<system>` → { schema_version = 1|2; tasks = { ... }; apps?; contexts?; discoveryInputs?; }
   flake.nxr = lib.mapAttrs (_system: cfg: nxrDocument cfg) config.allSystems;
 }

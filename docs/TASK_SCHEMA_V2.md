@@ -65,13 +65,17 @@ All v1 task fields remain available. New per-task fields:
 | `context` | Optional named execution context reference |
 
 Top-level `contexts` maps context names to shell, environment policy, secret
-references (logical `ref` strings only), and `confirm` metadata.
+references (logical `ref` strings plus optional `provider`, default `env`), and
+`confirm` metadata. Flake-parts consumers emit `schema_version: 2` automatically
+when contexts or task `shell` / `context` fields are present.
 
 ## Example contexts (runtime: env-provider secrets partial — H3)
 
-`delivery = "env"` secrets resolve from the caller environment at task spawn
-(see [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md)). `file` / `stdin` and sops/HM
-bindings are not implemented yet.
+`delivery = "env"` secrets with `provider = "env"` (default) resolve from the
+caller environment at task spawn (see [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md)).
+Non-env providers error at resolve time. Contexts with `confirm = true` prompt
+before spawn (or require `NXR_ASSUME_YES=1` when stdin is not a TTY). `file` /
+`stdin` delivery and sops/HM bindings are not implemented yet.
 
 ```nix
 perSystem.nxr.contexts = {
@@ -93,6 +97,7 @@ perSystem.nxr.contexts = {
     secrets.DEPLOY_TOKEN = {
       ref = "fixture/prod/deploy-token";
       delivery = "env";
+      provider = "env";
     };
     confirm = true;
   };

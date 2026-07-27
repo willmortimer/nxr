@@ -5,14 +5,18 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::io::{self, IsTerminal, Write};
 
 use nxr_core::EnvironmentPolicy;
 use serde::{Deserialize, Serialize};
 
 use crate::schema::{
     ContextEnvironment, ContextEnvironmentMode, ContextSecretRef, ExecutionContext, SecretDelivery,
-    TaskDocument,
+    SecretProvider, TaskDocument,
 };
+
+/// Environment variable that skips interactive context confirmation prompts.
+pub const NXR_ASSUME_YES_ENV: &str = "NXR_ASSUME_YES";
 
 /// Errors while applying or resolving execution contexts.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -27,6 +31,18 @@ pub enum ContextError {
         reference: String,
         delivery: SecretDelivery,
     },
+    /// A declared secret provider is not implemented in this runtime slice.
+    UnsupportedProvider {
+        slot: String,
+        reference: String,
+        provider: SecretProvider,
+    },
+    /// A context requires confirmation but stdin is not interactive.
+    ConfirmRequiredNonInteractive { context: String, task: String },
+    /// A context confirmation prompt was declined.
+    ConfirmDeclined { context: String, task: String },
+    /// Failed to read confirmation input from stdin.
+    ConfirmIo { message: String },
 }
 
 impl fmt::Display for ContextError {
@@ -48,6 +64,25 @@ impl fmt::Display for ContextError {
                 "secret delivery mode {:?} is not implemented yet (slot {slot}, ref {reference})",
                 delivery_label(*delivery)
             ),
+            Self::UnsupportedProvider {
+                slot,
+                reference,
+                provider,
+            } => write!(
+                f,
+                "secret provider {:?} is not implemented yet (slot {slot}, ref {reference})",
+                provider_label(*provider)
+            ),
+            Self::ConfirmRequiredNonInteractive { context, task } => write!(
+                f,
+                "context {context} for task {task} requires confirmation but stdin is not interactive (set {NXR_ASSUME_YES_ENV}=1 or run in a terminal)"
+            ),
+            Self::ConfirmDeclined { context, task } => {
+                write!(f, "context {context} confirmation declined for task {task}")
+            }
+            Self::ConfirmIo { message } => {
+                write!(f, "failed to read context confirmation: {message}")
+            }
         }
     }
 }
@@ -62,10 +97,25 @@ fn delivery_label(delivery: SecretDelivery) -> &'static str {
     }
 }
 
+fn provider_label(provider: SecretProvider) -> &'static str {
+    match provider {
+        SecretProvider::Env => "env",
+        SecretProvider::File => "file",
+        SecretProvider::Sops => "sops",
+        SecretProvider::SopsNix => "sops-nix",
+    }
+}
+
 /// Effective delivery mode for a context secret (schema default: `env`).
 #[must_use]
 pub fn secret_delivery_mode(secret: &ContextSecretRef) -> SecretDelivery {
     secret.delivery.unwrap_or(SecretDelivery::Env)
+}
+
+/// Effective secret provider for a context secret (schema default: `env`).
+#[must_use]
+pub fn secret_provider_mode(secret: &ContextSecretRef) -> SecretProvider {
+    secret.provider
 }
 
 /// Secret metadata recorded in plans (never includes resolved values).
@@ -75,6 +125,7 @@ pub struct PlanSecretEntry {
     #[serde(rename = "ref")]
     pub reference: String,
     pub delivery: SecretDelivery,
+    pub provider: SecretProvider,
     /// Placeholder indicating resolution happens at runtime.
     pub value: PlanSecretValuePlaceholder,
 }
@@ -99,6 +150,10 @@ pub struct AppliedTaskContext {
     /// Non-secret `environment.set` entries applied at spawn for inherit-mode contexts.
     pub spawn_env_set: BTreeMap<String, String>,
     pub plan_secrets: Vec<PlanSecretEntry>,
+    /// Resolved devShell name from the context (when set).
+    pub shell: Option<String>,
+    /// Whether the runner should prompt before executing this node.
+    pub confirm: bool,
 }
 
 /// Look up the named context for `task_id` or return [`ContextError::UnknownContext`].
@@ -152,6 +207,8 @@ pub fn apply_task_context(
         environment_policy,
         spawn_env_set,
         plan_secrets,
+        shell: context.shell.clone(),
+        confirm: context.confirm,
     })
 }
 
@@ -159,13 +216,21 @@ pub fn apply_task_context(
 ///
 /// # Errors
 ///
-/// Returns [`ContextError`] when a required secret is missing or delivery is unsupported.
+/// Returns [`ContextError`] when a required secret is missing, delivery is unsupported,
+/// or the provider is not `env`.
 pub fn resolve_env_provider_secrets_with(
     entries: &[PlanSecretEntry],
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<BTreeMap<String, String>, ContextError> {
     let mut resolved = BTreeMap::new();
     for entry in entries {
+        if entry.provider != SecretProvider::Env {
+            return Err(ContextError::UnsupportedProvider {
+                slot: entry.name.clone(),
+                reference: entry.reference.clone(),
+                provider: entry.provider,
+            });
+        }
         let delivery = entry.delivery;
         match delivery {
             SecretDelivery::Env => {
@@ -191,11 +256,72 @@ pub fn resolve_env_provider_secrets_with(
 ///
 /// # Errors
 ///
-/// Returns [`ContextError`] when a required secret is missing or delivery is unsupported.
+/// Returns [`ContextError`] when a required secret is missing, delivery is unsupported,
+/// or the provider is not `env`.
 pub fn resolve_env_provider_secrets(
     entries: &[PlanSecretEntry],
 ) -> Result<BTreeMap<String, String>, ContextError> {
     resolve_env_provider_secrets_with(entries, |name| std::env::var(name).ok())
+}
+
+/// Prompt for context confirmation when required.
+///
+/// # Errors
+///
+/// Returns [`ContextError`] when confirmation is required but stdin is not a TTY,
+/// the user declines, or stdin cannot be read.
+pub fn enforce_context_confirm(
+    context_name: &str,
+    task_id: &str,
+    confirm: bool,
+) -> Result<(), ContextError> {
+    if !confirm {
+        return Ok(());
+    }
+    if assume_yes_enabled() {
+        return Ok(());
+    }
+    if !io::stdin().is_terminal() {
+        return Err(ContextError::ConfirmRequiredNonInteractive {
+            context: context_name.to_owned(),
+            task: task_id.to_owned(),
+        });
+    }
+    let prompt = format!("Run task {task_id} with context {context_name}? [y/N] ");
+    let mut stderr = io::stderr().lock();
+    stderr
+        .write_all(prompt.as_bytes())
+        .map_err(|error| ContextError::ConfirmIo {
+            message: error.to_string(),
+        })?;
+    stderr.flush().map_err(|error| ContextError::ConfirmIo {
+        message: error.to_string(),
+    })?;
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| ContextError::ConfirmIo {
+            message: error.to_string(),
+        })?;
+    let normalized = answer.trim().to_ascii_lowercase();
+    if matches!(normalized.as_str(), "y" | "yes") {
+        Ok(())
+    } else {
+        Err(ContextError::ConfirmDeclined {
+            context: context_name.to_owned(),
+            task: task_id.to_owned(),
+        })
+    }
+}
+
+fn assume_yes_enabled() -> bool {
+    match std::env::var(NXR_ASSUME_YES_ENV) {
+        Ok(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            !normalized.is_empty() && !matches!(normalized.as_str(), "0" | "false" | "no" | "off")
+        }
+        Err(_) => false,
+    }
 }
 
 /// Merge spawn-time env assignments (context `set` + resolved secrets) without logging values.
@@ -222,6 +348,7 @@ fn plan_secret_entries(secrets: &BTreeMap<String, ContextSecretRef>) -> Vec<Plan
             name: name.clone(),
             reference: secret.reference.clone(),
             delivery: secret_delivery_mode(secret),
+            provider: secret_provider_mode(secret),
             value: PlanSecretValuePlaceholder::RUNTIME,
         })
         .collect()
@@ -285,7 +412,7 @@ mod tests {
         ExecutionContext {
             shell: Some("release".to_owned()),
             environment: Some(ContextEnvironment {
-                mode: ContextEnvironmentMode::Clean,
+                mode: ContextEnvironmentMode::Inherit,
                 keep: vec!["HOME".to_owned()],
                 set: BTreeMap::from([("RELEASE_CHANNEL".to_owned(), "stable".to_owned())]),
                 unset: Vec::new(),
@@ -295,6 +422,7 @@ mod tests {
                 ContextSecretRef {
                     reference: "NXR_TEST_DEPLOY_TOKEN".to_owned(),
                     delivery: Some(SecretDelivery::Env),
+                    provider: SecretProvider::Env,
                 },
             )]),
             confirm: true,
@@ -320,9 +448,12 @@ mod tests {
                 .expect("apply context");
 
         assert_eq!(applied.context_name, "release");
+        assert_eq!(applied.shell.as_deref(), Some("release"));
+        assert!(applied.confirm);
         assert_eq!(applied.plan_secrets.len(), 1);
         assert_eq!(applied.plan_secrets[0].name, "DEPLOY_TOKEN");
         assert_eq!(applied.plan_secrets[0].reference, "NXR_TEST_DEPLOY_TOKEN");
+        assert_eq!(applied.plan_secrets[0].provider, SecretProvider::Env);
         assert_eq!(
             applied.plan_secrets[0].value,
             PlanSecretValuePlaceholder::RUNTIME
@@ -341,6 +472,7 @@ mod tests {
             name: "DEPLOY_TOKEN".to_owned(),
             reference: "NXR_TEST_DEPLOY_TOKEN".to_owned(),
             delivery: SecretDelivery::Env,
+            provider: SecretProvider::Env,
             value: PlanSecretValuePlaceholder::RUNTIME,
         }];
         let resolved = resolve_env_provider_secrets_with(&entries, |name| {
@@ -363,6 +495,7 @@ mod tests {
             name: "DEPLOY_TOKEN".to_owned(),
             reference: "NXR_MISSING_SECRET_REF".to_owned(),
             delivery: SecretDelivery::Env,
+            provider: SecretProvider::Env,
             value: PlanSecretValuePlaceholder::RUNTIME,
         }];
         let error = resolve_env_provider_secrets_with(&entries, |_| None).expect_err("missing");
@@ -378,6 +511,7 @@ mod tests {
             name: "KUBECONFIG".to_owned(),
             reference: "prod/kubeconfig".to_owned(),
             delivery: SecretDelivery::File,
+            provider: SecretProvider::Env,
             value: PlanSecretValuePlaceholder::RUNTIME,
         }];
         let error =
@@ -389,12 +523,30 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_provider_errors_at_resolve_time() {
+        let entries = vec![PlanSecretEntry {
+            name: "DEPLOY_TOKEN".to_owned(),
+            reference: "openseat/prod/token".to_owned(),
+            delivery: SecretDelivery::Env,
+            provider: SecretProvider::Sops,
+            value: PlanSecretValuePlaceholder::RUNTIME,
+        }];
+        let error = resolve_env_provider_secrets_with(&entries, |_| Some("ignored".to_owned()))
+            .expect_err("unsupported provider");
+        assert!(matches!(error, ContextError::UnsupportedProvider { .. }));
+        assert!(error.to_string().contains("sops"));
+        assert!(error.to_string().contains("DEPLOY_TOKEN"));
+    }
+
+    #[test]
     fn default_delivery_is_env() {
         let secret = ContextSecretRef {
             reference: "TOKEN".to_owned(),
             delivery: None,
+            provider: SecretProvider::Env,
         };
         assert_eq!(secret_delivery_mode(&secret), SecretDelivery::Env);
+        assert_eq!(secret_provider_mode(&secret), SecretProvider::Env);
     }
 
     #[test]
@@ -403,11 +555,13 @@ mod tests {
             name: "DEPLOY_TOKEN".to_owned(),
             reference: "NXR_TEST_DEPLOY_TOKEN".to_owned(),
             delivery: SecretDelivery::Env,
+            provider: SecretProvider::Env,
             value: PlanSecretValuePlaceholder::RUNTIME,
         };
         let value = serde_json::to_value(&entry).expect("serialize");
         assert_eq!(value["value"], "<runtime>");
         assert_eq!(value["ref"], "NXR_TEST_DEPLOY_TOKEN");
+        assert_eq!(value["provider"], "env");
     }
 
     #[test]

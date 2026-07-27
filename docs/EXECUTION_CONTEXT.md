@@ -474,6 +474,10 @@ No secret **values** enter flake evaluation.
 
 #### Env provider (H3 — partial runtime)
 
+Secret refs include an optional `provider` field (default `env`). Only
+`provider = "env"` is resolved today; other providers fail at spawn with an
+actionable error. Plans include `provider` alongside slot, `ref`, and `delivery`.
+
 For `delivery = "env"`, nxr resolves the logical `ref` by reading a **caller
 environment variable whose name equals the `ref` string** (for example
 `ref = "NXR_DEPLOY_TOKEN"` → `std::env::var("NXR_DEPLOY_TOKEN")`). The resolved
@@ -482,7 +486,9 @@ value is injected into the **child process only** under the context **slot name*
 
 - Missing required secret → hard error naming **slot** and **ref** (never the value).
 - `file` / `stdin` delivery → hard error (“not implemented yet”); never silently ignored.
-- Plans, events, and dry-run JSON show slot/ref/delivery with `"value": "<runtime>"` only.
+- Plans, events, and dry-run JSON show slot/ref/delivery/provider with `"value": "<runtime>"` only.
+- Contexts with `confirm = true` prompt on a TTY before spawn; set
+  `NXR_ASSUME_YES=1` to skip (required when stdin is not a TTY).
 - Future `programs.nxr.secretBindings` (Home Manager / sops) will map logical refs
   to provider-specific lookups; H3 does not implement those bindings.
 

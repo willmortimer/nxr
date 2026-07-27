@@ -413,6 +413,12 @@
           "enum": ["env", "file", "stdin"],
           "default": "env",
           "description": "How the secret is delivered to the child process."
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["env", "file", "sops", "sops-nix"],
+          "default": "env",
+          "description": "Runtime secret provider used to resolve the logical ref."
         }
       }
     }
