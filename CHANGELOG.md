@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-07-27
+
+### Fixed
+
+- Include `templates/` in the hermetic workspace source filter so `nxr init`
+  `include_str!` paths compile under `nix build .#nxr` (broke package/SBOM
+  builds from v2.6 through v3.1.0).
+- Add `checks.*.workspace-src-includes` to fail CI if future `include_str!` /
+  `include_bytes!` targets are omitted from the filter.
+
+### Changed
+
+- Workspace and Nix package version **3.1.1**.
+
 ## [3.1.0] - 2026-07-27
 
 Workspace actions (“Nix Turborepo”) MVP plus process and inventory foundations.

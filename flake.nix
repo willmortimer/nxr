@@ -94,6 +94,10 @@
             inherit pkgs;
           };
 
+          workspaceSrcIncludesCheck = import ./nix/checks/workspace-src-includes.nix {
+            inherit pkgs src;
+          };
+
           nxrApp = {
             type = "app";
             program = "${nxr}/bin/nxr";
@@ -175,6 +179,7 @@
           checks = {
             inherit nxr;
             flake-schema = flakeSchemaCheck;
+            workspace-src-includes = workspaceSrcIncludesCheck;
           } // qualityChecks;
 
           formatter = pkgs.nixpkgs-fmt;
