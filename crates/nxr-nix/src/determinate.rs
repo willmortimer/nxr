@@ -5,7 +5,7 @@ use std::process::Command;
 use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::capabilities::{
-    NixDistribution, config_bool_setting, parse_nix_distribution, probe_config_json,
+    NixDistribution, config_bool_setting, config_string_list_setting, parse_nix_distribution,
 };
 
 /// Whether lazy trees are configured and enabled when readable.
@@ -22,6 +22,13 @@ pub enum LazyTreesState {
 pub struct DeterminatePerformanceFeatures {
     pub parallel_eval_available: bool,
     pub lazy_trees: LazyTreesState,
+}
+
+/// WebAssembly-related experimental features from effective Nix configuration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeterminateWasmSupport {
+    pub wasm_builtin: bool,
+    pub wasm_derivations: bool,
 }
 
 /// Read-only `determinate-nixd` probe summary.
@@ -107,6 +114,52 @@ pub fn probe_performance_features(
     }
 }
 
+/// Effective experimental features from `nix config show --json` output.
+#[must_use]
+pub fn effective_experimental_features(config_json: Option<&str>) -> Option<Vec<String>> {
+    let mut features =
+        config_string_list_setting(config_json, "experimental-features").unwrap_or_default();
+    if let Some(extra) = config_string_list_setting(config_json, "extra-experimental-features") {
+        features.extend(extra);
+    }
+    if features.is_empty() {
+        None
+    } else {
+        Some(features)
+    }
+}
+
+/// Detect WebAssembly experimental features when present in effective config.
+#[must_use]
+pub fn probe_wasm_support(config_json: Option<&str>) -> DeterminateWasmSupport {
+    let features = effective_experimental_features(config_json).unwrap_or_default();
+    DeterminateWasmSupport {
+        wasm_builtin: features.iter().any(|feature| feature == "wasm-builtin"),
+        wasm_derivations: features.iter().any(|feature| feature == "wasm-derivations"),
+    }
+}
+
+/// Detect a CI environment label from well-known environment variables.
+#[must_use]
+pub fn probe_ci_environment() -> Option<&'static str> {
+    if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        return Some("github-actions");
+    }
+    if std::env::var_os("GITLAB_CI").is_some() {
+        return Some("gitlab-ci");
+    }
+    if std::env::var_os("BUILDKITE").is_some() {
+        return Some("buildkite");
+    }
+    if std::env::var_os("CIRCLECI").is_some() {
+        return Some("circleci");
+    }
+    if std::env::var_os("CI").is_some() {
+        return Some("generic-ci");
+    }
+    None
+}
+
 /// Probe `determinate-nixd` with read-only commands when present.
 #[must_use]
 pub fn probe_nixd() -> Option<NixdProbe> {
@@ -148,21 +201,17 @@ pub fn host_is_macos(system: &str) -> bool {
     system.contains("darwin")
 }
 
-/// Parse distribution and load config for doctor probes.
+/// Parse distribution from a captured `nix --version` banner.
 #[must_use]
-pub fn probe_distribution_context(
-    nix: &Utf8Path,
-    version_banner: &str,
-) -> (NixDistribution, Option<String>) {
-    let distribution = parse_nix_distribution(version_banner);
-    let config_json = probe_config_json(nix);
-    (distribution, config_json)
+pub fn distribution_from_version_banner(version_banner: &str) -> NixDistribution {
+    parse_nix_distribution(version_banner)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        LazyTreesState, NixDistribution, host_is_macos, probe_performance_features,
+        DeterminateWasmSupport, LazyTreesState, NixDistribution, effective_experimental_features,
+        host_is_macos, probe_ci_environment, probe_performance_features, probe_wasm_support,
         redact_sensitive_text,
     };
 
@@ -209,5 +258,42 @@ mod tests {
     fn host_is_macos_detects_darwin_systems() {
         assert!(host_is_macos("aarch64-darwin"));
         assert!(!host_is_macos("x86_64-linux"));
+    }
+
+    #[test]
+    fn effective_experimental_features_merges_extra_features() {
+        let config = r#"{
+            "experimental-features": {"value": ["nix-command", "flakes"]},
+            "extra-experimental-features": {"value": ["wasm-builtin"]}
+        }"#;
+        let features = effective_experimental_features(Some(config)).expect("features");
+        assert!(features.contains(&"nix-command".to_owned()));
+        assert!(features.contains(&"wasm-builtin".to_owned()));
+    }
+
+    #[test]
+    fn probe_wasm_support_reads_experimental_features() {
+        let config = r#"{"experimental-features": {"value": ["wasm-derivations"]}}"#;
+        let support = probe_wasm_support(Some(config));
+        assert_eq!(
+            support,
+            DeterminateWasmSupport {
+                wasm_builtin: false,
+                wasm_derivations: true,
+            }
+        );
+    }
+
+    #[test]
+    fn probe_ci_environment_without_ci_vars_is_none_when_unset() {
+        if std::env::var_os("GITHUB_ACTIONS").is_some()
+            || std::env::var_os("GITLAB_CI").is_some()
+            || std::env::var_os("BUILDKITE").is_some()
+            || std::env::var_os("CIRCLECI").is_some()
+            || std::env::var_os("CI").is_some()
+        {
+            return;
+        }
+        assert_eq!(probe_ci_environment(), None);
     }
 }

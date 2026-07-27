@@ -1144,6 +1144,57 @@ fn doctor_determinate_json_reports_distribution_envelope() {
 }
 
 #[test]
+fn warm_doctor_determinate_reuses_capability_cache_without_reprobing() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let home = tempfile::TempDir::new().expect("cache home");
+    let repo_root = repo_root();
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--json", "doctor", "determinate"])
+        .assert()
+        .success();
+
+    let cold_log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    let cold_version = counter.count("version");
+    let cold_config = counter.count("config");
+    assert!(
+        cold_version >= 1 || cold_config >= 1,
+        "cold doctor determinate should probe capabilities at least once; log={cold_log}"
+    );
+
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--json", "doctor", "determinate"])
+        .assert()
+        .success();
+
+    let warm_log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(
+        counter.count("version"),
+        0,
+        "warm doctor determinate should not re-probe version; log={warm_log}"
+    );
+    assert_eq!(
+        counter.count("config"),
+        0,
+        "warm doctor determinate should not re-probe config; log={warm_log}"
+    );
+}
+
+#[test]
 fn doctor_fixture_reports_nix_and_apps() {
     let Some(()) = require_nix() else {
         return;

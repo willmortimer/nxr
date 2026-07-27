@@ -39,8 +39,10 @@ pub use configurations::{
     is_configuration_output_key, list_configurations, parse_configuration_output_node,
 };
 pub use determinate::{
-    DeterminatePerformanceFeatures, LazyTreesState, NixdProbe, host_is_macos,
-    probe_distribution_context, probe_nixd, probe_performance_features, redact_sensitive_text,
+    DeterminatePerformanceFeatures, DeterminateWasmSupport, LazyTreesState, NixdProbe,
+    distribution_from_version_banner, effective_experimental_features, host_is_macos,
+    probe_ci_environment, probe_nixd, probe_performance_features, probe_wasm_support,
+    redact_sensitive_text,
 };
 pub use discovery::{
     OutputTable, discover_apps, discover_outputs_with_args, flake_show_has_nxr_for_system,
