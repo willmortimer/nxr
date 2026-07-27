@@ -38,7 +38,7 @@ Design: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md). ADRs: [adr/README.md](adr/
 7. ~~Authoritative schema-v2 shipped/partial/planned matrix; PERFORMANCE accuracy~~.
 8. ~~Tag **v2.7.1**~~.
 
-### 2.8 — Automation ergonomics
+### 2.8 — Automation ergonomics — shipped as `v2.8.0`
 
 Mise/Just-class UX without abandoning Nix leaves ([ADR-0148](adr/0148-automation-ergonomics.md)):
 

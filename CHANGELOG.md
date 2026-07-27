@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-07-27
+
+Automation ergonomics (ADR-0148): scaffolding, selectors, CI plan export, and reports.
+
+### Added
+
+- `nxr init` templates: `rust`, `node`, `mixed`, `monorepo`.
+- `nxr migrate justfile` / `nxr migrate mise` (suggest Nix; never execute recipes).
+- Task selectors `category:<name>` and `changed` (affected alias) on list/task/plan.
+- `nxr ci plan --json` (`ci-plan-v1` schema).
+- Opt-in task reports: JUnit, SARIF, coverage/benchmark JSON stubs (`--report` / `--junit`).
+- `fixtures/golden` reference flake; `docs/CLI_GENERATED.md` via `cargo xtask cli-ref`.
+
+### Changed
+
+- Workspace and Nix package version **2.8.0**.
+
 ## [2.7.1] - 2026-07-27
 
 Correctness release: closes the 2.7 batch that was never tagged as 2.7.0, plus

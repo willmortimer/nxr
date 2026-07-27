@@ -206,9 +206,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**2.7.1** — correctness cut: mio drain/EOF, schema v2 auto-promotion, capability
-cache config-file digests, context confirm/shell enforcement, plus the 2.7
-polish batch (portable archives, contexts, env-provider secrets, doctor depth).
+**2.8.0** — automation ergonomics: `init`/`migrate`, selectors, `ci plan --json`, JUnit/SARIF reports, golden fixture.
 
 History: [CHANGELOG.md](CHANGELOG.md). Next: [docs/ROADMAP.md](docs/ROADMAP.md)
-(2.8 automation → 3.1).
+(3.0 secure contexts → 3.1).
