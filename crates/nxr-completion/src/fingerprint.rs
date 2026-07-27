@@ -197,8 +197,7 @@ fn compute_workspace_fingerprint(
     ignore_policy_hash: &str,
     loaded: Option<&WorkspaceFingerprintIndex>,
 ) -> io::Result<(String, WorkspaceFingerprintIndex)> {
-    let compatible =
-        loaded.filter(|index| index_is_compatible(index, root, ignore_policy_hash));
+    let compatible = loaded.filter(|index| index_is_compatible(index, root, ignore_policy_hash));
     let force_rehash = compatible
         .map(|index| should_force_rehash(index.last_rehash_ns))
         .unwrap_or(false);
@@ -252,8 +251,7 @@ fn index_is_compatible(
 }
 
 fn fingerprint_index_schema_supported(version: u32) -> bool {
-    (LEGACY_FINGERPRINT_INDEX_SCHEMA_VERSION..=FINGERPRINT_INDEX_SCHEMA_VERSION)
-        .contains(&version)
+    (LEGACY_FINGERPRINT_INDEX_SCHEMA_VERSION..=FINGERPRINT_INDEX_SCHEMA_VERSION).contains(&version)
 }
 
 fn discovery_inputs_index_schema_supported(version: u32) -> bool {
@@ -1270,7 +1268,9 @@ mod tests {
                 serde_json::from_str(&fs::read_to_string(&index_file).expect("read index"))
                     .expect("parse index");
             index["schema_version"] = serde_json::json!(1);
-            if let Some(entries) = index.get_mut("entries").and_then(|value| value.as_object_mut())
+            if let Some(entries) = index
+                .get_mut("entries")
+                .and_then(|value| value.as_object_mut())
             {
                 for entry in entries.values_mut() {
                     entry.as_object_mut().map(|object| {

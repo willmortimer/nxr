@@ -163,7 +163,15 @@ where
     P: AsRef<OsStr>,
     A: AsRef<OsStr>,
 {
-    spawn_in_with(program, args, cwd, environment, SpawnStdio::Inherit, None)
+    spawn_in_with(
+        program,
+        args,
+        cwd,
+        environment,
+        SpawnStdio::Inherit,
+        None,
+        None,
+    )
 }
 
 /// Spawn `program` with argv in a new process group and the given stdio mode.
@@ -181,6 +189,7 @@ pub fn spawn_in_with<P, A>(
     environment: &EnvironmentPolicy,
     stdio: SpawnStdio,
     env_overrides: Option<&BTreeMap<String, String>>,
+    stdin_input: Option<Vec<u8>>,
 ) -> io::Result<ChildSession>
 where
     P: AsRef<OsStr>,
@@ -190,12 +199,28 @@ where
     let overrides = env_overrides.unwrap_or(&empty);
     #[cfg(unix)]
     {
-        unix::spawn(program.as_ref(), args, cwd, environment, stdio, overrides)
+        unix::spawn(
+            program.as_ref(),
+            args,
+            cwd,
+            environment,
+            stdio,
+            overrides,
+            stdin_input,
+        )
     }
 
     #[cfg(windows)]
     {
-        let _ = (program, args, cwd, environment, stdio, overrides);
+        let _ = (
+            program,
+            args,
+            cwd,
+            environment,
+            stdio,
+            overrides,
+            stdin_input,
+        );
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Windows supervised spawn is not implemented yet",
@@ -204,7 +229,15 @@ where
 
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = (program, args, cwd, environment, stdio, overrides);
+        let _ = (
+            program,
+            args,
+            cwd,
+            environment,
+            stdio,
+            overrides,
+            stdin_input,
+        );
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "supervised spawn is not supported on this platform",
@@ -219,7 +252,9 @@ mod unix {
     use super::{ChildSession, Command, EnvironmentPolicy, OsStr, Path, SpawnStdio, Stdio, io};
     use nix::sys::signal::{Signal, killpg};
     use nix::unistd::Pid;
+    use std::io::Write;
     use std::os::unix::process::CommandExt;
+    use std::thread;
 
     pub(super) fn spawn<A: AsRef<OsStr>>(
         program: &OsStr,
@@ -228,10 +263,12 @@ mod unix {
         environment: &EnvironmentPolicy,
         stdio: SpawnStdio,
         env_overrides: &BTreeMap<String, String>,
+        stdin_input: Option<Vec<u8>>,
     ) -> io::Result<ChildSession> {
-        let (child_stdin, child_stdout, child_stderr) = match stdio {
-            SpawnStdio::Inherit => (Stdio::inherit(), Stdio::inherit(), Stdio::inherit()),
-            SpawnStdio::PipeStdoutStderr => (Stdio::null(), Stdio::piped(), Stdio::piped()),
+        let (child_stdin, child_stdout, child_stderr) = match (&stdio, stdin_input.as_ref()) {
+            (_, Some(_)) => (Stdio::piped(), Stdio::inherit(), Stdio::inherit()),
+            (SpawnStdio::Inherit, None) => (Stdio::inherit(), Stdio::inherit(), Stdio::inherit()),
+            (SpawnStdio::PipeStdoutStderr, None) => (Stdio::null(), Stdio::piped(), Stdio::piped()),
         };
 
         let mut command = Command::new(program);
@@ -247,7 +284,15 @@ mod unix {
         }
         environment.apply_with_overrides(&mut command, env_overrides);
 
-        let child = command.spawn()?;
+        let mut child = command.spawn()?;
+        if let Some(bytes) = stdin_input {
+            if let Some(mut stdin) = child.stdin.take() {
+                thread::spawn(move || {
+                    let _ = stdin.write_all(&bytes);
+                    let _ = stdin.flush();
+                });
+            }
+        }
         let pgid = child.id();
         Ok(ChildSession { child, pgid })
     }
@@ -353,6 +398,7 @@ mod tests {
             None,
             &EnvironmentPolicy::Inherit,
             SpawnStdio::PipeStdoutStderr,
+            None,
             None,
         )
         .expect("spawn bash stdin probe");

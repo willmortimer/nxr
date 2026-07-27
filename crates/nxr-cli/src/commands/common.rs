@@ -566,6 +566,7 @@ impl WorkspaceSnapshot {
         shell_mode: ShellMode,
         environment_policy: &EnvironmentPolicy,
         nix_flags: &OptionalNixFlags,
+        context_override: Option<&str>,
     ) -> Result<BTreeMap<String, PreparedTaskNode>, PrepareError> {
         document.validate().map_err(PrepareError::TaskSchema)?;
         let apps: Vec<App> = self.apps.values().cloned().collect();
@@ -590,10 +591,11 @@ impl WorkspaceSnapshot {
             )?;
             let mut context_name = None;
             let mut confirm = false;
+            let effective_context = context_override.or(definition.context.as_deref());
             let effective_shell = shell
                 .map(str::to_owned)
                 .or_else(|| {
-                    if let Some(name) = definition.context.as_deref() {
+                    if let Some(name) = effective_context {
                         document
                             .contexts
                             .get(name)
@@ -632,7 +634,7 @@ impl WorkspaceSnapshot {
                 &execution_directory,
                 &strip_one_separator(forwarded),
             )?;
-            let node_environment = if let Some(name) = definition.context.as_deref() {
+            let node_environment = if let Some(name) = effective_context {
                 let applied = apply_task_context(document, task_id, name, environment_policy)?;
                 context_name = Some(applied.context_name.clone());
                 confirm = applied.confirm;

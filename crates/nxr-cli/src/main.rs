@@ -21,12 +21,12 @@ use nxr_core::diagnostics::exit;
 use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
 
 use crate::cli::{
-    BuildSubcommand, CacheSubcommand, CiSubcommand, Cli, Command, DoctorSubcommand,
-    ExplainSubcommand, InspectSubcommand, MigrateSubcommand,
+    BuildSubcommand, CacheSubcommand, CiSubcommand, Cli, Command, ContextSubcommand,
+    DoctorSubcommand, ExplainSubcommand, InspectSubcommand, MigrateSubcommand,
 };
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
-    affected, cache, ci, complete, completion, configurations, doctor, doctor_builders,
+    affected, cache, ci, complete, completion, configurations, context, doctor, doctor_builders,
     doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt, graph, init, inspect, list,
     manpage, migrate, nix_op, plan, run, select, selectors, task, watch,
 };
@@ -114,6 +114,8 @@ enum RunError {
     Ci(#[from] ci::CiPlanError),
     #[error(transparent)]
     Selector(#[from] selectors::SelectorCommandError),
+    #[error(transparent)]
+    Context(#[from] context::ContextCommandError),
 }
 
 impl RunError {
@@ -146,6 +148,7 @@ impl RunError {
             Self::Affected(error) => error.exit_code(),
             Self::Ci(error) => error.exit_code(),
             Self::Selector(error) => error.exit_code(),
+            Self::Context(error) => error.exit_code(),
             Self::MissingAppName | Self::Usage(_) | Self::FlakeAppRef(_) => exit::USAGE,
         }
     }
@@ -531,6 +534,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             };
             init::run(request, runner).map_err(RunError::from)
         }
+        Some(Command::Context { action }) => dispatch_context(cli, &nix_flags, action, runner),
         Some(Command::Migrate { source }) => dispatch_migrate(source, runner),
         Some(Command::In { shell, verb, rest }) => {
             dispatch_in(cli, &nix_flags, shell, verb, rest, runner)
@@ -979,6 +983,7 @@ fn task_request_in_shell<'a>(
         events_format: cli.events,
         reports: report_paths_from_cli(cli, &TaskReportOptions::default())?,
         nix_flags,
+        context_override: None,
     })
 }
 
@@ -1187,7 +1192,47 @@ fn task_request<'a>(
         events_format: cli.events,
         reports: report_paths_from_cli(cli, report_options)?,
         nix_flags,
+        context_override: None,
     })
+}
+
+fn dispatch_context(
+    cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
+    action: &ContextSubcommand,
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    let context_action = match action {
+        ContextSubcommand::List => context::ContextAction::List,
+        ContextSubcommand::Inspect { name } => {
+            context::ContextAction::Inspect { name: name.clone() }
+        }
+        ContextSubcommand::Run { context, command } => context::ContextAction::Run {
+            context: context.clone(),
+            command: command.clone(),
+        },
+    };
+    let report_options = TaskReportOptions::default();
+    let request = context::ContextRequest {
+        flake_arg: cli.flake.as_deref(),
+        nix_override: cli.nix.as_deref(),
+        refresh_discovery: cli.refresh_discovery,
+        json: cli.json,
+        action: context_action,
+        environment_policy: environment_policy_from_cli(cli)?,
+        shell: cli.dev_shell.as_deref(),
+        shell_mode: cli.shell_mode,
+        root: cli.root,
+        cwd: cli.cwd.as_deref(),
+        nix_flags,
+        jobs: 1,
+        keep_going: false,
+        output_mode: cli.output,
+        events_format: cli.events,
+        reports: report_paths_from_cli(cli, &report_options)?,
+        dry_run: cli.dry_run,
+    };
+    context::run(&request, runner).map_err(RunError::from)
 }
 
 fn dispatch_doctor(

@@ -1,9 +1,11 @@
 # Execution context and ecosystem expansion
 
 **Status:** design contract for post-2.6 work (2.7 → 3.1). Context flake-parts
-module options and schema v2 parse are implemented (H2). **Runtime env-provider
-secret delivery** for `delivery = "env"` is implemented (H3); `file` / `stdin`,
-Home Manager / sops bindings, and `nxr context` CLI remain later milestones.
+module options and schema v2 parse are implemented (H2). **Runtime secret delivery**
+for `delivery = "env"` is implemented (H3). **Provider bindings** (`secret-bindings.toml`
+or `[secret_bindings]` in config), **`file` / `stdin` delivery**, and **`nxr context`**
+CLI are implemented in the 3.0 C4–C6 slice. Home Manager bindings generation and
+one-shell DAG optimization remain later milestones.
 **Companion:** [ROADMAP.md](ROADMAP.md) (scheduling), [CONTRACT_SUMMARY.md](CONTRACT_SUMMARY.md) (invariants), [ECOSYSTEM_SYNTHESIS.md](ECOSYSTEM_SYNTHESIS.md) (inheritance rules).
 
 ## Product identity
@@ -170,10 +172,15 @@ perSystem.nxr.tasks.deploy = {
 CLI:
 
 ```bash
-nxr context release deploy
+nxr context list
+nxr context inspect release
+nxr context run release deploy
 nxr context backend task integration
 nxr in backend test          # anonymous shell-only context
 ```
+
+`list` and `inspect` show context names and secret slot/ref metadata only (no
+values). `run` requires project trust when `trusted_projects` is configured.
 
 Machine-specific defaults belong in **Home Manager**, not in the repository’s
 public flake metadata. Prefer explicit `nxr context work …` / `nxr context ci …`
@@ -474,23 +481,46 @@ No secret **values** enter flake evaluation.
 
 #### Env provider (H3 — partial runtime)
 
-Secret refs include an optional `provider` field (default `env`). Only
-`provider = "env"` is resolved today; other providers fail at spawn with an
-actionable error. Plans include `provider` alongside slot, `ref`, and `delivery`.
+Secret refs include an optional `provider` field (default `env`). For
+`provider = "env"`, nxr resolves the logical `ref` by reading a **caller
+environment variable whose name equals the `ref` string** (unchanged from H3).
 
-For `delivery = "env"`, nxr resolves the logical `ref` by reading a **caller
-environment variable whose name equals the `ref` string** (for example
-`ref = "NXR_DEPLOY_TOKEN"` → `std::env::var("NXR_DEPLOY_TOKEN")`). The resolved
-value is injected into the **child process only** under the context **slot name**
-(for example slot `DEPLOY_TOKEN` → `DEPLOY_TOKEN=<value>` in the app child env).
+#### Provider bindings (C4 — user / HM config)
 
-- Missing required secret → hard error naming **slot** and **ref** (never the value).
-- `file` / `stdin` delivery → hard error (“not implemented yet”); never silently ignored.
-- Plans, events, and dry-run JSON show slot/ref/delivery/provider with `"value": "<runtime>"` only.
-- Contexts with `confirm = true` prompt on a TTY before spawn; set
-  `NXR_ASSUME_YES=1` to skip (required when stdin is not a TTY).
-- Future `programs.nxr.secretBindings` (Home Manager / sops) will map logical refs
-  to provider-specific lookups; H3 does not implement those bindings.
+Logical refs for non-`env` providers (and optional overrides) are resolved from
+user configuration — never flake evaluation:
+
+```toml
+# ~/.config/nxr/secret-bindings.toml
+[bindings."openseat/prod/cloudflare-token"]
+provider = "sops-nix"
+path = "/run/secrets/openseat-cloudflare-token"
+
+[bindings."openseat/prod/kubeconfig"]
+provider = "sops"
+path = "/home/.config/openseat/prod.sops.yaml"
+key = "kubeconfig"
+```
+
+The same table may live under `[secret_bindings]` in `~/.config/nxr/config.toml`.
+Binding providers: `env` (`env = "VAR"`), `file` / `sops-nix` (`path`), `sops`
+(`path` + `key`). `keychain`, `1password`, and `vault` return clear
+`UnsupportedProvider` errors.
+
+Project trust (`[trusted_projects."github.com/org/repo"]` with `allowed_secrets`)
+is required before non-env secrets resolve when trust entries exist.
+
+#### Delivery modes (C5)
+
+| Mode | Behavior |
+|---|---|
+| `env` | Inject value into the selected child process only |
+| `file` | Write value to a mode-0600 tempfile (or pass an existing path from
+`sops-nix` / file bindings); set slot env to the path; delete tempfile after child exit |
+| `stdin` | Deliver value on child stdin once (serial spawn only) |
+
+Plans, events, and dry-run JSON show slot/ref/delivery/provider with
+`"value": "<runtime>"` only — never the actual value.
 
 Optional later: a SecretSpec-compatible adapter. SecretSpec’s separation
 (project declares logical secrets; each environment chooses a provider) is the
