@@ -73,6 +73,9 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr doctor builders` | Remote builders and Determinate nixd diagnostics (read-only) |
 | `nxr fmt [PATH…]` | Thin `nix fmt` / flake formatter wrapper (not `apps.fmt`) |
 | `nxr envrc [--write] [--force]` | Print or write direnv `.envrc` (`use flake` / `use flake .#<shell>` via global `--shell`) |
+| `nxr init <rust\|node\|mixed\|monorepo> [--template <name>] [--dir PATH] [--yes]` | Scaffold a minimal nxr flake (confirmation required without `--yes`) |
+| `nxr migrate justfile [PATH] [--write PATH]` | Suggest `perSystem.nxr.*` Nix from a Justfile (never executes recipes) |
+| `nxr migrate mise [PATH] [--write PATH]` | Suggest `perSystem.nxr.*` Nix from `mise.toml` (never executes recipes) |
 | `nxr in <shell> <app\|run\|plan\|task\|watch\|explain> …` | Ergonomic `--shell` prefix (ADR-0126) |
 | `nxr explain <app\|task> [-- args…]` | Explain resolution and exact Nix invocation (apps win when both exist) |
 | `nxr explain app <name> [-- args…]` | Explain a single app |

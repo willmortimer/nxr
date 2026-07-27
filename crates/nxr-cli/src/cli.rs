@@ -500,6 +500,26 @@ pub enum Command {
         #[arg(long = "force", requires = "write")]
         force: bool,
     },
+    /// Scaffold a minimal nxr flake from a template
+    Init {
+        /// Template to scaffold (`rust`, `node`, `mixed`, `monorepo`)
+        #[arg(value_name = "TEMPLATE")]
+        template: Option<String>,
+        /// Template to scaffold (alternative to positional `TEMPLATE`)
+        #[arg(long = "template", value_name = "TEMPLATE")]
+        template_long: Option<String>,
+        /// Target directory (default: invocation CWD)
+        #[arg(long = "dir", value_name = "PATH")]
+        dir: Option<String>,
+        /// Write files without interactive confirmation
+        #[arg(long = "yes")]
+        yes: bool,
+    },
+    /// Suggest nxr Nix from Justfile or mise.toml (never executes recipes)
+    Migrate {
+        #[command(subcommand)]
+        source: MigrateSubcommand,
+    },
     /// Ergonomic dev-shell prefix: `nxr in <shell> <app|task|…>` (alias of `--shell`)
     In {
         /// Development shell name
@@ -513,6 +533,29 @@ pub enum Command {
     /// Bare `nxr <app> [args…]` form (reserved names win first)
     #[command(external_subcommand)]
     External(Vec<String>),
+}
+
+/// `nxr migrate` subcommands.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum MigrateSubcommand {
+    /// Suggest nxr Nix from a Justfile
+    Justfile {
+        /// Justfile path (default: `Justfile` or `justfile` in the invocation CWD)
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
+        /// Write output to a file instead of stdout
+        #[arg(long = "write", value_name = "PATH")]
+        write: Option<String>,
+    },
+    /// Suggest nxr Nix from mise.toml
+    Mise {
+        /// mise.toml path (default: `mise.toml` in the invocation CWD)
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
+        /// Write output to a file instead of stdout
+        #[arg(long = "write", value_name = "PATH")]
+        write: Option<String>,
+    },
 }
 
 /// `nxr cache` subcommands.

@@ -42,6 +42,22 @@
           path = ./templates/default;
           description = "Minimal nxr consumer flake using flake-parts";
         };
+        templates.rust = {
+          path = ./templates/rust;
+          description = "Rust project with fmt/lint/test apps and a ci task graph";
+        };
+        templates.node = {
+          path = ./templates/node;
+          description = "Node.js project with install/lint/test apps and a ci task graph";
+        };
+        templates.mixed = {
+          path = ./templates/mixed;
+          description = "Rust + Node project with separate apps and a combined ci task";
+        };
+        templates.monorepo = {
+          path = ./templates/monorepo;
+          description = "Namespaced monorepo with categories, tasks, and nxr.projects.json";
+        };
       };
 
       systems = [
