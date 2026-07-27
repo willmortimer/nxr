@@ -289,6 +289,10 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 Err(RunError::Usage(
                     "plan requires an app, task, or selector (or --affected / changed)".to_owned(),
                 ))
+            } else if tokens.len() == 1 && !selectors::token_is_selector(&tokens[0]) {
+                // Bare name: resolve app first (then task) inside plan::run. Do not
+                // expand as task selectors here — that rejects app-only flakes.
+                dispatch_plan(cli, &nix_flags, &tokens[0], args, runner)
             } else {
                 let resolved = selectors::expand_task_tokens(
                     cli.flake.as_deref(),
@@ -303,6 +307,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                         "plan requires an app, task, or selector".to_owned(),
                     ));
                 }
+                // Explicit selectors always plan as tasks (never app-first).
                 let used_selector = tokens
                     .iter()
                     .any(|token| selectors::token_is_selector(token));

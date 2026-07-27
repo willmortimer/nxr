@@ -86,6 +86,9 @@ in
     command = ''
       export NXR_SKIP_NIX_INTEGRATION=1
       export NXR_SKIP_WATCH_INTEGRATION=1
+      # Unit tests that probe a real `nix` (capability cache) need flakes/nix-command;
+      # the sandbox does not inherit the GitHub Actions NIX_CONFIG.
+      export NIX_CONFIG="experimental-features = nix-command flakes"
       cargo nextest run --workspace
     '';
   };
