@@ -2,16 +2,24 @@
 //!
 //! The envelope is `schema_version` plus a map of task name → [`TaskDefinition`].
 //! Field names in JSON match the flake metadata vocabulary (`dependsOn`,
-//! `workingDirectory`). Unknown task fields are tolerated by serde defaults.
+//! `workingDirectory`). Schema v1 tolerates unknown task fields via serde
+//! defaults; schema v2 rejects unknown document and task fields at parse time.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use thiserror::Error;
 
-/// Supported major version for the task schema envelope.
+/// Default major version for newly constructed task documents.
 pub const SCHEMA_VERSION: u32 = 1;
+
+/// Schema v2 major version (strict parse; see `docs/TASK_SCHEMA_V2.md`).
+pub const SCHEMA_VERSION_V2: u32 = 2;
+
+/// Highest task document major version this crate can parse.
+pub const MAX_SUPPORTED_SCHEMA_VERSION: u32 = SCHEMA_VERSION_V2;
 
 /// Run children in the caller's invocation directory.
 pub const WORKING_DIRECTORY_INVOCATION: &str = "invocation";
@@ -50,6 +58,9 @@ pub enum SchemaError {
     /// A task `timeout` or `terminationGracePeriod` string is invalid.
     #[error("task {task}: {message}")]
     InvalidTimeout { task: String, message: String },
+    /// JSON did not deserialize into a supported task document shape.
+    #[error("task document did not match schema: {message}")]
+    InvalidDocument { message: String },
 }
 
 /// Versioned task document: `schema_version` plus named task definitions.
@@ -192,6 +203,134 @@ pub struct TaskDefinition {
         skip_serializing_if = "Option::is_none"
     )]
     pub termination_grace_period: Option<String>,
+
+    /// Declared inputs for cache-key fingerprinting (schema v2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inputs: Option<TaskInputs>,
+
+    /// Declared workspace outputs for result caching (schema v2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<TaskOutput>,
+
+    /// Opt-in task result cache policy (schema v2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<TaskCache>,
+
+    /// Resource reservations and exclusivity locks (schema v2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<TaskResources>,
+}
+
+/// Declared inputs for cache-key fingerprinting and structured wiring (schema v2).
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskInputs {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<EnvInput>,
+    #[serde(
+        default,
+        rename = "includeGitState",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub include_git_state: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bindings: BTreeMap<String, TaskInputBinding>,
+}
+
+/// Environment variable name or structured binding for cache fingerprinting.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EnvInput {
+    /// Bare environment variable name.
+    Name(String),
+    /// Structured binding with required/secret metadata.
+    Binding(EnvInputBinding),
+}
+
+/// Structured environment input binding (schema v2).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EnvInputBinding {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
+}
+
+/// Named binding to an upstream task output (`<task>.<output>`).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskInputBinding {
+    pub from: String,
+}
+
+/// Declared workspace output artifact (schema v2).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskOutput {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<TaskOutputMode>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
+}
+
+/// How a cached workspace artifact is restored.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskOutputMode {
+    Replace,
+    Merge,
+    VerifyOnly,
+    Report,
+}
+
+/// Opt-in task result cache policy (schema v2).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskCache {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<TaskCacheMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub save: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failures: Option<bool>,
+}
+
+/// Task result cache scope (schema v2).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskCacheMode {
+    Disabled,
+    Local,
+    SharedRead,
+    Shared,
+}
+
+/// Resource reservations and exclusivity locks (schema v2).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskResources {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io: Option<IoIntensity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclusive: Vec<String>,
+}
+
+/// Relative I/O intensity for scheduling heuristics (schema v2).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IoIntensity {
+    Light,
+    Normal,
+    Heavy,
 }
 
 impl TaskDefinition {
@@ -210,6 +349,10 @@ impl TaskDefinition {
             paths: Vec::new(),
             timeout: None,
             termination_grace_period: None,
+            inputs: None,
+            outputs: Vec::new(),
+            cache: None,
+            resources: None,
         }
     }
 }
@@ -255,16 +398,293 @@ pub fn validate_working_directory(task: &str, value: &str) -> Result<(), SchemaE
 ///
 /// # Errors
 ///
-/// Returns [`SchemaError::UnsupportedVersion`] when `version` is not
-/// [`SCHEMA_VERSION`].
+/// Returns [`SchemaError::UnsupportedVersion`] when `version` is not 1 or 2.
 pub fn validate_schema_version(version: u32) -> Result<(), SchemaError> {
-    if version == SCHEMA_VERSION {
+    if version == SCHEMA_VERSION || version == SCHEMA_VERSION_V2 {
         Ok(())
     } else {
         Err(SchemaError::UnsupportedVersion {
             found: version,
             expected: SCHEMA_VERSION,
         })
+    }
+}
+
+/// Parse a versioned task document from JSON (for example `nix eval --json` output).
+///
+/// Schema v1 tolerates unknown task fields. Schema v2 rejects unknown document
+/// and task fields at parse time.
+///
+/// # Errors
+///
+/// Returns [`SchemaError::InvalidDocument`] on serde failures,
+/// [`SchemaError::UnsupportedVersion`] for unsupported majors, or other
+/// [`SchemaError`] variants from [`TaskDocument::validate`].
+pub fn parse_task_document(value: &JsonValue) -> Result<TaskDocument, SchemaError> {
+    let version = value
+        .get("schema_version")
+        .and_then(JsonValue::as_u64)
+        .map_or(SCHEMA_VERSION, |version| {
+            u32::try_from(version).unwrap_or(0)
+        });
+    validate_schema_version(version)?;
+
+    let doc: TaskDocument = match version {
+        SCHEMA_VERSION => serde_json::from_value(value.clone()).map_err(|source| {
+            SchemaError::InvalidDocument {
+                message: source.to_string(),
+            }
+        })?,
+        SCHEMA_VERSION_V2 => {
+            let strict: TaskDocumentV2Strict =
+                serde_json::from_value(value.clone()).map_err(|source| {
+                    SchemaError::InvalidDocument {
+                        message: source.to_string(),
+                    }
+                })?;
+            strict.into()
+        }
+        _ => {
+            return Err(SchemaError::UnsupportedVersion {
+                found: version,
+                expected: SCHEMA_VERSION,
+            });
+        }
+    };
+    doc.validate()?;
+    Ok(doc)
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskDocumentV2Strict {
+    schema_version: u32,
+    #[serde(default)]
+    tasks: BTreeMap<String, TaskDefinitionV2Strict>,
+    #[serde(default)]
+    apps: BTreeMap<String, AppListingMetadata>,
+    #[serde(default, rename = "discoveryInputs")]
+    discovery_inputs: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskDefinitionV2Strict {
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default, rename = "dependsOn")]
+    depends_on: Vec<String>,
+    app: String,
+    #[serde(default, rename = "workingDirectory")]
+    working_directory: Option<String>,
+    #[serde(default)]
+    hidden: bool,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    aliases: Vec<String>,
+    #[serde(default)]
+    interactive: bool,
+    #[serde(default)]
+    paths: Vec<String>,
+    #[serde(default)]
+    timeout: Option<String>,
+    #[serde(default, rename = "terminationGracePeriod")]
+    termination_grace_period: Option<String>,
+    #[serde(default)]
+    inputs: Option<TaskInputsV2Strict>,
+    #[serde(default)]
+    outputs: Vec<TaskOutputV2Strict>,
+    #[serde(default)]
+    cache: Option<TaskCacheV2Strict>,
+    #[serde(default)]
+    resources: Option<TaskResourcesV2Strict>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskInputsV2Strict {
+    #[serde(default)]
+    paths: Vec<String>,
+    #[serde(default)]
+    env: Vec<EnvInputV2Strict>,
+    #[serde(default, rename = "includeGitState")]
+    include_git_state: bool,
+    #[serde(default)]
+    bindings: BTreeMap<String, TaskInputBindingV2Strict>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+enum EnvInputV2Strict {
+    Name(String),
+    Binding(EnvInputBindingV2Strict),
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnvInputBindingV2Strict {
+    name: String,
+    #[serde(default)]
+    required: bool,
+    #[serde(default)]
+    secret: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskInputBindingV2Strict {
+    from: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskOutputV2Strict {
+    path: String,
+    #[serde(default)]
+    mode: Option<TaskOutputMode>,
+    #[serde(default)]
+    optional: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskCacheV2Strict {
+    #[serde(default)]
+    mode: Option<TaskCacheMode>,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    restore: Option<bool>,
+    #[serde(default)]
+    save: Option<bool>,
+    #[serde(default)]
+    failures: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskResourcesV2Strict {
+    #[serde(default)]
+    cpu: Option<u32>,
+    #[serde(default)]
+    memory: Option<String>,
+    #[serde(default)]
+    io: Option<IoIntensity>,
+    #[serde(default)]
+    network: Option<bool>,
+    #[serde(default)]
+    exclusive: Vec<String>,
+}
+
+impl From<TaskDocumentV2Strict> for TaskDocument {
+    fn from(strict: TaskDocumentV2Strict) -> Self {
+        Self {
+            schema_version: strict.schema_version,
+            tasks: strict
+                .tasks
+                .into_iter()
+                .map(|(name, task)| (name, task.into()))
+                .collect(),
+            apps: strict.apps,
+            discovery_inputs: strict.discovery_inputs,
+        }
+    }
+}
+
+impl From<TaskDefinitionV2Strict> for TaskDefinition {
+    fn from(strict: TaskDefinitionV2Strict) -> Self {
+        Self {
+            description: strict.description,
+            depends_on: strict.depends_on,
+            app: strict.app,
+            working_directory: strict.working_directory,
+            hidden: strict.hidden,
+            category: strict.category,
+            aliases: strict.aliases,
+            interactive: strict.interactive,
+            paths: strict.paths,
+            timeout: strict.timeout,
+            termination_grace_period: strict.termination_grace_period,
+            inputs: strict.inputs.map(Into::into),
+            outputs: strict.outputs.into_iter().map(Into::into).collect(),
+            cache: strict.cache.map(Into::into),
+            resources: strict.resources.map(Into::into),
+        }
+    }
+}
+
+impl From<TaskInputsV2Strict> for TaskInputs {
+    fn from(strict: TaskInputsV2Strict) -> Self {
+        Self {
+            paths: strict.paths,
+            env: strict.env.into_iter().map(Into::into).collect(),
+            include_git_state: strict.include_git_state,
+            bindings: strict
+                .bindings
+                .into_iter()
+                .map(|(name, binding)| (name, binding.into()))
+                .collect(),
+        }
+    }
+}
+
+impl From<EnvInputV2Strict> for EnvInput {
+    fn from(strict: EnvInputV2Strict) -> Self {
+        match strict {
+            EnvInputV2Strict::Name(name) => Self::Name(name),
+            EnvInputV2Strict::Binding(binding) => Self::Binding(binding.into()),
+        }
+    }
+}
+
+impl From<EnvInputBindingV2Strict> for EnvInputBinding {
+    fn from(strict: EnvInputBindingV2Strict) -> Self {
+        Self {
+            name: strict.name,
+            required: strict.required,
+            secret: strict.secret,
+        }
+    }
+}
+
+impl From<TaskInputBindingV2Strict> for TaskInputBinding {
+    fn from(strict: TaskInputBindingV2Strict) -> Self {
+        Self { from: strict.from }
+    }
+}
+
+impl From<TaskOutputV2Strict> for TaskOutput {
+    fn from(strict: TaskOutputV2Strict) -> Self {
+        Self {
+            path: strict.path,
+            mode: strict.mode,
+            optional: strict.optional,
+        }
+    }
+}
+
+impl From<TaskCacheV2Strict> for TaskCache {
+    fn from(strict: TaskCacheV2Strict) -> Self {
+        Self {
+            mode: strict.mode,
+            version: strict.version,
+            restore: strict.restore,
+            save: strict.save,
+            failures: strict.failures,
+        }
+    }
+}
+
+impl From<TaskResourcesV2Strict> for TaskResources {
+    fn from(strict: TaskResourcesV2Strict) -> Self {
+        Self {
+            cpu: strict.cpu,
+            memory: strict.memory,
+            io: strict.io,
+            network: strict.network,
+            exclusive: strict.exclusive,
+        }
     }
 }
 
@@ -290,6 +710,10 @@ mod tests {
                 paths: vec!["crates".to_owned()],
                 timeout: None,
                 termination_grace_period: None,
+                inputs: None,
+                outputs: Vec::new(),
+                cache: None,
+                resources: None,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -401,8 +825,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_schema_version_accepts_v1() {
+    fn validate_schema_version_accepts_v1_and_v2() {
         validate_schema_version(1).expect("v1 supported");
+        validate_schema_version(2).expect("v2 supported");
         TaskDocument::new(BTreeMap::new())
             .validate()
             .expect("new document is valid");
@@ -410,11 +835,11 @@ mod tests {
 
     #[test]
     fn validate_schema_version_rejects_unsupported_major() {
-        let err = validate_schema_version(2).expect_err("v2 unsupported");
+        let err = validate_schema_version(99).expect_err("v99 unsupported");
         assert_eq!(
             err,
             SchemaError::UnsupportedVersion {
-                found: 2,
+                found: 99,
                 expected: 1,
             }
         );
@@ -433,6 +858,99 @@ mod tests {
                 expected: 1
             }
         ));
+    }
+
+    #[test]
+    fn v1_tolerates_unknown_task_fields() {
+        let value = json!({
+            "schema_version": 1,
+            "tasks": {
+                "test": {
+                    "app": "test",
+                    "futureField": true
+                }
+            }
+        });
+        let doc = parse_task_document(&value).expect("v1 unknown task field tolerated");
+        assert_eq!(doc.tasks["test"].app, "test");
+    }
+
+    #[test]
+    fn v2_rejects_unknown_task_field() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "test": {
+                    "app": "test",
+                    "futureField": true
+                }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("v2 unknown task field rejected");
+        assert!(matches!(err, SchemaError::InvalidDocument { .. }));
+        let message = err.to_string();
+        assert!(
+            message.contains("futureField") || message.contains("unknown field"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn v2_rejects_unknown_document_field() {
+        let value = json!({
+            "schema_version": 2,
+            "futureEnvelope": true,
+            "tasks": {}
+        });
+        let err = parse_task_document(&value).expect_err("v2 unknown document field rejected");
+        assert!(matches!(err, SchemaError::InvalidDocument { .. }));
+    }
+
+    #[test]
+    fn v2_accepts_known_fields() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "test": {
+                    "app": "test",
+                    "inputs": {
+                        "paths": ["Cargo.toml"],
+                        "env": ["RUSTFLAGS", { "name": "CI", "secret": true }],
+                        "includeGitState": false,
+                        "bindings": { "report": { "from": "build.junit" } }
+                    },
+                    "outputs": [
+                        { "path": "target/debug", "mode": "replace", "optional": true }
+                    ],
+                    "cache": {
+                        "mode": "local",
+                        "version": "1",
+                        "restore": true,
+                        "save": true,
+                        "failures": false
+                    },
+                    "resources": {
+                        "cpu": 2,
+                        "memory": "4GiB",
+                        "io": "heavy",
+                        "network": false,
+                        "exclusive": ["cargo-target"]
+                    }
+                }
+            }
+        });
+        let doc = parse_task_document(&value).expect("v2 known fields accepted");
+        assert_eq!(doc.schema_version, 2);
+        let task = &doc.tasks["test"];
+        let inputs = task.inputs.as_ref().expect("inputs present");
+        assert_eq!(inputs.paths, vec!["Cargo.toml".to_owned()]);
+        assert_eq!(task.outputs.len(), 1);
+        assert_eq!(task.outputs[0].path, "target/debug");
+        assert_eq!(
+            task.cache.as_ref().and_then(|cache| cache.mode.as_ref()),
+            Some(&TaskCacheMode::Local)
+        );
+        assert_eq!(task.resources.as_ref().and_then(|r| r.cpu), Some(2));
     }
 
     #[test]
@@ -502,6 +1020,10 @@ mod tests {
                 paths: Vec::new(),
                 timeout: None,
                 termination_grace_period: None,
+                inputs: None,
+                outputs: Vec::new(),
+                cache: None,
+                resources: None,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -529,6 +1051,10 @@ mod tests {
                 paths: Vec::new(),
                 timeout: None,
                 termination_grace_period: None,
+                inputs: None,
+                outputs: Vec::new(),
+                cache: None,
+                resources: None,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -560,6 +1086,10 @@ mod tests {
                 paths: vec!["/abs".to_owned()],
                 timeout: None,
                 termination_grace_period: None,
+                inputs: None,
+                outputs: Vec::new(),
+                cache: None,
+                resources: None,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -586,6 +1116,10 @@ mod tests {
                 paths: Vec::new(),
                 timeout: None,
                 termination_grace_period: None,
+                inputs: None,
+                outputs: Vec::new(),
+                cache: None,
+                resources: None,
             },
         );
         let value = serde_json::to_value(TaskDocument::new(tasks)).expect("serialize");

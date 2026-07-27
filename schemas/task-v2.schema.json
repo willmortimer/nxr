@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://nxr.dev/schemas/task-v2.schema.json",
   "title": "nxr task document (schema v2 draft)",
-  "description": "DRAFT — not implemented. Versioned task orchestration metadata (schema version 2) extending v1 with declared inputs, outputs, cache policy, and resource reservations. Execution contexts, secrets, dependency states, and confirmation requirements are planned separately (see docs/EXECUTION_CONTEXT.md). Current nxr releases (schema v1 runners) reject unsupported majors and do not accept this document. Breaking changes before implementation require a new draft revision of this schema.",
+  "description": "PARTIAL — strict parse implemented in nxr-task (H1). Versioned task orchestration metadata (schema version 2) extending v1 with declared inputs, outputs, cache policy, and resource reservations. Execution contexts, secrets, dependency states, and confirmation requirements are planned separately (see docs/EXECUTION_CONTEXT.md). Runtime caching and resource scheduling are not yet implemented.",
   "type": "object",
   "required": ["schema_version"],
   "additionalProperties": false,

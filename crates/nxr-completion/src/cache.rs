@@ -9,7 +9,7 @@ use blake3::Hasher;
 use camino::{Utf8Path, Utf8PathBuf};
 use fs2::FileExt;
 use nxr_core::App;
-use nxr_task::{SCHEMA_VERSION as DISCOVERY_SCHEMA_VERSION, TaskDocument};
+use nxr_task::{MAX_SUPPORTED_SCHEMA_VERSION as DISCOVERY_SCHEMA_VERSION, TaskDocument};
 use serde::{Deserialize, Serialize};
 
 use crate::fingerprint::{discovery_inputs_fingerprint, nix_tree_fingerprint};

@@ -1,11 +1,14 @@
 # Task schema v2 (draft)
 
-**Status:** draft specification only — **not implemented** in current nxr releases.
+**Status:** **partial** — strict parse and Rust types for `schema_version: 2` are
+implemented in `crates/nxr-task`. Execution contexts, secret resolution, result-cache
+runtime, and resource scheduling runtime remain later work (H2/H3 and roadmap 3.0).
 
-Current runners accept only [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json)
-(`schema_version: 1`). A document with `schema_version: 2` is **rejected** by v1 runners
-(unsupported major). Do not emit v2 from flake modules until an nxr release advertises
-support.
+Runners accept [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json)
+(`schema_version: 1`) and [`schemas/task-v2.schema.json`](../schemas/task-v2.schema.json)
+(`schema_version: 2`) at parse time. Schema v1 tolerates unknown task fields; schema v2
+rejects unknown document and task fields. Do not emit v2 from flake modules until an nxr
+release advertises full v2 runtime support beyond parse/validation.
 
 This draft captures execution-affecting fields that must not be added to schema v1.
 Schema v1 tolerates unknown task fields; older runners would silently ignore security
@@ -172,11 +175,12 @@ shared-workspace conflicts.
 
 | Runner | `schema_version: 1` | `schema_version: 2` |
 |---|---|---|
-| nxr ≤ 2.x (current) | Accepted | **Rejected** (unsupported major) |
-| Future v2 runner | Rejected when strict | Accepted; unknown task fields **rejected** |
+| nxr ≤ 2.x (pre-H1) | Accepted | **Rejected** (unsupported major) |
+| nxr (H1+) | Accepted; unknown task fields tolerated | Accepted at parse; unknown fields **rejected**; contexts/secrets/cache/runtime still later |
 
-`crates/nxr-task` still exports `SCHEMA_VERSION = 1`. This draft does not change Rust
-types, Nix module emission, or flake evaluation.
+`crates/nxr-task` exports `SCHEMA_VERSION = 1` (default for new documents) and
+`SCHEMA_VERSION_V2 = 2` with strict parse via `parse_task_document`. Nix module emission
+and flake evaluation still emit v1 until a later milestone enables v2 authoring.
 
 ## Delivery stages (planned)
 
