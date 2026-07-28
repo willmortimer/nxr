@@ -4,6 +4,7 @@ pub mod action;
 pub mod cas;
 pub mod config;
 pub mod daemon;
+pub mod dev_env_cache;
 pub mod diagnostics;
 pub mod digest_cache;
 pub mod ecosystem;
@@ -44,6 +45,15 @@ pub use daemon::{
     DaemonStatus, SharedDaemonState, cleanup_socket_files, daemon_connect_enabled, daemon_pid_path,
     daemon_plan_entry, daemon_plan_to_hit, daemon_socket_path, ensure_socket_parent,
     handle_request, read_pid_file, serve, try_connect, try_once, write_pid_file,
+};
+pub use dev_env_cache::{
+    DEFAULT_DEV_ENV_CACHE_TTL_SECS, DEV_ENV_CACHE_ENV, DEV_ENV_CACHE_SCHEMA_VERSION,
+    DEV_ENV_CACHE_TTL_ENV, DEV_ENV_PROTOCOL_VERSION, DEV_ENV_SECRET_RUNTIME_PLACEHOLDER,
+    DevEnvSecretVariable, DevEnvironmentCacheHit, DevEnvironmentCacheKeyMaterial,
+    DevEnvironmentCacheStatus, DevEnvironmentNixIdentity, DevEnvironmentSnapshot,
+    clear_dev_env_cache, dev_env_cache_dir, dev_env_cache_enabled, dev_env_cache_key_digest,
+    dev_env_cache_status, lookup_dev_environment_snapshot, snapshot_contains_secret_values,
+    store_dev_environment_snapshot,
 };
 pub use diagnostics::{Diagnostic, DiagnosticLevel};
 pub use digest_cache::RunDigestCache;
