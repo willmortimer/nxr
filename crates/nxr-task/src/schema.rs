@@ -10,7 +10,7 @@ use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 
-use crate::process::ProcessDefinition;
+use crate::process::{ProcessDefinition, ProcessNameError, validate_node_id};
 use serde_json::Value as JsonValue;
 use thiserror::Error;
 
@@ -96,6 +96,9 @@ pub enum SchemaError {
     /// Task or context shell name is invalid.
     #[error("{scope}: {message}")]
     InvalidShell { scope: String, message: String },
+    /// Process node name is invalid.
+    #[error("process {process}: {message}")]
+    InvalidProcessName { process: String, message: String },
 }
 
 /// Versioned task document: `schema_version` plus named task definitions.
@@ -211,7 +214,21 @@ impl TaskDocument {
                 })?;
             }
         }
+        for process in self.processes.keys() {
+            validate_node_id(process).map_err(|error| SchemaError::InvalidProcessName {
+                process: process.clone(),
+                message: process_name_error_message(&error),
+            })?;
+        }
         Ok(())
+    }
+}
+
+fn process_name_error_message(error: &ProcessNameError) -> String {
+    match error {
+        ProcessNameError::Empty => "name must not be empty".to_owned(),
+        ProcessNameError::PathSeparator { .. } => "name must not contain path separators".to_owned(),
+        ProcessNameError::ParentTraversal { .. } => "name must not contain `..`".to_owned(),
     }
 }
 
@@ -1642,6 +1659,19 @@ mod tests {
         });
         let err = parse_task_document(&value).expect_err("empty shell rejected");
         assert!(matches!(err, SchemaError::InvalidShell { .. }));
+    }
+
+    #[test]
+    fn v2_rejects_invalid_process_name() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {},
+            "processes": {
+                "../escape": { "app": "worker" }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("invalid process name");
+        assert!(matches!(err, SchemaError::InvalidProcessName { .. }));
     }
 
     #[test]
