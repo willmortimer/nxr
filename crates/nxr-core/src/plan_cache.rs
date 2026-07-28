@@ -174,7 +174,10 @@ pub fn plan_cache_key_digest(material: &PlanCacheKeyMaterial) -> String {
         &mut hasher,
         material.fingerprints.nix_file_identity.as_deref(),
     );
-    hash_opt_str(&mut hasher, material.fingerprints.source_identity.as_deref());
+    hash_opt_str(
+        &mut hasher,
+        material.fingerprints.source_identity.as_deref(),
+    );
     let digest = hasher.finalize();
     add_bytes_hashed(digest.as_bytes().len() as u64);
     digest.to_hex().to_string()
@@ -548,6 +551,9 @@ mod tests {
                 arguments: vec!["run".to_owned(), "/proj#hello".to_owned()],
             },
             forwarded_arguments: Vec::new(),
+            workspace_script: None,
+            mutable_source: false,
+            fallback_app: None,
         }
     }
 

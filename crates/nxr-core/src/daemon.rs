@@ -1419,6 +1419,9 @@ mod tests {
                 arguments: vec!["run".to_owned(), ".#test".to_owned()],
             },
             forwarded_arguments: Vec::new(),
+            workspace_script: None,
+            mutable_source: false,
+            fallback_app: None,
         }
     }
 

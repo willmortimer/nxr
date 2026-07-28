@@ -29,6 +29,7 @@ pub mod nix_op;
 pub mod plan;
 pub mod process_cmd;
 pub mod run;
+pub mod script;
 pub mod secrets;
 pub mod select;
 pub mod selectors;

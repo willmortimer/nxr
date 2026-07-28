@@ -1728,6 +1728,9 @@ impl<'a> TaskNodePreparer<'a> {
                 arguments: command_argv.clone(),
             },
             forwarded_arguments: forwarded.to_vec(),
+            workspace_script: None,
+            mutable_source: false,
+            fallback_app: None,
         };
         if let Some(applied) = applied_context.as_ref() {
             plan.context = Some(applied.context_name.clone());
@@ -1841,7 +1844,12 @@ pub fn suggest_missing_app_after_run(
     }
 }
 
-fn resolve_execution_directory(
+/// Resolve the child working directory from CLI `--root` / `--cwd`.
+///
+/// # Errors
+///
+/// Returns [`PrepareError`] when flags conflict or paths cannot be resolved.
+pub fn resolve_execution_directory(
     invocation_cwd: &Utf8Path,
     flake: &FlakeSelection,
     root: bool,
@@ -2074,6 +2082,9 @@ fn build_plan(
             arguments: command_arguments,
         },
         forwarded_arguments: forwarded.to_vec(),
+        workspace_script: None,
+        mutable_source: false,
+        fallback_app: None,
     })
 }
 
@@ -2131,6 +2142,9 @@ fn build_fast_plan(
             arguments: command_arguments,
         },
         forwarded_arguments: forwarded.to_vec(),
+        workspace_script: None,
+        mutable_source: false,
+        fallback_app: None,
     })
 }
 

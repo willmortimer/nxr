@@ -270,6 +270,15 @@ pub enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Run a local workspace script (path or `.nxr/scripts/<name>`)
+    Script {
+        /// Script path (`./scripts/foo.sh`) or convention name (`deploy`)
+        #[arg(value_name = "PATH_OR_NAME")]
+        path_or_name: String,
+        /// Arguments forwarded to the script (one leading `--` is stripped)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Build a flake package (`nix build`)
     Build {
         #[command(subcommand)]

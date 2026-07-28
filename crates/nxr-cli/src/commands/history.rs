@@ -101,6 +101,7 @@ fn format_target_kind(kind: nxr_core::RunTargetKind) -> &'static str {
     match kind {
         nxr_core::RunTargetKind::App => "app",
         nxr_core::RunTargetKind::Task => "task",
+        nxr_core::RunTargetKind::WorkspaceScript => "workspace-script",
     }
 }
 

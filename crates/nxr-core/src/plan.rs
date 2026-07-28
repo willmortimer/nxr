@@ -6,11 +6,13 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::env_policy::EnvironmentPolicy;
 
-/// Plan target kind (V1: flake apps only).
+/// Plan target kind.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanKind {
     App,
+    /// Local checkout script (`nxr script` or file-backed live fast path).
+    WorkspaceScript,
 }
 
 /// Executable invocation recorded in a plan.
@@ -49,6 +51,15 @@ pub struct Plan {
     pub context_env_set: BTreeMap<String, String>,
     pub command: PlanCommand,
     pub forwarded_arguments: Vec<String>,
+    /// Absolute workspace script path when [`Self::kind`] is [`PlanKind::WorkspaceScript`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_script: Option<String>,
+    /// True when the operation runs mutable checkout content (not a store app).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mutable_source: bool,
+    /// Store app leaf used when a live workspace fast path is unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_app: Option<String>,
 }
 
 /// Secret metadata in app/task plans (never includes resolved values).

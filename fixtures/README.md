@@ -33,6 +33,7 @@ valid under pure `path:` flake refs (Nix 2.18+).
 | [inventory-custom](inventory-custom/) | Custom inventory role for Determinate-style envelopes |
 | [flake-parts-v2](flake-parts-v2/) | flake-parts module: task I/O, cache, resources, processes (schema v2) |
 | [nxr-metadata](nxr-metadata/) | Self-contained `nxrMetadata.<system>` envelope for single-eval discovery |
+| [workspace-scripts](workspace-scripts/) | `nxr script`, `.nxr/scripts`, file-backed `nxr.apps` + live fast path |
 | [golden](golden/) | Reference flake: apps, tasks, categories, contexts (schema v2) |
 
 ## Try them (without nxr yet)

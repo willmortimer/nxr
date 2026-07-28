@@ -210,10 +210,17 @@ nix develop .#backend
 Mixed-context DAGs continue wrapping nodes independently until a robust
 shell-environment cache exists.
 
-**Do not** eagerly parse `nix print-dev-env --json` and reconstruct every
-development shell inside nxr. That interface is still experimental, and
-faithfully reproducing shell hooks / semantics becomes environment-manager
-territory (direnv / devenv / Home Manager).
+**Do not** pretend `nix print-dev-env --json` reconstructs an interactive
+development shell (hooks, functions, aliases, traps). That remains
+environment-manager territory (direnv / devenv / Home Manager) — see
+ADR-0128.
+
+**Do** (scheduled 3.4, [ADR-0171](adr/0171-materialized-dev-environments.md))
+feature-detect `print-dev-env` to materialize a **process-compatible**
+environment snapshot for direct spawn of workspace scripts and opted-in
+file-backed apps, with an explicit fallback to `nix develop -c` when the shell
+is not representable or exact shell semantics are required. This supersedes
+the earlier absolute ban recorded as ADR-0130.
 
 ---
 

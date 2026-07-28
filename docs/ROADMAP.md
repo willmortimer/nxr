@@ -28,7 +28,9 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 
 ## Active roadmap
 
-Design: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md). ADRs: [adr/README.md](adr/README.md) (0143–0150 absorb the 2026-07 audit).
+Design: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md). ADRs: [adr/README.md](adr/README.md)
+(0143–0150 absorb the 2026-07 audit; 0169–0171 schedule workspace scripting).
+V4+ ideas: [ideas/V4_EXECUTION_PROTOCOL.md](ideas/V4_EXECUTION_PROTOCOL.md).
 
 ### 2.7.1 — Correctness — shipped as `v2.7.1`
 
@@ -102,14 +104,58 @@ Store-exe source identity; process metadata honesty (dep closure/topo, reject
 unsupported restart, process context fields, readiness fail-on-timeout); Home
 Manager `services.nxrd`; regression coverage.
 
-### Later
+### 3.3 — Workspace scripting — in progress
 
-- Optional local cache daemon deepening beyond the `v3.2.0` MVP (`nxrd`); full
-  control plane remains deferred (ADR-0301 / ADR-0302)
+Close the mise/Just ergonomic gap without abandoning Nix leaves
+([ADR-0169](adr/0169-workspace-script-execution.md),
+[ADR-0170](adr/0170-file-backed-apps.md)):
+
+- ~~`nxr script <path|name>`; optional `.nxr/scripts/` convention; shebang execution~~
+- ~~Current environment / context / confirm / `-C` policy support (develop-wrap OK)~~
+- ~~File-backed `nxr.apps` (`file` XOR `script`) emitting standard store apps~~
+- ~~Optional local live-workspace fast-path metadata; plan visibility~~
+- **Not in 3.3:** task leaf unions, YAML/TOML manifests, TUI, WASI, workers;
+  materialized process envs are **3.4**
+
+Acceptance: a checked-in script runs with exact argv/streams/signals; bare
+`nxr <name>` stays app-only; `nix run .#promoted` remains the escape hatch.
+
+### 3.4 — Materialized process environments — next
+
+Accelerate shell-backed script/app runs
+([ADR-0171](adr/0171-materialized-dev-environments.md); supersedes ADR-0130’s
+absolute ban):
+
+- Feature-detected `nix print-dev-env` → normalized process-env snapshot + disk
+  cache; optional `nxrd` retention
+- Active-shell and warm-snapshot paths with **zero** Nix subprocesses
+- Explicit process vs exact-shell semantics; unsupported constructs fall back to
+  `nix develop -c` (never partial interactive-shell emulation)
+- Perf counters + regression table (0 / 0 / one / develop / 0 Nix)
+
+May ship as one public minor with 3.3, but keep as two architectural commits:
+addressability first, environment acceleration second.
+
+### Later — V4+ and distributed fabric
+
+Ordered vision: [ideas/V4_EXECUTION_PROTOCOL.md](ideas/V4_EXECUTION_PROTOCOL.md).
+Older speculative prose: [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md).
+
+- V4.0 operation IR + event envelope / run protocol
+- V4.1 durable runs, prompts, optional run-coordinator role for `nxrd`
+- V4.2 TUI / IDE / DAP broker
+- V4.3 agent + CI operational API
+- V4.4 Nix-native deploy/fleet adapters (not infra reconciliation)
+- V4.5 builtins.wasm + WASI/WIT operation tier
+- V5 remote workspace CAS, workers, capability pools (Nix builders for
+  derivations; NXR workers for mutable/interactive work)
+- Optional `nxrd` deepening; Determinate feature matrix beyond doctor
+
+### Later (unchanged carry-overs)
+
 - Remote workspace CAS transport (unblocks honest `shared` / `shared-read`);
   deterministic CI sharding; indexing daemon
 - Native Nix remote builders first; GPU/capability advertisement
-- Distributed workers / control plane ([ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md))
 - Full Determinate feature matrix beyond doctor diagnostics
 
 ## Invariants
@@ -124,3 +170,5 @@ Manager `services.nxrd`; regression coverage.
 8. Secrets are referenced and delivered at process spawn—never embedded in store paths, plans, events, or public metadata.
 9. nxr does not replace direnv, devenv, Home Manager, sops/sops-nix, or system activation tools.
 10. Nix/Determinate build and distribute reproducible artifacts; NXR owns the human command graph, affected selection, mutable workspace actions, supervision, and security contexts.
+11. Bare `nxr <name>` stays app/task resolution—never an accidental local-script winner; workspace scripts use `nxr script` (or an explicit file-backed fast path).
+12. Process-env snapshots accelerate operations; they do not claim interactive-shell equivalence.

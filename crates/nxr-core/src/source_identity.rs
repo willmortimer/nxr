@@ -42,7 +42,14 @@ pub fn git_source_identity(flake_root: &Utf8Path) -> io::Result<Option<GitSource
     }
 
     let status = Command::new("git")
-        .args(["-C", flake_root.as_str(), "status", "--porcelain", "--", "."])
+        .args([
+            "-C",
+            flake_root.as_str(),
+            "status",
+            "--porcelain",
+            "--",
+            ".",
+        ])
         .output()?;
     if !status.status.success() {
         return Ok(None);

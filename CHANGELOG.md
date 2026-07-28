@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `nxr script <path|name>` — run a local workspace script (exact path or
+  `.nxr/scripts/<name>`) through the normal process model without a flake app
+  leaf ([ADR-0169](docs/adr/0169-workspace-script-execution.md)).
+- File-backed `nxr.apps` (`file` XOR `script`) with optional `fastPath` live
+  workspace execution metadata ([ADR-0170](docs/adr/0170-file-backed-apps.md)).
+- Fixture `fixtures/workspace-scripts` + CLI coverage for script argv, convention
+  names, bare-app non-collision, zero-Nix no-shell path, and live fast path.
+
+### Changed
+
+- Roadmap next line: **3.3** workspace scripting (`nxr script`, file-backed
+  apps) and **3.4** materialized process environments (ADR-0169–0171);
+  ADR-0130 superseded by ADR-0171’s process-env contract.
+- V4+ vision framed in [docs/ideas/V4_EXECUTION_PROTOCOL.md](docs/ideas/V4_EXECUTION_PROTOCOL.md);
+  legacy control-plane prose remains ideas-only.
+
 ## [3.2.1] - 2026-07-28
 
 Correctness polish on the 3.2 performance surface: store-exe source identity,

@@ -25,12 +25,13 @@ pub enum DiscoveryCacheOutcome {
     NotApplicable,
 }
 
-/// App vs task execution target.
+/// App vs task vs workspace-script execution target.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunTargetKind {
     App,
     Task,
+    WorkspaceScript,
 }
 
 /// One persisted run summary.

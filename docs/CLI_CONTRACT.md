@@ -34,9 +34,14 @@ nxr watch app:<name>
 nxr watch task:<name>
 nxr ci plan [--json]
 nxr graph <task>
+nxr script <path-or-name> [--] [args...]
 ```
 
 V1 implements the app-oriented subset. V2 activates task-oriented commands. Flake output commands (`list` filters, `build`, `check`, `shell`) map to native Nix operations without inventing a second authority.
+
+Reserved `script` ([ADR-0169](adr/0169-workspace-script-execution.md)): run a local
+workspace script (exact path or `.nxr/scripts/<name>`). Does **not** participate
+in bare `nxr <name>` resolution. Local checkout only.
 
 ## 2. Name resolution
 

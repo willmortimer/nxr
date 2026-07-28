@@ -615,6 +615,9 @@ mod tests {
             secrets: Vec::new(),
             context_env_set: BTreeMap::new(),
             forwarded_arguments: vec!["one".to_owned()],
+            workspace_script: None,
+            mutable_source: false,
+            fallback_app: None,
         }
     }
 

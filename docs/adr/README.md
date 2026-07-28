@@ -5,8 +5,10 @@
 This index lists decisions that should be captured as individual Architecture Decision Records as implementation proceeds.
 
 V3-era ADRs (0201–0412) remain **Deferred** unless pulled forward by
-[ROADMAP.md](../ROADMAP.md). Active delivery follows that roadmap (2.7 → 3.1).
+[ROADMAP.md](../ROADMAP.md). Active delivery follows that roadmap (through
+3.2.x shipped; next **3.3–3.4** scripting / process envs, then V4+ ideas).
 Execution-context design: [EXECUTION_CONTEXT.md](../EXECUTION_CONTEXT.md).
+V4+ ordering: [ideas/V4_EXECUTION_PROTOCOL.md](../ideas/V4_EXECUTION_PROTOCOL.md).
 
 An ADR is required when a decision:
 
@@ -83,7 +85,7 @@ Rejected   considered and explicitly not chosen
 | ADR-0127 | Export Home Manager module; do not ship homeConfigurations | Proposed | 2.6 |
 | ADR-0128 | direnv remains activation authority; nxr only generates/diagnoses | Proposed | 2.6 |
 | ADR-0129 | One-shell DAG optimization when all nodes share a context | Proposed | 3.0 |
-| ADR-0130 | Do not reconstruct shells via print-dev-env | Proposed | 3.0 |
+| ADR-0130 | Do not reconstruct shells via print-dev-env | Superseded by ADR-0171 | 3.0 → 3.4 |
 | ADR-0131 | Configuration adapters inspect/build only; never switch/activate | Proposed | 2.6 |
 | ADR-0132 | Process nodes after task I/O; no built-in service module zoo | Proposed | 3.1 |
 | ADR-0133 | Persist Nix capability detection | Accepted (v2 config digest) | 2.6 / 2.7 |
@@ -122,6 +124,9 @@ Rejected   considered and explicitly not chosen
 | ADR-0166 | Optional `nxrMetadata` single-eval discovery endpoint | Accepted | Unreleased |
 | ADR-0167 | Batched Nix store path queries | Accepted | Unreleased |
 | ADR-0168 | Experimental optional Nix eval worker via `nxrd` | Accepted | Unreleased |
+| ADR-0169 | Workspace script execution (`nxr script`) | Accepted (Wave A) | 3.3 |
+| ADR-0170 | File-backed `nxr.apps` and live-workspace fast path | Accepted (Wave A) | 3.3 |
+| ADR-0171 | Materialized process-compatible development environments | Proposed | 3.4 |
 
 Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0144-auto-schema-v2.md`](0144-auto-schema-v2.md),
@@ -148,11 +153,20 @@ Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0165-determinate-eval-strategy.md`](0165-determinate-eval-strategy.md),
 [`0166-nxr-metadata-endpoint.md`](0166-nxr-metadata-endpoint.md),
 [`0167-batched-store-queries.md`](0167-batched-store-queries.md),
-[`0168-experimental-eval-worker.md`](0168-experimental-eval-worker.md).
+[`0168-experimental-eval-worker.md`](0168-experimental-eval-worker.md),
+[`0169-workspace-script-execution.md`](0169-workspace-script-execution.md),
+[`0170-file-backed-apps.md`](0170-file-backed-apps.md),
+[`0171-materialized-dev-environments.md`](0171-materialized-dev-environments.md).
 
 Audit absorb (2026-07, post-`a040e50`): remaps active delivery to
 **2.7.1 → 2.8 → 3.0 → 3.1** (process workflows remain in 3.1 MVP; distributed
 workers stay Later / former “3.2”). Internal DAG: `docs/internal/dag-to-3.1.md`
+(gitignored).
+
+Post-3.2.1 next line: **3.3 workspace scripting → 3.4 materialized process
+envs** (ADR-0169–0171). V4+ ordering:
+[ideas/V4_EXECUTION_PROTOCOL.md](../ideas/V4_EXECUTION_PROTOCOL.md).
+Internal implementation DAG: `docs/internal/workspace-scripting-dag.md`
 (gitignored).
 
 Notes on ADR-0133–0142 (from the internal `nxr-next` plan; 2.6 re-audit at `v2.6.0`):
@@ -243,7 +257,14 @@ The first implementation ADRs should be written in this order:
 4. ADR-0133 through ADR-0137 / ADR-0141–0142 before or alongside 2.6 ecosystem ergonomics (latency, inventory schemas, Determinate doctor, distribution/docs).
 5. ADR-0138 with task schema v2 (3.0); ADR-0135 runtime only after declared inputs/outputs exist.
 6. ADR-0139 / ADR-0140 only when CI plan / remote placement is explicitly scheduled (still after 3.0–3.1 runner trustworthiness).
-7. Remaining V3 ADRs (0201–0412) only if a future control-plane effort is explicitly scheduled — see [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md) and [EXECUTION_CONTEXT.md](../EXECUTION_CONTEXT.md).
+7. Remaining V3 ADRs (0201–0412) only if a future control-plane effort is
+   explicitly scheduled — prefer
+   [ideas/V4_EXECUTION_PROTOCOL.md](../ideas/V4_EXECUTION_PROTOCOL.md) for
+   ordering; legacy prose in
+   [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md) and
+   [EXECUTION_CONTEXT.md](../EXECUTION_CONTEXT.md).
+8. ADR-0169–0171 before freezing `nxr script` / file-backed apps / process-env
+   snapshot CLI semantics.
 
 ## 8. Repository location
 

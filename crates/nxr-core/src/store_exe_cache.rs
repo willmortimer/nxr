@@ -124,7 +124,10 @@ pub fn store_exe_cache_key_digest(material: &StoreExeCacheKeyMaterial) -> String
         &mut hasher,
         material.fingerprints.nix_file_identity.as_deref(),
     );
-    hash_opt_str(&mut hasher, material.fingerprints.source_identity.as_deref());
+    hash_opt_str(
+        &mut hasher,
+        material.fingerprints.source_identity.as_deref(),
+    );
     let digest = hasher.finalize();
     add_bytes_hashed(digest.as_bytes().len() as u64);
     digest.to_hex().to_string()

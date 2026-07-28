@@ -5,6 +5,7 @@
 # schema_version + tasks + optional apps listing metadata) and optional
 # compact `nxrMetadata.<system>` for single-eval cold discovery.
 {
+  self,
   lib,
   config,
   ...
@@ -19,6 +20,7 @@ in
   ];
 
   perSystem = {
+    _module.args.nxrSelf = self;
     imports = [
       ./apps.nix
       ./tasks.nix

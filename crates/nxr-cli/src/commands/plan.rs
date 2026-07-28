@@ -207,6 +207,18 @@ fn write_human_plan(writer: &mut impl Write, plan: &Plan) -> io::Result<()> {
         write!(writer, " {argument}")?;
     }
     writeln!(writer)?;
+    if plan.kind == nxr_core::PlanKind::WorkspaceScript {
+        writeln!(writer, "kind: workspace_script")?;
+    }
+    if let Some(path) = plan.workspace_script.as_deref() {
+        writeln!(writer, "workspace_script: {path}")?;
+    }
+    if plan.mutable_source {
+        writeln!(writer, "mutable_source: true")?;
+    }
+    if let Some(app) = plan.fallback_app.as_deref() {
+        writeln!(writer, "fallback_app: {app}")?;
+    }
     if let Some(shell) = &plan.shell {
         writeln!(writer, "shell: {shell}")?;
     }
@@ -274,6 +286,9 @@ mod tests {
                 arguments: vec!["run".to_owned(), "/project#hello".to_owned()],
             },
             forwarded_arguments: vec![],
+            workspace_script: None,
+            mutable_source: false,
+            fallback_app: None,
         }
     }
 

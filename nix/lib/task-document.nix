@@ -194,9 +194,23 @@ let
 
   appListingToJson =
     app:
-    lib.optionalAttrs (app.category != null) {
-      category = app.category;
-    };
+    lib.filterAttrs (_: v: v != null && v != { } && v != false) (
+      lib.optionalAttrs (app.category != null) {
+        category = app.category;
+      }
+      // lib.optionalAttrs (app.file != null) {
+        workspace_path = app.file;
+      }
+      // lib.optionalAttrs (app.interpreter != null) {
+        interpreter = app.interpreter;
+      }
+      // lib.optionalAttrs (app.file != null) {
+        fastPath = lib.filterAttrs (_: v: v != null && v != false) {
+          enable = app.fastPath.enable;
+          shell = app.fastPath.shell;
+        };
+      }
+    );
 
   taskUsesSchemaV2 =
     task:

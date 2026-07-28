@@ -454,6 +454,159 @@ fn list_basic_apps_lexicographic_sort_is_stable() {
 }
 
 #[test]
+fn script_path_form_runs_checked_in_script() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/workspace-scripts",
+            "script",
+            "fixtures/workspace-scripts/.nxr/scripts/hello.sh",
+            "--",
+            "one",
+            "two words",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("script-hello one/two words"));
+}
+
+#[test]
+fn script_convention_name_resolves_under_nxr_scripts() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root.join("fixtures/workspace-scripts"))
+        .args(["script", "hello", "--", "alpha"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("script-hello alpha"));
+}
+
+#[test]
+fn script_dry_run_json_labels_workspace_script() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let output = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root.join("fixtures/workspace-scripts"))
+        .args(["--json", "--dry-run", "script", "hello"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).expect("plan json");
+    assert_eq!(value["kind"], "workspace_script");
+    assert_eq!(value["mutable_source"], true);
+    assert!(
+        value["workspace_script"]
+            .as_str()
+            .expect("workspace_script")
+            .contains(".nxr/scripts/hello.sh")
+    );
+}
+
+#[test]
+fn bare_hello_does_not_resolve_workspace_script() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root.join("fixtures/workspace-scripts"))
+        .arg("hello")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello from workspace-scripts app"));
+}
+
+#[test]
+fn script_no_shell_invokes_zero_nix_subprocesses() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root.join("fixtures/workspace-scripts"))
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["script", "hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("script-hello"));
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(counter.count("version"), 0, "log={log}");
+    assert_eq!(counter.count("config"), 0, "log={log}");
+    assert_eq!(counter.count("flake-show"), 0, "log={log}");
+    assert_eq!(counter.count("run"), 0, "log={log}");
+    assert_eq!(counter.count("develop"), 0, "log={log}");
+    assert_eq!(counter.count("eval"), 0, "log={log}");
+}
+
+#[test]
+fn file_backed_app_nix_run_and_live_fast_path() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let fixture = repo_root.join("fixtures/workspace-scripts");
+    let home = tempfile::TempDir::new().expect("cache home");
+
+    // Warm discovery so live fast-path metadata is available.
+    cargo_bin_cmd!("nxr")
+        .current_dir(&fixture)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .args(["list"])
+        .assert()
+        .success();
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&fixture)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .args(["greet-file", "--", "arg1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("greet-file:live-v1"))
+        .stdout(predicate::str::contains("arg1"));
+
+    // Edit the live workspace file; warm fast path should pick it up without rebuild.
+    let greet = fixture.join("scripts/greet.sh");
+    let original = std::fs::read_to_string(&greet).expect("read greet");
+    let updated = original.replace("live-v1", "live-v2");
+    std::fs::write(&greet, &updated).expect("write greet");
+
+    let result = std::panic::catch_unwind(|| {
+        cargo_bin_cmd!("nxr")
+            .current_dir(&fixture)
+            .env("HOME", home.path())
+            .env("XDG_CACHE_HOME", home.path().join("cache"))
+            .arg("greet-file")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("greet-file:live-v2"));
+    });
+    std::fs::write(&greet, original).expect("restore greet");
+    result.expect("live fast path should observe script edit");
+}
+
+#[test]
 fn run_hello_prints_greeting() {
     let Some(()) = require_nix() else {
         return;

@@ -338,6 +338,32 @@ Optional `category` on `nxr.apps.<name>` is listing metadata for
 `nxr list --category` / `inspect` (also emitted under `nxr.<system>.apps`).
 It does not change how the app runs. See [MONOREPO_VIEWS.md](MONOREPO_VIEWS.md).
 
+### File-backed apps (ADR-0170)
+
+Prefer `file` when the body already lives in the checkout:
+
+```nix
+nxr.apps.deploy = {
+  description = "Deploy the application";
+  file = "scripts/deploy.nu";           # repository-relative; no .. or absolute
+  interpreter = "${pkgs.nushell}/bin/nu"; # optional
+  runtimeInputs = [ pkgs.nushell pkgs.gh ];
+  fastPath = {
+    enable = true;   # local nxr may run the live file; nix run stays store-backed
+    shell = "ops";   # optional default --shell for the live path
+  };
+};
+```
+
+`script` and `file` are mutually exclusive. The module always emits a standard
+store app so `nix run .#deploy` works offline of NXR. When `fastPath.enable` is
+true and warm discovery metadata is available, local `nxr deploy` may spawn the
+live workspace file (`mutable_source` in plans). Remote flakes never take the
+live path.
+
+Disposable scripts that are not yet apps use `nxr script` instead — see
+[MIGRATE_FROM_MISE_JUST.md](MIGRATE_FROM_MISE_JUST.md).
+
 Optional `perSystem.nxr.discoveryInputs` lists flake-root-relative paths whose
 **contents** are hashed into the discovery cache key (schema v3), in addition to
 `*.nix` and `flake.lock`. Emitted on `nxr.<system>.discoveryInputs`. See

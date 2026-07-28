@@ -3,10 +3,18 @@
 This document preserves earlier speculative V3 design prose (projects, CAS,
 daemon, remote workers, IDE fabric). It is **not** the active delivery plan.
 
-**Committed expansion** (contexts, secrets delivery, Home Manager, processes)
-lives in [EXECUTION_CONTEXT.md](../EXECUTION_CONTEXT.md) and is scheduled in
-[ROADMAP.md](../ROADMAP.md) as **2.7 → 3.0 → 3.1**. Revisit *this* file’s
-control-plane ideas only after that line is trustworthy on real flakes.
+**Prefer for post-3.4 ordering:**
+[V4_EXECUTION_PROTOCOL.md](V4_EXECUTION_PROTOCOL.md) (operation IR, run
+protocol, durable runs, IDE/agent APIs, fleet adapters, WASI, v5 workers).
+Mine *this* file for requirements; do not treat its V3 phase numbers as the
+schedule.
+
+**Near-term active line:** workspace scripting and materialized process
+environments in [ROADMAP.md](../ROADMAP.md) §3.3–3.4 (ADR-0169–0171).
+
+**Shipped expansion** (contexts, secrets, Home Manager, processes, local
+orchestration caches) lives in [EXECUTION_CONTEXT.md](../EXECUTION_CONTEXT.md)
+and [ROADMAP.md](../ROADMAP.md) through **3.2.x**.
 
 See also [FEATURES.md](../FEATURES.md) §3.
 

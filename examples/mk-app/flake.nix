@@ -4,12 +4,15 @@
   inputs = {
     nxr.url = "path:../..";
     nixpkgs.follows = "nxr/nixpkgs";
+    nixpkgsIntelDarwin.follows = "nxr/nixpkgsIntelDarwin";
     flake-parts.follows = "nxr/flake-parts";
   };
 
   outputs =
     inputs@{ flake-parts, nxr, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
+      flake.schemas = { };
+
       imports = [
         nxr.flakeModules.default
       ];
@@ -37,6 +40,13 @@
               script = ''
                 printf '%s\n' "$@"
               '';
+            };
+
+            # File-backed app (ADR-0170): store wrapper + optional live fast path.
+            from-file = {
+              description = "Run scripts/hello.sh via file-backed nxr.apps";
+              file = "scripts/hello.sh";
+              fastPath.enable = true;
             };
           };
 

@@ -44,6 +44,21 @@ pub struct MetadataAppListing {
     pub description: Option<String>,
     #[serde(default)]
     pub category: Option<String>,
+    #[serde(default, rename = "workspace_path")]
+    pub workspace_path: Option<String>,
+    #[serde(default)]
+    pub interpreter: Option<String>,
+    #[serde(default, rename = "fastPath")]
+    pub fast_path: Option<MetadataAppFastPath>,
+}
+
+/// Local live-workspace fast-path hint inside `nxrMetadata.apps`.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize)]
+pub struct MetadataAppFastPath {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub shell: Option<String>,
 }
 
 /// Parsed `nxrMetadata.<system>` document.
@@ -254,15 +269,38 @@ impl NxrMetadataDocument {
             ),
         );
         if !self.apps.is_empty() {
-            let apps =
-                self.apps
-                    .iter()
-                    .filter_map(|(name, listing)| {
-                        listing.category.as_ref().map(|category| {
-                            (name.clone(), serde_json::json!({ "category": category }))
-                        })
-                    })
-                    .collect::<serde_json::Map<_, _>>();
+            let apps = self
+                .apps
+                .iter()
+                .filter_map(|(name, listing)| {
+                    let mut meta = serde_json::Map::new();
+                    if let Some(category) = listing.category.as_ref() {
+                        meta.insert("category".to_owned(), JsonValue::String(category.clone()));
+                    }
+                    if let Some(path) = listing.workspace_path.as_ref() {
+                        meta.insert("workspace_path".to_owned(), JsonValue::String(path.clone()));
+                    }
+                    if let Some(interpreter) = listing.interpreter.as_ref() {
+                        meta.insert(
+                            "interpreter".to_owned(),
+                            JsonValue::String(interpreter.clone()),
+                        );
+                    }
+                    if let Some(fast_path) = listing.fast_path.as_ref() {
+                        let mut fp = serde_json::Map::new();
+                        fp.insert("enable".to_owned(), JsonValue::Bool(fast_path.enable));
+                        if let Some(shell) = fast_path.shell.as_ref() {
+                            fp.insert("shell".to_owned(), JsonValue::String(shell.clone()));
+                        }
+                        meta.insert("fastPath".to_owned(), JsonValue::Object(fp));
+                    }
+                    if meta.is_empty() {
+                        None
+                    } else {
+                        Some((name.clone(), JsonValue::Object(meta)))
+                    }
+                })
+                .collect::<serde_json::Map<_, _>>();
             if !apps.is_empty() {
                 value.insert("apps".to_owned(), JsonValue::Object(apps));
             }

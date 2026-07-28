@@ -83,6 +83,7 @@ nxr --flake ./path/to/flake hello
 | `nxr shell [name]` | Interactive `nix develop` |
 | `nxr <app> [args…]` | Run a flake app (apps only — not tasks) |
 | `nxr run <app> [-- args…]` | Explicit run form |
+| `nxr script <path\|name> [-- args…]` | Local workspace script (`.nxr/scripts/` or path) |
 | `nxr task <name>… [-j N]` | Run one or more task roots (union DAG; shared deps once) |
 | `nxr graph <name>` | Print the plan (`--format text\|mermaid\|dot`) |
 | `nxr watch <name>` | Kill + rerun on flake-root changes |

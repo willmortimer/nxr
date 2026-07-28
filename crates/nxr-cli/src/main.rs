@@ -32,7 +32,7 @@ use crate::commands::{
     affected, cache, ci, complete, completion, configurations, context, daemon, doctor,
     doctor_builders, doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt, graph,
     history, init, inspect, inventory, list, manpage, migrate, nix_op, plan, process_cmd, run,
-    select, selectors, task, trust, watch,
+    script, select, selectors, task, trust, watch,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -80,6 +80,8 @@ enum RunError {
     List(#[from] list::ListError),
     #[error(transparent)]
     Run(#[from] run::RunError),
+    #[error(transparent)]
+    Script(#[from] script::ScriptError),
     #[error(transparent)]
     NixOp(#[from] nix_op::NixOpError),
     #[error(transparent)]
@@ -155,6 +157,7 @@ impl RunError {
         match self {
             Self::List(error) => error.exit_code(),
             Self::Run(error) => error.exit_code(),
+            Self::Script(error) => error.exit_code(),
             Self::NixOp(error) => error.exit_code(),
             Self::Plan(error) => error.exit_code(),
             Self::Task(error) => error.exit_code(),
@@ -246,6 +249,10 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             debounce,
             args,
         }) => dispatch_run_command(cli, &nix_flags, app, *watch, *debounce, args, runner),
+        Some(Command::Script { path_or_name, args }) => {
+            let request = script_request(cli, &nix_flags, path_or_name, args)?;
+            script::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+        }
         Some(Command::Build {
             target,
             installable,
@@ -990,6 +997,14 @@ fn dispatch_in(
             let args = &rest[1..];
             dispatch_run_command_in_shell(cli, nix_flags, shell, app, false, None, args, runner)
         }
+        "script" => {
+            let path_or_name = rest.first().ok_or_else(|| {
+                RunError::Usage("missing path or name after `in <shell> script`".to_owned())
+            })?;
+            let args = &rest[1..];
+            let request = script_request_in_shell(cli, nix_flags, shell, path_or_name, args)?;
+            script::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+        }
         "plan" => {
             let app = rest.first().ok_or_else(|| {
                 RunError::Usage("missing app or task name after `in <shell> plan`".to_owned())
@@ -1340,6 +1355,47 @@ fn app_request<'a>(
         root: cli.root,
         cwd: cli.cwd.as_deref(),
         shell: cli.dev_shell.as_deref(),
+        shell_mode: cli.shell_mode,
+        environment_policy: environment_policy_from_cli(cli)?,
+        nix_flags,
+    })
+}
+
+fn script_request<'a>(
+    cli: &'a Cli,
+    nix_flags: &'a nxr_nix::OptionalNixFlags,
+    path_or_name: &'a str,
+    args: &'a [String],
+) -> Result<script::ScriptRequest<'a>, RunError> {
+    Ok(script::ScriptRequest {
+        flake_arg: cli.flake.as_deref(),
+        nix_override: cli.nix.as_deref(),
+        path_or_name,
+        args,
+        root: cli.root,
+        cwd: cli.cwd.as_deref(),
+        shell: cli.dev_shell.as_deref(),
+        shell_mode: cli.shell_mode,
+        environment_policy: environment_policy_from_cli(cli)?,
+        nix_flags,
+    })
+}
+
+fn script_request_in_shell<'a>(
+    cli: &'a Cli,
+    nix_flags: &'a nxr_nix::OptionalNixFlags,
+    shell: &'a str,
+    path_or_name: &'a str,
+    args: &'a [String],
+) -> Result<script::ScriptRequest<'a>, RunError> {
+    Ok(script::ScriptRequest {
+        flake_arg: cli.flake.as_deref(),
+        nix_override: cli.nix.as_deref(),
+        path_or_name,
+        args,
+        root: cli.root,
+        cwd: cli.cwd.as_deref(),
+        shell: Some(shell),
         shell_mode: cli.shell_mode,
         environment_policy: environment_policy_from_cli(cli)?,
         nix_flags,

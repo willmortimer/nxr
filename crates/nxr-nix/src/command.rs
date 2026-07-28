@@ -81,6 +81,27 @@ pub fn nix_develop_wrap_run_args(
     args
 }
 
+/// Arguments for `nix develop <flake_ref>#<shell_name> -c <program> [args…]`.
+///
+/// Used to wrap arbitrary workspace scripts (or other non-`nix run` programs)
+/// inside a development shell.
+#[must_use]
+pub fn nix_develop_wrap_command_args(
+    flake_ref: &str,
+    shell_name: &str,
+    program: &str,
+    program_args: &[impl AsRef<str>],
+) -> Vec<String> {
+    let mut args = vec![
+        "develop".to_owned(),
+        format!("{flake_ref}#{shell_name}"),
+        "-c".to_owned(),
+        program.to_owned(),
+    ];
+    args.extend(program_args.iter().map(|arg| arg.as_ref().to_owned()));
+    args
+}
+
 /// Arguments for `nix build --no-link --print-out-paths <installable>`.
 ///
 /// Used to realise a store output without creating a `./result` link.

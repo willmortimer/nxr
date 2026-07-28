@@ -222,6 +222,9 @@ mod tests {
                 arguments: vec!["run".to_owned(), format!("{flake}#test"), "--".to_owned()],
             },
             forwarded_arguments: vec![],
+            workspace_script: None,
+            mutable_source: false,
+            fallback_app: None,
         };
 
         let value = serde_json::to_value(&envelope).expect("serialize Plan");
@@ -275,6 +278,9 @@ mod tests {
                 arguments: vec!["run".to_owned(), ".#lint".to_owned(), "--".to_owned()],
             },
             forwarded_arguments: vec!["--fix".to_owned(), "--".to_owned(), "extra".to_owned()],
+            workspace_script: None,
+            mutable_source: false,
+            fallback_app: None,
         };
 
         let value = serde_json::to_value(&envelope).expect("serialize Plan");

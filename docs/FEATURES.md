@@ -469,8 +469,15 @@ Still planned for a later 2.6.x cut:
 - shell-entry command menu; treefmt / git-hooks recognition in inspect/doctor.
 
 Upcoming major releases:
-- **3.0** execution-context schema v2 (contexts, secrets, task I/O, dependency states);
-- **3.1** process nodes / `up` / `status` / `logs`.
+- **3.0**–**3.2** shipped (contexts, processes, local orchestration performance);
+- **3.3** workspace scripting (`nxr script`, file-backed apps);
+- **3.4** materialized process-compatible development environments.
 
-Speculative control-plane ideas beyond that remain in
-[ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md) only.
+Speculative post-3.4 protocol ideas live in
+[ideas/V4_EXECUTION_PROTOCOL.md](ideas/V4_EXECUTION_PROTOCOL.md). Older V3
+control-plane prose remains in
+[ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md) (mine for
+requirements; do not treat as the schedule).
+
+Near-term (3.3–3.4): workspace scripts, file-backed apps, materialized process
+environments — see [ROADMAP.md](ROADMAP.md) and ADR-0169–0171.

@@ -66,6 +66,39 @@ alias lint='cargo clippy -- -D warnings'
 
 with an `apps.lint` that embeds `clippy` in `runtimeInputs`, so CI and colleagues get the same closure.
 
+## Disposable scripts first (planned 3.3)
+
+When the command is still a short checked-in script and not yet worth a store
+app, prefer the planned workspace-script path
+([ADR-0169](adr/0169-workspace-script-execution.md)) over inventing a second
+manifest:
+
+```bash
+nxr script ./scripts/dev.sh
+nxr script deploy          # resolves .nxr/scripts/deploy.*
+```
+
+Promote without copying the body into `flake.nix` via file-backed `nxr.apps`
+([ADR-0170](adr/0170-file-backed-apps.md)):
+
+```nix
+nxr.apps.deploy = {
+  description = "Deploy the application";
+  file = "scripts/deploy.nu";
+  runtimeInputs = [ pkgs.nushell pkgs.gh ];
+  fastPath.enable = true; # optional local live path
+};
+```
+
+Progression:
+
+```text
+nxr script ./scripts/deploy.nu  →  nxr script deploy  →  nxr deploy  →  nix run .#deploy
+```
+
+Materialized process environments for mise-like warm shell inheritance are
+[ADR-0171](adr/0171-materialized-dev-environments.md) (3.4).
+
 ## Day-one workflow after migration
 
 ```bash

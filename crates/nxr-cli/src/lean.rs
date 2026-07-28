@@ -36,6 +36,7 @@ const VALUE_FLAGS: &[&str] = &[
 const RESERVED_SUBCOMMANDS: &[&str] = &[
     "list",
     "run",
+    "script",
     "plan",
     "select",
     "doctor",
