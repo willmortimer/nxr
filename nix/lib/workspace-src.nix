@@ -18,6 +18,7 @@ lib.fileset.toSource {
     (root + "/fixtures")
     (root + "/schemas")
     (root + "/shell")
+    (root + "/docs/CLI_GENERATED.md")
     (root + "/templates")
     (root + "/tests")
     (root + "/xtask")
