@@ -214,7 +214,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**3.1.2** — workspace CAS/actions (**experimental**), resource scheduling, process MVP (**preview**), inventory CLI, history, coalesced discovery; packaging fix for init templates in Nix builds.
+**3.1.3** — workspace CAS/actions (**experimental**), resource scheduling, process MVP (**preview**), inventory CLI, history, coalesced discovery; correctness hardening for cache hits, action keys, CAS publish/restore, and flake-parts 3.1 options.
 
 History: [CHANGELOG.md](CHANGELOG.md). Next: [docs/ROADMAP.md](docs/ROADMAP.md)
 (Later: remote CAS, workers; full process supervision).

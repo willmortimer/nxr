@@ -7,24 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.3] - 2026-07-28
+
+Correctness hardening for the 3.1 workspace-actions / process surface.
+
+### Added
+
+- Flake-parts options for 3.1 task fields (inputs/outputs/cache/resources) and
+  processes, with `checks.*.flake-parts-v2-fields` and a fixture flake.
+- `checks.<system>.cli-ref` fails CI when generated CLI help drifts from Clap.
+
 ### Changed
 
 - Regenerated `docs/CLI_GENERATED.md`; README and schema v2 status matrix aligned
   with 3.1 shipped CLI and experimental workspace cache / process preview.
-- `checks.<system>.cli-ref` fails CI when generated CLI help drifts from Clap.
+- Workspace and Nix package version **3.1.3**.
 
 ### Fixed
 
+- Scheduler no longer hangs when cache hits complete work: ready successors are
+  accumulated into `to_start` after `complete()`.
+- Unschedulable CPU/memory requests are rejected at `Scheduler::new`.
+- Process commands propagate flake context; validate process names; strengthen
+  PID start-time identity on Linux/macOS.
+- Workspace action keys include args/argv, task definition, relative cwd, env
+  state, and glob material previously omitted.
+- CAS protocol v2: atomic publish, restore modes, optional outputs, and
+  symlink containment.
 - `cargo deny` allowlist includes `BSD-2-Clause` (`arrayref` via `blake3`).
 - Detect `nxr` in `nix flake show --json` when reported as `{ "type": "unknown" }`
   so unprefixed `watch` still prefers tasks over same-named apps.
-- Hermetic process tests resolve `true`/`false`/`printenv` via `PATH` when `/usr/bin`
-  and `/bin` are absent in the Nix sandbox.
-- Hermetic `nxr-process` tests avoid `perl` and share PATH-aware `unix_util` helpers
-  so sandboxed nextest no longer fails on missing FHS tools.
-- Watch first-generation config probe budget allows the `show-config` fallback
-  (1–2 logged config calls), matching doctor probe accounting.
-
+- Hermetic process tests resolve Unix utilities via `PATH` and avoid `perl`.
+- Watch first-generation config probe budget allows the `show-config` fallback;
+  source-restart integration tests hardened for macOS FSEvents.
 - `nxr plan <app>` on app-only flakes no longer fails with `unknown selector or task`
   (bare names were expanded as task selectors before app resolution).
 - `nxr task` bare names keep exit code 6 / `unknown task root` (selector expansion no

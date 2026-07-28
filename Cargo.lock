@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "nxr-affected"
-version = "3.1.2"
+version = "3.1.3"
 dependencies = [
  "camino",
  "globset",
@@ -630,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "nxr-cli"
-version = "3.1.2"
+version = "3.1.3"
 dependencies = [
  "assert_cmd",
  "camino",
@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "nxr-completion"
-version = "3.1.2"
+version = "3.1.3"
 dependencies = [
  "blake3",
  "camino",
@@ -677,7 +677,7 @@ dependencies = [
 
 [[package]]
 name = "nxr-core"
-version = "3.1.2"
+version = "3.1.3"
 dependencies = [
  "blake3",
  "camino",
@@ -692,7 +692,7 @@ dependencies = [
 
 [[package]]
 name = "nxr-nix"
-version = "3.1.2"
+version = "3.1.3"
 dependencies = [
  "blake3",
  "camino",
@@ -709,7 +709,7 @@ dependencies = [
 
 [[package]]
 name = "nxr-process"
-version = "3.1.2"
+version = "3.1.3"
 dependencies = [
  "mio 1.2.2",
  "nix",
@@ -719,7 +719,7 @@ dependencies = [
 
 [[package]]
 name = "nxr-task"
-version = "3.1.2"
+version = "3.1.3"
 dependencies = [
  "base64",
  "camino",
@@ -733,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "nxr-watch"
-version = "3.1.2"
+version = "3.1.3"
 dependencies = [
  "camino",
  "globset",
@@ -746,7 +746,7 @@ dependencies = [
 
 [[package]]
 name = "nxr-workspace"
-version = "3.1.2"
+version = "3.1.3"
 dependencies = [
  "camino",
  "nxr-core",
@@ -1268,7 +1268,7 @@ checksum = "d135d17ab770252ad95e9a872d365cf3090e3be864a34ab46f48555993efc904"
 
 [[package]]
 name = "xtask"
-version = "3.1.2"
+version = "3.1.3"
 
 [[package]]
 name = "zmij"
