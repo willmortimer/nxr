@@ -23,7 +23,7 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 | **V2.6** | Latency + ecosystem ergonomics | Capability cache, fingerprints, watch reuse, schema export, HM, `fmt`/`in`/`envrc`, doctor — `v2.6.0`. |
 | **V2.7.1** | Correctness + 2.7 polish | Cap-cache layers/v4 file digests, portable archives, flake check CI, mio drain/EOF, schema v2 auto-emit, contexts, env-provider secrets, confirm/shell — `v2.7.1`. |
 | **V3.0** | Secure execution contexts | Env policy, trust, secret bindings/delivery, `nxr context` — `v3.0.0`. |
-| **V3.1** | Workspace actions + process MVP | Local CAS, resources, `up`/`status`/`logs`/`down`, inventory, history, coalesced discovery — `v3.1.3`. Cache safety ([#1](https://github.com/willmortimer/nxr/issues/1), [#2](https://github.com/willmortimer/nxr/issues/2)) implemented for **3.1.4**. |
+| **V3.1** | Workspace actions + process MVP | Local CAS, resources, `up`/`status`/`logs`/`down`, inventory, history, coalesced discovery — `v3.1.0`–`v3.1.4`. Cache safety ([#1](https://github.com/willmortimer/nxr/issues/1), [#2](https://github.com/willmortimer/nxr/issues/2)) shipped in **v3.1.4**. |
 
 ## Active roadmap
 
@@ -61,7 +61,7 @@ Finish the security boundary before result caching:
 - `nxr context list|inspect|run`; one-shell DAG optimization
 - Semantic v2 validation (paths, cache policy, resources, secret slots)
 
-### 3.1 — Workspace actions (“Nix Turborepo”) + process MVP — shipped as `v3.1.0`–`v3.1.3`
+### 3.1 — Workspace actions (“Nix Turborepo”) + process MVP — shipped as `v3.1.0`–`v3.1.4`
 
 Two execution tiers ([ADR-0147](adr/0147-two-tier-actions.md)):
 
@@ -76,9 +76,9 @@ Correctness follow-ups through **v3.1.3**: cache-hit scheduler hang, complete
 action keys, CAS atomic publish/restore, process flake/PID hardening,
 flake-parts 3.1 options, `checks.*.cli-ref`.
 
-### 3.1.4 — Workspace cache safety (next)
+### 3.1.4 — Workspace cache safety — shipped as `v3.1.4`
 
-Tracked on GitHub; closes trust holes before heavier CAS/context use:
+Closes trust holes before heavier CAS/context use:
 
 1. ~~**[#1](https://github.com/willmortimer/nxr/issues/1)** — Disable workspace
    caching by default for secret-bearing tasks (env `secret = true` / context

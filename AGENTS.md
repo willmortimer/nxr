@@ -22,7 +22,7 @@ Do not contradict [docs/CONTRACT_SUMMARY.md](docs/CONTRACT_SUMMARY.md). In short
 
 Accepted foundational ADRs are listed in [docs/adr/README.md](docs/adr/README.md)
 (including audit absorb ADR-0143–0150).
-Active roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) (shipped through 3.1.3; next 3.1.4 cache safety).
+Active roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) (shipped through 3.1.4; next Later — remote CAS / workers).
 
 ## Working agreements
 

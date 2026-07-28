@@ -214,7 +214,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**3.1.3** — workspace CAS/actions (**experimental**), resource scheduling, process MVP (**preview**), inventory CLI, history, coalesced discovery; correctness hardening for cache hits, action keys, CAS publish/restore, and flake-parts 3.1 options.
+**3.1.4** — workspace CAS/actions (**experimental**), resource scheduling, process MVP (**preview**), inventory CLI, history, coalesced discovery; cache safety for secret-bearing tasks and honest `shared` / `shared-read` reject ([#1](https://github.com/willmortimer/nxr/issues/1), [#2](https://github.com/willmortimer/nxr/issues/2)).
 
 History: [CHANGELOG.md](CHANGELOG.md). Next: [docs/ROADMAP.md](docs/ROADMAP.md)
 (Later: remote CAS, workers; full process supervision).

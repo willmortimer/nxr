@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.4] - 2026-07-28
+
+Workspace cache safety before heavier CAS/context use.
+
 ### Added
 
 - `cache.secretPolicy` (`disable` | `ignore-values`) for expert override of
@@ -22,8 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Roadmap **3.1.4** workspace cache safety items [#1](https://github.com/willmortimer/nxr/issues/1)
-  and [#2](https://github.com/willmortimer/nxr/issues/2) implemented.
+- Workspace and Nix package version **3.1.4**.
 
 ## [3.1.3] - 2026-07-28
 
