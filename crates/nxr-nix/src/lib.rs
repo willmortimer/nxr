@@ -10,6 +10,7 @@ pub mod determinate;
 pub mod discovery;
 pub mod inventory;
 pub mod inventory_list;
+pub mod metadata;
 pub mod resolve;
 pub mod store_exe;
 pub mod store_query;
@@ -64,6 +65,11 @@ pub use inventory::{
 };
 pub use inventory_list::{
     InventoryEntry, InventoryRole, list_inventory_entries, list_inventory_roles,
+};
+pub use metadata::{
+    FORCE_NXR_METADATA_ENV, MetadataDiscoveryError, MetadataInventory, MetadataWorkspace,
+    NXR_METADATA_ENV, NXR_METADATA_SCHEMA_VERSION, NxrMetadataDocument, discover_nxr_metadata,
+    nxr_metadata_attr_path, nxr_metadata_eval_args, nxr_metadata_preferred, parse_nxr_metadata,
 };
 pub use resolve::{
     AppNotFoundError, OutputNotFoundError, resolve_app_by_name, resolve_output_by_name,

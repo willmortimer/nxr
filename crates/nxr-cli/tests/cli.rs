@@ -3198,6 +3198,7 @@ fn coalesced_cold_task_discovery_uses_single_eval_when_forced() {
         .env("HOME", home.path())
         .env("XDG_CACHE_HOME", home.path().join("cache"))
         .env("NXR_FORCE_COALESCED_DISCOVERY", "1")
+        .env("NXR_NXR_METADATA", "off")
         .env("NXR_NIX", &counter.wrapper)
         .args(["--flake", "fixtures/task-dag", "list"])
         .assert()
@@ -3211,6 +3212,7 @@ fn coalesced_cold_task_discovery_uses_single_eval_when_forced() {
         .env("HOME", home.path())
         .env("XDG_CACHE_HOME", home.path().join("cache"))
         .env("NXR_FORCE_COALESCED_DISCOVERY", "1")
+        .env("NXR_NXR_METADATA", "off")
         .env("NXR_NIX", &counter.wrapper)
         .args([
             "--flake",
@@ -3233,6 +3235,56 @@ fn coalesced_cold_task_discovery_uses_single_eval_when_forced() {
         counter.count("eval"),
         1,
         "coalesced discovery should use one eval; log={log}"
+    );
+}
+
+#[test]
+fn nxr_metadata_cold_task_discovery_uses_single_eval() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let home = tempfile::TempDir::new().expect("cache home");
+    let repo_root = repo_root();
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/nxr-metadata", "list"])
+        .assert()
+        .success();
+
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_NIX", &counter.wrapper)
+        .args([
+            "--flake",
+            "fixtures/nxr-metadata",
+            "--refresh-discovery",
+            "task",
+            "ci",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(
+        counter.count("flake-show"),
+        0,
+        "nxrMetadata discovery must not call flake show; log={log}"
+    );
+    assert_eq!(
+        counter.count("eval"),
+        1,
+        "nxrMetadata discovery should use one eval; log={log}"
     );
 }
 

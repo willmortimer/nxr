@@ -119,6 +119,7 @@ Rejected   considered and explicitly not chosen
 | ADR-0163 | Watch prewarm for likely reruns | Accepted | Unreleased |
 | ADR-0164 | Optional process log broker via `nxrd` | Accepted | Unreleased |
 | ADR-0165 | Determinate discovery/evaluation strategy planner | Accepted | Unreleased |
+| ADR-0166 | Optional `nxrMetadata` single-eval discovery endpoint | Accepted | Unreleased |
 | ADR-0167 | Batched Nix store path queries | Accepted | Unreleased |
 
 Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
@@ -144,6 +145,7 @@ Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0163-watch-prewarm.md`](0163-watch-prewarm.md),
 [`0164-process-log-broker.md`](0164-process-log-broker.md),
 [`0165-determinate-eval-strategy.md`](0165-determinate-eval-strategy.md),
+[`0166-nxr-metadata-endpoint.md`](0166-nxr-metadata-endpoint.md),
 [`0167-batched-store-queries.md`](0167-batched-store-queries.md).
 
 Audit absorb (2026-07, post-`a040e50`): remaps active delivery to

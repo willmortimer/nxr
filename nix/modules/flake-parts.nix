@@ -2,7 +2,8 @@
 #
 # Imports per-system apps, tasks, and shellIntegration modules, then emits
 # versioned metadata at flake output `nxr.<system>` (TaskDocument:
-# schema_version + tasks + optional apps listing metadata).
+# schema_version + tasks + optional apps listing metadata) and optional
+# compact `nxrMetadata.<system>` for single-eval cold discovery.
 {
   lib,
   config,
@@ -14,6 +15,7 @@ in
 {
   imports = [
     ./schema.nix
+    ./metadata.nix
   ];
 
   perSystem = {

@@ -347,3 +347,8 @@ No custom runner is required to execute the emitted app.
 
 For optional task orchestration metadata (`perSystem.nxr.tasks` → evaluable
 `nxr.<system>`), see [TASKS.md](TASKS.md).
+
+The same module emits optional `nxrMetadata.<system>` for single-eval cold
+discovery ([ADR-0166](adr/0166-nxr-metadata-endpoint.md)). Set
+`nxr.metadata.enable = false` to omit it; `nxr.namespaces` embeds non-authoritative
+namespace views in that document.

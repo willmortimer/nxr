@@ -208,7 +208,7 @@ in
       hasV2Fields =
         contextsJson != { }
         || cfg.nxr.processes != { }
-        || lib.any taskUsesSchemaV2 cfg.nxr.tasks;
+        || lib.any taskUsesSchemaV2 (lib.attrValues cfg.nxr.tasks);
       forcedVersion = cfg.nxr.schemaVersion;
       schema_version =
         if forcedVersion == 2 then

@@ -252,6 +252,20 @@ Benchmark scenarios to profile (stable harness thresholds TBD):
 
 Windows builds still use one reader thread per pipe (Unix-first); the supervisor API is unchanged.
 
+## Optional `nxrMetadata` cold discovery
+
+Flake-parts consumers emit optional `nxrMetadata.<system>` — a compact JSON
+document with apps/tasks/processes/contexts/inventory/namespaces
+([ADR-0166](adr/0166-nxr-metadata-endpoint.md)). When present, cold discovery
+uses **one** `nix eval --json <flake>#nxrMetadata.<system>` instead of
+`flake show` + task eval (or the Determinate coalesced `--expr`).
+
+- Kill-switch: `NXR_NXR_METADATA=off` (also `0` / `false` / `no`)
+- Missing attribute → silent fallback to coalesce / show+eval
+- Standard outputs and `nxr.<system>` remain authoritative; the endpoint is
+  never required
+- Envelope schema: [`schemas/nxr-metadata-v1.schema.json`](../schemas/nxr-metadata-v1.schema.json)
+
 ## Nix call budgets
 
 | Path | Expected Nix invocations | Notes |
@@ -261,7 +275,7 @@ Windows builds still use one reader thread per pipe (Unix-first); the supervisor
 | Bare app missing installable (non-TTY stderr, store-exe off) | **1×** `nix run` + optional diagnostic discovery | Bounded stderr tail (~128 KiB); suggestion discovery only when stderr indicates installable-resolution failure |
 | Bare app on a TTY (store-exe off) | **1×** `nix run`; inherit stderr | Prefer transparent rendering over typo suggestions |
 | Adapter init (list/task/doctor) | **1×** `nix eval` (`currentSystem`) + capability probes (`--version`, config/help) | Shared via `WorkspaceSnapshot` / `NixAdapter`; warm capability cache skips all probes when the environment digest matches |
-| `nxr task` with **N** nodes (store-exe off) | **N×** `nix run` + **O(1)** discovery | One `flake show` (apps) + one task `eval` (or warm combined cache); **not** N× `flake show` |
+| `nxr task` with **N** nodes (store-exe off) | **N×** `nix run` + **O(1)** discovery | Prefer `nxrMetadata` (1 eval) when present; else coalesce or one `flake show` + one task `eval` (warm combined cache); **not** N× `flake show` |
 | `nxr list --refresh-discovery` | Dominated by `nix flake show` | Catalog commands still discover |
 | Named `nxr build` / `check` / `shell` | Direct installable argv (no whole-output discovery up front) | Adapter init still probes once for system / flags |
 | Named build/check/shell missing attribute | **1×** installable + optional diagnostic discovery | Suggestion discovery only when stderr indicates missing attribute |

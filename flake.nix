@@ -98,6 +98,10 @@
             inherit pkgs;
           };
 
+          nxrMetadataDocumentCheck = import ./nix/checks/nxr-metadata-document.nix {
+            inherit pkgs;
+          };
+
           workspaceSrcIncludesCheck = import ./nix/checks/workspace-src-includes.nix {
             inherit pkgs src;
           };
@@ -184,6 +188,7 @@
             inherit nxr;
             flake-schema = flakeSchemaCheck;
             flake-parts-v2-fields = flakePartsV2FieldsCheck;
+            nxr-metadata-document = nxrMetadataDocumentCheck;
             workspace-src-includes = workspaceSrcIncludesCheck;
           } // qualityChecks;
 

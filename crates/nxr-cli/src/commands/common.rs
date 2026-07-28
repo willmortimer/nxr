@@ -560,13 +560,48 @@ pub(crate) struct ColdWorkspaceDiscovery {
     pub(crate) discovery: WorkspaceDiscovery,
 }
 
-/// Discover apps and optional tasks, preferring coalesced eval when available.
+/// Discover apps and optional tasks.
+///
+/// Preference order:
+/// 1. Optional `nxrMetadata.<system>` (one targeted eval) when enabled
+/// 2. Coalesced `{ inventory, nxr }` eval when Determinate (or forced)
+/// 3. Classic `flake show` + optional task `eval`
 pub(crate) fn cold_discover_workspace(
     nix: &NixAdapter,
     flake_ref: &str,
     load_tasks: bool,
     nix_flags: &OptionalNixFlags,
 ) -> Result<ColdWorkspaceDiscovery, PrepareError> {
+    if nxr_nix::nxr_metadata_preferred() {
+        let mut discovery_flags = nix_flags.clone();
+        discovery_flags.no_write_lock_file = true;
+        let args = nix.compatible_argv(
+            nxr_nix::nxr_metadata_eval_args(flake_ref, &nix.system),
+            &discovery_flags,
+        )?;
+        match nxr_nix::discover_nxr_metadata(&nix.nix, &nix.system, &args) {
+            Ok(Some(document)) => match document.into_workspace(flake_ref, &nix.system, load_tasks)
+            {
+                Ok(workspace) => {
+                    return Ok(ColdWorkspaceDiscovery {
+                        discovery: WorkspaceDiscovery {
+                            apps: workspace.apps,
+                            tasks: workspace.tasks,
+                            dev_shells: workspace.dev_shells,
+                        },
+                    });
+                }
+                Err(error) => {
+                    eprintln!("nxr: nxrMetadata parse failed, falling back: {error}");
+                }
+            },
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("nxr: nxrMetadata discovery failed, falling back: {error}");
+            }
+        }
+    }
+
     let eval_plan =
         nxr_nix::plan_discovery_eval(&nix.version_banner, nix.config_json.as_deref(), load_tasks);
 

@@ -31,6 +31,7 @@ valid under pure `path:` flake refs (Nix 2.18+).
 | [processes](processes/) | Declared processes for `up` / `status` / `logs` / `down` |
 | [inventory-custom](inventory-custom/) | Custom inventory role for Determinate-style envelopes |
 | [flake-parts-v2](flake-parts-v2/) | flake-parts module: task I/O, cache, resources, processes (schema v2) |
+| [nxr-metadata](nxr-metadata/) | Self-contained `nxrMetadata.<system>` envelope for single-eval discovery |
 | [golden](golden/) | Reference flake: apps, tasks, categories, contexts (schema v2) |
 
 ## Try them (without nxr yet)
@@ -44,6 +45,7 @@ nix run ./fixtures/basic-apps#pwd
 nix flake show ./fixtures/app-metadata
 nix eval --json ./fixtures/task-dag#nxr.aarch64-darwin
 nix eval --json ./fixtures/flake-parts-v2#nxr.aarch64-darwin
+nix eval --json ./fixtures/nxr-metadata#nxrMetadata.aarch64-darwin
 nix eval --json ./fixtures/task-dag#nxr.x86_64-linux
 ```
 

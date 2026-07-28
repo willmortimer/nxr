@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/nxr-metadata-v1.schema.json",
+  "title": "nxrMetadata discovery document",
+  "description": "Optional compact flake output `nxrMetadata.<system>` for single-eval cold discovery (ADR-0166). Standard flake outputs and `nxr.<system>` remain authoritative. Breaking envelope changes require a new major schema_version.",
+  "type": "object",
+  "required": ["schema_version"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Major version of the nxrMetadata envelope."
+    },
+    "task_schema_version": {
+      "type": "integer",
+      "enum": [1, 2],
+      "default": 1,
+      "description": "Major version for embedded task/process/context fields (matches nxr.<system>.schema_version)."
+    },
+    "apps": {
+      "type": "object",
+      "description": "Optional listing metadata for flake app leaf names. Does not define apps.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "description": { "type": "string" },
+          "category": { "type": "string" }
+        }
+      }
+    },
+    "tasks": {
+      "type": "object",
+      "description": "Task definitions (same JSON shape as nxr.<system>.tasks).",
+      "additionalProperties": { "type": "object" }
+    },
+    "processes": {
+      "type": "object",
+      "description": "Process definitions (schema v2; same shape as nxr.<system>.processes).",
+      "additionalProperties": { "type": "object" }
+    },
+    "contexts": {
+      "type": "object",
+      "description": "Execution contexts (schema v2; same shape as nxr.<system>.contexts).",
+      "additionalProperties": { "type": "object" }
+    },
+    "discoveryInputs": {
+      "type": "array",
+      "default": [],
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "apps": {
+          "type": "array",
+          "default": [],
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "packages": {
+          "type": "array",
+          "default": [],
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "checks": {
+          "type": "array",
+          "default": [],
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "devShells": {
+          "type": "array",
+          "default": [],
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "namespaces": {
+      "type": "object",
+      "description": "Optional non-authoritative namespace views (nxr.projects.json membership shape).",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "description": { "type": "string" },
+          "category": { "type": "string" },
+          "apps": {
+            "type": "array",
+            "default": [],
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "tasks": {
+            "type": "array",
+            "default": [],
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}
