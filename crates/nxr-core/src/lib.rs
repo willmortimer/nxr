@@ -85,12 +85,13 @@ pub use model::{App, AppList, FlakeOutput, FlakeRef, ListApp, OutputList};
 pub use perf::{
     CasLookupGuard, PERF_STATS_ENV, PerfStats, PlanPrepareGuard, add_bytes_hashed,
     add_cas_lookup_us, add_plan_prepare_us, emit_stderr, enabled as perf_enabled,
-    record_digest_cache_hit, record_digest_metadata_hit, record_fs_metadata,
-    record_git_blob_digest, record_nix_spawn, record_node_prepared, record_plan_cache_hit,
-    record_plan_cache_miss, record_spawn_plan_cancelled, record_spawn_plan_prepared,
-    record_spawn_to_child_output_us, record_store_exe_hit, record_store_exe_miss,
-    record_watch_paths_invalidated, record_watch_prepared_nodes_dropped,
-    record_watch_prewarm_cas_hit, record_watch_prewarm_cas_miss, record_watch_prewarm_context_hit,
+    record_dev_env_cache_hit, record_dev_env_cache_miss, record_digest_cache_hit,
+    record_digest_metadata_hit, record_fs_metadata, record_git_blob_digest, record_nix_spawn,
+    record_node_prepared, record_plan_cache_hit, record_plan_cache_miss,
+    record_spawn_plan_cancelled, record_spawn_plan_prepared, record_spawn_to_child_output_us,
+    record_store_exe_hit, record_store_exe_miss, record_watch_paths_invalidated,
+    record_watch_prepared_nodes_dropped, record_watch_prewarm_cas_hit,
+    record_watch_prewarm_cas_miss, record_watch_prewarm_context_hit,
     record_watch_prewarm_context_miss, record_watch_prewarm_ownership_shortcut,
     record_watch_prewarm_store_exe_hit, record_watch_prewarm_store_exe_miss,
     record_watch_snapshot_patch,
@@ -235,6 +236,7 @@ mod tests {
             workspace_script: None,
             mutable_source: false,
             fallback_app: None,
+            environment_mode: None,
         };
 
         let value = serde_json::to_value(&envelope).expect("serialize Plan");
@@ -291,6 +293,7 @@ mod tests {
             workspace_script: None,
             mutable_source: false,
             fallback_app: None,
+            environment_mode: None,
         };
 
         let value = serde_json::to_value(&envelope).expect("serialize Plan");

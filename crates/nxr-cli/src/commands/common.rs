@@ -1731,6 +1731,7 @@ impl<'a> TaskNodePreparer<'a> {
             workspace_script: None,
             mutable_source: false,
             fallback_app: None,
+            environment_mode: None,
         };
         if let Some(applied) = applied_context.as_ref() {
             plan.context = Some(applied.context_name.clone());
@@ -2085,6 +2086,7 @@ fn build_plan(
         workspace_script: None,
         mutable_source: false,
         fallback_app: None,
+        environment_mode: None,
     })
 }
 
@@ -2118,6 +2120,7 @@ fn build_fast_plan(
             supports_no_write_lock_file: true,
             supports_offline: false,
             supports_accept_flake_config: false,
+            supports_print_dev_env_json: true,
         }
     };
     let command_arguments = capabilities.apply_optional_flags(base_arguments, request.nix_flags)?;
@@ -2145,6 +2148,7 @@ fn build_fast_plan(
         workspace_script: None,
         mutable_source: false,
         fallback_app: None,
+        environment_mode: None,
     })
 }
 

@@ -214,7 +214,7 @@ fn resolve_realise_system(plan: &Plan, nix: &Utf8Path) -> Option<String> {
     detect_system(nix).ok()
 }
 
-fn shared_fingerprints(
+pub(crate) fn shared_fingerprints(
     local_root: &Utf8Path,
     nix_path: &str,
     nix_version: &str,
@@ -308,6 +308,7 @@ mod tests {
             workspace_script: None,
             mutable_source: false,
             fallback_app: None,
+            environment_mode: None,
         }
     }
 

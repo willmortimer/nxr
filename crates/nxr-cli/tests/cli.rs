@@ -557,6 +557,185 @@ fn script_no_shell_invokes_zero_nix_subprocesses() {
     assert_eq!(counter.count("eval"), 0, "log={log}");
 }
 
+fn warm_named_dev_shells_discovery(
+    fixture: &std::path::Path,
+    home: &tempfile::TempDir,
+    nix: Option<&std::path::Path>,
+) {
+    let mut cmd = cargo_bin_cmd!("nxr");
+    cmd.current_dir(fixture)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"));
+    if let Some(nix) = nix {
+        cmd.env("NXR_NIX", nix);
+    }
+    cmd.args(["list"]).assert().success();
+}
+
+#[test]
+fn script_shell_materializes_process_env_on_cold_run() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let home = tempfile::TempDir::new().expect("cache home");
+    let repo_root = repo_root();
+    let fixture = repo_root.join("fixtures/named-dev-shells");
+    warm_named_dev_shells_discovery(&fixture, &home, Some(&counter.wrapper));
+    std::fs::write(&counter.log, "").expect("reset log after discovery warm");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&fixture)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--shell", "default", "script", "shell-marker"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "script-marker:inside-default-shell",
+        ));
+
+    let cold_log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(counter.count("develop"), 0, "cold log={cold_log}");
+    assert_eq!(counter.count("print-dev-env"), 1, "cold log={cold_log}");
+}
+
+#[test]
+fn script_shell_warm_dev_env_cache_skips_nix_on_second_run() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let home = tempfile::TempDir::new().expect("cache home");
+    let repo_root = repo_root();
+    let fixture = repo_root.join("fixtures/named-dev-shells");
+    let cache = home.path().join("cache");
+    warm_named_dev_shells_discovery(&fixture, &home, Some(&counter.wrapper));
+    std::fs::write(&counter.log, "").expect("reset log after discovery warm");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&fixture)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", &cache)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--shell", "default", "script", "shell-marker"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "script-marker:inside-default-shell",
+        ));
+
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&fixture)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", &cache)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--shell", "default", "script", "shell-marker"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "script-marker:inside-default-shell",
+        ));
+
+    let warm_log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(counter.count("print-dev-env"), 0, "warm log={warm_log}");
+    assert_eq!(counter.count("develop"), 0, "warm log={warm_log}");
+    assert_eq!(counter.count("run"), 0, "warm log={warm_log}");
+}
+
+#[test]
+fn script_shell_mode_always_uses_develop_wrap() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let repo_root = repo_root();
+    let fixture = repo_root.join("fixtures/named-dev-shells");
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&fixture)
+        .env("NXR_NIX", &counter.wrapper)
+        .args([
+            "--shell",
+            "default",
+            "--shell-mode",
+            "always",
+            "--json",
+            "--dry-run",
+            "script",
+            "shell-marker",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse plan json");
+    assert_eq!(value["environment_mode"], "shell");
+    assert_eq!(value["command"]["arguments"][0], "develop");
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(counter.count("print-dev-env"), 0, "log={log}");
+    assert_eq!(
+        counter.count("develop"),
+        0,
+        "dry-run should not invoke nix; log={log}"
+    );
+}
+
+#[test]
+fn script_shell_dry_run_json_reports_process_environment_mode() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let fixture = repo_root.join("fixtures/named-dev-shells");
+    let home = tempfile::TempDir::new().expect("cache home");
+    warm_named_dev_shells_discovery(&fixture, &home, None);
+
+    // Warm dev-env cache so dry-run does not need a live print-dev-env call.
+    cargo_bin_cmd!("nxr")
+        .current_dir(&fixture)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .args(["--shell", "default", "script", "shell-marker"])
+        .assert()
+        .success();
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&fixture)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .args([
+            "--shell",
+            "default",
+            "--json",
+            "--dry-run",
+            "script",
+            "shell-marker",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse plan json");
+    assert_eq!(value["environment_mode"], "process");
+    assert!(
+        !value["command"]["arguments"]
+            .as_array()
+            .expect("argv")
+            .iter()
+            .any(|arg| arg == "develop"),
+        "process mode should spawn script directly"
+    );
+}
+
 #[test]
 fn file_backed_app_nix_run_and_live_fast_path() {
     let Some(()) = require_nix() else {

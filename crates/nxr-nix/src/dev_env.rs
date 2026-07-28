@@ -18,8 +18,21 @@ pub enum UnsupportedDevEnvFeature {
     ShellVariable,
     /// Variables with type `array` (hook lists and other arrays).
     ArrayVariable,
+    /// Non-empty exported `shellHook` (must run inside `nix develop`).
+    ShellHook,
     /// Variable type not classified as process-representable.
     UnknownVariableType { name: String, variable_type: String },
+}
+
+impl UnsupportedDevEnvFeature {
+    /// Whether this feature forces `nix develop -c` fallback.
+    #[must_use]
+    pub fn is_blocking(&self) -> bool {
+        match self {
+            Self::BashFunctions | Self::ShellVariable | Self::ArrayVariable => false,
+            Self::ShellHook | Self::UnknownVariableType { .. } => true,
+        }
+    }
 }
 
 /// Normalized process-compatible development environment from `print-dev-env --json`.
@@ -35,9 +48,15 @@ pub struct DevEnvironment {
 
 impl DevEnvironment {
     /// Whether the snapshot can be used for direct spawn without develop-wrap.
+    ///
+    /// Skipped features (functions, shell internals, hook arrays) are recorded in
+    /// [`Self::unsupported_features`] for explain/telemetry but do not block spawn.
     #[must_use]
     pub fn is_process_compatible(&self) -> bool {
-        self.unsupported_features.is_empty()
+        !self
+            .unsupported_features
+            .iter()
+            .any(UnsupportedDevEnvFeature::is_blocking)
     }
 }
 
@@ -68,8 +87,8 @@ pub enum DevEnvParseError {
 ///
 /// Exported string variables become `variables`; `PATH` is split into
 /// `path_entries`. Functions, hook arrays, and non-exported shell variables are
-/// recorded in `unsupported_features` for callers that need develop-wrap
-/// fallback.
+/// recorded in `unsupported_features` for explain/telemetry. Only blocking
+/// features (non-empty `shellHook`, unknown variable types) force develop-wrap.
 pub fn parse_print_dev_env_json(json: &str) -> Result<DevEnvironment, DevEnvParseError> {
     let root: JsonValue = serde_json::from_str(json)?;
     let root_obj = root.as_object().ok_or(DevEnvParseError::InvalidRoot)?;
@@ -99,6 +118,18 @@ pub fn parse_print_dev_env_json(json: &str) -> Result<DevEnvironment, DevEnvPars
     Ok(env)
 }
 
+/// Stable snake_case label for a skipped/unsupported feature (telemetry and cache).
+#[must_use]
+pub fn unsupported_feature_label(feature: &UnsupportedDevEnvFeature) -> &'static str {
+    match feature {
+        UnsupportedDevEnvFeature::BashFunctions => "bash_functions",
+        UnsupportedDevEnvFeature::ShellVariable => "shell_variable",
+        UnsupportedDevEnvFeature::ArrayVariable => "array_variable",
+        UnsupportedDevEnvFeature::ShellHook => "shell_hook",
+        UnsupportedDevEnvFeature::UnknownVariableType { .. } => "unknown_variable_type",
+    }
+}
+
 fn classify_variable(
     name: String,
     entry: &JsonValue,
@@ -117,12 +148,14 @@ fn classify_variable(
         "exported" => {
             let text = value
                 .and_then(JsonValue::as_str)
-                .ok_or_else(|| DevEnvParseError::InvalidVariableEntry {
-                    name: name.clone(),
-                })?;
+                .ok_or_else(|| DevEnvParseError::InvalidVariableEntry { name: name.clone() })?;
             if name == "PATH" {
                 env.path_entries = split_path_entries(text);
             } else {
+                if name == "shellHook" && !text.is_empty() {
+                    env.unsupported_features
+                        .push(UnsupportedDevEnvFeature::ShellHook);
+                }
                 env.variables.insert(name, text.to_owned());
             }
         }
@@ -269,9 +302,9 @@ mod tests {
     }
 
     #[test]
-    fn bash_functions_mark_unsupported() {
+    fn bash_functions_are_skipped_not_blocking() {
         let env = parse_print_dev_env_json(WITH_BASH_FUNCTIONS).expect("parse functions");
-        assert!(!env.is_process_compatible());
+        assert!(env.is_process_compatible());
         assert!(
             env.unsupported_features
                 .contains(&UnsupportedDevEnvFeature::BashFunctions)
@@ -280,9 +313,9 @@ mod tests {
     }
 
     #[test]
-    fn array_variables_mark_unsupported() {
+    fn array_variables_are_skipped_not_blocking() {
         let env = parse_print_dev_env_json(WITH_ARRAY_HOOKS).expect("parse arrays");
-        assert!(!env.is_process_compatible());
+        assert!(env.is_process_compatible());
         assert!(
             env.unsupported_features
                 .contains(&UnsupportedDevEnvFeature::ArrayVariable)
@@ -290,12 +323,63 @@ mod tests {
     }
 
     #[test]
-    fn shell_variables_mark_unsupported() {
+    fn shell_variables_are_skipped_not_blocking() {
         let env = parse_print_dev_env_json(WITH_SHELL_VARS).expect("parse shell vars");
-        assert!(!env.is_process_compatible());
+        assert!(env.is_process_compatible());
         assert!(
             env.unsupported_features
                 .contains(&UnsupportedDevEnvFeature::ShellVariable)
+        );
+    }
+
+    #[test]
+    fn non_empty_shell_hook_blocks_process_spawn() {
+        let json = r#"{
+            "bashFunctions": {},
+            "variables": {
+                "shellHook": { "type": "exported", "value": "export FOO=1" },
+                "AR": { "type": "exported", "value": "ar" }
+            }
+        }"#;
+        let env = parse_print_dev_env_json(json).expect("parse shell hook");
+        assert!(!env.is_process_compatible());
+        assert!(
+            env.unsupported_features
+                .contains(&UnsupportedDevEnvFeature::ShellHook)
+        );
+    }
+
+    #[test]
+    fn fixture_with_bash_functions_and_exports_is_process_spawnable() {
+        let json = r#"{
+            "bashFunctions": {
+                "buildPhase": "runHook preBuild"
+            },
+            "variables": {
+                "PATH": {
+                    "type": "exported",
+                    "value": "/nix/store/abc/bin:/nix/store/def/bin"
+                },
+                "NXR_FIXTURE_SHELL_MARKER": {
+                    "type": "exported",
+                    "value": "inside-default-shell"
+                },
+                "BASH": { "type": "var", "value": "/bin/bash" },
+                "envBuildHostHooks": {
+                    "type": "array",
+                    "value": ["_updateSourceDateEpochFromSourceRoot"]
+                }
+            }
+        }"#;
+        let env = parse_print_dev_env_json(json).expect("parse realistic shell");
+        assert!(env.is_process_compatible());
+        assert_eq!(
+            env.variables.get("NXR_FIXTURE_SHELL_MARKER"),
+            Some(&"inside-default-shell".to_owned())
+        );
+        assert!(
+            env.unsupported_features
+                .contains(&UnsupportedDevEnvFeature::BashFunctions)
         );
     }
 

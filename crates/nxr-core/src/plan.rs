@@ -60,6 +60,9 @@ pub struct Plan {
     /// Store app leaf used when a live workspace fast path is unavailable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_app: Option<String>,
+    /// How the dev shell environment is applied: `process`, `shell`, or omitted when none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_mode: Option<String>,
 }
 
 /// Secret metadata in app/task plans (never includes resolved values).

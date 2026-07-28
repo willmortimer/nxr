@@ -50,6 +50,7 @@ pub fn classify_nix_argv(args: &[&str]) -> &'static str {
         Some("eval") => "eval",
         Some("build") => "build",
         Some("develop") => "develop",
+        Some("print-dev-env") => "print-dev-env",
         _ => "other",
     }
 }
@@ -99,6 +100,8 @@ REAL_NIX={real}
       echo "build"
     elif [[ "${{1:-}}" == "develop" ]]; then
       echo "develop"
+    elif [[ "${{1:-}}" == "print-dev-env" ]]; then
+      echo "print-dev-env"
     else
       echo "other"
     fi

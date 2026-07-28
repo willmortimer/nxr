@@ -554,6 +554,7 @@ mod tests {
             workspace_script: None,
             mutable_source: false,
             fallback_app: None,
+            environment_mode: None,
         }
     }
 

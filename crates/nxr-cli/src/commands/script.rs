@@ -9,17 +9,18 @@ use std::path::Path;
 use camino::{Utf8Path, Utf8PathBuf};
 use nxr_core::diagnostics::exit;
 use nxr_core::{EnvironmentPolicy, Plan, PlanCommand, PlanKind};
-use nxr_nix::{NixError, OptionalNixFlags, nix_develop_wrap_command_args};
+use nxr_nix::{NixError, OptionalNixFlags};
 
 use crate::commands::common::{
     PrepareError, current_invocation_directory, locate_nix_path, resolve_execution_directory,
     strip_one_separator,
 };
+use crate::commands::dev_env::resolve_script_spawn_with_dev_env;
 use crate::commands::history;
 use crate::commands::plan::{PlanRenderError, write_plan};
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
 use crate::runner_output::RunnerOutput;
-use crate::shell_mode::{ShellMode, active_dev_shell, effective_shell_wrap};
+use crate::shell_mode::{ShellMode, active_dev_shell};
 
 /// Convention directory under the flake root for named scripts.
 pub const SCRIPT_CONVENTION_DIR: &str = ".nxr/scripts";
@@ -166,11 +167,13 @@ pub fn prepare_script(request: &ScriptRequest<'_>) -> Result<PreparedScript, Scr
     let spawn = resolve_script_spawn(&script_path, None)?;
     let nix = locate_nix_path(request.nix_override)?;
 
-    let (program, arguments) = wrap_script_spawn(
+    let resolved = wrap_script_spawn(
         &flake,
         &nix,
+        &local_root,
         request.shell,
         request.shell_mode,
+        &request.environment_policy,
         request.nix_flags,
         &spawn,
         &forwarded,
@@ -190,24 +193,25 @@ pub fn prepare_script(request: &ScriptRequest<'_>) -> Result<PreparedScript, Scr
         execution_directory: execution_directory.as_str().to_owned(),
         shell: request.shell.map(str::to_owned),
         active_shell: active_dev_shell(),
-        environment_policy: request.environment_policy.clone(),
+        environment_policy: resolved.environment_policy.clone(),
         context: None,
         secrets: Vec::new(),
         context_env_set: Default::default(),
         command: PlanCommand {
-            program: program.as_str().to_owned(),
-            arguments: arguments.clone(),
+            program: resolved.program.as_str().to_owned(),
+            arguments: resolved.arguments.clone(),
         },
         forwarded_arguments: forwarded,
         workspace_script: Some(script_path.as_str().to_owned()),
         mutable_source: true,
         fallback_app: None,
+        environment_mode: resolved.environment_mode.clone(),
     };
 
     Ok(PreparedScript {
         plan,
-        program,
-        arguments,
+        program: resolved.program,
+        arguments: resolved.arguments,
         execution_directory,
         script_path,
     })
@@ -271,29 +275,26 @@ pub fn resolve_script_spawn(
 fn wrap_script_spawn(
     flake: &FlakeSelection,
     nix: &Utf8Path,
+    local_root: &Utf8Path,
     shell: Option<&str>,
     shell_mode: ShellMode,
+    environment_policy: &EnvironmentPolicy,
     nix_flags: &OptionalNixFlags,
     spawn: &ScriptSpawn,
     forwarded: &[String],
-) -> Result<(Utf8PathBuf, Vec<String>), ScriptError> {
-    let mut inner_args = spawn.prefix_args.clone();
-    inner_args.extend(forwarded.iter().cloned());
-
-    match effective_shell_wrap(shell, shell_mode) {
-        Some(shell_name) => {
-            let develop_argv = nix_develop_wrap_command_args(
-                &flake.nix_ref,
-                shell_name,
-                spawn.program.as_str(),
-                &inner_args,
-            );
-            let capabilities = nxr_nix::detect_capabilities(nix)?;
-            let arguments = capabilities.apply_optional_flags(develop_argv, nix_flags)?;
-            Ok((nix.to_path_buf(), arguments))
-        }
-        None => Ok((spawn.program.clone(), inner_args)),
-    }
+) -> Result<crate::commands::dev_env::ResolvedScriptSpawn, ScriptError> {
+    resolve_script_spawn_with_dev_env(
+        flake,
+        nix,
+        local_root,
+        shell,
+        shell_mode,
+        environment_policy,
+        nix_flags,
+        spawn,
+        forwarded,
+    )
+    .map_err(ScriptError::Nix)
 }
 
 /// Resolve `path_or_name` to an absolute script path.
@@ -419,11 +420,13 @@ pub fn prepare_live_file_app(
     let spawn = resolve_script_spawn(&script_path, interpreter)?;
     let nix = locate_nix_path(nix_override)?;
     let shell = request_shell.or(fast_path_shell);
-    let (program, arguments) = wrap_script_spawn(
+    let resolved = wrap_script_spawn(
         flake,
         &nix,
+        local_root,
         shell,
         request_shell_mode,
+        &environment_policy,
         nix_flags,
         &spawn,
         forwarded,
@@ -440,24 +443,25 @@ pub fn prepare_live_file_app(
         execution_directory: execution_directory.as_str().to_owned(),
         shell: shell.map(str::to_owned),
         active_shell: active_dev_shell(),
-        environment_policy,
+        environment_policy: resolved.environment_policy.clone(),
         context: None,
         secrets: Vec::new(),
         context_env_set: Default::default(),
         command: PlanCommand {
-            program: program.as_str().to_owned(),
-            arguments: arguments.clone(),
+            program: resolved.program.as_str().to_owned(),
+            arguments: resolved.arguments.clone(),
         },
         forwarded_arguments: forwarded.to_vec(),
         workspace_script: Some(script_path.as_str().to_owned()),
         mutable_source: true,
         fallback_app: Some(app_name.to_owned()),
+        environment_mode: resolved.environment_mode.clone(),
     };
 
     Ok(PreparedScript {
         plan,
-        program,
-        arguments,
+        program: resolved.program,
+        arguments: resolved.arguments,
         execution_directory: execution_directory.to_path_buf(),
         script_path,
     })

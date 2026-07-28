@@ -59,7 +59,7 @@ pub use determinate::{
 };
 pub use dev_env::{
     DEV_ENV_PROTOCOL_VERSION, DevEnvParseError, DevEnvironment, UnsupportedDevEnvFeature,
-    parse_print_dev_env_json,
+    parse_print_dev_env_json, unsupported_feature_label,
 };
 pub use discovery::{
     OutputTable, discover_apps, discover_outputs_with_args, flake_show_has_nxr_for_system,

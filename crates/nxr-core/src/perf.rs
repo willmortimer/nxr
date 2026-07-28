@@ -44,6 +44,8 @@ static WATCH_PREWARM_CONTEXT_MISSES: AtomicU64 = AtomicU64::new(0);
 static WATCH_PREWARM_CAS_HITS: AtomicU64 = AtomicU64::new(0);
 static WATCH_PREWARM_CAS_MISSES: AtomicU64 = AtomicU64::new(0);
 static WATCH_PREWARM_OWNERSHIP_SHORTCUTS: AtomicU64 = AtomicU64::new(0);
+static DEV_ENV_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static DEV_ENV_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 
 fn env_enabled() -> bool {
     match std::env::var(PERF_STATS_ENV) {
@@ -209,6 +211,22 @@ pub fn record_spawn_plan_prepared() {
 pub fn record_spawn_plan_cancelled() {
     if enabled() {
         SPAWN_PLANS_CANCELLED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Record one dev-environment disk cache hit (schema v10+; ADR-0171).
+#[inline]
+pub fn record_dev_env_cache_hit() {
+    if enabled() {
+        DEV_ENV_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Record one dev-environment disk cache miss (schema v10+; ADR-0171).
+#[inline]
+pub fn record_dev_env_cache_miss() {
+    if enabled() {
+        DEV_ENV_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -388,11 +406,15 @@ pub struct PerfStats {
     pub watch_prewarm_cas_misses: u64,
     /// Plan nodes skipped by watch ownership locality (schema v9+).
     pub watch_prewarm_ownership_shortcuts: u64,
+    /// Dev-environment disk cache hits (schema v10+; ADR-0171).
+    pub dev_env_cache_hits: u64,
+    /// Dev-environment disk cache misses (schema v10+; ADR-0171).
+    pub dev_env_cache_misses: u64,
 }
 
 impl PerfStats {
-    /// Schema v9 adds watch prewarm counters (ADR-0163).
-    const SCHEMA_VERSION: u32 = 9;
+    /// Schema v10 adds dev-environment cache counters (ADR-0171).
+    const SCHEMA_VERSION: u32 = 10;
 
     /// Collect current counter values.
     #[must_use]
@@ -426,6 +448,8 @@ impl PerfStats {
             watch_prewarm_cas_misses: WATCH_PREWARM_CAS_MISSES.load(Ordering::Relaxed),
             watch_prewarm_ownership_shortcuts: WATCH_PREWARM_OWNERSHIP_SHORTCUTS
                 .load(Ordering::Relaxed),
+            dev_env_cache_hits: DEV_ENV_CACHE_HITS.load(Ordering::Relaxed),
+            dev_env_cache_misses: DEV_ENV_CACHE_MISSES.load(Ordering::Relaxed),
         }
     }
 }
@@ -478,6 +502,8 @@ pub(crate) fn test_reset(enabled: bool) {
     WATCH_PREWARM_CAS_HITS.store(0, Ordering::Relaxed);
     WATCH_PREWARM_CAS_MISSES.store(0, Ordering::Relaxed);
     WATCH_PREWARM_OWNERSHIP_SHORTCUTS.store(0, Ordering::Relaxed);
+    DEV_ENV_CACHE_HITS.store(0, Ordering::Relaxed);
+    DEV_ENV_CACHE_MISSES.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -503,6 +529,8 @@ mod tests {
         record_node_prepared();
         record_spawn_plan_prepared();
         record_spawn_plan_cancelled();
+        record_dev_env_cache_hit();
+        record_dev_env_cache_miss();
         let stats = PerfStats::snapshot();
         assert_eq!(stats.nix_spawns, 0);
         assert_eq!(stats.bytes_hashed, 0);
@@ -520,6 +548,8 @@ mod tests {
         assert_eq!(stats.nodes_prepared, 0);
         assert_eq!(stats.spawn_plans_prepared, 0);
         assert_eq!(stats.spawn_plans_cancelled, 0);
+        assert_eq!(stats.dev_env_cache_hits, 0);
+        assert_eq!(stats.dev_env_cache_misses, 0);
     }
 
     #[test]
@@ -550,6 +580,9 @@ mod tests {
         record_spawn_plan_prepared();
         record_spawn_plan_cancelled();
         record_spawn_plan_cancelled();
+        record_dev_env_cache_hit();
+        record_dev_env_cache_miss();
+        record_dev_env_cache_miss();
         let stats = PerfStats::snapshot();
         assert_eq!(stats.nix_spawns, 2);
         assert_eq!(stats.bytes_hashed, 1_024);
@@ -567,7 +600,9 @@ mod tests {
         assert_eq!(stats.nodes_prepared, 2);
         assert_eq!(stats.spawn_plans_prepared, 1);
         assert_eq!(stats.spawn_plans_cancelled, 2);
-        assert_eq!(stats.schema_version, 9);
+        assert_eq!(stats.dev_env_cache_hits, 1);
+        assert_eq!(stats.dev_env_cache_misses, 2);
+        assert_eq!(stats.schema_version, 10);
     }
 
     #[test]

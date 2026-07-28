@@ -67,5 +67,15 @@
           };
         }
       );
+
+      nxr = forAllSystems (_system: {
+        schema_version = 1;
+        tasks = { };
+        apps = { };
+        discoveryInputs = [
+          "flake.nix"
+          ".nxr/scripts/shell-marker.sh"
+        ];
+      });
     };
 }
