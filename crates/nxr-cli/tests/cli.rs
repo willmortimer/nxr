@@ -3381,6 +3381,9 @@ fn doctor_all_does_not_double_capability_probes() {
     cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
         .env("NXR_NIX", &counter.wrapper)
+        // Isolate capability-probe budgets from the optional nxrMetadata preference
+        // (ADR-0166); missing attrs otherwise add one failed eval before fallback.
+        .env("NXR_NXR_METADATA", "off")
         .args([
             "--flake",
             "fixtures/basic-apps",
