@@ -81,6 +81,20 @@
             hidden = false;
             context = "release";
           };
+          cached-deploy = {
+            description = "Context secrets + workspace cache (disabled by default)";
+            app = "cached-deploy";
+            workingDirectory = "flake-root";
+            dependsOn = [ ];
+            hidden = false;
+            context = "release";
+            outputs = [
+              { path = "gen/deploy-marker.txt"; }
+            ];
+            cache = {
+              mode = "local";
+            };
+          };
           integration = {
             description = "Integration tests in backend shell";
             app = "test";
@@ -103,6 +117,15 @@
               echo "missing deploy token" >&2
               exit 42
             fi
+            echo "deploy ok"
+          '';
+          cached-deploy = mkApp pkgs "fixture-cached-deploy" "Write deploy marker" ''
+            if [ -z "''${DEPLOY_TOKEN:-}" ]; then
+              echo "missing deploy token" >&2
+              exit 42
+            fi
+            mkdir -p gen
+            echo "deployed" > gen/deploy-marker.txt
             echo "deploy ok"
           '';
           test = mkApp pkgs "fixture-test" "Run tests" ''

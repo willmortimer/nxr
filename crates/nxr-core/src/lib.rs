@@ -14,7 +14,10 @@ pub mod run_history;
 pub mod sanitize;
 pub mod trust;
 
-pub use action::{ActionTier, cache_mode_enabled, classify_action_tier, workspace_cache_enabled};
+pub use action::{
+    ActionTier, cache_mode_enabled, cache_mode_shared_unimplemented, classify_action_tier,
+    workspace_cache_enabled,
+};
 pub use cas::{
     CAS_PROTOCOL_VERSION, CacheExplain, CacheLookupExplain, CasLookup, CasOutput, CasRestoreMode,
     WORKSPACE_CAS_ENV, clear_workspace_cas, digest_bytes, digest_file, digest_repo_path,

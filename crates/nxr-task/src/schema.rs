@@ -387,6 +387,24 @@ pub struct TaskCache {
     pub save: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failures: Option<bool>,
+    /// Expert override for secret-bearing tasks (schema v2; see nxr#1).
+    #[serde(
+        default,
+        rename = "secretPolicy",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub secret_policy: Option<TaskCacheSecretPolicy>,
+}
+
+/// How secret-bearing tasks interact with workspace caching (schema v2).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskCacheSecretPolicy {
+    /// Disable workspace cache when secret env inputs or context secrets exist.
+    /// This is the default when `secretPolicy` is omitted.
+    Disable,
+    /// Allow caching while still excluding secret values from the action key.
+    IgnoreValues,
 }
 
 /// Task result cache scope (schema v2).
@@ -835,6 +853,8 @@ struct TaskCacheV2Strict {
     save: Option<bool>,
     #[serde(default)]
     failures: Option<bool>,
+    #[serde(default, rename = "secretPolicy")]
+    secret_policy: Option<TaskCacheSecretPolicy>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -991,6 +1011,7 @@ impl From<TaskCacheV2Strict> for TaskCache {
             restore: strict.restore,
             save: strict.save,
             failures: strict.failures,
+            secret_policy: strict.secret_policy,
         }
     }
 }
@@ -1286,7 +1307,8 @@ mod tests {
                         "version": "1",
                         "restore": true,
                         "save": true,
-                        "failures": false
+                        "failures": false,
+                        "secretPolicy": "ignore-values"
                     },
                     "resources": {
                         "cpu": 2,
@@ -1308,6 +1330,12 @@ mod tests {
         assert_eq!(
             task.cache.as_ref().and_then(|cache| cache.mode.as_ref()),
             Some(&TaskCacheMode::Local)
+        );
+        assert_eq!(
+            task.cache
+                .as_ref()
+                .and_then(|cache| cache.secret_policy.as_ref()),
+            Some(&TaskCacheSecretPolicy::IgnoreValues)
         );
         assert_eq!(task.resources.as_ref().and_then(|r| r.cpu), Some(2));
     }

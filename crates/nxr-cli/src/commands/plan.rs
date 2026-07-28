@@ -10,7 +10,8 @@ use nxr_core::diagnostics::exit;
 use nxr_nix::TaskDiscoveryError;
 use nxr_task::{
     ExecutionPlan, FailurePolicy, PlanError as TaskPlanError, ResolveTaskError,
-    build_execution_plan, build_execution_plan_roots, resolve_task_name,
+    WorkspaceCachePlanOptions, build_execution_plan, build_execution_plan_roots,
+    build_workspace_cache_plan, resolve_task_name,
 };
 
 use crate::commands::common::{
@@ -91,6 +92,28 @@ fn plan_task(request: &AppRequest<'_>, json: bool, runner: RunnerOutput) -> Resu
     let document = adapter.discover_tasks(&flake.nix_ref, request.nix_flags)?;
     let canonical = resolve_task_name(&document, request.app)?;
     let plan = build_execution_plan(&document.tasks, canonical, FailurePolicy::FailFast, None)?;
+    // Fail closed on unimplemented cache modes (and other plan-time cache errors)
+    // so `nxr plan` matches `task` / `cache explain` (nxr#2).
+    let flake_root = flake
+        .local_root
+        .as_deref()
+        .unwrap_or(invocation_cwd.as_path());
+    for node_id in &plan.serial_order {
+        let Some(definition) = document.tasks.get(node_id) else {
+            continue;
+        };
+        build_workspace_cache_plan(
+            &document,
+            node_id,
+            definition,
+            &adapter.system,
+            flake_root,
+            invocation_cwd.as_str(),
+            &std::collections::BTreeMap::new(),
+            &WorkspaceCachePlanOptions::default(),
+        )
+        .map_err(PrepareError::WorkspaceCache)?;
+    }
 
     runner
         .info(format!("planning task {canonical}"))

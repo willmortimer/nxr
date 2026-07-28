@@ -59,9 +59,9 @@ pub use schema::{
     AppListingMetadata, ContextEnvironment, ContextEnvironmentMode, ContextSecretRef, EnvInput,
     EnvInputBinding, ExecutionContext, IoIntensity, MAX_SUPPORTED_SCHEMA_VERSION, SCHEMA_VERSION,
     SCHEMA_VERSION_V2, SchemaError, SecretDelivery, SecretProvider, TaskCache, TaskCacheMode,
-    TaskDefinition, TaskDocument, TaskInputBinding, TaskInputs, TaskOutput, TaskOutputMode,
-    TaskResources, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, parse_task_document,
-    validate_schema_version, validate_working_directory,
+    TaskCacheSecretPolicy, TaskDefinition, TaskDocument, TaskInputBinding, TaskInputs, TaskOutput,
+    TaskOutputMode, TaskResources, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION,
+    parse_task_document, validate_schema_version, validate_working_directory,
 };
 pub use secrets::{
     ResolvedSecrets, SecureTempFile, authorize_secret_refs, resolve_context_secrets,

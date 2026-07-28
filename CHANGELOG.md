@@ -7,12 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `cache.secretPolicy` (`disable` | `ignore-values`) for expert override of
+  secret-bearing workspace-cache policy.
+
+### Fixed
+
+- Secret-bearing tasks (secret env inputs / context secrets) disable workspace
+  cache by default; `nxr cache explain` surfaces the reason ([#1](https://github.com/willmortimer/nxr/issues/1)).
+- `cache.mode` `shared` / `shared-read` fail closed until a shared CAS transport
+  exists ([#2](https://github.com/willmortimer/nxr/issues/2)).
+- `fixtures/README.md` lists `workspace-cache`, `processes`, and `inventory-custom`.
+
 ### Changed
 
-- Roadmap **3.1.4** tracks workspace cache safety: secret-bearing tasks
-  ([#1](https://github.com/willmortimer/nxr/issues/1)) and honest
-  `shared` / `shared-read` handling ([#2](https://github.com/willmortimer/nxr/issues/2)).
-  Docs/Nix option text no longer claim those behaviors are already shipped.
+- Roadmap **3.1.4** workspace cache safety items [#1](https://github.com/willmortimer/nxr/issues/1)
+  and [#2](https://github.com/willmortimer/nxr/issues/2) implemented.
 
 ## [3.1.3] - 2026-07-28
 

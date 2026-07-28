@@ -289,6 +289,11 @@
           "type": "boolean",
           "default": false,
           "description": "When true, failed runs may be cached. Disabled in initial implementations."
+        },
+        "secretPolicy": {
+          "type": "string",
+          "enum": ["disable", "ignore-values"],
+          "description": "How secret-bearing tasks interact with workspace caching. Default (omitted or `disable`): disable cache when secret env inputs or context secrets are present. `ignore-values` is an expert override that allows caching while still excluding secret values from the action key."
         }
       }
     },

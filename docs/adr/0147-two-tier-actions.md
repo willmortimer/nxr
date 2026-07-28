@@ -19,13 +19,14 @@ apply. NXR never copies these into an NXR cache.
 **Workspace actions** declare inputs/outputs for mutable checkout artifacts
 (codegen, reports, bundles). NXR computes an action key and may restore/save
 through an NXR CAS (local first; remote / shared transport later —
-`shared` / `shared-read` modes are reserved; see nxr#2).
+`shared` / `shared-read` modes are rejected until that transport exists).
 
 Action key includes: schema major, task identity + cache salt, system,
 flake.lock / relevant input identity, command + cwd, execution-context
 identity, declared path digests, declared non-secret env, upstream output
 digests, NXR cache protocol version. Secret env/context slots must not be
-keyed by value; default-disable of cache for secret-bearing tasks is nxr#1.
+keyed by value; secret-bearing tasks disable workspace cache by default
+(`cache.secretPolicy = "ignore-values"` is an expert override).
 
 ## Validation
 

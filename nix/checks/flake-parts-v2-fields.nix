@@ -56,6 +56,7 @@ let
             restore = true;
             save = true;
             failures = null;
+            secretPolicy = null;
           };
           resources = {
             cpu = 2;

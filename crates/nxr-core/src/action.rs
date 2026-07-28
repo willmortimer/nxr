@@ -11,9 +11,18 @@ pub enum ActionTier {
 }
 
 /// Whether schema v2 cache policy enables local NXR CAS restore/save.
+///
+/// Only `local` is implemented. `shared` / `shared-read` must fail closed
+/// before this helper is consulted (see nxr#2).
 #[must_use]
 pub fn cache_mode_enabled(mode: Option<&str>) -> bool {
-    matches!(mode, Some("local" | "shared-read" | "shared"))
+    matches!(mode, Some("local"))
+}
+
+/// `shared` / `shared-read` are reserved until a shared CAS transport exists.
+#[must_use]
+pub fn cache_mode_shared_unimplemented(mode: Option<&str>) -> bool {
+    matches!(mode, Some("shared-read" | "shared"))
 }
 
 /// Classify a task from its declared outputs.
@@ -51,5 +60,9 @@ mod tests {
         assert!(!workspace_cache_enabled(1, None));
         assert!(workspace_cache_enabled(1, Some("local")));
         assert!(!workspace_cache_enabled(1, Some("disabled")));
+        assert!(!workspace_cache_enabled(1, Some("shared")));
+        assert!(!workspace_cache_enabled(1, Some("shared-read")));
+        assert!(cache_mode_shared_unimplemented(Some("shared")));
+        assert!(cache_mode_shared_unimplemented(Some("shared-read")));
     }
 }

@@ -30,13 +30,16 @@ pub fn explain_workspace_cache(prepared: &PreparedTaskNode) -> CacheExplain {
 
 fn build_explain(plan: &WorkspaceCachePlan) -> CacheExplain {
     if !plan.cache_enabled {
+        let reason = plan
+            .key_components
+            .get("cache_disabled")
+            .cloned()
+            .unwrap_or_else(|| "cache.mode disabled or no outputs declared".to_owned());
         return CacheExplain {
             tier: plan.tier,
             cache_enabled: false,
             action_key: plan.action_key.clone(),
-            lookup: CacheLookupExplain::Skipped {
-                reason: "cache.mode disabled or no outputs declared".to_owned(),
-            },
+            lookup: CacheLookupExplain::Skipped { reason },
             key_components: plan.key_components.clone(),
         };
     }

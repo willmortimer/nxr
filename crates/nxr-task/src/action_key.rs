@@ -16,13 +16,17 @@ use nxr_core::cas::{
     CAS_PROTOCOL_VERSION, CasOutput, CasRestoreMode, digest_bytes, digest_file, digest_repo_path,
     flake_lock_digest, hash_action_key,
 };
-use nxr_core::{ActionTier, EnvironmentPolicy, classify_action_tier, workspace_cache_enabled};
+use nxr_core::{
+    ActionTier, EnvironmentPolicy, cache_mode_shared_unimplemented, classify_action_tier,
+    workspace_cache_enabled,
+};
 use nxr_core::{normalize_repo_relative_path, validate_repo_relative_path};
 use serde::Serialize;
 
 use crate::context::PlanSecretEntry;
 use crate::schema::{
-    EnvInput, TaskCacheMode, TaskDefinition, TaskDocument, TaskOutput, TaskOutputMode,
+    EnvInput, TaskCacheMode, TaskCacheSecretPolicy, TaskDefinition, TaskDocument, TaskOutput,
+    TaskOutputMode,
 };
 
 /// Resolved cache plan for one task node.
@@ -78,6 +82,15 @@ pub fn build_workspace_cache_plan(
         .as_ref()
         .and_then(|cache| cache.mode.as_ref());
     let mode_label = cache_mode_label(cache_mode);
+    if cache_mode_shared_unimplemented(mode_label) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cache.mode `{label}` is not implemented yet; use `local` or `disabled` until a shared CAS transport exists (nxr#2)",
+                label = mode_label.unwrap_or("shared")
+            ),
+        ));
+    }
     let tier = classify_action_tier(definition.outputs.len());
     let cache_requested = workspace_cache_enabled(definition.outputs.len(), mode_label);
     let outputs = cas_outputs_from_task(&definition.outputs);
@@ -100,6 +113,31 @@ pub fn build_workspace_cache_plan(
             BTreeMap::from([(
                 "cache_disabled".to_owned(),
                 "no workspace outputs or cache mode disabled".to_owned(),
+            )]),
+        ));
+    }
+
+    let has_secret_env = definition.inputs.as_ref().is_some_and(|inputs| {
+        inputs
+            .env
+            .iter()
+            .any(|env_input| env_input_metadata(env_input).2)
+    });
+    let has_context_secrets = !options.context_secrets.is_empty();
+    let ignore_secret_values = matches!(
+        definition
+            .cache
+            .as_ref()
+            .and_then(|cache| cache.secret_policy),
+        Some(TaskCacheSecretPolicy::IgnoreValues)
+    );
+    if (has_secret_env || has_context_secrets) && !ignore_secret_values {
+        return Ok(disabled_plan(
+            tier,
+            outputs,
+            BTreeMap::from([(
+                "cache_disabled".to_owned(),
+                "secret-bearing task disables workspace cache by default".to_owned(),
             )]),
         ));
     }
@@ -159,14 +197,14 @@ pub fn build_workspace_cache_plan(
     }
 
     for secret in &options.context_secrets {
+        // Never include resolved secret values in explainable key material.
         key_components.insert(
             format!("context.secret:{}", secret.name),
             format!(
-                "{}:{}:{:?}:{:?}",
+                "{}:{}:{:?}",
                 secret.reference,
                 secret_provider_label(secret.provider),
                 secret.delivery,
-                secret.value
             ),
         );
     }
@@ -698,6 +736,7 @@ mod tests {
             restore: None,
             save: None,
             failures: None,
+            secret_policy: None,
         });
         def
     }
@@ -920,16 +959,125 @@ mod tests {
             &plan_options(),
         )
         .expect("plan");
+        assert!(!plan.cache_enabled);
+        assert!(plan.action_key.is_none());
+        assert_eq!(
+            plan.key_components.get("cache_disabled"),
+            Some(&"secret-bearing task disables workspace cache by default".to_owned())
+        );
         let components = serde_json::to_string(&plan.key_components).expect("json");
         assert!(!components.contains("super-secret-value"));
+    }
+
+    #[test]
+    fn secret_env_ignore_values_keeps_cache_enabled_without_values() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let flake = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8");
+        let doc = empty_doc();
+        let mut def = workspace_task();
+        def.cache.as_mut().expect("cache").secret_policy =
+            Some(crate::schema::TaskCacheSecretPolicy::IgnoreValues);
+        def.inputs = Some(TaskInputs {
+            env: vec![EnvInput::Binding(EnvInputBinding {
+                name: "NXR_TEST_SECRET_ENV".to_owned(),
+                required: false,
+                secret: true,
+            })],
+            ..TaskInputs::default()
+        });
+
+        let plan_a = build_workspace_cache_plan(
+            &doc,
+            "codegen",
+            &def,
+            "aarch64-darwin",
+            &flake,
+            tmp.path().as_os_str().to_str().expect("utf8"),
+            &BTreeMap::new(),
+            &plan_options(),
+        )
+        .expect("plan a");
+        let plan_b = build_workspace_cache_plan(
+            &doc,
+            "codegen",
+            &def,
+            "aarch64-darwin",
+            &flake,
+            tmp.path().as_os_str().to_str().expect("utf8"),
+            &BTreeMap::new(),
+            &plan_options(),
+        )
+        .expect("plan b");
+
+        assert!(plan_a.cache_enabled);
+        assert_eq!(plan_a.action_key, plan_b.action_key);
+        let components = serde_json::to_string(&plan_a.key_components).expect("json");
+        assert!(!components.contains("super-secret-value"));
         assert_eq!(
-            plan.key_components.get("input.env:NXR_TEST_SECRET_ENV"),
+            plan_a.key_components.get("input.env:NXR_TEST_SECRET_ENV"),
             Some(&"secret".to_owned())
         );
+    }
+
+    #[test]
+    fn context_secrets_disable_cache_by_default() {
+        use crate::context::{PlanSecretEntry, PlanSecretValuePlaceholder};
+        use crate::schema::{SecretDelivery, SecretProvider};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let flake = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8");
+        let doc = empty_doc();
+        let def = workspace_task();
+        let mut options = plan_options();
+        options.context_name = Some("release".to_owned());
+        options.context_secrets = vec![PlanSecretEntry {
+            name: "DEPLOY_TOKEN".to_owned(),
+            reference: "NXR_FIXTURE_DEPLOY_TOKEN".to_owned(),
+            provider: SecretProvider::Env,
+            delivery: SecretDelivery::Env,
+            value: PlanSecretValuePlaceholder::RUNTIME,
+        }];
+
+        let plan = build_workspace_cache_plan(
+            &doc,
+            "codegen",
+            &def,
+            "aarch64-darwin",
+            &flake,
+            tmp.path().as_os_str().to_str().expect("utf8"),
+            &BTreeMap::new(),
+            &options,
+        )
+        .expect("plan");
+
+        assert!(!plan.cache_enabled);
         assert_eq!(
-            plan.key_components.get("input.env:NXR_TEST_PUBLIC_ENV"),
-            Some(&"unset".to_owned())
+            plan.key_components.get("cache_disabled"),
+            Some(&"secret-bearing task disables workspace cache by default".to_owned())
         );
+    }
+
+    #[test]
+    fn shared_cache_mode_is_rejected() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let flake = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8");
+        let doc = empty_doc();
+        let mut def = workspace_task();
+        def.cache.as_mut().expect("cache").mode = Some(TaskCacheMode::Shared);
+
+        let err = build_workspace_cache_plan(
+            &doc,
+            "codegen",
+            &def,
+            "aarch64-darwin",
+            &flake,
+            tmp.path().as_os_str().to_str().expect("utf8"),
+            &BTreeMap::new(),
+            &plan_options(),
+        )
+        .expect_err("shared must fail closed");
+        assert!(err.to_string().contains("not implemented"));
+        assert!(err.to_string().contains("shared"));
     }
 
     #[test]

@@ -5289,6 +5289,151 @@ fn task_dry_run_notes_workspace_cache_lookup() {
         .stdout(predicate::str::contains("workspace-action"));
 }
 
+fn isolated_workspace_cache_flake() -> tempfile::TempDir {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let src = repo_root().join("fixtures/workspace-cache");
+    let dst = temp.path().join("workspace-cache");
+    copy_dir_recursive(&src, &dst).expect("copy workspace-cache fixture");
+    temp
+}
+
+fn isolated_contexts_flake() -> tempfile::TempDir {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let src = repo_root().join("fixtures/contexts");
+    let dst = temp.path().join("contexts");
+    copy_dir_recursive(&src, &dst).expect("copy contexts fixture");
+    temp
+}
+
+#[test]
+fn cache_explain_secret_task_reports_disable_reason() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args([
+            "--flake",
+            "fixtures/workspace-cache",
+            "cache",
+            "explain",
+            "secret-codegen",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse cache explain json");
+    assert_eq!(value["tier"], "workspace-action");
+    assert_eq!(value["cache_enabled"], false);
+    let reason = value["lookup"]["reason"].as_str().expect("skipped reason");
+    assert!(
+        reason.contains("secret-bearing"),
+        "expected secret disable reason, got {reason}"
+    );
+}
+
+#[test]
+fn secret_codegen_key_a_to_key_b_does_not_restore_stale_output() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let fixture = isolated_workspace_cache_flake();
+    let flake = fixture.path().join("workspace-cache");
+    let home = tempfile::TempDir::new().expect("cache home");
+    let out = flake.join("gen/secret-out.txt");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&flake)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_FIXTURE_API_KEY", "key-a")
+        .args(["task", "secret-codegen"])
+        .assert()
+        .success();
+    let first = std::fs::read_to_string(&out).expect("read secret-out after key-a");
+    assert!(
+        first.contains("key-a"),
+        "expected key-a in output, got {first}"
+    );
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&flake)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_FIXTURE_API_KEY", "key-b")
+        .args(["task", "secret-codegen"])
+        .assert()
+        .success();
+    let second = std::fs::read_to_string(&out).expect("read secret-out after key-b");
+    assert!(
+        second.contains("key-b"),
+        "key-a→key-b must miss / re-run; got {second}"
+    );
+    assert!(
+        !second.contains("key-a"),
+        "stale key-a output must not be restored; got {second}"
+    );
+}
+
+#[test]
+fn shared_cache_modes_fail_closed_at_plan_task_and_explain() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    for task in ["shared-codegen", "shared-read-codegen"] {
+        for args in [
+            vec!["plan", task],
+            vec!["task", task, "--dry-run"],
+            vec!["cache", "explain", task],
+        ] {
+            cargo_bin_cmd!("nxr")
+                .current_dir(&repo_root)
+                .args(["--flake", "fixtures/workspace-cache"])
+                .args(&args)
+                .assert()
+                .failure()
+                .stderr(predicate::str::contains("not implemented"));
+        }
+    }
+}
+
+#[test]
+fn cache_explain_context_secret_task_reports_disable_reason() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let fixture = isolated_contexts_flake();
+    let flake = fixture.path().join("contexts");
+    let home = tempfile::TempDir::new().expect("temp home");
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&flake)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_FIXTURE_DEPLOY_TOKEN", "marker")
+        .env("NXR_ASSUME_YES", "1")
+        .args(["cache", "explain", "cached-deploy", "--json"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse cache explain json");
+    assert_eq!(value["cache_enabled"], false);
+    let reason = value["lookup"]["reason"].as_str().expect("skipped reason");
+    assert!(
+        reason.contains("secret-bearing"),
+        "expected context-secret disable reason, got {reason}"
+    );
+}
+
 #[test]
 fn process_status_lists_declared_processes() {
     let Some(()) = require_nix() else {

@@ -52,10 +52,9 @@ let
         description = ''
           When true, the variable is secret metadata: values never appear in
           plans or events, and the action key records presence as `"secret"`
-          rather than the value. Auto-disabling workspace cache for
-          secret-bearing tasks is tracked as a follow-up (nxr#1); until then
-          set `cache.mode = "disabled"` explicitly when outputs depend on the
-          secret value.
+          rather than the value. Secret-bearing tasks disable workspace cache
+          by default; use `cache.secretPolicy = "ignore-values"` only when
+          outputs do not depend on the secret value (nxr#1).
         '';
       };
     };
@@ -140,9 +139,8 @@ let
         default = null;
         description = ''
           Cache scope (`disabled`, `local`, `shared-read`, or `shared`).
-          Only local CAS is implemented today; `shared-read` / `shared` still
-          use the local path (honest reject-or-warn is nxr#2). Prefer `local`
-          or `disabled` until a shared transport ships.
+          Only `local` CAS is implemented; `shared-read` / `shared` are
+          rejected until a shared transport ships (nxr#2).
         '';
       };
 
@@ -175,6 +173,22 @@ let
         type = types.nullOr types.bool;
         default = null;
         description = "When true, failed runs may be cached.";
+      };
+
+      secretPolicy = lib.mkOption {
+        type = types.nullOr (
+          types.enum [
+            "disable"
+            "ignore-values"
+          ]
+        );
+        default = null;
+        description = ''
+          How secret-bearing tasks interact with workspace caching. Omitted or
+          `disable`: secret env inputs / context secrets disable the workspace
+          cache. `ignore-values` is an expert override that keeps caching while
+          excluding secret values from the action key (nxr#1).
+        '';
       };
     };
   };

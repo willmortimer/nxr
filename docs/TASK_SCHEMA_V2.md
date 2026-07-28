@@ -9,7 +9,7 @@ when security/execution fields are used is required as of 2.7.1 ([ADR-0144](adr/
 |---|---|---|
 | Strict parse (`deny_unknown_fields`) | **Shipped** | Document + task + nested v2 objects |
 | `inputs` / `outputs` declarations | **Partial** | Parsed and validated; fingerprinting for workspace CAS |
-| `cache` policy + workspace result cache | **Experimental 3.1** | Opt-in **local** CAS; `nxr cache explain` ([ADR-0147](adr/0147-two-tier-actions.md)). `shared` / `shared-read` not transported yet ([#2](https://github.com/willmortimer/nxr/issues/2)). Secret-bearing tasks do not yet auto-disable cache ([#1](https://github.com/willmortimer/nxr/issues/1)). |
+| `cache` policy + workspace result cache | **Experimental 3.1** | Opt-in **local** CAS; `nxr cache explain` ([ADR-0147](adr/0147-two-tier-actions.md)). Secret-bearing tasks disable cache by default (`cache.secretPolicy = "ignore-values"` override). `shared` / `shared-read` fail closed until a transport exists. |
 | `resources` scheduling | **Experimental 3.1** | Exclusive locks + soft CPU/memory pools |
 | `contexts` module + emit | **Shipped** | `perSystem.nxr.contexts` |
 | Auto `schema_version = 2` when v2 fields present | **2.7.1** | Older runners reject instead of ignoring |

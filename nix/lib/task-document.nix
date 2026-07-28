@@ -52,6 +52,7 @@ let
       restore = cache.restore;
       save = cache.save;
       failures = cache.failures;
+      secretPolicy = cache.secretPolicy;
     };
 
   taskResourcesToJson =
