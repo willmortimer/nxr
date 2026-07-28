@@ -143,15 +143,18 @@ nxr daemon stop
 
 - Socket: `$XDG_RUNTIME_DIR/nxr/nxrd.sock` (override `NXR_DAEMON_SOCKET`).
 - Protocol: JSON lines, version **1**, role `cache` only — not execution
-  authority; reserved methods leave room for log broker (7c) and workers;
-  lazy prep (4b) is CLI-local ([ADR-0158](adr/0158-lazy-node-prep.md)).
+  authority; `log.*` broker methods ship in Wave 7c
+  ([ADR-0164](adr/0164-process-log-broker.md)); reserved `eval.prepare` /
+  `worker.register` leave room for later waves; lazy prep (4b) is CLI-local
+  ([ADR-0158](adr/0158-lazy-node-prep.md)).
 - **Retained in RAM while running:** discovery payloads, prepared plans
   (placeholder secret policy), fingerprint strings, Merkle invalidation path
-  sets, recent action-key digests.
+  sets, recent action-key digests, bounded process-log tails (≤256 KiB/stream).
 - **Not retained / not authoritative:** secret values, Nix eval results as a
   trust boundary, process supervision, remote workers.
 - Kill-switch: `NXR_DAEMON=off` (also `0` / `false` / `no`). Absent socket or
-  protocol mismatch → identical standalone CLI behavior.
+  protocol mismatch → identical standalone CLI behavior. Log-broker follow
+  kill-switch: `NXR_LOG_BROKER=off`.
 - Watch best-effort calls `merkle.invalidate` on restart classification;
   in-process `WatchIncrementalSnapshot` is Wave 5a ([ADR-0160](adr/0160-watch-incremental-snapshot.md)).
 
@@ -232,8 +235,11 @@ Adjacent reads for the same `(node, stream)` are coalesced before
 `StdoutChunk` / `StderrChunk` events are emitted ([ADR-0162](adr/0162-child-output-batching.md)).
 Default limits: **64 KiB**, **32 lines**, **8 ms** latency. Live mode batches
 terminal writes (8 KiB buffer, 256 KiB per-node pending cap) and stores grouped
-output as raw bytes until node exit. Wave **7c** (Unix-socket log broker for
-`nxr process logs --follow`) is deferred.
+output as raw bytes until node exit. Wave **7c** optional Unix-socket log
+broker for `nxr process logs --follow` ([ADR-0164](adr/0164-process-log-broker.md)):
+when `nxrd` is up, follow streams via `log.subscribe` with an open log FD
+(20 ms poll inside the daemon); absent daemon / `NXR_LOG_BROKER=off` keeps the
+200 ms file poll.
 
 Benchmark scenarios to profile (stable harness thresholds TBD):
 

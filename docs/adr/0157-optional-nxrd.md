@@ -37,7 +37,8 @@ ADR-0301 describe a full workspace control plane; this wave ships only a
 5. Reserved method names (`eval.prepare`, `log.append`, `worker.register`)
    return `not_implemented` so Waves 4b / 7c / 8c can extend without a new
    transport. This ADR does **not** accept remote workers, eval workers, or a
-   log broker (ADR-0302 remains deferred).
+   log broker (ADR-0302 remains deferred). Wave **7c** later implements the
+   log broker methods on this socket ([ADR-0164](0164-process-log-broker.md)).
 6. High-value clients first: discovery warm path in `WorkspaceSnapshot::build`,
    prepared-plan lookup/store beside the disk cache, watch best-effort
    `merkle.invalidate` on restart classification.

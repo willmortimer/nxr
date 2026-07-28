@@ -9,6 +9,7 @@ pub mod digest_cache;
 pub mod ecosystem;
 pub mod env_policy;
 pub mod incremental_digest;
+pub mod log_broker;
 pub mod merkle_index;
 pub mod model;
 pub mod perf;
@@ -54,6 +55,10 @@ pub use incremental_digest::{
     GIT_BLOB_DIGEST_DOMAIN, GIT_DIGESTS_ENV, action_digest_index_dir, action_digest_index_enabled,
     action_digest_index_status, clear_action_digest_index, digest_from_git_blob,
     git_digests_enabled, invalidate_action_digest_paths,
+};
+pub use log_broker::{
+    FILE_POLL_MS, LOG_BROKER_ENV, LogBroker, LogEvent, MAX_APPEND_BYTES, MAX_STREAMS,
+    MAX_TAIL_BYTES, decode_log_bytes, encode_log_bytes, log_broker_enabled,
 };
 pub use merkle_index::{
     MERKLE_DIR_DOMAIN, MERKLE_INDEX_ENV, MERKLE_INDEX_SCHEMA_VERSION, MERKLE_LEAF_KIND,

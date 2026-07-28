@@ -33,8 +33,9 @@ covers in-process coalescing and renderer batching only.
    invalid bytes still use the incremental decoder).
 4. **Grouped / failures** modes store **raw bytes** in spillable buffers (no
    per-chunk UTF-8 decode); decode/sanitization stays deferred until flush.
-5. **Non-goals (7c):** Unix-socket log broker, `nxr process logs --follow`
-   poll removal, or `nxrd` tail forwarding — reserved for Wave 7c.
+5. **Non-goals (at 7a/7b ship):** Unix-socket log broker, `nxr process logs
+   --follow` poll removal, or `nxrd` tail forwarding — delivered in Wave 7c
+   ([ADR-0164](0164-process-log-broker.md)).
 
 ## Validation
 
@@ -48,4 +49,5 @@ covers in-process coalescing and renderer batching only.
 
 - Fewer events and terminal writes for bursty child output.
 - Slightly higher worst-case latency (≤ 8 ms) for tiny interactive lines.
-- Log broker (7c) can subscribe at the coalescer or pre-broker hook later.
+- Log broker (7c) can subscribe at the coalescer or pre-broker hook later;
+  process-log follow over `nxrd` is [ADR-0164](0164-process-log-broker.md).

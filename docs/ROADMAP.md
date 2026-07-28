@@ -89,7 +89,8 @@ Closes trust holes before heavier CAS/context use:
 ### Later
 
 - Optional local cache daemon deepening (watch Merkle session Wave 5; log broker
-  Wave 7c) — MVP in Unreleased via [ADR-0157](adr/0157-optional-nxrd.md);
+  Wave 7c shipped via [ADR-0164](adr/0164-process-log-broker.md)) — MVP daemon
+  in Unreleased via [ADR-0157](adr/0157-optional-nxrd.md);
   lazy prep + CAS‖plan shipped ([ADR-0158](adr/0158-lazy-node-prep.md),
   [ADR-0159](adr/0159-cas-plan-pipeline.md)); full control plane remains deferred
   (ADR-0301 / ADR-0302)

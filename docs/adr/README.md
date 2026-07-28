@@ -117,6 +117,7 @@ Rejected   considered and explicitly not chosen
 | ADR-0161 | Watch semantic change coalesce | Accepted | Unreleased |
 | ADR-0162 | Child output event batching + terminal write coalescing | Accepted | Unreleased |
 | ADR-0163 | Watch prewarm for likely reruns | Accepted | Unreleased |
+| ADR-0164 | Optional process log broker via `nxrd` | Accepted | Unreleased |
 | ADR-0165 | Determinate discovery/evaluation strategy planner | Accepted | Unreleased |
 | ADR-0167 | Batched Nix store path queries | Accepted | Unreleased |
 
@@ -141,6 +142,7 @@ Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0161-watch-semantic-coalesce.md`](0161-watch-semantic-coalesce.md),
 [`0162-child-output-batching.md`](0162-child-output-batching.md),
 [`0163-watch-prewarm.md`](0163-watch-prewarm.md),
+[`0164-process-log-broker.md`](0164-process-log-broker.md),
 [`0165-determinate-eval-strategy.md`](0165-determinate-eval-strategy.md),
 [`0167-batched-store-queries.md`](0167-batched-store-queries.md).
 

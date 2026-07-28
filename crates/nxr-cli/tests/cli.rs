@@ -5706,3 +5706,157 @@ fn list_works_without_daemon() {
         .assert()
         .success();
 }
+
+#[test]
+fn process_logs_follow_absent_daemon_still_resolves_process() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("missing-broker.sock");
+    // No supervised process → NotRunning; proves logs --follow path works
+    // with an absent daemon (file-poll fallback would apply if running).
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .env("NXR_DAEMON_SOCKET", &socket)
+        .env("NXR_LOG_BROKER", "on")
+        .args([
+            "--flake",
+            "fixtures/processes",
+            "logs",
+            "worker",
+            "--follow",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not running"));
+}
+
+#[test]
+fn process_logs_follow_broker_kill_switch_still_resolves_process() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .env("NXR_LOG_BROKER", "off")
+        .args([
+            "--flake",
+            "fixtures/processes",
+            "logs",
+            "worker",
+            "--follow",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not running"));
+}
+
+#[cfg(unix)]
+#[test]
+fn daemon_log_broker_append_subscribe_round_trip() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use assert_cmd::cargo::CommandCargoExt;
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("nxrd.sock");
+    let socket_str = socket.to_str().expect("utf8").to_owned();
+
+    let mut child = Command::cargo_bin("nxr")
+        .expect("nxr binary")
+        .args(["daemon", "start", "--foreground", "--socket", &socket_str])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn daemon");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if socket.exists() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(socket.exists(), "daemon socket missing");
+
+    // base64("broker-cli\n")
+    const PAYLOAD_B64: &str = "YnJva2VyLWNsaQo=";
+
+    let socket_for_producer = socket.clone();
+    let producer = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(150));
+        let mut stream = UnixStream::connect(&socket_for_producer).expect("connect");
+        let hello = r#"{"v":1,"id":1,"method":"hello"}"#;
+        writeln!(stream, "{hello}").unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let append = format!(
+            r#"{{"v":1,"id":2,"method":"log.append","params":{{"stream":"cli/test","data_b64":"{PAYLOAD_B64}"}}}}"#
+        );
+        writeln!(stream, "{append}").unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.contains("\"ok\":true"), "append resp {line}");
+        let close = r#"{"v":1,"id":3,"method":"log.close","params":{"stream":"cli/test"}}"#;
+        writeln!(stream, "{close}").unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+    });
+
+    let mut stream = UnixStream::connect(&socket).expect("subscribe connect");
+    {
+        let hello = r#"{"v":1,"id":1,"method":"hello"}"#;
+        writeln!(stream, "{hello}").unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+    }
+    let subscribe = r#"{"v":1,"id":2,"method":"log.subscribe","params":{"stream":"cli/test","from_start":true}}"#;
+    writeln!(stream, "{subscribe}").unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut got = String::new();
+    let mut body = String::new();
+    let read_deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < read_deadline {
+        got.clear();
+        match reader.read_line(&mut got) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                continue;
+            }
+            Err(error) => panic!("subscribe read failed: {error}"),
+        }
+        if got.contains(PAYLOAD_B64) {
+            body.push_str(&got);
+            break;
+        }
+        if got.contains("\"type\":\"eof\"") {
+            break;
+        }
+    }
+    producer.join().expect("producer");
+    assert!(
+        body.contains(PAYLOAD_B64),
+        "expected chunk in subscribe stream, last={got}"
+    );
+
+    let _ = Command::cargo_bin("nxr")
+        .expect("nxr")
+        .args(["daemon", "stop", "--socket", &socket_str])
+        .status();
+    let _ = child.wait();
+}

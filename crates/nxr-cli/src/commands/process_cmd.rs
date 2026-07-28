@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
+use nxr_core::{DaemonClientError, daemon_socket_path, log_broker_enabled, try_connect};
 use nxr_nix::{OptionalNixFlags, resolve_app_by_name};
 use nxr_task::{
     ProcessDefinition, ProcessNameError, ProcessReadiness, sanitize_process_log_name,
@@ -207,6 +208,11 @@ pub fn logs(
         .info(format!("reading logs for {name}"))
         .map_err(ProcessError::Io)?;
 
+    if follow && log_broker_enabled() && follow_logs_via_broker(&context.project_id, name, record)?
+    {
+        return Ok(exit::SUCCESS);
+    }
+
     let mut file = File::open(&record.log_path)?;
     let mut stdout = io::stdout().lock();
     if follow {
@@ -226,6 +232,102 @@ pub fn logs(
         io::copy(&mut file, &mut stdout)?;
     }
     Ok(exit::SUCCESS)
+}
+
+/// Prefer nxrd log.subscribe when the daemon is up; return false to fall back.
+#[cfg(unix)]
+fn follow_logs_via_broker(
+    project_id: &str,
+    name: &str,
+    record: &RunningProcessRecord,
+) -> Result<bool, ProcessError> {
+    let socket = daemon_socket_path();
+    let mut conn = match try_connect(&socket) {
+        Ok(conn) => conn,
+        Err(
+            DaemonClientError::Absent
+            | DaemonClientError::Disabled
+            | DaemonClientError::ProtocolMismatch(_),
+        ) => return Ok(false),
+        Err(error) => {
+            runner_broker_fallback_note(&error);
+            return Ok(false);
+        }
+    };
+
+    let stream_id = log_stream_id(project_id, name);
+    let alive_record = record.clone();
+    let mut stdout = io::stdout().lock();
+    let mut wrote_any = false;
+
+    match conn.follow_log_stream(
+        &stream_id,
+        Some(alive_record.log_path.as_str()),
+        true,
+        |chunk| {
+            wrote_any = true;
+            stdout.write_all(chunk).map_err(DaemonClientError::Io)?;
+            stdout.flush().map_err(DaemonClientError::Io)?;
+            Ok(())
+        },
+        || is_supervised_process_alive(&alive_record),
+    ) {
+        Ok(()) => Ok(true),
+        Err(
+            DaemonClientError::Absent
+            | DaemonClientError::Disabled
+            | DaemonClientError::ProtocolMismatch(_),
+        ) => Ok(false),
+        Err(error) if wrote_any => {
+            // Partial stream already emitted; avoid file-follow replay.
+            runner_broker_fallback_note(&error);
+            Ok(true)
+        }
+        Err(error) => {
+            runner_broker_fallback_note(&error);
+            Ok(false)
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn follow_logs_via_broker(
+    _project_id: &str,
+    _name: &str,
+    _record: &RunningProcessRecord,
+) -> Result<bool, ProcessError> {
+    Ok(false)
+}
+
+fn runner_broker_fallback_note(error: &DaemonClientError) {
+    // Best-effort diagnostics only; never fail follow because stderr is busy.
+    let _ = writeln!(
+        io::stderr(),
+        "nxr: log broker unavailable ({error}); falling back to file follow"
+    );
+}
+
+fn log_stream_id(project_id: &str, name: &str) -> String {
+    format!("{project_id}/{name}")
+}
+
+/// Best-effort registration so the daemon can track the log path early.
+fn best_effort_log_open(project_id: &str, name: &str, log_path: &Path) {
+    if !log_broker_enabled() {
+        return;
+    }
+    let socket = daemon_socket_path();
+    let Ok(mut conn) = try_connect(&socket) else {
+        return;
+    };
+    let stream = log_stream_id(project_id, name);
+    let _ = conn.call::<serde_json::Value>(
+        "log.open",
+        Some(serde_json::json!({
+            "stream": stream,
+            "path": log_path.display().to_string(),
+        })),
+    );
 }
 
 /// Stop one or all supervised processes.
@@ -363,6 +465,8 @@ fn spawn_process(
         .create(true)
         .append(true)
         .open(&log_path)?;
+
+    best_effort_log_open(context.project_id.as_str(), name, &log_path);
 
     let pid = spawn_background(
         spawn.program.as_std_path(),

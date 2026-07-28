@@ -1,21 +1,26 @@
 //! Optional local cache/coordination daemon (`nxrd` / `nxr daemon`).
 //!
-//! Retains warm discovery, prepared-plan, fingerprint, Merkle invalidation, and
-//! recent action-key material across CLI invocations over a per-user Unix
-//! socket. The daemon is **not** an execution authority and is never required
-//! for correctness ([ADR-0157](../../../docs/adr/0157-optional-nxrd.md);
-//! ADR-0301 spirit). Kill-switch: [`DAEMON_ENV`]=`off`.
+//! Retains warm discovery, prepared-plan, fingerprint, Merkle invalidation,
+//! recent action-key material, and an optional process-log broker across CLI
+//! invocations over a per-user Unix socket. The daemon is **not** an execution
+//! authority and is never required for correctness
+//! ([ADR-0157](../../../docs/adr/0157-optional-nxrd.md);
+//! [ADR-0164](../../../docs/adr/0164-process-log-broker.md); ADR-0301 spirit).
+//! Kill-switch: [`DAEMON_ENV`]=`off`. Log broker follow kill-switch:
+//! [`crate::log_broker::LOG_BROKER_ENV`].
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::log_broker::{FILE_POLL_MS, LogBroker, LogEvent, decode_log_bytes, encode_log_bytes};
 use crate::merkle_index::touched_directories;
 use crate::plan::{Plan, PlanSecretRef};
 use crate::plan_cache::{
@@ -139,6 +144,7 @@ pub struct DaemonStatus {
     pub fingerprint_entries: usize,
     pub merkle_roots: usize,
     pub action_key_entries: usize,
+    pub log_streams: usize,
 }
 
 /// Prepared-plan entry retained in daemon memory.
@@ -161,6 +167,8 @@ pub struct DaemonState {
     merkle_invalidated: BTreeMap<String, BTreeSet<String>>,
     /// Recent action-key digests (never secret values).
     action_keys: BTreeMap<String, String>,
+    /// Optional process-log broker ([ADR-0164]).
+    pub(crate) logs: LogBroker,
     started_at: Option<Instant>,
     stop: bool,
 }
@@ -193,6 +201,7 @@ impl DaemonState {
             fingerprint_entries: self.fingerprints.len(),
             merkle_roots: self.merkle_invalidated.len(),
             action_key_entries: self.action_keys.len(),
+            log_streams: self.logs.stream_count(),
         }
     }
 
@@ -418,8 +427,65 @@ pub fn handle_request(
                 None => ok_json(request, &serde_json::json!({ "hit": false })),
             }
         }
-        // Reserved for Wave 4b / 7c / 8c — refuse so clients fall back.
-        "eval.prepare" | "log.append" | "worker.register" => error_response(
+        "log.open" => {
+            let stream = match param_str(request, "stream") {
+                Ok(stream) => stream,
+                Err(resp) => return resp,
+            };
+            let path = match optional_param_str(request, "path") {
+                Ok(path) => path.map(PathBuf::from),
+                Err(resp) => return resp,
+            };
+            if let Err(message) = state.logs.open(stream.clone(), path) {
+                return error_response(request, "invalid_params", message);
+            }
+            ok_json(
+                request,
+                &serde_json::json!({ "opened": true, "stream": stream }),
+            )
+        }
+        "log.append" => {
+            let stream = match param_str(request, "stream") {
+                Ok(stream) => stream,
+                Err(resp) => return resp,
+            };
+            let encoded = match param_str(request, "data_b64") {
+                Ok(encoded) => encoded,
+                Err(resp) => return resp,
+            };
+            let data = match decode_log_bytes(&encoded) {
+                Ok(data) => data,
+                Err(message) => {
+                    return error_response(request, "invalid_params", message);
+                }
+            };
+            match state.logs.append(&stream, &data) {
+                Ok(written) => ok_json(
+                    request,
+                    &serde_json::json!({ "written": written, "stream": stream }),
+                ),
+                Err(message) => error_response(request, "invalid_params", message),
+            }
+        }
+        "log.close" => {
+            let stream = match param_str(request, "stream") {
+                Ok(stream) => stream,
+                Err(resp) => return resp,
+            };
+            state.logs.close(&stream);
+            ok_json(
+                request,
+                &serde_json::json!({ "closed": true, "stream": stream }),
+            )
+        }
+        // `log.subscribe` is handled in the connection loop (streaming).
+        "log.subscribe" => error_response(
+            request,
+            "invalid_params",
+            "log.subscribe must be handled as a streaming connection method",
+        ),
+        // Reserved for Wave 4b / 8c — refuse so clients fall back.
+        "eval.prepare" | "worker.register" => error_response(
             request,
             "not_implemented",
             format!(
@@ -474,6 +540,33 @@ fn param_str(request: &DaemonRequest, field: &str) -> Result<String, DaemonRespo
             format!("missing or non-string params.{field}"),
         )),
     }
+}
+
+fn optional_param_str(
+    request: &DaemonRequest,
+    field: &str,
+) -> Result<Option<String>, DaemonResponse> {
+    let Some(params) = request.params.as_ref() else {
+        return Ok(None);
+    };
+    match params.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(error_response(
+            request,
+            "invalid_params",
+            format!("params.{field} must be a string when present"),
+        )),
+    }
+}
+
+fn optional_param_bool(request: &DaemonRequest, field: &str, default: bool) -> bool {
+    request
+        .params
+        .as_ref()
+        .and_then(|params| params.get(field))
+        .and_then(Value::as_bool)
+        .unwrap_or(default)
 }
 
 fn param_value(request: &DaemonRequest, field: &str) -> Result<Value, DaemonResponse> {
@@ -737,6 +830,121 @@ impl DaemonConnection {
             Ok(serde_json::from_str(response_line.trim())?)
         }
     }
+
+    /// Subscribe to a log stream and invoke `on_chunk` for each payload until
+    /// EOF, disconnect, or `should_continue` returns false after an idle poll.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DaemonClientError`] on I/O, JSON, or remote errors.
+    #[cfg(unix)]
+    pub fn follow_log_stream<F, C>(
+        &mut self,
+        stream: &str,
+        path: Option<&str>,
+        from_start: bool,
+        mut on_chunk: F,
+        mut should_continue: C,
+    ) -> Result<(), DaemonClientError>
+    where
+        F: FnMut(&[u8]) -> Result<(), DaemonClientError>,
+        C: FnMut() -> bool,
+    {
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
+        let mut params = serde_json::json!({
+            "stream": stream,
+            "from_start": from_start,
+        });
+        if let Some(path) = path {
+            params
+                .as_object_mut()
+                .expect("object")
+                .insert("path".to_owned(), Value::String(path.to_owned()));
+        }
+        let request = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id,
+            method: "log.subscribe".to_owned(),
+            params: Some(params),
+        };
+        let mut line = serde_json::to_string(&request)?;
+        line.push('\n');
+        self.stream.write_all(line.as_bytes())?;
+        self.stream.flush()?;
+
+        // Idle reads wake often enough for the caller to observe process death.
+        self.stream
+            .set_read_timeout(Some(Duration::from_millis(200)))?;
+        let mut reader = BufReader::new(self.stream.try_clone()?);
+        let mut idle_after_exit = 0u8;
+
+        loop {
+            let mut response_line = String::new();
+            match reader.read_line(&mut response_line) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(error)
+                    if error.kind() == io::ErrorKind::WouldBlock
+                        || error.kind() == io::ErrorKind::TimedOut =>
+                {
+                    if !should_continue() {
+                        idle_after_exit = idle_after_exit.saturating_add(1);
+                        // One extra idle wake lets in-flight file chunks arrive.
+                        if idle_after_exit >= 2 {
+                            break;
+                        }
+                    } else {
+                        idle_after_exit = 0;
+                    }
+                    continue;
+                }
+                Err(error) => return Err(DaemonClientError::Io(error)),
+            }
+            if response_line.trim().is_empty() {
+                continue;
+            }
+            let response: DaemonResponse = serde_json::from_str(response_line.trim())?;
+            if !response.ok {
+                let error = response.error.unwrap_or(DaemonErrorBody {
+                    code: "unknown".to_owned(),
+                    message: "log.subscribe failed".to_owned(),
+                });
+                return Err(DaemonClientError::Remote {
+                    code: error.code,
+                    message: error.message,
+                });
+            }
+            let Some(result) = response.result else {
+                continue;
+            };
+            if result.get("subscribed").and_then(Value::as_bool) == Some(true) {
+                continue;
+            }
+            match result.get("type").and_then(Value::as_str) {
+                Some("chunk") => {
+                    let encoded =
+                        result
+                            .get("data_b64")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| DaemonClientError::Remote {
+                                code: "invalid_params".to_owned(),
+                                message: "chunk missing data_b64".to_owned(),
+                            })?;
+                    let data =
+                        decode_log_bytes(encoded).map_err(|message| DaemonClientError::Remote {
+                            code: "invalid_params".to_owned(),
+                            message,
+                        })?;
+                    on_chunk(&data)?;
+                    idle_after_exit = 0;
+                }
+                Some("eof") => break,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Convenience: one-shot call against the default or override socket.
@@ -754,6 +962,9 @@ pub fn try_once<T: for<'de> Deserialize<'de>>(method: &str, params: Option<Value
 pub type SharedDaemonState = Arc<Mutex<DaemonState>>;
 
 /// Serve JSON-lines requests until shutdown (Unix).
+///
+/// Each accepted connection runs on its own thread so long-lived
+/// `log.subscribe` streams do not block the accept loop.
 ///
 /// # Errors
 ///
@@ -778,21 +989,33 @@ pub fn serve(socket: &Path, state: SharedDaemonState) -> io::Result<()> {
         }
         write_pid_file(socket)?;
 
-        for incoming in listener.incoming() {
-            let stream = match incoming {
-                Ok(stream) => stream,
+        // Accept loop: spawn per connection; poll stop between accepts with a
+        // short timeout so shutdown does not wait forever for a new client.
+        listener.set_nonblocking(true)?;
+        loop {
+            let stop = state.lock().map(|guard| guard.stop).unwrap_or(true);
+            if stop {
+                break;
+            }
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = stream.set_nonblocking(false);
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+                    let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
+                    let conn_state = Arc::clone(&state);
+                    let conn_socket = socket.to_path_buf();
+                    std::thread::spawn(move || {
+                        let _ = handle_connection(&conn_socket, &conn_state, stream);
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => {
                     cleanup_socket_files(socket);
                     return Err(error);
                 }
-            };
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-            let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
-            let _ = handle_connection(socket, &state, stream);
-            let stop = state.lock().map(|guard| guard.stop).unwrap_or(true);
-            if stop {
-                break;
             }
         }
         cleanup_socket_files(socket);
@@ -835,6 +1058,10 @@ fn handle_connection(
                 continue;
             }
         };
+        if request.method == "log.subscribe" {
+            handle_log_subscribe(state, &mut writer, &request)?;
+            break;
+        }
         let response = {
             let mut guard = state
                 .lock()
@@ -847,6 +1074,181 @@ fn handle_connection(
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn handle_log_subscribe(
+    state: &SharedDaemonState,
+    writer: &mut std::os::unix::net::UnixStream,
+    request: &DaemonRequest,
+) -> io::Result<()> {
+    if request.v != DAEMON_PROTOCOL_VERSION {
+        let response = error_response(
+            request,
+            "protocol_mismatch",
+            format!(
+                "unsupported protocol version {} (daemon speaks {})",
+                request.v, DAEMON_PROTOCOL_VERSION
+            ),
+        );
+        return write_response(writer, &response);
+    }
+
+    let stream_id = match param_str(request, "stream") {
+        Ok(stream) => stream,
+        Err(resp) => return write_response(writer, &resp),
+    };
+    let path_param = match optional_param_str(request, "path") {
+        Ok(path) => path.map(PathBuf::from),
+        Err(resp) => return write_response(writer, &resp),
+    };
+    let from_start = optional_param_bool(request, "from_start", true);
+
+    let (tail, rx, file_path) = {
+        let mut guard = state
+            .lock()
+            .map_err(|_| io::Error::other("daemon state mutex poisoned"))?;
+        if let Some(path) = path_param.clone() {
+            if let Err(message) = guard.logs.open(stream_id.clone(), Some(path)) {
+                let response = error_response(request, "invalid_params", message);
+                return write_response(writer, &response);
+            }
+        } else if let Err(message) = guard.logs.open(stream_id.clone(), None) {
+            let response = error_response(request, "invalid_params", message);
+            return write_response(writer, &response);
+        }
+        let (tail, rx) = match guard.logs.subscribe(&stream_id) {
+            Ok(pair) => pair,
+            Err(message) => {
+                let response = error_response(request, "invalid_params", message);
+                return write_response(writer, &response);
+            }
+        };
+        let file_path = path_param.or_else(|| guard.logs.path_for(&stream_id));
+        (tail, rx, file_path)
+    };
+
+    let subscribed = ok_json(
+        request,
+        &serde_json::json!({
+            "subscribed": true,
+            "stream": stream_id,
+            "from_start": from_start,
+        }),
+    );
+    write_response(writer, &subscribed)?;
+
+    // File-backed follow streams the open FD; the RAM tail is for append-only
+    // producers (avoid duplicating disk bytes).
+    if file_path.is_none() && !tail.is_empty() {
+        write_chunk_event(writer, request.id, &tail)?;
+    }
+
+    let mut file = match file_path.as_ref() {
+        Some(path) => match File::open(path) {
+            Ok(mut file) => {
+                if from_start {
+                    file.seek(SeekFrom::Start(0))?;
+                } else {
+                    file.seek(SeekFrom::End(0))?;
+                }
+                Some(file)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        },
+        None => None,
+    };
+
+    // Stream existing file bytes first (may exceed the bounded RAM tail).
+    if let Some(file) = file.as_mut()
+        && from_start
+    {
+        let mut buffer = [0u8; 8192];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            write_chunk_event(writer, request.id, &buffer[..read])?;
+        }
+    }
+
+    let poll = Duration::from_millis(FILE_POLL_MS);
+    let mut buffer = [0u8; 8192];
+    loop {
+        let mut progress = false;
+        if let Some(file) = file.as_mut() {
+            loop {
+                let read = file.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                progress = true;
+                write_chunk_event(writer, request.id, &buffer[..read])?;
+            }
+        }
+
+        // Drain append-fed events when this stream has no file FD (file is the
+        // source of truth for process logs).
+        if file.is_none() {
+            loop {
+                match rx.try_recv() {
+                    Ok(LogEvent::Chunk(data)) => {
+                        progress = true;
+                        write_chunk_event(writer, request.id, &data)?;
+                    }
+                    Ok(LogEvent::Closed) => {
+                        let eof = ok_json(
+                            request,
+                            &serde_json::json!({ "type": "eof", "stream": stream_id }),
+                        );
+                        write_response(writer, &eof)?;
+                        return Ok(());
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => return Ok(()),
+                }
+            }
+        }
+
+        if progress {
+            continue;
+        }
+
+        match rx.recv_timeout(poll) {
+            Ok(LogEvent::Chunk(data)) => {
+                if file.is_none() {
+                    write_chunk_event(writer, request.id, &data)?;
+                }
+            }
+            Ok(LogEvent::Closed) => {
+                let eof = ok_json(
+                    request,
+                    &serde_json::json!({ "type": "eof", "stream": stream_id }),
+                );
+                write_response(writer, &eof)?;
+                break;
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    Ok(())
+}
+
+fn write_chunk_event(writer: &mut impl Write, id: u64, data: &[u8]) -> io::Result<()> {
+    let response = DaemonResponse {
+        v: DAEMON_PROTOCOL_VERSION,
+        id,
+        ok: true,
+        result: Some(serde_json::json!({
+            "type": "chunk",
+            "data_b64": encode_log_bytes(data),
+        })),
+        error: None,
+    };
+    write_response(writer, &response)
 }
 
 fn write_response(writer: &mut impl Write, response: &DaemonResponse) -> io::Result<()> {
@@ -869,9 +1271,12 @@ pub fn unix_now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::log_broker::encode_log_bytes;
     use crate::plan::{PlanCommand, PlanKind};
     use crate::plan_cache::PlanPrepareKind;
 
+    #[cfg(unix)]
+    use std::io::Write;
     #[cfg(unix)]
     use std::sync::Mutex;
     #[cfg(unix)]
@@ -1059,6 +1464,156 @@ mod tests {
         assert_eq!(got["hit"], true);
 
         let _: Value = conn.call("shutdown", None).expect("shutdown");
+        let _ = server.join();
+    }
+
+    #[test]
+    fn log_open_append_status_counts_streams() {
+        let mut state = DaemonState::new();
+        let socket = PathBuf::from("/tmp/nxr-test.sock");
+        let open = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id: 1,
+            method: "log.open".to_owned(),
+            params: Some(serde_json::json!({ "stream": "proj/api" })),
+        };
+        assert!(handle_request(&mut state, &socket, &open).ok);
+        let append = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id: 2,
+            method: "log.append".to_owned(),
+            params: Some(serde_json::json!({
+                "stream": "proj/api",
+                "data_b64": encode_log_bytes(b"hello-broker"),
+            })),
+        };
+        let append_resp = handle_request(&mut state, &socket, &append);
+        assert!(append_resp.ok);
+        assert_eq!(append_resp.result.unwrap()["written"], 12);
+        let status = state.status(&socket);
+        assert_eq!(status.log_streams, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn log_subscribe_receives_append_chunks() {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _guard = LOCK.lock().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("nxrd.sock");
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let serve_state = Arc::clone(&state);
+        let serve_socket = socket.clone();
+        let server = thread::spawn(move || serve(&serve_socket, serve_state));
+
+        for _ in 0..50 {
+            if socket.exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(socket.exists());
+
+        let append_socket = socket.clone();
+        let producer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            let mut conn = try_connect(&append_socket).expect("producer connect");
+            let _: Value = conn
+                .call(
+                    "log.append",
+                    Some(serde_json::json!({
+                        "stream": "proj/worker",
+                        "data_b64": encode_log_bytes(b"line-one\n"),
+                    })),
+                )
+                .expect("append");
+            let _: Value = conn
+                .call(
+                    "log.close",
+                    Some(serde_json::json!({ "stream": "proj/worker" })),
+                )
+                .expect("close");
+        });
+
+        let mut conn = try_connect(&socket).expect("subscriber connect");
+        let mut body = Vec::new();
+        conn.follow_log_stream(
+            "proj/worker",
+            None,
+            true,
+            |chunk| {
+                body.extend_from_slice(chunk);
+                Ok(())
+            },
+            || true,
+        )
+        .expect("follow");
+        producer.join().expect("producer");
+        assert_eq!(String::from_utf8(body).unwrap(), "line-one\n");
+
+        let mut shutdown = try_connect(&socket).expect("shutdown connect");
+        let _: Value = shutdown.call("shutdown", None).expect("shutdown");
+        let _ = server.join();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn log_subscribe_follows_open_file_fd() {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _guard = LOCK.lock().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("nxrd.sock");
+        let log_path = dir.path().join("worker.log");
+        fs::write(&log_path, b"seed\n").unwrap();
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let serve_state = Arc::clone(&state);
+        let serve_socket = socket.clone();
+        let server = thread::spawn(move || serve(&serve_socket, serve_state));
+
+        for _ in 0..50 {
+            if socket.exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        let log_path_for_writer = log_path.clone();
+        let writer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(80));
+            let mut file = OpenOptions::new()
+                .append(true)
+                .open(&log_path_for_writer)
+                .unwrap();
+            file.write_all(b"live\n").unwrap();
+        });
+
+        let mut conn = try_connect(&socket).expect("connect");
+        let mut body = Vec::new();
+        let saw_live = std::sync::atomic::AtomicBool::new(false);
+        conn.follow_log_stream(
+            "proj/file",
+            Some(log_path.to_str().unwrap()),
+            true,
+            |chunk| {
+                body.extend_from_slice(chunk);
+                if body.windows(5).any(|w| w == b"live\n") {
+                    saw_live.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                Ok(())
+            },
+            || !saw_live.load(std::sync::atomic::Ordering::SeqCst),
+        )
+        .expect("follow");
+        writer.join().unwrap();
+        let text = String::from_utf8(body).unwrap();
+        assert!(text.contains("seed\n"), "got {text:?}");
+        assert!(text.contains("live\n"), "got {text:?}");
+
+        let mut shutdown = try_connect(&socket).expect("shutdown connect");
+        let _: Value = shutdown.call("shutdown", None).expect("shutdown");
         let _ = server.join();
     }
 }
