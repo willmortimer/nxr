@@ -183,6 +183,9 @@ pub struct NixCapabilities {
     pub supports_no_write_lock_file: bool,
     pub supports_offline: bool,
     pub supports_accept_flake_config: bool,
+    /// `nix print-dev-env --json` for process-compatible dev environment snapshots.
+    #[serde(default)]
+    pub supports_print_dev_env_json: bool,
 }
 
 /// Optional Nix global flags a caller may request.
@@ -214,6 +217,7 @@ impl NixCapabilities {
             supports_no_write_lock_file: true,
             supports_offline: true,
             supports_accept_flake_config: true,
+            supports_print_dev_env_json: true,
         }
     }
 
@@ -495,6 +499,8 @@ pub fn negotiate_capabilities(
         && (config_has_setting(config_json, "accept-flake-config")
             || help_mentions(help, "--accept-flake-config")
             || at_feature_floor);
+    let supports_print_dev_env_json =
+        help_mentions_print_dev_env_json(help) || (at_feature_floor && flakes_enabled);
 
     NixCapabilities {
         version,
@@ -503,6 +509,7 @@ pub fn negotiate_capabilities(
         supports_no_write_lock_file,
         supports_offline,
         supports_accept_flake_config,
+        supports_print_dev_env_json,
     }
 }
 
@@ -775,6 +782,10 @@ fn help_mentions_log_format_json(help: &str) -> bool {
     help_mentions(help, "--log-format") && (help.contains("json") || help.contains("JSON"))
 }
 
+fn help_mentions_print_dev_env_json(help: &str) -> bool {
+    help.contains("print-dev-env") && help_mentions(help, "--json")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -933,6 +944,7 @@ mod tests {
             supports_no_write_lock_file: false,
             supports_offline: true,
             supports_accept_flake_config: false,
+            supports_print_dev_env_json: false,
         };
         let flags = caps.select_compatible_globals(&OptionalNixFlags {
             offline: true,
@@ -954,6 +966,7 @@ mod tests {
             supports_no_write_lock_file: false,
             supports_offline: false,
             supports_accept_flake_config: false,
+            supports_print_dev_env_json: false,
         };
         let offline_error = caps
             .ensure_compatible_flags(&OptionalNixFlags {
@@ -993,6 +1006,7 @@ mod tests {
             supports_no_write_lock_file: false,
             supports_offline: true,
             supports_accept_flake_config: true,
+            supports_print_dev_env_json: true,
         };
         let args = caps
             .apply_optional_flags(
@@ -1094,5 +1108,31 @@ mod tests {
     #[test]
     fn tested_support_floor_is_documented_constant() {
         assert_eq!(TESTED_NIX_SUPPORT_FLOOR, NixVersion::new(2, 18, 0));
+    }
+
+    #[test]
+    fn negotiate_enables_print_dev_env_json_from_help_probe() {
+        let help = "nix print-dev-env installable\n  --json\n    Produce output in JSON format";
+        let caps = negotiate_capabilities(
+            NixVersion::new(2, 18, 1),
+            "nix (Nix) 2.18.1\n",
+            None,
+            Some(help),
+        );
+        assert!(caps.supports_print_dev_env_json);
+    }
+
+    #[test]
+    fn negotiate_print_dev_env_json_requires_flakes_at_feature_floor() {
+        let caps = negotiate_capabilities(FEATURE_FLOOR, "nix (Nix) 2.4.0\n", None, None);
+        assert!(!caps.supports_print_dev_env_json);
+
+        let caps_with_flakes = negotiate_capabilities(
+            FEATURE_FLOOR,
+            "nix (Nix) 2.4.0\n",
+            Some(r#"{"experimental-features": { "value": ["flakes"] }}"#),
+            None,
+        );
+        assert!(caps_with_flakes.supports_print_dev_env_json);
     }
 }

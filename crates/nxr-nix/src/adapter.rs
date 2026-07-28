@@ -390,6 +390,7 @@ mod tests {
                 supports_no_write_lock_file: false,
                 supports_offline: true,
                 supports_accept_flake_config: false,
+                supports_print_dev_env_json: false,
             },
         );
         let error = adapter.require_flakes().expect_err("flakes disabled");
@@ -408,6 +409,7 @@ mod tests {
                 supports_no_write_lock_file: true,
                 supports_offline: true,
                 supports_accept_flake_config: true,
+                supports_print_dev_env_json: true,
             },
         );
         let args = adapter
@@ -447,6 +449,7 @@ mod tests {
                 supports_no_write_lock_file: true,
                 supports_offline: false,
                 supports_accept_flake_config: true,
+                supports_print_dev_env_json: true,
             },
         );
         let error = adapter

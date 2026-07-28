@@ -140,6 +140,20 @@ pub fn nix_flake_check_args(flake_ref: &str) -> Vec<String> {
     vec!["flake".to_owned(), "check".to_owned(), flake_ref.to_owned()]
 }
 
+/// Arguments for `nix print-dev-env <flake_ref>#<shell_name> --json`.
+///
+/// Used to materialize a process-compatible development environment snapshot
+/// (ADR-0171); callers must fall back to develop-wrap when unsupported shell
+/// semantics are present in the JSON output.
+#[must_use]
+pub fn print_dev_env_args(flake_ref: &str, shell_name: &str) -> Vec<String> {
+    vec![
+        "print-dev-env".to_owned(),
+        format!("{flake_ref}#{shell_name}"),
+        "--json".to_owned(),
+    ]
+}
+
 /// Arguments for interactive `nix develop`.
 ///
 /// When `shell_name` is `None`, enters the flake's default development shell
@@ -194,7 +208,7 @@ mod tests {
         attr_installable, check_installable, current_system_args, flake_app_program_eval_args,
         flake_eval_json_args, flake_show_args, nix_build_args,
         nix_build_no_link_print_out_paths_args, nix_develop_args, nix_develop_wrap_run_args,
-        nix_flake_check_args, nix_fmt_args, nix_run_args, package_installable,
+        nix_flake_check_args, nix_fmt_args, nix_run_args, package_installable, print_dev_env_args,
         token_is_explicit_installable,
     };
 
@@ -396,6 +410,26 @@ mod tests {
             vec![
                 "develop".to_owned(),
                 "./fixtures/named-dev-shells#backend".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn print_dev_env_argv_includes_json_flag_and_installable() {
+        assert_eq!(
+            print_dev_env_args(".", "default"),
+            vec![
+                "print-dev-env".to_owned(),
+                ".#default".to_owned(),
+                "--json".to_owned(),
+            ]
+        );
+        assert_eq!(
+            print_dev_env_args("./fixtures/named-dev-shells", "backend"),
+            vec![
+                "print-dev-env".to_owned(),
+                "./fixtures/named-dev-shells#backend".to_owned(),
+                "--json".to_owned(),
             ]
         );
     }

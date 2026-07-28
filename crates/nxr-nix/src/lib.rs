@@ -7,6 +7,7 @@ pub mod coalesce;
 pub mod command;
 pub mod configurations;
 pub mod determinate;
+pub mod dev_env;
 pub mod discovery;
 pub mod eval_worker;
 pub mod inventory;
@@ -44,7 +45,7 @@ pub use command::{
     flake_app_program_eval_args, flake_eval_json_args, flake_show_args, nix_build_args,
     nix_build_no_link_print_out_paths_args, nix_develop_args, nix_develop_wrap_command_args,
     nix_develop_wrap_run_args, nix_flake_check_args, nix_fmt_args, nix_run_args,
-    package_installable, token_is_explicit_installable,
+    package_installable, print_dev_env_args, token_is_explicit_installable,
 };
 pub use configurations::{
     ConfigurationEntry, ConfigurationKind, configuration_installable, find_configuration,
@@ -55,6 +56,10 @@ pub use determinate::{
     distribution_from_version_banner, effective_experimental_features, host_is_macos,
     probe_ci_environment, probe_nixd, probe_performance_features, probe_wasm_support,
     redact_sensitive_text,
+};
+pub use dev_env::{
+    DEV_ENV_PROTOCOL_VERSION, DevEnvParseError, DevEnvironment, UnsupportedDevEnvFeature,
+    parse_print_dev_env_json,
 };
 pub use discovery::{
     OutputTable, discover_apps, discover_outputs_with_args, flake_show_has_nxr_for_system,
