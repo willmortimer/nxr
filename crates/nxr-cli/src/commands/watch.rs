@@ -12,7 +12,8 @@ use nxr_process::{InterruptFlags, Supervisor, spawn_in};
 use nxr_task::{PlanError, resolve_task_name};
 use nxr_watch::{
     ChangeClass, Generation, MetadataInputRegistry, PathFilterError, PathFilters, WatchConfig,
-    WatchError, WatchIncrementalSnapshot, WatchPoll, WatchSession, classify_pending_changes,
+    WatchError, WatchIncrementalSnapshot, WatchPoll, WatchSemanticCoalescer, WatchSession,
+    classify_pending_changes,
 };
 
 use crate::commands::common::{
@@ -166,6 +167,7 @@ struct WatchCaches {
     app_plan: Option<PreparedPlan>,
     task_plan: Option<PreparedTaskGeneration>,
     incremental: Option<WatchIncrementalSnapshot>,
+    coalesce: WatchSemanticCoalescer,
 }
 
 /// Resolve `name` as a task (preferred) or app, then watch the flake root.
@@ -224,6 +226,23 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
         }
 
         let pending_changes = session.take_pending_changes();
+        let pending_changes = coalesce_pending_paths(&watch_root, &mut caches, pending_changes);
+        if generation_id > 1 && pending_changes.is_empty() {
+            runner
+                .verbose("watch coalesce: spurious restart suppressed")
+                .map_err(WatchCommandError::Io)?;
+            loop {
+                if interrupts.take_pending() {
+                    return Ok(exit::INTERRUPTED);
+                }
+                match session.poll_restart(Duration::from_millis(100))? {
+                    WatchPoll::Restart => break,
+                    WatchPoll::Timeout => {}
+                }
+            }
+            continue;
+        }
+
         let invalidate_snapshot = apply_restart_classification(
             &watch_root,
             &filters,
@@ -434,6 +453,36 @@ fn seed_incremental_graph(
     Ok(())
 }
 
+fn seed_owned_outputs(caches: &mut WatchCaches) {
+    let Some(task_plan) = caches.task_plan.as_ref() else {
+        return;
+    };
+    let outputs: Vec<String> = task_plan
+        .plan
+        .serial_order
+        .iter()
+        .filter_map(|id| task_plan.document.tasks.get(id))
+        .flat_map(|task| task.outputs.iter().map(|output| output.path.clone()))
+        .collect();
+    if let Some(incremental) = caches.incremental.as_mut() {
+        incremental.set_owned_outputs(outputs);
+    } else {
+        caches.coalesce.set_owned_outputs(outputs);
+    }
+}
+
+fn coalesce_pending_paths(
+    watch_root: &camino::Utf8Path,
+    caches: &mut WatchCaches,
+    paths: Vec<Utf8PathBuf>,
+) -> Vec<Utf8PathBuf> {
+    if let Some(incremental) = caches.incremental.as_mut() {
+        incremental.coalesce_pending_paths(paths)
+    } else {
+        caches.coalesce.coalesce_paths(watch_root, paths)
+    }
+}
+
 fn apply_restart_classification(
     watch_root: &camino::Utf8Path,
     filters: &PathFilters,
@@ -523,6 +572,7 @@ fn apply_restart_classification(
         workspace.invalidate_snapshots();
         caches.app_plan = None;
         caches.task_plan = None;
+        caches.coalesce.clear_owned_outputs();
         if let Some(incremental) = caches.incremental.as_mut() {
             *incremental = WatchIncrementalSnapshot::new(watch_root.to_path_buf());
         }
@@ -651,6 +701,9 @@ fn run_task_generation(
     };
 
     let reuse_from_cache = !invalidate_snapshot && caches.task_plan.is_some();
+    if caches.task_plan.is_some() {
+        seed_owned_outputs(caches);
+    }
     if reuse_from_cache {
         reprepare_missing_task_nodes(request, &task_request, workspace, caches, runner)?;
     }
@@ -682,6 +735,8 @@ fn run_task_generation(
         reuse_from_cache,
         Some(&mut caches.task_plan),
     )?;
+
+    seed_owned_outputs(caches);
 
     if restart_requested {
         return Ok(GenerationOutcome::Restart);

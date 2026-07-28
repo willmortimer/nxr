@@ -37,7 +37,8 @@ hints in `nxrd`; Wave 5a wires an in-process snapshot for the watch session.
    `watch_snapshot_patches`, `watch_paths_invalidated`,
    `watch_prepared_nodes_dropped`.
 6. **Extension hooks (empty in 5a):** reserved fields for Wave 5b semantic
-   coalesce and Wave 5c prewarm — no formatter-storm or store-exe prewarm yet.
+   coalesce ([ADR-0161](0161-watch-semantic-coalesce.md)) and Wave 5c prewarm —
+   no formatter-storm or store-exe prewarm yet.
 7. **Sealed watch prepare** remains eager per ADR-0159; no live CAS‖plan
    pipeline tickets cross watch generations.
 
@@ -49,7 +50,7 @@ hints in `nxrd`; Wave 5a wires an in-process snapshot for the watch session.
 
 ## Non-goals (Wave 5a)
 
-- Semantic event coalesce (5b).
+- Semantic event coalesce (5b; shipped in [ADR-0161](0161-watch-semantic-coalesce.md)).
 - Prewarm resolved executables / CAS handles (5c).
 - Replacing FSEvents or debounce semantics.
 - Required `nxrd` / in-daemon `MerkleSession` ownership (still optional).

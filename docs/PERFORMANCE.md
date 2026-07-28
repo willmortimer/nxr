@@ -87,8 +87,10 @@ generations ([ADR-0160](adr/0160-watch-incremental-snapshot.md)):
 - Kill-switch: `NXR_WATCH_SNAPSHOT=off`. `NXR_PERF_STATS` schema **v8** adds
   `watch_snapshot_patches`, `watch_paths_invalidated`,
   `watch_prepared_nodes_dropped`.
-- Wave **5b** (semantic coalesce) and **5c** (prewarm) extend reserved hooks;
-  not implemented in 5a.
+- **Semantic coalesce** ([ADR-0161](adr/0161-watch-semantic-coalesce.md)):
+  after debounce, drop editor temporaries, collapse formatter bursts, narrow
+  lockfile batches, ignore fixture-only and task-owned output paths.
+  `NXR_WATCH_COALESCE=off` kill-switch. Wave **5c** (prewarm) hook reserved.
 
 ## Optional local cache daemon (`nxrd`)
 

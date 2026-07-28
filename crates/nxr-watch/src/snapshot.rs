@@ -2,7 +2,7 @@
 //!
 //! Retains run-scoped digest / Merkle state across watch generations so source
 //! events patch file metadata and directory digests instead of cold rescans.
-//! Wave 5b (semantic coalesce) and 5c (prewarm) extend via reserved hooks.
+//! Wave 5b semantic coalesce and Wave 5c prewarm extend via reserved hooks.
 
 use std::collections::BTreeSet;
 use std::io;
@@ -14,6 +14,8 @@ use nxr_core::{
     record_watch_snapshot_patch,
 };
 use nxr_task::TaskDocument;
+
+use crate::coalesce::{WatchCoalesceStats, WatchSemanticCoalescer};
 
 /// Kill-switch for watch incremental snapshot (`off` / `0` / `false` / `no`).
 pub const WATCH_SNAPSHOT_ENV: &str = "NXR_WATCH_SNAPSHOT";
@@ -44,9 +46,7 @@ pub struct WatchIncrementalSnapshot {
     digest_cache: RunDigestCache,
     graph: Option<AffectedGraph>,
     stats: WatchSnapshotStats,
-    /// Reserved for Wave 5b semantic coalesce (formatter storms, rename pairs).
-    #[allow(dead_code)]
-    coalesce_hook: (),
+    coalesce: WatchSemanticCoalescer,
     /// Reserved for Wave 5c prewarm (resolved exe / CAS handles).
     #[allow(dead_code)]
     prewarm_hook: (),
@@ -61,9 +61,32 @@ impl WatchIncrementalSnapshot {
             digest_cache: RunDigestCache::new(),
             graph: None,
             stats: WatchSnapshotStats::default(),
-            coalesce_hook: (),
+            coalesce: WatchSemanticCoalescer::default(),
             prewarm_hook: (),
         }
+    }
+
+    /// Semantic coalesce statistics for the watch session.
+    #[must_use]
+    pub fn coalesce_stats(&self) -> &WatchCoalesceStats {
+        self.coalesce.stats()
+    }
+
+    /// Replace workspace output paths owned by the running generation.
+    pub fn set_owned_outputs<I>(&mut self, paths: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        self.coalesce.set_owned_outputs(paths);
+    }
+
+    /// Apply semantic coalesce to a debounced path batch ([ADR-0161]).
+    #[must_use]
+    pub fn coalesce_pending_paths(
+        &mut self,
+        paths: Vec<Utf8PathBuf>,
+    ) -> Vec<Utf8PathBuf> {
+        self.coalesce.coalesce_paths(&self.root, paths)
     }
 
     /// Whether incremental watch snapshot is enabled (default on).
