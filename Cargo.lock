@@ -682,6 +682,7 @@ dependencies = [
  "blake3",
  "camino",
  "directories",
+ "fs2",
  "serde",
  "serde_json",
  "tempfile",

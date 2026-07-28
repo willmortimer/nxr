@@ -11,6 +11,7 @@ description = "Shared models, schemas, and diagnostics for nxr"
 blake3 = { workspace = true }
 camino = { workspace = true }
 directories = { workspace = true }
+fs2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

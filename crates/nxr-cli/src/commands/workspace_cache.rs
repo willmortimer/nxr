@@ -62,7 +62,7 @@ fn build_explain(plan: &WorkspaceCachePlan) -> CacheExplain {
             key_components: plan.key_components.clone(),
         };
     };
-    let lookup = match lookup_outputs(action_key, &plan.output_paths) {
+    let lookup = match lookup_outputs(action_key, &plan.outputs) {
         Ok(CasLookup::Hit) => CacheLookupExplain::Hit,
         Ok(CasLookup::Miss { reason }) => CacheLookupExplain::Miss { reason },
         Err(error) => CacheLookupExplain::Miss {
@@ -98,7 +98,7 @@ pub fn try_workspace_cache_restore(
     let Some(action_key) = plan.action_key.as_ref() else {
         return Ok(None);
     };
-    let lookup = restore_outputs(flake_root, action_key, &plan.output_paths)?;
+    let lookup = restore_outputs(flake_root, action_key, &plan.outputs)?;
     if matches!(lookup, CasLookup::Hit) {
         return Ok(Some(lookup));
     }
@@ -120,5 +120,5 @@ pub fn save_workspace_cache(prepared: &PreparedTaskNode, flake_root: &Utf8Path) 
     let Some(action_key) = plan.action_key.as_ref() else {
         return Ok(());
     };
-    save_outputs(flake_root, action_key, &plan.output_paths)
+    save_outputs(flake_root, action_key, &plan.outputs)
 }

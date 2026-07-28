@@ -13,15 +13,15 @@ use std::process::Command;
 use camino::{Utf8Path, Utf8PathBuf};
 use globset::Glob;
 use nxr_core::cas::{
-    digest_bytes, digest_file, digest_repo_path, flake_lock_digest, hash_action_key,
-    CAS_PROTOCOL_VERSION,
+    CasOutput, CasRestoreMode, digest_bytes, digest_file, digest_repo_path, flake_lock_digest,
+    hash_action_key, CAS_PROTOCOL_VERSION,
 };
 use nxr_core::{ActionTier, EnvironmentPolicy, classify_action_tier, workspace_cache_enabled};
 use nxr_core::{normalize_repo_relative_path, validate_repo_relative_path};
 use serde::Serialize;
 
 use crate::context::PlanSecretEntry;
-use crate::schema::{EnvInput, TaskCacheMode, TaskDefinition, TaskDocument, TaskOutput};
+use crate::schema::{EnvInput, TaskCacheMode, TaskDefinition, TaskDocument, TaskOutput, TaskOutputMode};
 
 /// Resolved cache plan for one task node.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31,7 +31,7 @@ pub struct WorkspaceCachePlan {
     pub restore: bool,
     pub save: bool,
     pub action_key: Option<String>,
-    pub output_paths: Vec<String>,
+    pub outputs: Vec<CasOutput>,
     pub key_components: BTreeMap<String, String>,
 }
 
@@ -78,7 +78,7 @@ pub fn build_workspace_cache_plan(
     let mode_label = cache_mode_label(cache_mode);
     let tier = classify_action_tier(definition.outputs.len());
     let cache_requested = workspace_cache_enabled(definition.outputs.len(), mode_label);
-    let output_paths: Vec<String> = definition.outputs.iter().map(|o| o.path.clone()).collect();
+    let outputs = cas_outputs_from_task(&definition.outputs);
 
     let restore = definition
         .cache
@@ -94,7 +94,7 @@ pub fn build_workspace_cache_plan(
     if !cache_requested {
         return Ok(disabled_plan(
             tier,
-            output_paths,
+            outputs,
             BTreeMap::from([(
                 "cache_disabled".to_owned(),
                 "no workspace outputs or cache mode disabled".to_owned(),
@@ -243,14 +243,14 @@ pub fn build_workspace_cache_plan(
             "cache_disabled".to_owned(),
             "unresolved upstream binding".to_owned(),
         );
-        return Ok(disabled_plan(tier, output_paths, key_components));
+        return Ok(disabled_plan(tier, outputs, key_components));
     }
     if required_env_missing {
         key_components.insert(
             "cache_disabled".to_owned(),
             "required environment input missing".to_owned(),
         );
-        return Ok(disabled_plan(tier, output_paths, key_components));
+        return Ok(disabled_plan(tier, outputs, key_components));
     }
 
     let git_state_digest = if include_git_state {
@@ -264,7 +264,7 @@ pub fn build_workspace_cache_plan(
                     "cache_disabled".to_owned(),
                     "includeGitState requested but git state unavailable".to_owned(),
                 );
-                return Ok(disabled_plan(tier, output_paths, key_components));
+                return Ok(disabled_plan(tier, outputs, key_components));
             }
         }
     } else {
@@ -327,14 +327,14 @@ pub fn build_workspace_cache_plan(
         restore,
         save,
         action_key: Some(action_key),
-        output_paths,
+        outputs,
         key_components,
     })
 }
 
 fn disabled_plan(
     tier: ActionTier,
-    output_paths: Vec<String>,
+    outputs: Vec<CasOutput>,
     key_components: BTreeMap<String, String>,
 ) -> WorkspaceCachePlan {
     WorkspaceCachePlan {
@@ -343,9 +343,29 @@ fn disabled_plan(
         restore: false,
         save: false,
         action_key: None,
-        output_paths,
+        outputs,
         key_components,
     }
+}
+
+fn cas_outputs_from_task(outputs: &[TaskOutput]) -> Vec<CasOutput> {
+    outputs
+        .iter()
+        .map(|output| CasOutput {
+            path: output.path.clone(),
+            mode: output
+                .mode
+                .as_ref()
+                .map(|mode| match mode {
+                    TaskOutputMode::Replace => CasRestoreMode::Replace,
+                    TaskOutputMode::Merge => CasRestoreMode::Merge,
+                    TaskOutputMode::VerifyOnly => CasRestoreMode::VerifyOnly,
+                    TaskOutputMode::Report => CasRestoreMode::Report,
+                })
+                .unwrap_or_default(),
+            optional: output.optional,
+        })
+        .collect()
 }
 
 fn cache_mode_label(mode: Option<&TaskCacheMode>) -> Option<&str> {
