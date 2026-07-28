@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cargo deny` allowlist includes `BSD-2-Clause` (`arrayref` via `blake3`).
+- Detect `nxr` in `nix flake show --json` when reported as `{ "type": "unknown" }`
+  so unprefixed `watch` still prefers tasks over same-named apps.
+- Hermetic process tests resolve `true`/`false`/`printenv` via `PATH` when `/usr/bin`
+  and `/bin` are absent in the Nix sandbox.
+- Watch first-generation config probe budget allows the `show-config` fallback
+  (1–2 logged config calls), matching doctor probe accounting.
+
 - `nxr plan <app>` on app-only flakes no longer fails with `unknown selector or task`
   (bare names were expanded as task selectors before app resolution).
 - `nxr task` bare names keep exit code 6 / `unknown task root` (selector expansion no

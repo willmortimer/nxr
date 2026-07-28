@@ -251,7 +251,20 @@ mod tests {
                 return candidate;
             }
         }
-        panic!("missing {name} under /usr/bin or /bin");
+        // Hermetic Nix check sandboxes often omit /usr/bin and /bin; coreutils
+        // still appear on PATH via the stdenv.
+        if let Ok(path) = std::env::var("PATH") {
+            for dir in path.split(':') {
+                if dir.is_empty() {
+                    continue;
+                }
+                let candidate = Path::new(dir).join(name);
+                if candidate.is_file() {
+                    return candidate.to_string_lossy().into_owned();
+                }
+            }
+        }
+        panic!("missing {name} under /usr/bin, /bin, or PATH");
     }
 
     #[cfg(unix)]

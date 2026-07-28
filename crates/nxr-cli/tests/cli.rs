@@ -3286,7 +3286,12 @@ fn watch_app_does_not_double_workspace_init_on_first_generation() {
         1,
         "resolve_target + prepare share one adapter; log={log}"
     );
-    assert_eq!(counter.count("config"), 1, "single config probe; log={log}");
+    // `probe_config_json` tries `nix config show` then `show-config`; both log as
+    // "config", so a single logical probe may appear as 1 or 2 lines.
+    assert!(
+        (1..=2).contains(&counter.count("config")),
+        "config probe (with optional show-config fallback); log={log}"
+    );
     assert_eq!(
         counter.count("run"),
         1,

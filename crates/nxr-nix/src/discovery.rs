@@ -132,7 +132,24 @@ pub fn flake_show_has_nxr_for_system(show: &JsonValue, system: &str) -> bool {
     {
         return true;
     }
-    show.get("nxr").and_then(|nxr| nxr.get(system)).is_some()
+    match show.get("nxr") {
+        None => false,
+        Some(nxr) => {
+            // Per-system task document already expanded in show JSON.
+            if nxr.get(system).is_some() {
+                return true;
+            }
+            // Recent `nix flake show --json` reports custom outputs as
+            // `{ "type": "unknown" }` without system children. That still means
+            // an `nxr` output exists and tasks may be present — do not treat it
+            // as apps-only (which would make unprefixed watch prefer apps).
+            nxr.get("type").and_then(|value| value.as_str()) == Some("unknown")
+                || nxr.as_object().is_some_and(|obj| {
+                    obj.keys()
+                        .any(|key| key != "type" && key != "description")
+                })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -228,6 +245,15 @@ mod tests {
         assert!(super::flake_show_has_nxr_for_system(
             &inventory_unknown_nxr,
             "aarch64-darwin"
+        ));
+
+        let show_unknown_type = json!({
+            "apps": { "aarch64-linux": { "ci": { "type": "app" } } },
+            "nxr": { "type": "unknown" }
+        });
+        assert!(super::flake_show_has_nxr_for_system(
+            &show_unknown_type,
+            "aarch64-linux"
         ));
     }
 
