@@ -65,8 +65,9 @@ pub use perf::{
     CasLookupGuard, PERF_STATS_ENV, PerfStats, PlanPrepareGuard, add_bytes_hashed,
     add_cas_lookup_us, add_plan_prepare_us, emit_stderr, enabled as perf_enabled,
     record_digest_cache_hit, record_digest_metadata_hit, record_fs_metadata,
-    record_git_blob_digest, record_nix_spawn, record_plan_cache_hit, record_plan_cache_miss,
-    record_spawn_to_child_output_us, record_store_exe_hit, record_store_exe_miss,
+    record_git_blob_digest, record_nix_spawn, record_node_prepared, record_plan_cache_hit,
+    record_plan_cache_miss, record_spawn_to_child_output_us, record_store_exe_hit,
+    record_store_exe_miss,
 };
 pub use plan::{Plan, PlanCommand, PlanKind, PlanSecretRef};
 pub use plan_cache::{

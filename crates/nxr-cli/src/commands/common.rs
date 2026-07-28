@@ -14,10 +14,10 @@ use nxr_core::PlanPrepareGuard;
 use nxr_core::diagnostics::exit;
 use nxr_core::{
     App, EnvironmentPolicy, Plan, PlanCacheKeyMaterial, PlanCacheSharedFingerprints, PlanCommand,
-    PlanKind, PlanPrepareKind, PlanSecretRef, daemon_plan_entry, daemon_plan_to_hit,
-    digest_environment_policy, digest_nix_flags, flake_lock_digest, lookup_prepared_plan,
-    plan_cache_enabled, plan_cache_key_digest, record_plan_cache_hit, record_plan_cache_miss,
-    store_prepared_plan, try_once,
+    PlanKind, PlanPrepareKind, PlanSecretRef, RunDigestCache, daemon_plan_entry,
+    daemon_plan_to_hit, digest_environment_policy, digest_nix_flags, flake_lock_digest,
+    lookup_prepared_plan, plan_cache_enabled, plan_cache_key_digest, record_node_prepared,
+    record_plan_cache_hit, record_plan_cache_miss, store_prepared_plan, try_once,
 };
 use nxr_nix::{
     AppNotFoundError, NixAdapter, NixCapabilities, NixError, OptionalNixFlags, OutputTable,
@@ -26,7 +26,7 @@ use nxr_nix::{
     parse_outputs_from_flake_show, resolve_app_by_name,
 };
 use nxr_task::{
-    ContextError, PlanSecretEntry, SchemaError, SecretDelivery, TaskDocument,
+    ContextError, ExecutionPlan, PlanSecretEntry, SchemaError, SecretDelivery, TaskDocument,
     WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, WorkspaceCachePlan,
     WorkspaceCachePlanOptions, apply_task_context, build_workspace_cache_plan,
 };
@@ -75,10 +75,44 @@ pub struct PreparedPlan {
     pub local_root: Option<Utf8PathBuf>,
 }
 
+/// Environment variable forcing eager full-DAG prepare (`off` / `0` / `false` / `no`).
+///
+/// Default (unset or any other value): staged / lazy prepare (ADR-0158).
+pub const LAZY_PREP_ENV: &str = "NXR_LAZY_PREP";
+
+/// Whether staged / lazy node preparation is enabled (default on).
+#[must_use]
+pub fn lazy_prep_enabled() -> bool {
+    lazy_prep_enabled_for_env(std::env::var(LAZY_PREP_ENV).ok().as_deref())
+}
+
+fn lazy_prep_enabled_for_env(value: Option<&str>) -> bool {
+    match value {
+        Some(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            !matches!(normalized.as_str(), "off" | "0" | "false" | "no")
+        }
+        None => true,
+    }
+}
+
+/// Preparation stage for Wave 4c CAS‖plan pipelining.
+///
+/// Today both stages are fused into one prepare; callers should still request
+/// [`NodePrepStage::CasInputs`] before CAS lookup and [`NodePrepStage::SpawnPlan`]
+/// before spawn so 4c can split them without reshaping the scheduler.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NodePrepStage {
+    /// Action key / workspace CAS plan inputs (no child spawn required yet).
+    CasInputs,
+    /// Full spawn argv (`build_plan` / store-exe resolution inputs).
+    SpawnPlan,
+}
+
 /// Precomputed spawn inputs for one task graph node.
 ///
-/// Built once from a [`WorkspaceSnapshot`] before the scheduler starts so node
-/// execution does not re-run discovery or system detection.
+/// Built from a [`WorkspaceSnapshot`] when the node approaches execution (lazy)
+/// or eagerly for dry-run / watch reuse / `NXR_LAZY_PREP=off`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedTaskNode {
     pub id: String,
@@ -105,7 +139,8 @@ pub struct PreparedTaskNode {
 /// Once-per-invocation workspace evaluation: flake, Nix adapter, apps, optional tasks.
 ///
 /// Task runs resolve flake → detect system → evaluate tasks → discover apps once,
-/// validate referenced apps, then prepare every node before the scheduler starts.
+/// validate referenced apps, then prepare nodes as they approach execution (or
+/// eagerly when lazy prep is disabled).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceSnapshot {
     pub flake: FlakeSelection,
@@ -706,6 +741,9 @@ impl WorkspaceSnapshot {
 
     /// Build spawn plans for every node in `serial_order` without further Nix discovery.
     ///
+    /// Eager path used by dry-run, explain, cache explain, watch reuse, and
+    /// `NXR_LAZY_PREP=off`. Live task runs prefer [`TaskNodePreparer`].
+    ///
     /// # Errors
     ///
     /// Returns [`PrepareError`] when an app is missing or cwd flags conflict.
@@ -724,161 +762,452 @@ impl WorkspaceSnapshot {
         nix_flags: &OptionalNixFlags,
         context_override: Option<&str>,
     ) -> Result<BTreeMap<String, PreparedTaskNode>, PrepareError> {
-        let _timer = PlanPrepareGuard::start();
+        let mut preparer = TaskNodePreparer::new(
+            self,
+            document,
+            root_task_ids,
+            request_args,
+            root,
+            cwd,
+            shell,
+            shell_mode,
+            environment_policy,
+            nix_flags,
+            context_override,
+        )?;
+        preparer.prepare_all(serial_order)?;
+        Ok(preparer.into_prepared())
+    }
+
+    /// Whether any planned node requires project trust (confirm or secrets).
+    ///
+    /// Scans context metadata without building spawn plans so lazy prep can
+    /// enforce trust before the first node is prepared.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrepareError`] when a referenced context is unknown.
+    pub fn plan_requires_project_trust(
+        document: &TaskDocument,
+        plan: &ExecutionPlan,
+        environment_policy: &EnvironmentPolicy,
+        context_override: Option<&str>,
+    ) -> Result<bool, PrepareError> {
+        for node in &plan.nodes {
+            let definition = document
+                .tasks
+                .get(&node.id)
+                .expect("execution plan only includes known task ids");
+            let effective_context = context_override.or(definition.context.as_deref());
+            if let Some(name) = effective_context {
+                let applied = apply_task_context(document, &node.id, name, environment_policy)?;
+                if applied.confirm || !applied.plan_secrets.is_empty() {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+}
+
+/// Staged / lazy task-node preparation for the scheduler (ADR-0158).
+///
+/// Phase 1 (DAG / affected) and phase 2 (resource readiness) remain outside this
+/// type. Callers prepare only nodes approaching execution (phase 3) and may
+/// speculate likely successors within a bounded pool (phase 4).
+pub struct TaskNodePreparer<'a> {
+    mode: PrepMode<'a>,
+    prepared: BTreeMap<String, PreparedTaskNode>,
+    prepare_count: u64,
+}
+
+enum PrepMode<'a> {
+    /// Can prepare additional nodes from the workspace snapshot.
+    Live(Box<LivePrep<'a>>),
+    /// Watch reuse / pre-built map — lookups only, no further prepare.
+    Sealed,
+}
+
+struct LivePrep<'a> {
+    snapshot: &'a WorkspaceSnapshot,
+    document: &'a TaskDocument,
+    root_task_ids: &'a [String],
+    request_args: &'a [String],
+    root: bool,
+    cwd: Option<&'a str>,
+    shell: Option<&'a str>,
+    shell_mode: ShellMode,
+    environment_policy: &'a EnvironmentPolicy,
+    nix_flags: &'a OptionalNixFlags,
+    context_override: Option<&'a str>,
+    upstream_keys: BTreeMap<String, String>,
+    digest_cache: RunDigestCache,
+}
+
+impl<'a> TaskNodePreparer<'a> {
+    /// Create an empty preparer bound to a validated task document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrepareError`] when the document fails schema validation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        snapshot: &'a WorkspaceSnapshot,
+        document: &'a TaskDocument,
+        root_task_ids: &'a [String],
+        request_args: &'a [String],
+        root: bool,
+        cwd: Option<&'a str>,
+        shell: Option<&'a str>,
+        shell_mode: ShellMode,
+        environment_policy: &'a EnvironmentPolicy,
+        nix_flags: &'a OptionalNixFlags,
+        context_override: Option<&'a str>,
+    ) -> Result<Self, PrepareError> {
         document.validate().map_err(PrepareError::TaskSchema)?;
-        let apps: Vec<App> = self.apps.values().cloned().collect();
-        let mut nodes = BTreeMap::new();
-        let mut upstream_keys = BTreeMap::new();
-        let flake_root = self
+        Ok(Self {
+            mode: PrepMode::Live(Box::new(LivePrep {
+                snapshot,
+                document,
+                root_task_ids,
+                request_args,
+                root,
+                cwd,
+                shell,
+                shell_mode,
+                environment_policy,
+                nix_flags,
+                context_override,
+                upstream_keys: BTreeMap::new(),
+                digest_cache: RunDigestCache::new(),
+            })),
+            prepared: BTreeMap::new(),
+            prepare_count: 0,
+        })
+    }
+
+    /// Wrap an already-prepared map (watch reuse into the scheduler).
+    #[must_use]
+    pub fn from_prepared(prepared: BTreeMap<String, PreparedTaskNode>) -> Self {
+        let prepare_count = u64::try_from(prepared.len()).unwrap_or(u64::MAX);
+        Self {
+            mode: PrepMode::Sealed,
+            prepared,
+            prepare_count,
+        }
+    }
+
+    /// How many nodes were prepared by this preparer (excludes sealed reuse).
+    #[must_use]
+    pub fn prepare_count(&self) -> u64 {
+        self.prepare_count
+    }
+
+    /// Borrow prepared nodes (partial under lazy mode).
+    #[must_use]
+    pub fn prepared(&self) -> &BTreeMap<String, PreparedTaskNode> {
+        &self.prepared
+    }
+
+    /// Consume into the prepared map.
+    #[must_use]
+    pub fn into_prepared(self) -> BTreeMap<String, PreparedTaskNode> {
+        self.prepared
+    }
+
+    /// Eagerly prepare every id in `serial_order`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrepareError`] when any node fails to prepare.
+    pub fn prepare_all(&mut self, serial_order: &[String]) -> Result<(), PrepareError> {
+        let _timer = PlanPrepareGuard::start();
+        for task_id in serial_order {
+            self.ensure_prepared(task_id)?;
+        }
+        Ok(())
+    }
+
+    /// Ensure `task_id` is fully prepared (both CAS inputs and spawn plan).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrepareError`] when preparation fails.
+    pub fn ensure_prepared(&mut self, task_id: &str) -> Result<&PreparedTaskNode, PrepareError> {
+        self.ensure_stage(task_id, NodePrepStage::SpawnPlan)
+    }
+
+    /// Ensure the node has at least `stage` prepared.
+    ///
+    /// Stages are fused today; both map to a full prepare. Wave 4c will split
+    /// CAS-input prep from spawn-plan prep so CAS lookup can race argv assembly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrepareError`] when preparation fails, or when a sealed map
+    /// is missing `task_id`.
+    pub fn ensure_stage(
+        &mut self,
+        task_id: &str,
+        _stage: NodePrepStage,
+    ) -> Result<&PreparedTaskNode, PrepareError> {
+        if self.prepared.contains_key(task_id) {
+            return Ok(&self.prepared[task_id]);
+        }
+        if matches!(self.mode, PrepMode::Sealed) {
+            return Err(PrepareError::WorkspaceCache(io::Error::other(format!(
+                "sealed preparer missing node {task_id}"
+            ))));
+        }
+        let _timer = PlanPrepareGuard::start();
+        let node = self.prepare_one(task_id)?;
+        self.prepared.insert(task_id.to_owned(), node);
+        self.prepare_count = self.prepare_count.saturating_add(1);
+        record_node_prepared();
+        Ok(&self.prepared[task_id])
+    }
+
+    /// Prepare each id in `ids` (phase 3: approaching execution).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrepareError`] when any node fails to prepare.
+    pub fn ensure_prepared_many(&mut self, ids: &[String]) -> Result<(), PrepareError> {
+        for id in ids {
+            self.ensure_prepared(id)?;
+        }
+        Ok(())
+    }
+
+    /// Speculatively prepare likely successors of `started` up to `budget` nodes.
+    ///
+    /// Skips ids already prepared. Never-run nodes under fail-fast are simply
+    /// never requested — there is no async cancel surface yet (Wave 4c).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrepareError`] when a speculative prepare fails.
+    pub fn speculate_successors(
+        &mut self,
+        plan: &ExecutionPlan,
+        started: &[String],
+        budget: usize,
+    ) -> Result<(), PrepareError> {
+        if budget == 0 || matches!(self.mode, PrepMode::Sealed) {
+            return Ok(());
+        }
+        let mut dependents: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for node in &plan.nodes {
+            for dep in &node.depends_on {
+                dependents
+                    .entry(dep.as_str())
+                    .or_default()
+                    .push(node.id.as_str());
+            }
+        }
+        let mut remaining = budget;
+        for id in started {
+            let Some(children) = dependents.get(id.as_str()) else {
+                continue;
+            };
+            for child in children {
+                if remaining == 0 {
+                    return Ok(());
+                }
+                if self.prepared.contains_key(*child) {
+                    continue;
+                }
+                self.ensure_prepared(child)?;
+                remaining -= 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Flake root used for workspace CAS paths (available before any prepare).
+    #[must_use]
+    pub fn flake_root(&self) -> Utf8PathBuf {
+        if let Some(node) = self.prepared.values().next() {
+            return node.flake_root.clone();
+        }
+        match &self.mode {
+            PrepMode::Live(live) => live
+                .snapshot
+                .flake
+                .local_root
+                .as_deref()
+                .unwrap_or(live.snapshot.invocation_directory.as_path())
+                .to_path_buf(),
+            PrepMode::Sealed => Utf8PathBuf::from("."),
+        }
+    }
+
+    fn prepare_one(&mut self, task_id: &str) -> Result<PreparedTaskNode, PrepareError> {
+        let PrepMode::Live(live) = &mut self.mode else {
+            return Err(PrepareError::WorkspaceCache(io::Error::other(
+                "sealed preparer cannot prepare nodes",
+            )));
+        };
+        let LivePrep {
+            snapshot,
+            document,
+            root_task_ids,
+            request_args,
+            root,
+            cwd,
+            shell,
+            shell_mode,
+            environment_policy,
+            nix_flags,
+            context_override,
+            upstream_keys,
+            digest_cache,
+        } = live.as_mut();
+
+        let definition = document
+            .tasks
+            .get(task_id)
+            .expect("execution plan only includes known task ids");
+        let apps: Vec<App> = snapshot.apps.values().cloned().collect();
+        let forwarded = if root_task_ids.iter().any(|id| id == task_id) {
+            *request_args
+        } else {
+            &[][..]
+        };
+        let app = resolve_app_by_name(&apps, definition.app.as_str())?;
+        let execution_directory = resolve_task_execution_directory(
+            &snapshot.invocation_directory,
+            &snapshot.flake,
+            *root,
+            *cwd,
+            definition.working_directory.as_deref(),
+        )?;
+        let mut context_name = None;
+        let mut confirm = false;
+        let effective_context = context_override.or(definition.context.as_deref());
+        let applied_context = effective_context
+            .map(|name| apply_task_context(document, task_id, name, environment_policy))
+            .transpose()?;
+        let context_shell = applied_context
+            .as_ref()
+            .and_then(|applied| applied.shell.clone());
+        if let Some(applied) = &applied_context {
+            context_name = Some(applied.context_name.clone());
+            confirm = applied.confirm;
+        }
+        let node_environment = if let Some(applied) = &applied_context {
+            applied.environment_policy.clone()
+        } else {
+            (*environment_policy).clone()
+        };
+        let effective_shell =
+            resolve_effective_shell(*shell, context_shell, definition.shell.clone());
+        if let Some(shell_name) = effective_shell_wrap(effective_shell.as_deref(), *shell_mode)
+            && !snapshot.dev_shells.contains(shell_name)
+        {
+            return Err(PrepareError::UnknownDevShell {
+                task: task_id.to_owned(),
+                shell: shell_name.to_owned(),
+            });
+        }
+        let app_request = AppRequest {
+            flake_arg: None,
+            nix_override: None,
+            app: definition.app.as_str(),
+            args: forwarded,
+            root: *root,
+            cwd: *cwd,
+            shell: effective_shell.as_deref(),
+            shell_mode: *shell_mode,
+            environment_policy: (*environment_policy).clone(),
+            nix_flags,
+        };
+        let mut plan = build_plan(
+            &app_request,
+            &snapshot.flake,
+            &snapshot.nix,
+            app,
+            &snapshot.invocation_directory,
+            &execution_directory,
+            &strip_one_separator(forwarded),
+        )?;
+        if let Some(applied) = applied_context.as_ref() {
+            plan.context = Some(applied.context_name.clone());
+            plan.secrets = plan_secrets_for_core(&applied.plan_secrets);
+            plan.context_env_set = applied.spawn_env_set.clone();
+            plan.environment_policy = applied.environment_policy.clone();
+        }
+        let timeout = definition
+            .timeout
+            .as_deref()
+            .map(nxr_task::parse_duration)
+            .transpose()
+            .map_err(|error| {
+                PrepareError::TaskSchema(SchemaError::InvalidTimeout {
+                    task: task_id.to_owned(),
+                    message: error.to_string(),
+                })
+            })?;
+        let termination_grace = definition
+            .termination_grace_period
+            .as_deref()
+            .map(nxr_task::parse_duration)
+            .transpose()
+            .map_err(|error| {
+                PrepareError::TaskSchema(SchemaError::InvalidTimeout {
+                    task: task_id.to_owned(),
+                    message: error.to_string(),
+                })
+            })?;
+        let flake_root = snapshot
             .flake
             .local_root
             .as_deref()
-            .unwrap_or(self.invocation_directory.as_path());
-        let mut digest_cache = nxr_core::RunDigestCache::new();
-        for task_id in serial_order {
-            let definition = document
-                .tasks
-                .get(task_id)
-                .expect("execution plan only includes known task ids");
-            let forwarded = if root_task_ids.iter().any(|id| id == task_id) {
-                request_args
-            } else {
-                &[][..]
-            };
-            let app = resolve_app_by_name(&apps, definition.app.as_str())?;
-            let execution_directory = resolve_task_execution_directory(
-                &self.invocation_directory,
-                &self.flake,
-                root,
-                cwd,
-                definition.working_directory.as_deref(),
-            )?;
-            let mut context_name = None;
-            let mut confirm = false;
-            let effective_context = context_override.or(definition.context.as_deref());
-            let applied_context = effective_context
-                .map(|name| apply_task_context(document, task_id, name, environment_policy))
-                .transpose()?;
-            let context_shell = applied_context
-                .as_ref()
-                .and_then(|applied| applied.shell.clone());
-            if let Some(applied) = &applied_context {
-                context_name = Some(applied.context_name.clone());
-                confirm = applied.confirm;
-            }
-            let node_environment = if let Some(applied) = &applied_context {
-                applied.environment_policy.clone()
-            } else {
-                environment_policy.clone()
-            };
-            let effective_shell =
-                resolve_effective_shell(shell, context_shell, definition.shell.clone());
-            if let Some(shell_name) = effective_shell_wrap(effective_shell.as_deref(), shell_mode)
-                && !self.dev_shells.contains(shell_name)
-            {
-                return Err(PrepareError::UnknownDevShell {
-                    task: task_id.clone(),
-                    shell: shell_name.to_owned(),
-                });
-            }
-            let app_request = AppRequest {
-                flake_arg: None,
-                nix_override: None,
-                app: definition.app.as_str(),
-                args: forwarded,
-                root,
-                cwd,
-                shell: effective_shell.as_deref(),
-                shell_mode,
-                environment_policy: environment_policy.clone(),
-                nix_flags,
-            };
-            let mut plan = build_plan(
-                &app_request,
-                &self.flake,
-                &self.nix,
-                app,
-                &self.invocation_directory,
-                &execution_directory,
-                &strip_one_separator(forwarded),
-            )?;
-            if let Some(applied) = applied_context.as_ref() {
-                plan.context = Some(applied.context_name.clone());
-                plan.secrets = plan_secrets_for_core(&applied.plan_secrets);
-                plan.context_env_set = applied.spawn_env_set.clone();
-                plan.environment_policy = applied.environment_policy.clone();
-            }
-            let timeout = definition
-                .timeout
-                .as_deref()
-                .map(nxr_task::parse_duration)
-                .transpose()
-                .map_err(|error| {
-                    PrepareError::TaskSchema(SchemaError::InvalidTimeout {
-                        task: task_id.clone(),
-                        message: error.to_string(),
-                    })
-                })?;
-            let termination_grace = definition
-                .termination_grace_period
-                .as_deref()
-                .map(nxr_task::parse_duration)
-                .transpose()
-                .map_err(|error| {
-                    PrepareError::TaskSchema(SchemaError::InvalidTimeout {
-                        task: task_id.clone(),
-                        message: error.to_string(),
-                    })
-                })?;
-            let workspace_cache = build_workspace_cache_plan(
-                document,
-                task_id,
-                definition,
-                &self.nix.system,
-                flake_root,
-                execution_directory.as_str(),
-                &upstream_keys,
-                &WorkspaceCachePlanOptions {
-                    forwarded_args: forwarded.to_vec(),
-                    command_program: Some(self.nix.nix.to_string()),
-                    command_argv: plan.command.arguments.clone(),
-                    effective_shell: effective_shell.clone(),
-                    environment_policy: Some(node_environment.clone()),
-                    context_name: context_name.clone(),
-                    context_secrets: applied_context
-                        .as_ref()
-                        .map(|applied| applied.plan_secrets.clone())
-                        .unwrap_or_default(),
-                    context_spawn_env_set: applied_context
-                        .as_ref()
-                        .map(|applied| applied.spawn_env_set.clone())
-                        .unwrap_or_default(),
-                },
-                Some(&mut digest_cache),
-            )
-            .map_err(PrepareError::WorkspaceCache)?;
-            if let Some(key) = workspace_cache.action_key.as_ref() {
-                upstream_keys.insert(task_id.clone(), key.clone());
-            }
-            nodes.insert(
-                task_id.clone(),
-                PreparedTaskNode {
-                    id: task_id.clone(),
-                    program: self.nix.nix.clone(),
-                    arguments: plan.command.arguments.clone(),
-                    cwd: execution_directory,
-                    environment: node_environment,
-                    plan,
-                    timeout,
-                    termination_grace,
-                    context_name,
-                    confirm,
-                    workspace_cache: Some(workspace_cache),
-                    flake_root: flake_root.to_path_buf(),
-                },
-            );
+            .unwrap_or(snapshot.invocation_directory.as_path());
+        let workspace_cache = build_workspace_cache_plan(
+            document,
+            task_id,
+            definition,
+            &snapshot.nix.system,
+            flake_root,
+            execution_directory.as_str(),
+            upstream_keys,
+            &WorkspaceCachePlanOptions {
+                forwarded_args: forwarded.to_vec(),
+                command_program: Some(snapshot.nix.nix.to_string()),
+                command_argv: plan.command.arguments.clone(),
+                effective_shell: effective_shell.clone(),
+                environment_policy: Some(node_environment.clone()),
+                context_name: context_name.clone(),
+                context_secrets: applied_context
+                    .as_ref()
+                    .map(|applied| applied.plan_secrets.clone())
+                    .unwrap_or_default(),
+                context_spawn_env_set: applied_context
+                    .as_ref()
+                    .map(|applied| applied.spawn_env_set.clone())
+                    .unwrap_or_default(),
+            },
+            Some(digest_cache),
+        )
+        .map_err(PrepareError::WorkspaceCache)?;
+        if let Some(key) = workspace_cache.action_key.as_ref() {
+            upstream_keys.insert(task_id.to_owned(), key.clone());
         }
-        Ok(nodes)
+        Ok(PreparedTaskNode {
+            id: task_id.to_owned(),
+            program: snapshot.nix.nix.clone(),
+            arguments: plan.command.arguments.clone(),
+            cwd: execution_directory,
+            environment: node_environment,
+            plan,
+            timeout,
+            termination_grace,
+            context_name,
+            confirm,
+            workspace_cache: Some(workspace_cache),
+            flake_root: flake_root.to_path_buf(),
+        })
     }
 }
 
@@ -1848,5 +2177,180 @@ mod tests {
                 "/abs/fixtures/named-dev-shells#shell-marker".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn lazy_prep_kill_switch_parses_off_values() {
+        assert!(super::lazy_prep_enabled_for_env(None));
+        assert!(super::lazy_prep_enabled_for_env(Some("1")));
+        assert!(super::lazy_prep_enabled_for_env(Some("on")));
+        assert!(!super::lazy_prep_enabled_for_env(Some("off")));
+        assert!(!super::lazy_prep_enabled_for_env(Some("0")));
+        assert!(!super::lazy_prep_enabled_for_env(Some("false")));
+        assert!(!super::lazy_prep_enabled_for_env(Some("NO")));
+    }
+
+    fn chain_fixture() -> (
+        super::WorkspaceSnapshot,
+        nxr_task::TaskDocument,
+        Vec<String>,
+        OptionalNixFlags,
+    ) {
+        use nxr_task::{FailurePolicy, TaskDefinition, build_execution_plan};
+
+        let mut tasks = BTreeMap::new();
+        let mut a = TaskDefinition::new("leaf");
+        a.depends_on = Vec::new();
+        let mut b = TaskDefinition::new("leaf");
+        b.depends_on = vec!["a".to_owned()];
+        let mut c = TaskDefinition::new("leaf");
+        c.depends_on = vec!["b".to_owned()];
+        tasks.insert("a".to_owned(), a);
+        tasks.insert("b".to_owned(), b);
+        tasks.insert("c".to_owned(), c);
+        let document = nxr_task::TaskDocument::new(tasks);
+        let plan = build_execution_plan(&document.tasks, "c", FailurePolicy::FailFast, None)
+            .expect("plan");
+
+        let flake = FlakeSelection {
+            display: "/tmp/lazy-prep".to_owned(),
+            nix_ref: "/tmp/lazy-prep".to_owned(),
+            local_root: Some(camino::Utf8PathBuf::from("/tmp/lazy-prep")),
+        };
+        let adapter = NixAdapter::with_nix_and_system(
+            camino::Utf8PathBuf::from("/nix/bin/nix"),
+            "aarch64-darwin".to_owned(),
+        );
+        let app = App {
+            name: "leaf".to_owned(),
+            attr_path: "apps.aarch64-darwin.leaf".to_owned(),
+            flake_ref: flake.nix_ref.clone(),
+            system: "aarch64-darwin".to_owned(),
+            description: None,
+            is_default: false,
+            metadata: BTreeMap::new(),
+        };
+        let mut apps = BTreeMap::new();
+        apps.insert("leaf".to_owned(), app);
+        let snapshot = super::WorkspaceSnapshot {
+            flake,
+            nix: adapter,
+            apps,
+            tasks: Some(document.clone()),
+            invocation_directory: camino::Utf8PathBuf::from("/tmp/lazy-prep"),
+            dev_shells: std::collections::BTreeSet::new(),
+        };
+        (
+            snapshot,
+            document,
+            plan.serial_order,
+            OptionalNixFlags::default(),
+        )
+    }
+
+    #[test]
+    fn lazy_preparer_skips_never_run_successors() {
+        let (snapshot, document, serial_order, nix_flags) = chain_fixture();
+        let roots = vec!["c".to_owned()];
+        let policy = nxr_core::EnvironmentPolicy::Inherit;
+        let mut preparer = super::TaskNodePreparer::new(
+            &snapshot,
+            &document,
+            &roots,
+            &[],
+            false,
+            None,
+            None,
+            ShellMode::Smart,
+            &policy,
+            &nix_flags,
+            None,
+        )
+        .expect("preparer");
+
+        // Simulate fail-fast after the first ready node: only prepare "a".
+        preparer.ensure_prepared("a").expect("prepare a");
+        assert_eq!(preparer.prepare_count(), 1);
+        assert!(preparer.prepared().contains_key("a"));
+        assert!(!preparer.prepared().contains_key("b"));
+        assert!(!preparer.prepared().contains_key("c"));
+
+        // Eager path still prepares the full serial order.
+        let all = snapshot
+            .prepare_task_nodes(
+                &document,
+                &roots,
+                &serial_order,
+                &[],
+                false,
+                None,
+                None,
+                ShellMode::Smart,
+                &policy,
+                &nix_flags,
+                None,
+            )
+            .expect("eager");
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn lazy_preparer_respects_affected_serial_subset() {
+        let (snapshot, document, _full_order, nix_flags) = chain_fixture();
+        // Affected selection / excluded branches shrink serial_order before prepare.
+        let affected_order = vec!["a".to_owned(), "b".to_owned()];
+        let roots = vec!["b".to_owned()];
+        let policy = nxr_core::EnvironmentPolicy::Inherit;
+        let mut preparer = super::TaskNodePreparer::new(
+            &snapshot,
+            &document,
+            &roots,
+            &[],
+            false,
+            None,
+            None,
+            ShellMode::Smart,
+            &policy,
+            &nix_flags,
+            None,
+        )
+        .expect("preparer");
+        preparer
+            .prepare_all(&affected_order)
+            .expect("prepare affected");
+        assert_eq!(preparer.prepare_count(), 2);
+        assert!(!preparer.prepared().contains_key("c"));
+    }
+
+    #[test]
+    fn speculate_successors_is_bounded() {
+        use nxr_task::{FailurePolicy, build_execution_plan};
+
+        let (snapshot, document, _order, nix_flags) = chain_fixture();
+        let plan = build_execution_plan(&document.tasks, "c", FailurePolicy::KeepGoing, None)
+            .expect("plan");
+        let roots = vec!["c".to_owned()];
+        let policy = nxr_core::EnvironmentPolicy::Inherit;
+        let mut preparer = super::TaskNodePreparer::new(
+            &snapshot,
+            &document,
+            &roots,
+            &[],
+            false,
+            None,
+            None,
+            ShellMode::Smart,
+            &policy,
+            &nix_flags,
+            None,
+        )
+        .expect("preparer");
+        preparer.ensure_prepared("a").expect("a");
+        preparer
+            .speculate_successors(&plan, &["a".to_owned()], 1)
+            .expect("speculate");
+        assert_eq!(preparer.prepare_count(), 2);
+        assert!(preparer.prepared().contains_key("b"));
+        assert!(!preparer.prepared().contains_key("c"));
     }
 }

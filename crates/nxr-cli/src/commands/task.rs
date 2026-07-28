@@ -15,7 +15,10 @@ use nxr_task::{
     merge_spawn_env_overrides, resolve_task_name,
 };
 
-use crate::commands::common::{PrepareError, PreparedTaskNode, WorkspaceSnapshot, WorkspaceState};
+use crate::commands::common::{
+    NodePrepStage, PrepareError, PreparedTaskNode, TaskNodePreparer, WorkspaceSnapshot,
+    WorkspaceState, lazy_prep_enabled,
+};
 use crate::commands::history;
 use crate::commands::plan::{PlanRenderError, write_plan};
 use crate::commands::run::RunError;
@@ -233,8 +236,12 @@ pub enum RunControl {
 pub struct PreparedTaskGeneration {
     pub document: nxr_task::TaskDocument,
     pub plan: ExecutionPlan,
+    /// Fully populated for dry-run, watch reuse, and `NXR_LAZY_PREP=off`.
+    /// Empty when [`Self::snapshot`] is set for lazy preparation.
     pub prepared_nodes: BTreeMap<String, PreparedTaskNode>,
     pub canonical_roots: Vec<String>,
+    /// Workspace snapshot retained for lazy node prepare (ADR-0158).
+    pub snapshot: Option<WorkspaceSnapshot>,
 }
 
 /// Like [`execute`], but polls `control` during the scheduler loop.
@@ -318,33 +325,56 @@ pub fn execute_with_control(
         snapshot
             .validate_task_apps(&document)
             .map_err(PrepareError::NotFound)?;
-        let prepared_nodes = snapshot.prepare_task_nodes(
-            &document,
-            &canonical_roots,
-            &plan.serial_order,
-            request.args,
-            request.root,
-            request.cwd,
-            request.shell,
-            request.shell_mode,
-            &request.environment_policy,
-            request.nix_flags,
-            request.context_override.as_deref(),
-        )?;
 
-        if !dry_run && requires_project_trust(&prepared_nodes) {
-            trust::enforce_for_execution(
-                &snapshot.flake.display,
-                snapshot.flake.local_root.as_deref(),
-                &snapshot.flake.nix_ref,
+        // Watch caches and dry-run need every node prepared up front. Live runs
+        // default to lazy prep (`NXR_LAZY_PREP=off` restores eager).
+        let use_lazy = lazy_prep_enabled() && !dry_run && cache.is_none();
+
+        let (prepared_nodes, retained_snapshot) = if use_lazy {
+            if WorkspaceSnapshot::plan_requires_project_trust(
+                &document,
+                &plan,
+                &request.environment_policy,
+                request.context_override.as_deref(),
+            )? {
+                trust::enforce_for_execution(
+                    &snapshot.flake.display,
+                    snapshot.flake.local_root.as_deref(),
+                    &snapshot.flake.nix_ref,
+                )?;
+            }
+            (BTreeMap::new(), Some(snapshot.clone()))
+        } else {
+            let prepared_nodes = snapshot.prepare_task_nodes(
+                &document,
+                &canonical_roots,
+                &plan.serial_order,
+                request.args,
+                request.root,
+                request.cwd,
+                request.shell,
+                request.shell_mode,
+                &request.environment_policy,
+                request.nix_flags,
+                request.context_override.as_deref(),
             )?;
-        }
+
+            if !dry_run && requires_project_trust(&prepared_nodes) {
+                trust::enforce_for_execution(
+                    &snapshot.flake.display,
+                    snapshot.flake.local_root.as_deref(),
+                    &snapshot.flake.nix_ref,
+                )?;
+            }
+            (prepared_nodes, None)
+        };
 
         let bundle = PreparedTaskGeneration {
             document,
             plan,
             prepared_nodes,
             canonical_roots,
+            snapshot: retained_snapshot,
         };
         if let Some(cache) = cache {
             *cache = Some(bundle.clone());
@@ -353,10 +383,11 @@ pub fn execute_with_control(
     };
 
     let PreparedTaskGeneration {
-        document: _document,
+        document,
         plan,
         prepared_nodes,
         canonical_roots,
+        snapshot: lazy_snapshot,
     } = prepared_bundle;
 
     let failure_policy = if request.keep_going {
@@ -391,6 +422,24 @@ pub fn execute_with_control(
         return dry_run_execute(&prepared_nodes, &plan, &waves, request, json, runner);
     }
 
+    let mut preparer = if let Some(ref snapshot) = lazy_snapshot {
+        TaskNodePreparer::new(
+            snapshot,
+            &document,
+            &canonical_roots,
+            request.args,
+            request.root,
+            request.cwd,
+            request.shell,
+            request.shell_mode,
+            &request.environment_policy,
+            request.nix_flags,
+            request.context_override.as_deref(),
+        )?
+    } else {
+        TaskNodePreparer::from_prepared(prepared_nodes)
+    };
+
     if pipe_stdio {
         let mut stdout = io::stdout().lock();
         let mut stderr = io::stderr().lock();
@@ -410,14 +459,14 @@ pub fn execute_with_control(
             },
             plan.nodes.len(),
         ));
-        let result = run_plan(request, &plan, &prepared_nodes, &mut sink, runner, control);
+        let result = run_plan(request, &plan, &mut preparer, &mut sink, runner, control);
         report_sink_error(&sink)?;
         result
     } else {
         // Inherit stdio for interactivity / --output raw: do not hold stdout/stderr locks.
         let inner = nxr_task::NullSink;
         let mut sink = wrap_report_sink(inner, &request.reports);
-        let result = run_plan(request, &plan, &prepared_nodes, &mut sink, runner, control);
+        let result = run_plan(request, &plan, &mut preparer, &mut sink, runner, control);
         report_sink_error(&sink)?;
         result
     }
@@ -639,7 +688,7 @@ fn dry_run_execute(
 fn run_plan(
     request: &TaskRequest<'_>,
     plan: &ExecutionPlan,
-    prepared_nodes: &BTreeMap<String, PreparedTaskNode>,
+    preparer: &mut TaskNodePreparer<'_>,
     sink: &mut dyn EventSink,
     runner: RunnerOutput,
     control: &mut dyn FnMut() -> io::Result<RunControl>,
@@ -657,11 +706,7 @@ fn run_plan(
     let mut started_at: BTreeMap<String, std::time::Instant> = BTreeMap::new();
 
     let (user_config, secret_bindings) = load_runtime_secret_config()?;
-    let project_id = prepared_nodes
-        .values()
-        .next()
-        .map(|node| project_identity(std::path::Path::new(node.cwd.as_str())))
-        .unwrap_or_else(|| "local".to_owned());
+    let project_id = project_identity(std::path::Path::new(preparer.flake_root().as_str()));
     let mut node_secret_guards: BTreeMap<String, SpawnSecrets> = BTreeMap::new();
 
     let mut to_start = scheduler.schedule_ready();
@@ -751,7 +796,8 @@ fn run_plan(
             if !started_at.contains_key(&id) {
                 continue;
             }
-            let grace = prepared_nodes
+            let grace = preparer
+                .prepared()
                 .get(&id)
                 .and_then(|node| node.termination_grace)
                 .unwrap_or(SHUTDOWN_GRACE);
@@ -799,12 +845,30 @@ fn run_plan(
             }
         }
 
+        // Phase 3: prepare only resource-ready nodes about to start.
+        preparer
+            .ensure_prepared_many(&to_start)
+            .map_err(TaskError::Prepare)?;
+        // Phase 4 (optional): speculate successors only under keep-going so
+        // fail-fast / upstream failure still avoid never-run prepares.
+        if request.keep_going {
+            preparer
+                .speculate_successors(plan, &to_start, request.jobs)
+                .map_err(TaskError::Prepare)?;
+        }
+
         let ready: Vec<String> = std::mem::take(&mut to_start);
         let mut spawn_queue = Vec::new();
         for node_id in ready {
-            let prepared = prepared_nodes
+            // Wave 4c hook: CasInputs before lookup; SpawnPlan before spawn.
+            // Stages are fused today (ADR-0158); 4c splits them for CAS‖plan.
+            preparer
+                .ensure_stage(&node_id, NodePrepStage::CasInputs)
+                .map_err(TaskError::Prepare)?;
+            let prepared = preparer
+                .prepared()
                 .get(&node_id)
-                .expect("scheduler only starts ids prepared before run");
+                .expect("ensure_stage just prepared this node");
             if try_workspace_cache_restore(prepared, &prepared.flake_root)
                 .map_err(TaskError::Supervision)?
                 .is_some()
@@ -826,6 +890,9 @@ fn run_plan(
                 to_start.extend(scheduler.complete(&node_id, exit::SUCCESS)?);
                 continue;
             }
+            preparer
+                .ensure_stage(&node_id, NodePrepStage::SpawnPlan)
+                .map_err(TaskError::Prepare)?;
             spawn_queue.push(node_id);
         }
         for node_id in spawn_queue {
@@ -836,7 +903,7 @@ fn run_plan(
                 request.events_format,
             );
             let compact = spawn_node(
-                prepared_nodes,
+                preparer,
                 &node_id,
                 pipe_stdio,
                 &mut supervisor,
@@ -850,7 +917,11 @@ fn run_plan(
             )?;
             started_at.insert(node_id.clone(), std::time::Instant::now());
             node_compact_ids.insert(node_id.clone(), compact);
-            if let Some(timeout) = prepared_nodes.get(&node_id).and_then(|node| node.timeout) {
+            if let Some(timeout) = preparer
+                .prepared()
+                .get(&node_id)
+                .and_then(|node| node.timeout)
+            {
                 deadlines.insert(compact, started_at[&node_id] + timeout);
             }
         }
@@ -883,7 +954,7 @@ fn run_plan(
             node_secret_guards.remove(&id);
 
             if code == exit::SUCCESS
-                && let Some(prepared) = prepared_nodes.get(&id)
+                && let Some(prepared) = preparer.prepared().get(&id)
             {
                 save_workspace_cache(prepared, &prepared.flake_root)
                     .map_err(TaskError::Supervision)?;
@@ -979,6 +1050,13 @@ fn run_plan(
         finished_at: None,
     });
 
+    runner
+        .verbose(format!(
+            "prepared {} task node(s) this run",
+            preparer.prepare_count()
+        ))
+        .map_err(TaskError::Io)?;
+
     if interrupted {
         return Ok(exit::INTERRUPTED);
     }
@@ -1003,7 +1081,7 @@ fn requires_project_trust(prepared_nodes: &BTreeMap<String, PreparedTaskNode>) -
 }
 
 fn spawn_node(
-    prepared_nodes: &BTreeMap<String, PreparedTaskNode>,
+    preparer: &TaskNodePreparer<'_>,
     node_id: &str,
     pipe_stdio: bool,
     supervisor: &mut Supervisor,
@@ -1015,7 +1093,8 @@ fn spawn_node(
     project_id: &str,
     node_secret_guards: &mut BTreeMap<String, SpawnSecrets>,
 ) -> Result<u32, TaskError> {
-    let prepared = prepared_nodes
+    let prepared = preparer
+        .prepared()
         .get(node_id)
         .expect("scheduler only starts ids prepared before run");
     if prepared.confirm {

@@ -16,7 +16,7 @@ Set `NXR_PERF_STATS=1` to accumulate counters for one CLI invocation. On exit,
 nxr prints a single JSON line on stderr:
 
 ```text
-nxr-perf-stats: {"schema_version":5,"nix_spawns":…,…}
+nxr-perf-stats: {"schema_version":6,"nix_spawns":…,…}
 ```
 
 | Counter | Meaning |
@@ -34,13 +34,31 @@ nxr-perf-stats: {"schema_version":5,"nix_spawns":…,…}
 | `digest_cache_hits` | Run-scoped path/pattern digest cache hits (action-key planning) |
 | `digest_metadata_hits` | Action-digest reuse when device/inode/size/mtime(/ctime) match |
 | `git_blob_digests` | Action digests derived from Git blob OID (no working-tree read) |
+| `nodes_prepared` | Task-graph nodes prepared this invocation (lazy or eager) |
 
 Counters are **off by default**; no semantic change when unset. See
 [ADR-0151](adr/0151-perf-counters.md), [ADR-0152](adr/0152-prepared-plan-cache.md),
 [ADR-0153](adr/0153-store-exe-cache.md), [ADR-0154](adr/0154-run-digest-cache.md),
 and [ADR-0155](adr/0155-incremental-git-digests.md),
 and [ADR-0156](adr/0156-merkle-affected-index.md),
-and [ADR-0157](adr/0157-optional-nxrd.md).
+and [ADR-0157](adr/0157-optional-nxrd.md),
+and [ADR-0158](adr/0158-lazy-node-prep.md).
+
+## Staged / lazy task-node preparation
+
+Live `nxr task` runs prepare spawn plans as nodes approach execution
+([ADR-0158](adr/0158-lazy-node-prep.md)):
+
+1. Resolve DAG / affected roots (structure only).
+2. Scheduler selects resource-ready nodes.
+3. Prepare only the ready set about to start.
+4. Optionally speculate successors under `--keep-going` (budget = `--jobs`).
+
+Never-run nodes (fail-fast cancel, upstream failure, excluded by affected
+selection) are not prepared. Kill-switch: `NXR_LAZY_PREP=off` (also `0` /
+`false` / `no`) restores eager prepare-all for bisection. Dry-run, explain,
+and watch generation caches stay eager. Wave 4c will split CAS-input prep from
+spawn-plan prep (`NodePrepStage`) so CAS lookup can race argv assembly.
 
 ## Optional local cache daemon (`nxrd`)
 
@@ -55,8 +73,8 @@ nxr daemon stop
 
 - Socket: `$XDG_RUNTIME_DIR/nxr/nxrd.sock` (override `NXR_DAEMON_SOCKET`).
 - Protocol: JSON lines, version **1**, role `cache` only — not execution
-  authority; reserved methods leave room for lazy prep (4b), log broker (7c),
-  and workers without claiming them.
+  authority; reserved methods leave room for log broker (7c) and workers;
+  lazy prep (4b) is CLI-local ([ADR-0158](adr/0158-lazy-node-prep.md)).
 - **Retained in RAM while running:** discovery payloads, prepared plans
   (placeholder secret policy), fingerprint strings, Merkle invalidation path
   sets, recent action-key digests.
