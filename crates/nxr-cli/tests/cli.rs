@@ -2963,6 +2963,7 @@ fn bare_app_fast_path_skips_flake_show() {
     cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
         .env("NXR_NIX", &counter.wrapper)
+        .env("NXR_STORE_EXE_CACHE", "off")
         .args(["--flake", "fixtures/basic-apps", "hello"])
         .assert()
         .success()
@@ -2994,6 +2995,7 @@ fn bare_app_failing_existing_app_is_one_nix_process() {
     cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
         .env("NXR_NIX", &counter.wrapper)
+        .env("NXR_STORE_EXE_CACHE", "off")
         .args(["--flake", "fixtures/basic-apps", "fail"])
         .assert()
         .failure()
@@ -3004,6 +3006,68 @@ fn bare_app_failing_existing_app_is_one_nix_process() {
     assert_eq!(counter.count("flake-show"), 0, "log={log}");
     assert_eq!(counter.count("eval"), 0, "log={log}");
     assert_eq!(counter.count("other"), 0, "log={log}");
+}
+
+#[test]
+fn warm_store_exe_skips_nix_run() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let home = tempfile::TempDir::new().expect("cache home");
+    let repo_root = repo_root();
+    let cache = home.path().join("cache");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", &cache)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello from basic-apps"));
+
+    let cold_log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(
+        counter.count("run"),
+        0,
+        "cold store-exe path should realise+exec without nix run; log={cold_log}"
+    );
+    assert!(
+        counter.count("eval") >= 1,
+        "cold store-exe should eval app.program (and possibly currentSystem); log={cold_log}"
+    );
+
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", &cache)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello from basic-apps"));
+
+    let warm_log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(
+        counter.count("run"),
+        0,
+        "warm store-exe must not call nix run; log={warm_log}"
+    );
+    assert_eq!(
+        counter.count("eval"),
+        0,
+        "warm store-exe must not re-eval; log={warm_log}"
+    );
+    assert_eq!(
+        counter.count("build"),
+        0,
+        "warm store-exe must not rebuild; log={warm_log}"
+    );
 }
 
 #[test]
@@ -3030,6 +3094,7 @@ fn task_ci_uses_o1_discovery_not_per_node_flake_show() {
     cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
         .env("NXR_NIX", &counter.wrapper)
+        .env("NXR_STORE_EXE_CACHE", "off")
         .args(["--flake", "fixtures/task-dag", "task", "ci"])
         .assert()
         .success()
@@ -3244,6 +3309,7 @@ fn watch_app_does_not_double_workspace_init_on_first_generation() {
         .expect("nxr binary")
         .current_dir(&repo_root)
         .env("NXR_NIX", &counter.wrapper)
+        .env("NXR_STORE_EXE_CACHE", "off")
         .args(["--flake", "fixtures/basic-apps", "watch", "hello"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

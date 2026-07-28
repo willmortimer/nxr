@@ -31,6 +31,7 @@ pub mod run;
 pub mod secrets;
 pub mod select;
 pub mod selectors;
+pub mod store_exe;
 pub mod task;
 pub mod trust;
 pub mod views;

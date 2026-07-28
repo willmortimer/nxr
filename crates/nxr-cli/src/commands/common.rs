@@ -70,6 +70,8 @@ pub struct PreparedPlan {
     pub plan: Plan,
     pub nix: Utf8PathBuf,
     pub execution_directory: Utf8PathBuf,
+    /// Local flake root when the flake is path-based (store-exe / plan cache).
+    pub local_root: Option<Utf8PathBuf>,
 }
 
 /// Precomputed spawn inputs for one task graph node.
@@ -443,6 +445,7 @@ pub fn prepare_fast_app_plan(request: &AppRequest<'_>) -> Result<PreparedPlan, P
         plan,
         nix,
         execution_directory,
+        local_root: flake.local_root.clone(),
     };
     if plan_cache_enabled() {
         store_prepared_plan_cache_with_version(
@@ -675,6 +678,7 @@ impl WorkspaceSnapshot {
             plan,
             nix: self.nix.nix.clone(),
             execution_directory,
+            local_root: self.flake.local_root.clone(),
         })
     }
 
@@ -1207,6 +1211,7 @@ fn try_prepared_plan_cache(
         plan: hit.plan,
         nix: Utf8PathBuf::from(hit.nix),
         execution_directory: Utf8PathBuf::from(hit.execution_directory),
+        local_root: flake.local_root.clone(),
     }))
 }
 
@@ -1247,6 +1252,7 @@ fn try_fast_prepared_plan_cache(
         plan: hit.plan,
         nix: Utf8PathBuf::from(hit.nix),
         execution_directory: Utf8PathBuf::from(hit.execution_directory),
+        local_root: flake.local_root.clone(),
     }))
 }
 

@@ -16,7 +16,7 @@ Set `NXR_PERF_STATS=1` to accumulate counters for one CLI invocation. On exit,
 nxr prints a single JSON line on stderr:
 
 ```text
-nxr-perf-stats: {"schema_version":2,"nix_spawns":…,…}
+nxr-perf-stats: {"schema_version":3,"nix_spawns":…,…}
 ```
 
 | Counter | Meaning |
@@ -29,9 +29,12 @@ nxr-perf-stats: {"schema_version":2,"nix_spawns":…,…}
 | `spawn_to_child_output_us` | Spawn to first piped child stderr byte (µs) |
 | `plan_cache_hits` | Prepared-plan disk cache hits |
 | `plan_cache_misses` | Prepared-plan disk cache misses |
+| `store_exe_hits` | Store-exe disk cache hits (direct `/nix/store` spawn) |
+| `store_exe_misses` | Store-exe disk cache misses (realise or `nix run` fallback) |
 
 Counters are **off by default**; no semantic change when unset. See
-[ADR-0151](adr/0151-perf-counters.md) and [ADR-0152](adr/0152-prepared-plan-cache.md).
+[ADR-0151](adr/0151-perf-counters.md), [ADR-0152](adr/0152-prepared-plan-cache.md),
+and [ADR-0153](adr/0153-store-exe-cache.md).
 
 ## Prepared-plan disk cache
 
@@ -41,8 +44,21 @@ discovery/lock fingerprints. Schema **v1**. Miss → today’s prepare path; hit
 reuse the stored plan. Live environment and secret values are still resolved at
 spawn — never stored. Set `NXR_PLAN_CACHE=off` to disable. TTL default 24h
 (`NXR_PLAN_CACHE_TTL_SECS`; `0` disables). `nxr cache clear` / `status` cover this
-cache alongside discovery, capabilities, and workspace CAS. See
+cache alongside discovery, capabilities, workspace CAS, and store-exe. See
 [ADR-0152](adr/0152-prepared-plan-cache.md).
+
+## Store-exe disk cache
+
+Optional cache of realised flake-app store executables. Schema **v1**. Miss/cold →
+`nix eval` of `apps.<system>.<app>.program` plus `nix build --no-link
+--print-out-paths` when needed, then direct exec (build-then-exec equivalence to
+`nix run`). Hit → spawn the cached `/nix/store/…` program with forwarded args
+(0× `nix run`) when fingerprints match and the path is still valid. Falls back to
+`nix run` for shell wraps, doubt, or `NXR_STORE_EXE_CACHE=off`. Reuses
+`PlanCacheSharedFingerprints` from ADR-0152. Independent of the prepared-plan
+cache (both may hit on one invocation). TTL default 24h
+(`NXR_STORE_EXE_CACHE_TTL_SECS`; `0` disables). See
+[ADR-0153](adr/0153-store-exe-cache.md).
 
 ## Process supervision
 
@@ -54,11 +70,12 @@ Windows builds still use one reader thread per pipe (Unix-first); the supervisor
 
 | Path | Expected Nix invocations | Notes |
 |---|---|---|
-| Bare `nxr <app>` / `nxr run <app>` (success or ordinary app failure) | **exactly 1×** `nix` (`nix run`); **0×** probes / `flake show` | Locate-only prepare; no `currentSystem` / capability probes unless `--offline` / `--accept-flake-config`; TTY stderr is inherited (no capture) |
-| Bare app missing installable (non-TTY stderr) | **1×** `nix run` + optional diagnostic discovery | Bounded stderr tail (~128 KiB); suggestion discovery only when stderr indicates installable-resolution failure |
-| Bare app on a TTY | **1×** `nix run`; inherit stderr | Prefer transparent rendering over typo suggestions |
+| Bare `nxr <app>` / `nxr run <app>` with `NXR_STORE_EXE_CACHE=off` | **exactly 1×** `nix` (`nix run`); **0×** probes / `flake show` | Classic budget; locate-only prepare |
+| Bare app warm with store-exe cache hit | **0×** `nix run` | Direct `/nix/store` spawn; cold may `eval`/`build` then exec |
+| Bare app missing installable (non-TTY stderr, store-exe off) | **1×** `nix run` + optional diagnostic discovery | Bounded stderr tail (~128 KiB); suggestion discovery only when stderr indicates installable-resolution failure |
+| Bare app on a TTY (store-exe off) | **1×** `nix run`; inherit stderr | Prefer transparent rendering over typo suggestions |
 | Adapter init (list/task/doctor) | **1×** `nix eval` (`currentSystem`) + capability probes (`--version`, config/help) | Shared via `WorkspaceSnapshot` / `NixAdapter`; warm capability cache skips all probes when the environment digest matches |
-| `nxr task` with **N** nodes | **N×** `nix run` + **O(1)** discovery | One `flake show` (apps) + one task `eval` (or warm combined cache); **not** N× `flake show` |
+| `nxr task` with **N** nodes (store-exe off) | **N×** `nix run` + **O(1)** discovery | One `flake show` (apps) + one task `eval` (or warm combined cache); **not** N× `flake show` |
 | `nxr list --refresh-discovery` | Dominated by `nix flake show` | Catalog commands still discover |
 | Named `nxr build` / `check` / `shell` | Direct installable argv (no whole-output discovery up front) | Adapter init still probes once for system / flags |
 | Named build/check/shell missing attribute | **1×** installable + optional diagnostic discovery | Suggestion discovery only when stderr indicates missing attribute |

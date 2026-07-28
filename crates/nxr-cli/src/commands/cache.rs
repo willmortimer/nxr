@@ -8,7 +8,9 @@ use nxr_completion::{
 use nxr_core::cas::CacheExplain;
 use nxr_core::cas::{clear_workspace_cas, workspace_cas_status};
 use nxr_core::diagnostics::exit;
-use nxr_core::{clear_plan_cache, plan_cache_status};
+use nxr_core::{
+    clear_plan_cache, clear_store_exe_cache, plan_cache_status, store_exe_cache_status,
+};
 use nxr_nix::{
     OptionalNixFlags, capability_cache_status, clear_capability_cache,
     coalesced_discovery_available,
@@ -59,6 +61,7 @@ struct CacheClearJson {
     capabilities_removed: usize,
     workspace_removed: usize,
     plans_removed: usize,
+    store_exe_removed: usize,
 }
 
 #[derive(Serialize)]
@@ -74,6 +77,7 @@ struct CacheStatusJson {
     capabilities: CacheStatusSection,
     workspace: CacheStatusSection,
     plans: CacheStatusSection,
+    store_exe: CacheStatusSection,
 }
 
 /// Remove all discovery cache entries.
@@ -86,23 +90,26 @@ pub fn clear(json: bool, runner: RunnerOutput) -> Result<(), CacheError> {
     let capabilities_removed = clear_capability_cache()?;
     let workspace_removed = clear_workspace_cas()?;
     let plans_removed = clear_plan_cache()?;
+    let store_exe_removed = clear_store_exe_cache()?;
     if json {
         let payload = CacheClearJson {
             discovery_removed,
             capabilities_removed,
             workspace_removed,
             plans_removed,
+            store_exe_removed,
         };
         let rendered = serde_json::to_string_pretty(&payload)?;
         writeln!(io::stdout().lock(), "{rendered}")?;
     } else {
         runner
             .info(format!(
-                "removed {discovery_removed} discovery cache entr{}, {capabilities_removed} capability cache entr{}, {workspace_removed} workspace CAS entr{}, and {plans_removed} prepared-plan cache entr{}",
+                "removed {discovery_removed} discovery cache entr{}, {capabilities_removed} capability cache entr{}, {workspace_removed} workspace CAS entr{}, {plans_removed} prepared-plan cache entr{}, and {store_exe_removed} store-exe cache entr{}",
                 if discovery_removed == 1 { "y" } else { "ies" },
                 if capabilities_removed == 1 { "y" } else { "ies" },
                 if workspace_removed == 1 { "y" } else { "ies" },
                 if plans_removed == 1 { "y" } else { "ies" },
+                if store_exe_removed == 1 { "y" } else { "ies" },
             ))
             .map_err(CacheError::Io)?;
     }
@@ -119,6 +126,7 @@ pub fn status(json: bool, mut runner: RunnerOutput) -> Result<(), CacheError> {
     let capabilities = capability_cache_status()?;
     let workspace = workspace_cas_status()?;
     let plans = plan_cache_status()?;
+    let store_exe = store_exe_cache_status()?;
     if json {
         let payload = CacheStatusJson {
             discovery: CacheStatusSection {
@@ -140,6 +148,11 @@ pub fn status(json: bool, mut runner: RunnerOutput) -> Result<(), CacheError> {
                 path: plans.path,
                 entries: plans.entries,
                 total_bytes: plans.total_bytes,
+            },
+            store_exe: CacheStatusSection {
+                path: store_exe.path,
+                entries: store_exe.entries,
+                total_bytes: store_exe.total_bytes,
             },
         };
         let rendered = serde_json::to_string_pretty(&payload)?;
@@ -172,6 +185,13 @@ pub fn status(json: bool, mut runner: RunnerOutput) -> Result<(), CacheError> {
             &plans.path,
             plans.entries,
             plans.total_bytes,
+        )?;
+        render_status_section(
+            &mut runner,
+            "store-exe",
+            &store_exe.path,
+            store_exe.entries,
+            store_exe.total_bytes,
         )?;
     }
     Ok(())

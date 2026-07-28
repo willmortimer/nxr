@@ -346,6 +346,14 @@ fn spawn_process(
     let environment_policy = EnvironmentPolicy::Inherit;
     let app_request = process_app_request(context, definition.app.as_str(), environment_policy);
     let prepared = prepare_fast_app_plan(&app_request)?;
+    let spawn = crate::commands::store_exe::resolve_app_spawn(
+        &prepared.plan,
+        &prepared.nix,
+        prepared.local_root.as_deref(),
+        context.nix_flags,
+        "",
+        Some(prepared.execution_directory.as_std_path()),
+    );
 
     let log_path = process_log_path(&context.project_id, name)?;
     if let Some(parent) = log_path.parent() {
@@ -357,8 +365,8 @@ fn spawn_process(
         .open(&log_path)?;
 
     let pid = spawn_background(
-        prepared.nix.as_std_path(),
-        &prepared.plan.command.arguments,
+        spawn.program.as_std_path(),
+        &spawn.arguments,
         prepared.execution_directory.as_std_path(),
         &prepared.plan.environment_policy,
         log_file,

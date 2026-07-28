@@ -17,13 +17,14 @@ and spawn-to-first-child-output are not visible from `measure-release.sh` alone.
 2. When disabled (default), counters are not accumulated and process behavior is
    unchanged.
 3. When enabled, counters are emitted as a single JSON line on stderr at process
-   exit (`nxr-perf-stats: {…}`), schema version **2** (v1 fields retained;
-   `plan_cache_hits` / `plan_cache_misses` added in ADR-0152).
+   exit (`nxr-perf-stats: {…}`), schema version **3** (v1/v2 fields retained;
+   `store_exe_hits` / `store_exe_misses` added in ADR-0153; plan-cache counters
+   in ADR-0152).
 4. Do **not** add a public CLI flag in Wave 0; env gate avoids CLI contract churn.
 5. Extend `scripts/perf/measure-matrix.sh` for additional scenarios; document
    deferred/flaky cases in `docs/PERFORMANCE.md`.
 
-### Counter surface (schema v2)
+### Counter surface (schema v3)
 
 | Field | Meaning |
 |---|---|
@@ -35,6 +36,8 @@ and spawn-to-first-child-output are not visible from `measure-release.sh` alone.
 | `spawn_to_child_output_us` | First child stderr byte after spawn (µs), when piped |
 | `plan_cache_hits` | Prepared-plan disk cache hits |
 | `plan_cache_misses` | Prepared-plan disk cache misses (prepare ran) |
+| `store_exe_hits` | Store-exe disk cache hits (direct store spawn) |
+| `store_exe_misses` | Store-exe disk cache misses |
 
 ## Validation
 

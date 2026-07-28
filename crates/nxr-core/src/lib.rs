@@ -14,6 +14,7 @@ pub mod projects;
 pub mod repo_path;
 pub mod run_history;
 pub mod sanitize;
+pub mod store_exe_cache;
 pub mod trust;
 
 pub use action::{
@@ -41,7 +42,7 @@ pub use perf::{
     CasLookupGuard, PERF_STATS_ENV, PerfStats, PlanPrepareGuard, add_bytes_hashed,
     add_cas_lookup_us, add_plan_prepare_us, emit_stderr, enabled as perf_enabled,
     record_fs_metadata, record_nix_spawn, record_plan_cache_hit, record_plan_cache_miss,
-    record_spawn_to_child_output_us,
+    record_spawn_to_child_output_us, record_store_exe_hit, record_store_exe_miss,
 };
 pub use plan::{Plan, PlanCommand, PlanKind, PlanSecretRef};
 pub use plan_cache::{
@@ -62,6 +63,13 @@ pub use run_history::{
     RunSummaryInput, RunTargetKind, clear_runs, list_runs, record_run, record_run_result,
 };
 pub use sanitize::sanitize_terminal_text;
+pub use store_exe_cache::{
+    DEFAULT_STORE_EXE_CACHE_TTL_SECS, STORE_EXE_CACHE_ENV, STORE_EXE_CACHE_SCHEMA_VERSION,
+    STORE_EXE_CACHE_TTL_ENV, StoreExeCacheHit, StoreExeCacheKeyMaterial, StoreExeCacheStatus,
+    clear_store_exe_cache, lookup_store_exe, store_exe_cache_dir, store_exe_cache_enabled,
+    store_exe_cache_key_digest, store_exe_cache_status, store_exe_path_usable,
+    store_output_root_for_program, store_store_exe,
+};
 pub use trust::{
     NXR_TRUST_PROJECT_ENV, TrustDatabase, TrustError, canonical_project_key, enforce_project_trust,
     project_trust_key, trust_project_env_enabled,

@@ -42,7 +42,7 @@ pub enum PlanPrepareKind {
     Discovered,
 }
 
-/// Fingerprint material shared with future store-exe reuse (perf-1b).
+/// Fingerprint material shared with store-exe reuse (perf-1b / ADR-0153).
 ///
 /// Callers compute these with existing discovery / lock / Nix identity helpers.
 /// Values are digests or paths — never secret contents.

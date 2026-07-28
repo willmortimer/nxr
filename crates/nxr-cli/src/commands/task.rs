@@ -1031,8 +1031,16 @@ fn spawn_node(
 
     sink.emit(Event::node_started(node_id.to_owned()));
 
-    let program = prepared.program.as_std_path();
-    let args = &prepared.arguments;
+    let spawn = crate::commands::store_exe::resolve_app_spawn(
+        &prepared.plan,
+        &prepared.program,
+        Some(prepared.flake_root.as_path()),
+        &OptionalNixFlags::default(),
+        "",
+        Some(prepared.cwd.as_std_path()),
+    );
+    let program = spawn.program.as_std_path();
+    let args = &spawn.arguments;
     let cwd = Some(prepared.cwd.as_std_path());
     let env = &prepared.environment;
     let (env_overrides, stdin_payload, spawn_secrets) =

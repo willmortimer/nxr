@@ -10,6 +10,7 @@ use crate::commands::common::{
 };
 use crate::commands::history;
 use crate::commands::plan::{PlanRenderError, write_plan};
+use crate::commands::store_exe::resolve_app_spawn;
 use crate::runner_output::RunnerOutput;
 
 /// Errors while running an app.
@@ -39,6 +40,9 @@ impl RunError {
 /// Uses the bare-app fast path: builds `nix run <flake>#<app>` without probes or
 /// `flake show`. Suggestion discovery runs only when stderr indicates a missing
 /// installable — not after ordinary app nonzero exits.
+///
+/// When the store-exe cache hits (ADR-0153), spawns the realised store program
+/// directly; dry-run still renders the `nix run` plan (escape hatch unchanged).
 ///
 /// # Errors
 ///
@@ -74,15 +78,30 @@ pub fn execute(
         ))
         .map_err(RunError::Supervision)?;
 
+    let spawn = resolve_app_spawn(
+        &prepared.plan,
+        &prepared.nix,
+        prepared.local_root.as_deref(),
+        request.nix_flags,
+        "",
+        Some(prepared.execution_directory.as_std_path()),
+    );
+    if spawn.used_store_exe {
+        runner
+            .verbose(format!("store-exe: {}", spawn.program))
+            .map_err(RunError::Supervision)?;
+    }
+
     let (code, stderr) = nxr_process::run_in_with_stderr(
-        prepared.nix.as_std_path(),
-        &prepared.plan.command.arguments,
+        spawn.program.as_std_path(),
+        &spawn.arguments,
         Some(prepared.execution_directory.as_std_path()),
         &prepared.plan.environment_policy,
     )
     .map_err(RunError::Supervision)?;
 
     if code != exit::SUCCESS
+        && !spawn.used_store_exe
         && stderr_indicates_missing_installable(&stderr)
         && let Ok(Some(not_found)) = suggest_missing_app_after_run(request)
     {
