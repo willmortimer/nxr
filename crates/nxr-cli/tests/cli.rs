@@ -3437,6 +3437,12 @@ fn start_watch_stdout_reader(
     rx
 }
 
+fn start_watch_stderr_drain(
+    stderr: impl std::io::Read + Send + 'static,
+) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    start_watch_stdout_reader(stderr)
+}
+
 fn wait_for_watch_occurrences(
     rx: &std::sync::mpsc::Receiver<Vec<u8>>,
     output: &mut Vec<u8>,
@@ -3446,6 +3452,7 @@ fn wait_for_watch_occurrences(
 ) {
     use std::sync::mpsc::RecvTimeoutError;
 
+    let mut disconnected = false;
     while std::time::Instant::now() < deadline {
         if String::from_utf8_lossy(output).matches(needle).count() >= occurrences {
             return;
@@ -3453,12 +3460,20 @@ fn wait_for_watch_occurrences(
         match rx.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(chunk) => output.extend_from_slice(&chunk),
             Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Disconnected) => {
+                disconnected = true;
+                break;
+            }
         }
     }
 
     panic!(
-        "watch timed out waiting for {occurrences}x {needle:?}; output={}",
+        "watch {} waiting for {occurrences}x {needle:?}; output={}",
+        if disconnected {
+            "stdout closed"
+        } else {
+            "timed out"
+        },
         String::from_utf8_lossy(output)
     );
 }
@@ -3500,7 +3515,11 @@ fn spawn_basic_apps_watch(
     counter: &common::NixCallCounter,
     flake_dir: &std::path::Path,
     extra_args: &[&str],
-) -> (std::process::Child, std::process::ChildStdout) {
+) -> (
+    std::process::Child,
+    std::process::ChildStdout,
+    std::process::ChildStderr,
+) {
     use std::process::{Command, Stdio};
 
     use assert_cmd::cargo::CommandCargoExt;
@@ -3525,7 +3544,8 @@ fn spawn_basic_apps_watch(
         .spawn()
         .expect("spawn watch");
     let stdout = child.stdout.take().expect("stdout pipe");
-    (child, stdout)
+    let stderr = child.stderr.take().expect("stderr pipe");
+    (child, stdout, stderr)
 }
 
 #[test]
@@ -3539,18 +3559,48 @@ fn watch_source_restart_skips_discovery_nix_calls() {
     let fixture = isolated_basic_apps_flake();
     let flake_dir = fixture.path().join("basic-apps");
     let counter = NixCallCounter::install();
-    let (mut child, stdout) = spawn_basic_apps_watch(&counter, &flake_dir, &[]);
+    let (mut child, stdout, stderr) = spawn_basic_apps_watch(&counter, &flake_dir, &[]);
     let rx = start_watch_stdout_reader(stdout);
+    let stderr_rx = start_watch_stderr_drain(stderr);
     let mut output = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(90);
     wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 1, deadline);
 
     std::fs::write(&counter.log, "").expect("reset log");
 
-    let trigger = flake_dir.join(".watch-source-trigger");
-    std::fs::write(&trigger, b"touch").expect("write trigger");
-    wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 2, deadline);
-    let _ = std::fs::remove_file(trigger);
+    // FSEvents on macOS CI can miss a single create; use a non-dotfile and a
+    // modify pulse, with a fresh deadline for the second generation.
+    std::thread::sleep(Duration::from_millis(300));
+    let trigger = flake_dir.join("source-trigger.txt");
+    std::fs::write(&trigger, b"touch-1").expect("write trigger");
+    std::thread::sleep(Duration::from_millis(100));
+    std::fs::write(&trigger, b"touch-2").expect("modify trigger");
+    let second_deadline = Instant::now() + Duration::from_secs(90);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_for_watch_occurrences(
+            &rx,
+            &mut output,
+            "hello from basic-apps",
+            2,
+            second_deadline,
+        );
+    }));
+    let _ = std::fs::remove_file(&trigger);
+
+    let mut stderr_bytes = Vec::new();
+    while let Ok(chunk) = stderr_rx.try_recv() {
+        stderr_bytes.extend_from_slice(&chunk);
+    }
+    if let Err(panic) = result {
+        let msg = panic
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+            .unwrap_or_else(|| "watch assertion failed".to_owned());
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("{msg}; stderr={}", String::from_utf8_lossy(&stderr_bytes));
+    }
 
     let _ = child.kill();
     let _ = child.wait();
@@ -3586,8 +3636,9 @@ fn watch_metadata_restart_rediscovers_apps() {
     let original = std::fs::read(&flake_path).expect("read flake.nix");
 
     let counter = NixCallCounter::install();
-    let (mut child, stdout) = spawn_basic_apps_watch(&counter, &flake_dir, &[]);
+    let (mut child, stdout, stderr) = spawn_basic_apps_watch(&counter, &flake_dir, &[]);
     let rx = start_watch_stdout_reader(stdout);
+    let _stderr_rx = start_watch_stderr_drain(stderr);
     let mut output = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(90);
     wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 1, deadline);
@@ -3598,7 +3649,14 @@ fn watch_metadata_restart_rediscovers_apps() {
     edited.push(b'\n');
     std::fs::write(&flake_path, &edited).expect("touch flake.nix");
 
-    wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 2, deadline);
+    let second_deadline = Instant::now() + Duration::from_secs(90);
+    wait_for_watch_occurrences(
+        &rx,
+        &mut output,
+        "hello from basic-apps",
+        2,
+        second_deadline,
+    );
 
     let _ = child.kill();
     let _ = child.wait();
