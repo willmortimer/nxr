@@ -36,8 +36,8 @@ so never-run nodes are not prepared, and leaves stage hooks for that pipeline.
 4. **Trust** is checked via context metadata scan without full prepare when
    lazy (`plan_requires_project_trust`).
 5. **Observability:** `NXR_PERF_STATS` schema **v6** adds `nodes_prepared`.
-6. **Wave 4c hooks:** `NodePrepStage::{CasInputs, SpawnPlan}` — fused today;
-   callers request CasInputs before CAS restore and SpawnPlan before spawn.
+6. **Wave 4c hooks:** `NodePrepStage::{CasInputs, SpawnPlan}` — fused in 4b;
+   split and pipelined in ADR-0159.
 7. **Daemon:** do not require `nxrd` / `eval.prepare` (ADR-0157 reserved).
    Optional hint only if trivially available later.
 
@@ -51,8 +51,9 @@ so never-run nodes are not prepared, and leaves stage hooks for that pipeline.
 
 ## Non-goals (Wave 4b)
 
-- Concurrent CAS lookup ‖ plan prep (Wave 4c).
-- Async cancel of in-flight speculative prepare.
+- Concurrent CAS lookup ‖ plan prep (Wave 4c / ADR-0159).
+- Async cancel of in-flight speculative prepare (partially addressed in 4c for
+  SpawnPlan tickets on CAS hit).
 - Requiring nxrd or eval workers.
 
 ## Consequences

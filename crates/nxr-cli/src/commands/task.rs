@@ -845,10 +845,18 @@ fn run_plan(
             }
         }
 
-        // Phase 3: prepare only resource-ready nodes about to start.
-        preparer
-            .ensure_prepared_many(&to_start)
-            .map_err(TaskError::Prepare)?;
+        // Phase 3: prepare CAS inputs for resource-ready nodes about to start.
+        // SpawnPlan is deferred until after (or overlapped with) CAS lookup when
+        // pipelining is enabled (ADR-0159).
+        if preparer.pipeline_enabled() {
+            preparer
+                .ensure_cas_inputs_many(&to_start)
+                .map_err(TaskError::Prepare)?;
+        } else {
+            preparer
+                .ensure_prepared_many(&to_start)
+                .map_err(TaskError::Prepare)?;
+        }
         // Phase 4 (optional): speculate successors only under keep-going so
         // fail-fast / upstream failure still avoid never-run prepares.
         if request.keep_going {
@@ -859,12 +867,23 @@ fn run_plan(
 
         let ready: Vec<String> = std::mem::take(&mut to_start);
         let mut spawn_queue = Vec::new();
+        let mut inflight_spawn_plans = Vec::new();
         for node_id in ready {
-            // Wave 4c hook: CasInputs before lookup; SpawnPlan before spawn.
-            // Stages are fused today (ADR-0158); 4c splits them for CAS‖plan.
             preparer
                 .ensure_stage(&node_id, NodePrepStage::CasInputs)
                 .map_err(TaskError::Prepare)?;
+
+            // Overlap SpawnPlan with CAS lookup when pipelining; cancel on hit.
+            let ticket = if preparer.pipeline_enabled() {
+                Some(
+                    preparer
+                        .start_spawn_plan(&node_id)
+                        .map_err(TaskError::Prepare)?,
+                )
+            } else {
+                None
+            };
+
             let prepared = preparer
                 .prepared()
                 .get(&node_id)
@@ -873,6 +892,9 @@ fn run_plan(
                 .map_err(TaskError::Supervision)?
                 .is_some()
             {
+                if let Some(ticket) = ticket {
+                    preparer.cancel_spawn_plan(ticket);
+                }
                 runner
                     .verbose(format!("cache hit for task {node_id}; skipping spawn"))
                     .map_err(TaskError::Io)?;
@@ -890,11 +912,35 @@ fn run_plan(
                 to_start.extend(scheduler.complete(&node_id, exit::SUCCESS)?);
                 continue;
             }
-            preparer
-                .ensure_stage(&node_id, NodePrepStage::SpawnPlan)
-                .map_err(TaskError::Prepare)?;
+
+            if let Some(ticket) = ticket {
+                inflight_spawn_plans.push(ticket);
+            } else {
+                preparer
+                    .ensure_stage(&node_id, NodePrepStage::SpawnPlan)
+                    .map_err(TaskError::Prepare)?;
+            }
             spawn_queue.push(node_id);
         }
+
+        // Join overlapped SpawnPlan work before spawning (miss path).
+        for ticket in inflight_spawn_plans {
+            let node_id = ticket.task_id().to_owned();
+            preparer
+                .join_spawn_plan(ticket)
+                .map_err(TaskError::Prepare)?;
+            // join may have cancelled; ensure SpawnPlan for miss-path nodes.
+            if preparer
+                .prepared()
+                .get(&node_id)
+                .is_some_and(|n| n.prep_stage < NodePrepStage::SpawnPlan)
+            {
+                preparer
+                    .ensure_stage(&node_id, NodePrepStage::SpawnPlan)
+                    .map_err(TaskError::Prepare)?;
+            }
+        }
+
         for node_id in spawn_queue {
             let pipe_stdio = node_uses_piped_stdio(
                 node_is_interactive(plan, &node_id),
@@ -1097,6 +1143,10 @@ fn spawn_node(
         .prepared()
         .get(node_id)
         .expect("scheduler only starts ids prepared before run");
+    debug_assert!(
+        prepared.prep_stage >= NodePrepStage::SpawnPlan,
+        "spawn requires SpawnPlan stage"
+    );
     if prepared.confirm {
         let context_name = prepared.context_name.as_deref().unwrap_or("unknown");
         enforce_context_confirm(context_name, node_id, true).map_err(TaskError::Context)?;

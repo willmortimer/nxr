@@ -112,6 +112,7 @@ Rejected   considered and explicitly not chosen
 | ADR-0156 | Repository Merkle / affected directory index | Accepted | Unreleased |
 | ADR-0157 | Optional local cache daemon (`nxrd`) | Accepted | Unreleased |
 | ADR-0158 | Staged / lazy task-graph node preparation | Accepted | Unreleased |
+| ADR-0159 | CAS lookup ‖ SpawnPlan pipelining | Accepted | Unreleased |
 
 Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0144-auto-schema-v2.md`](0144-auto-schema-v2.md),
@@ -128,7 +129,8 @@ Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0155-incremental-git-digests.md`](0155-incremental-git-digests.md),
 [`0156-merkle-affected-index.md`](0156-merkle-affected-index.md),
 [`0157-optional-nxrd.md`](0157-optional-nxrd.md),
-[`0158-lazy-node-prep.md`](0158-lazy-node-prep.md).
+[`0158-lazy-node-prep.md`](0158-lazy-node-prep.md),
+[`0159-cas-plan-pipeline.md`](0159-cas-plan-pipeline.md).
 
 Audit absorb (2026-07, post-`a040e50`): remaps active delivery to
 **2.7.1 → 2.8 → 3.0 → 3.1** (process workflows remain in 3.1 MVP; distributed

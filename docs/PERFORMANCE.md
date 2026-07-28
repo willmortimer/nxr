@@ -16,7 +16,7 @@ Set `NXR_PERF_STATS=1` to accumulate counters for one CLI invocation. On exit,
 nxr prints a single JSON line on stderr:
 
 ```text
-nxr-perf-stats: {"schema_version":6,"nix_spawns":…,…}
+nxr-perf-stats: {"schema_version":7,"nix_spawns":…,…}
 ```
 
 | Counter | Meaning |
@@ -35,6 +35,8 @@ nxr-perf-stats: {"schema_version":6,"nix_spawns":…,…}
 | `digest_metadata_hits` | Action-digest reuse when device/inode/size/mtime(/ctime) match |
 | `git_blob_digests` | Action digests derived from Git blob OID (no working-tree read) |
 | `nodes_prepared` | Task-graph nodes prepared this invocation (lazy or eager) |
+| `spawn_plans_prepared` | SpawnPlan stages completed (ADR-0159) |
+| `spawn_plans_cancelled` | SpawnPlan stages cancelled on CAS hit (ADR-0159) |
 
 Counters are **off by default**; no semantic change when unset. See
 [ADR-0151](adr/0151-perf-counters.md), [ADR-0152](adr/0152-prepared-plan-cache.md),
@@ -42,7 +44,8 @@ Counters are **off by default**; no semantic change when unset. See
 and [ADR-0155](adr/0155-incremental-git-digests.md),
 and [ADR-0156](adr/0156-merkle-affected-index.md),
 and [ADR-0157](adr/0157-optional-nxrd.md),
-and [ADR-0158](adr/0158-lazy-node-prep.md).
+and [ADR-0158](adr/0158-lazy-node-prep.md),
+and [ADR-0159](adr/0159-cas-plan-pipeline.md).
 
 ## Staged / lazy task-node preparation
 
@@ -57,8 +60,16 @@ Live `nxr task` runs prepare spawn plans as nodes approach execution
 Never-run nodes (fail-fast cancel, upstream failure, excluded by affected
 selection) are not prepared. Kill-switch: `NXR_LAZY_PREP=off` (also `0` /
 `false` / `no`) restores eager prepare-all for bisection. Dry-run, explain,
-and watch generation caches stay eager. Wave 4c will split CAS-input prep from
-spawn-plan prep (`NodePrepStage`) so CAS lookup can race argv assembly.
+and watch generation caches stay eager.
+
+## CAS ‖ SpawnPlan pipelining
+
+On live lazy runs, CasInputs (action key + digests) complete without a
+finalized SpawnPlan; the scheduler overlaps CAS restore with SpawnPlan
+preparation and cancels in-flight SpawnPlan on cache hit
+([ADR-0159](adr/0159-cas-plan-pipeline.md)). Kill-switch:
+`NXR_CAS_PLAN_PIPELINE=off` fuses stages (serial prepare-then-CAS). Sealed
+watch maps and eager prepare stay non-pipelined.
 
 ## Optional local cache daemon (`nxrd`)
 

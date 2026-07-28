@@ -4,6 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use nxr_completion::cache::{
@@ -17,7 +20,8 @@ use nxr_core::{
     PlanKind, PlanPrepareKind, PlanSecretRef, RunDigestCache, daemon_plan_entry,
     daemon_plan_to_hit, digest_environment_policy, digest_nix_flags, flake_lock_digest,
     lookup_prepared_plan, plan_cache_enabled, plan_cache_key_digest, record_node_prepared,
-    record_plan_cache_hit, record_plan_cache_miss, store_prepared_plan, try_once,
+    record_plan_cache_hit, record_plan_cache_miss, record_spawn_plan_cancelled,
+    record_spawn_plan_prepared, store_prepared_plan, try_once,
 };
 use nxr_nix::{
     AppNotFoundError, NixAdapter, NixCapabilities, NixError, OptionalNixFlags, OutputTable,
@@ -80,6 +84,13 @@ pub struct PreparedPlan {
 /// Default (unset or any other value): staged / lazy prepare (ADR-0158).
 pub const LAZY_PREP_ENV: &str = "NXR_LAZY_PREP";
 
+/// Environment variable disabling CAS‖SpawnPlan pipelining (`off` / `0` / `false` / `no`).
+///
+/// Default (unset or any other value): overlap CAS lookup with SpawnPlan prep on
+/// live lazy runs (ADR-0159). When off, stages fuse and CAS runs only after a
+/// full spawn plan is ready (Wave 4b serial behavior).
+pub const CAS_PLAN_PIPELINE_ENV: &str = "NXR_CAS_PLAN_PIPELINE";
+
 /// Whether staged / lazy node preparation is enabled (default on).
 #[must_use]
 pub fn lazy_prep_enabled() -> bool {
@@ -96,16 +107,33 @@ fn lazy_prep_enabled_for_env(value: Option<&str>) -> bool {
     }
 }
 
-/// Preparation stage for Wave 4c CAS‖plan pipelining.
+/// Whether CAS lookup may overlap SpawnPlan preparation (default on).
+#[must_use]
+pub fn cas_plan_pipeline_enabled() -> bool {
+    cas_plan_pipeline_enabled_for_env(std::env::var(CAS_PLAN_PIPELINE_ENV).ok().as_deref())
+}
+
+fn cas_plan_pipeline_enabled_for_env(value: Option<&str>) -> bool {
+    match value {
+        Some(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            !matches!(normalized.as_str(), "off" | "0" | "false" | "no")
+        }
+        None => true,
+    }
+}
+
+/// Preparation stage for CAS‖plan pipelining (ADR-0159).
 ///
-/// Today both stages are fused into one prepare; callers should still request
-/// [`NodePrepStage::CasInputs`] before CAS lookup and [`NodePrepStage::SpawnPlan`]
-/// before spawn so 4c can split them without reshaping the scheduler.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// [`NodePrepStage::CasInputs`] finishes action-key / digest work without requiring
+/// a finalized spawn argv. [`NodePrepStage::SpawnPlan`] builds nix argv (and marks
+/// the node spawn-ready). Callers request CasInputs before CAS restore and
+/// SpawnPlan before spawn.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum NodePrepStage {
-    /// Action key / workspace CAS plan inputs (no child spawn required yet).
+    /// Action key / workspace CAS plan inputs (no finalized spawn argv yet).
     CasInputs,
-    /// Full spawn argv (`build_plan` / store-exe resolution inputs).
+    /// Full spawn argv (`build_plan`) ready for child launch.
     SpawnPlan,
 }
 
@@ -134,6 +162,8 @@ pub struct PreparedTaskNode {
     pub workspace_cache: Option<WorkspaceCachePlan>,
     /// Absolute flake root for workspace CAS paths.
     pub flake_root: Utf8PathBuf,
+    /// Highest preparation stage reached for this node.
+    pub prep_stage: NodePrepStage,
 }
 
 /// Once-per-invocation workspace evaluation: flake, Nix adapter, apps, optional tasks.
@@ -810,15 +840,23 @@ impl WorkspaceSnapshot {
     }
 }
 
-/// Staged / lazy task-node preparation for the scheduler (ADR-0158).
+/// Staged / lazy task-node preparation for the scheduler (ADR-0158 / ADR-0159).
 ///
 /// Phase 1 (DAG / affected) and phase 2 (resource readiness) remain outside this
 /// type. Callers prepare only nodes approaching execution (phase 3) and may
 /// speculate likely successors within a bounded pool (phase 4).
+///
+/// Live lazy runs split [`NodePrepStage::CasInputs`] from
+/// [`NodePrepStage::SpawnPlan`] so CAS lookup can overlap argv assembly; cache
+/// hits cancel or skip SpawnPlan. `NXR_CAS_PLAN_PIPELINE=off` fuses stages.
 pub struct TaskNodePreparer<'a> {
     mode: PrepMode<'a>,
     prepared: BTreeMap<String, PreparedTaskNode>,
     prepare_count: u64,
+    spawn_plan_count: u64,
+    spawn_plan_cancelled: u64,
+    /// When false, CasInputs advances through SpawnPlan in one shot (fused).
+    pipeline: bool,
 }
 
 enum PrepMode<'a> {
@@ -842,6 +880,32 @@ struct LivePrep<'a> {
     context_override: Option<&'a str>,
     upstream_keys: BTreeMap<String, String>,
     digest_cache: RunDigestCache,
+}
+
+/// In-flight SpawnPlan work that can be cancelled on CAS hit.
+pub struct SpawnPlanTicket {
+    task_id: String,
+    cancel: Arc<AtomicBool>,
+    handle: Option<JoinHandle<Result<SpawnPlanParts, PrepareError>>>,
+}
+
+struct SpawnPlanParts {
+    plan: Plan,
+    program: Utf8PathBuf,
+    arguments: Vec<String>,
+}
+
+impl SpawnPlanTicket {
+    /// Request cancellation; the worker may still finish but results are dropped.
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// Task id this ticket prepares.
+    #[must_use]
+    pub fn task_id(&self) -> &str {
+        &self.task_id
+    }
 }
 
 impl<'a> TaskNodePreparer<'a> {
@@ -883,6 +947,10 @@ impl<'a> TaskNodePreparer<'a> {
             })),
             prepared: BTreeMap::new(),
             prepare_count: 0,
+            spawn_plan_count: 0,
+            spawn_plan_cancelled: 0,
+            // Pipeline only applies to live lazy runs; sealed/eager fuse stages.
+            pipeline: cas_plan_pipeline_enabled(),
         })
     }
 
@@ -890,17 +958,54 @@ impl<'a> TaskNodePreparer<'a> {
     #[must_use]
     pub fn from_prepared(prepared: BTreeMap<String, PreparedTaskNode>) -> Self {
         let prepare_count = u64::try_from(prepared.len()).unwrap_or(u64::MAX);
+        let spawn_plan_count = prepare_count;
+        let prepared = prepared
+            .into_iter()
+            .map(|(id, mut node)| {
+                node.prep_stage = NodePrepStage::SpawnPlan;
+                (id, node)
+            })
+            .collect();
         Self {
             mode: PrepMode::Sealed,
             prepared,
             prepare_count,
+            spawn_plan_count,
+            spawn_plan_cancelled: 0,
+            pipeline: false,
         }
     }
 
-    /// How many nodes were prepared by this preparer (excludes sealed reuse).
+    /// How many nodes reached at least CasInputs.
     #[must_use]
     pub fn prepare_count(&self) -> u64 {
         self.prepare_count
+    }
+
+    /// How many SpawnPlan stages completed.
+    #[must_use]
+    #[allow(dead_code)] // exercised in unit tests; useful for diagnostics
+    pub fn spawn_plan_count(&self) -> u64 {
+        self.spawn_plan_count
+    }
+
+    /// How many SpawnPlan stages were cancelled on CAS hit.
+    #[must_use]
+    #[allow(dead_code)] // exercised in unit tests; useful for diagnostics
+    pub fn spawn_plan_cancelled(&self) -> u64 {
+        self.spawn_plan_cancelled
+    }
+
+    /// Whether this preparer splits CasInputs from SpawnPlan.
+    #[must_use]
+    pub fn pipeline_enabled(&self) -> bool {
+        self.pipeline && matches!(self.mode, PrepMode::Live(_))
+    }
+
+    /// Test-only override for CAS‖plan pipelining.
+    #[cfg(test)]
+    pub fn set_pipeline_for_test(&mut self, enabled: bool) {
+        self.pipeline = enabled;
     }
 
     /// Borrow prepared nodes (partial under lazy mode).
@@ -915,7 +1020,7 @@ impl<'a> TaskNodePreparer<'a> {
         self.prepared
     }
 
-    /// Eagerly prepare every id in `serial_order`.
+    /// Eagerly prepare every id in `serial_order` through SpawnPlan.
     ///
     /// # Errors
     ///
@@ -939,8 +1044,10 @@ impl<'a> TaskNodePreparer<'a> {
 
     /// Ensure the node has at least `stage` prepared.
     ///
-    /// Stages are fused today; both map to a full prepare. Wave 4c will split
-    /// CAS-input prep from spawn-plan prep so CAS lookup can race argv assembly.
+    /// When pipelining is enabled, [`NodePrepStage::CasInputs`] stops after action
+    /// keys / digests; [`NodePrepStage::SpawnPlan`] finalizes nix argv via
+    /// `build_plan`. When pipelining is off (or sealed), CasInputs advances
+    /// through SpawnPlan.
     ///
     /// # Errors
     ///
@@ -949,25 +1056,29 @@ impl<'a> TaskNodePreparer<'a> {
     pub fn ensure_stage(
         &mut self,
         task_id: &str,
-        _stage: NodePrepStage,
+        stage: NodePrepStage,
     ) -> Result<&PreparedTaskNode, PrepareError> {
-        if self.prepared.contains_key(task_id) {
-            return Ok(&self.prepared[task_id]);
-        }
-        if matches!(self.mode, PrepMode::Sealed) {
-            return Err(PrepareError::WorkspaceCache(io::Error::other(format!(
-                "sealed preparer missing node {task_id}"
-            ))));
-        }
-        let _timer = PlanPrepareGuard::start();
-        let node = self.prepare_one(task_id)?;
-        self.prepared.insert(task_id.to_owned(), node);
-        self.prepare_count = self.prepare_count.saturating_add(1);
-        record_node_prepared();
-        Ok(&self.prepared[task_id])
+        let target = if self.pipeline_enabled() {
+            stage
+        } else {
+            NodePrepStage::SpawnPlan
+        };
+        self.advance_to_stage(task_id, target)
     }
 
-    /// Prepare each id in `ids` (phase 3: approaching execution).
+    /// Prepare CasInputs only for each id (phase 3 under pipelining).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrepareError`] when any node fails to prepare.
+    pub fn ensure_cas_inputs_many(&mut self, ids: &[String]) -> Result<(), PrepareError> {
+        for id in ids {
+            self.ensure_stage(id, NodePrepStage::CasInputs)?;
+        }
+        Ok(())
+    }
+
+    /// Prepare each id through SpawnPlan (phase 3 when fused / eager).
     ///
     /// # Errors
     ///
@@ -979,10 +1090,147 @@ impl<'a> TaskNodePreparer<'a> {
         Ok(())
     }
 
+    /// Start SpawnPlan on a background thread after CasInputs (pipeline mode).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrepareError`] when CasInputs is missing or the node is sealed.
+    pub fn start_spawn_plan(&mut self, task_id: &str) -> Result<SpawnPlanTicket, PrepareError> {
+        self.ensure_stage(task_id, NodePrepStage::CasInputs)?;
+        if self
+            .prepared
+            .get(task_id)
+            .is_some_and(|n| n.prep_stage >= NodePrepStage::SpawnPlan)
+        {
+            let cancel = Arc::new(AtomicBool::new(false));
+            return Ok(SpawnPlanTicket {
+                task_id: task_id.to_owned(),
+                cancel,
+                handle: None,
+            });
+        }
+        let PrepMode::Live(live) = &self.mode else {
+            return Err(PrepareError::WorkspaceCache(io::Error::other(
+                "sealed preparer cannot start spawn plan",
+            )));
+        };
+        let node = self
+            .prepared
+            .get(task_id)
+            .expect("CasInputs just ensured")
+            .clone();
+        let root_task_ids = live.root_task_ids.to_vec();
+        let request_args = live.request_args.to_vec();
+        let root = live.root;
+        let cwd = live.cwd.map(str::to_owned);
+        let shell = live.shell.map(str::to_owned);
+        let shell_mode = live.shell_mode;
+        let environment_policy = live.environment_policy.clone();
+        let nix_flags = live.nix_flags.clone();
+        let context_override = live.context_override.map(str::to_owned);
+        let task_id_owned = task_id.to_owned();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_worker = Arc::clone(&cancel);
+        let flake = live.snapshot.flake.clone();
+        let nix = live.snapshot.nix.clone();
+        let apps = live.snapshot.apps.clone();
+        let invocation_directory = live.snapshot.invocation_directory.clone();
+        let document = live.document.clone();
+        let handle = std::thread::spawn(move || {
+            if cancel_worker.load(Ordering::Relaxed) {
+                return Err(PrepareError::WorkspaceCache(io::Error::other(
+                    "spawn plan cancelled",
+                )));
+            }
+            #[cfg(test)]
+            maybe_spawn_plan_test_delay(&cancel_worker);
+            if cancel_worker.load(Ordering::Relaxed) {
+                return Err(PrepareError::WorkspaceCache(io::Error::other(
+                    "spawn plan cancelled",
+                )));
+            }
+            compute_spawn_plan_parts(
+                &document,
+                &task_id_owned,
+                &root_task_ids,
+                &request_args,
+                root,
+                cwd.as_deref(),
+                shell.as_deref(),
+                shell_mode,
+                &environment_policy,
+                &nix_flags,
+                context_override.as_deref(),
+                &flake,
+                &nix,
+                &apps,
+                &invocation_directory,
+                &node,
+            )
+        });
+        Ok(SpawnPlanTicket {
+            task_id: task_id.to_owned(),
+            cancel,
+            handle: Some(handle),
+        })
+    }
+
+    /// Cancel an in-flight SpawnPlan ticket (CAS hit path).
+    pub fn cancel_spawn_plan(&mut self, ticket: SpawnPlanTicket) {
+        ticket.cancel();
+        if let Some(handle) = ticket.handle {
+            let _ = handle.join();
+        }
+        self.spawn_plan_cancelled = self.spawn_plan_cancelled.saturating_add(1);
+        record_spawn_plan_cancelled();
+    }
+
+    /// Join a SpawnPlan ticket and apply results unless cancelled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrepareError`] when the worker failed (and was not cancelled).
+    pub fn join_spawn_plan(&mut self, mut ticket: SpawnPlanTicket) -> Result<(), PrepareError> {
+        let Some(handle) = ticket.handle.take() else {
+            return Ok(());
+        };
+        if ticket.cancel.load(Ordering::Relaxed) {
+            let _ = handle.join();
+            self.spawn_plan_cancelled = self.spawn_plan_cancelled.saturating_add(1);
+            record_spawn_plan_cancelled();
+            return Ok(());
+        }
+        match handle.join() {
+            Ok(Ok(parts)) => {
+                if ticket.cancel.load(Ordering::Relaxed) {
+                    self.spawn_plan_cancelled = self.spawn_plan_cancelled.saturating_add(1);
+                    record_spawn_plan_cancelled();
+                    return Ok(());
+                }
+                self.apply_spawn_plan_parts(&ticket.task_id, parts)?;
+                Ok(())
+            }
+            Ok(Err(error)) => {
+                if ticket.cancel.load(Ordering::Relaxed)
+                    || error.to_string().contains("spawn plan cancelled")
+                {
+                    self.spawn_plan_cancelled = self.spawn_plan_cancelled.saturating_add(1);
+                    record_spawn_plan_cancelled();
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }
+            Err(_) => Err(PrepareError::WorkspaceCache(io::Error::other(
+                "spawn plan worker panicked",
+            ))),
+        }
+    }
+
     /// Speculatively prepare likely successors of `started` up to `budget` nodes.
     ///
-    /// Skips ids already prepared. Never-run nodes under fail-fast are simply
-    /// never requested — there is no async cancel surface yet (Wave 4c).
+    /// Under pipelining, speculation prepares CasInputs only so never-run nodes
+    /// avoid SpawnPlan. Fail-fast callers simply never request speculation.
     ///
     /// # Errors
     ///
@@ -1017,7 +1265,11 @@ impl<'a> TaskNodePreparer<'a> {
                 if self.prepared.contains_key(*child) {
                     continue;
                 }
-                self.ensure_prepared(child)?;
+                if self.pipeline_enabled() {
+                    self.ensure_stage(child, NodePrepStage::CasInputs)?;
+                } else {
+                    self.ensure_prepared(child)?;
+                }
                 remaining -= 1;
             }
         }
@@ -1042,7 +1294,91 @@ impl<'a> TaskNodePreparer<'a> {
         }
     }
 
-    fn prepare_one(&mut self, task_id: &str) -> Result<PreparedTaskNode, PrepareError> {
+    fn advance_to_stage(
+        &mut self,
+        task_id: &str,
+        target: NodePrepStage,
+    ) -> Result<&PreparedTaskNode, PrepareError> {
+        if let Some(existing) = self.prepared.get(task_id)
+            && existing.prep_stage >= target
+        {
+            return Ok(&self.prepared[task_id]);
+        }
+        if matches!(self.mode, PrepMode::Sealed) {
+            return Err(PrepareError::WorkspaceCache(io::Error::other(format!(
+                "sealed preparer missing node {task_id}"
+            ))));
+        }
+        let _timer = PlanPrepareGuard::start();
+        if !self.prepared.contains_key(task_id) {
+            let node = self.prepare_cas_inputs(task_id)?;
+            self.prepared.insert(task_id.to_owned(), node);
+            self.prepare_count = self.prepare_count.saturating_add(1);
+            record_node_prepared();
+        }
+        if target >= NodePrepStage::SpawnPlan
+            && self.prepared[task_id].prep_stage < NodePrepStage::SpawnPlan
+        {
+            self.prepare_spawn_plan_exists(task_id)?;
+        }
+        Ok(&self.prepared[task_id])
+    }
+
+    fn apply_spawn_plan_parts(
+        &mut self,
+        task_id: &str,
+        parts: SpawnPlanParts,
+    ) -> Result<(), PrepareError> {
+        let Some(node) = self.prepared.get_mut(task_id) else {
+            return Err(PrepareError::WorkspaceCache(io::Error::other(format!(
+                "missing node {task_id} when applying spawn plan"
+            ))));
+        };
+        if node.prep_stage >= NodePrepStage::SpawnPlan {
+            return Ok(());
+        }
+        node.plan = parts.plan;
+        node.program = parts.program;
+        node.arguments = parts.arguments;
+        node.prep_stage = NodePrepStage::SpawnPlan;
+        self.spawn_plan_count = self.spawn_plan_count.saturating_add(1);
+        record_spawn_plan_prepared();
+        Ok(())
+    }
+
+    fn prepare_spawn_plan_exists(&mut self, task_id: &str) -> Result<(), PrepareError> {
+        let node = self
+            .prepared
+            .get(task_id)
+            .expect("caller ensures CasInputs")
+            .clone();
+        let PrepMode::Live(live) = &self.mode else {
+            return Err(PrepareError::WorkspaceCache(io::Error::other(
+                "sealed preparer cannot prepare spawn plan",
+            )));
+        };
+        let parts = compute_spawn_plan_parts(
+            live.document,
+            task_id,
+            live.root_task_ids,
+            live.request_args,
+            live.root,
+            live.cwd,
+            live.shell,
+            live.shell_mode,
+            live.environment_policy,
+            live.nix_flags,
+            live.context_override,
+            &live.snapshot.flake,
+            &live.snapshot.nix,
+            &live.snapshot.apps,
+            &live.snapshot.invocation_directory,
+            &node,
+        )?;
+        self.apply_spawn_plan_parts(task_id, parts)
+    }
+
+    fn prepare_cas_inputs(&mut self, task_id: &str) -> Result<PreparedTaskNode, PrepareError> {
         let PrepMode::Live(live) = &mut self.mode else {
             return Err(PrepareError::WorkspaceCache(io::Error::other(
                 "sealed preparer cannot prepare nodes",
@@ -1110,33 +1446,19 @@ impl<'a> TaskNodePreparer<'a> {
                 shell: shell_name.to_owned(),
             });
         }
-        let app_request = AppRequest {
-            flake_arg: None,
-            nix_override: None,
-            app: definition.app.as_str(),
-            args: forwarded,
-            root: *root,
-            cwd: *cwd,
-            shell: effective_shell.as_deref(),
-            shell_mode: *shell_mode,
-            environment_policy: (*environment_policy).clone(),
-            nix_flags,
-        };
-        let mut plan = build_plan(
-            &app_request,
+
+        // CasInputs needs stable command argv for the action key without committing
+        // SpawnPlan; assemble the same argv build_plan uses.
+        let command_argv = assemble_nix_run_argv(
             &snapshot.flake,
             &snapshot.nix,
             app,
-            &snapshot.invocation_directory,
-            &execution_directory,
+            effective_shell.as_deref(),
+            *shell_mode,
+            nix_flags,
             &strip_one_separator(forwarded),
         )?;
-        if let Some(applied) = applied_context.as_ref() {
-            plan.context = Some(applied.context_name.clone());
-            plan.secrets = plan_secrets_for_core(&applied.plan_secrets);
-            plan.context_env_set = applied.spawn_env_set.clone();
-            plan.environment_policy = applied.environment_policy.clone();
-        }
+
         let timeout = definition
             .timeout
             .as_deref()
@@ -1175,7 +1497,7 @@ impl<'a> TaskNodePreparer<'a> {
             &WorkspaceCachePlanOptions {
                 forwarded_args: forwarded.to_vec(),
                 command_program: Some(snapshot.nix.nix.to_string()),
-                command_argv: plan.command.arguments.clone(),
+                command_argv: command_argv.clone(),
                 effective_shell: effective_shell.clone(),
                 environment_policy: Some(node_environment.clone()),
                 context_name: context_name.clone(),
@@ -1194,10 +1516,39 @@ impl<'a> TaskNodePreparer<'a> {
         if let Some(key) = workspace_cache.action_key.as_ref() {
             upstream_keys.insert(task_id.to_owned(), key.clone());
         }
+
+        let mut plan = Plan {
+            schema_version: Plan::SCHEMA_VERSION,
+            kind: PlanKind::App,
+            flake: snapshot.flake.nix_ref.clone(),
+            system: snapshot.nix.system.clone(),
+            target: app.name.clone(),
+            attr_path: app.attr_path.clone(),
+            invocation_directory: snapshot.invocation_directory.as_str().to_owned(),
+            execution_directory: execution_directory.as_str().to_owned(),
+            shell: effective_shell.clone(),
+            active_shell: active_dev_shell(),
+            environment_policy: (*environment_policy).clone(),
+            context: None,
+            secrets: Vec::new(),
+            context_env_set: BTreeMap::new(),
+            command: PlanCommand {
+                program: snapshot.nix.nix.as_str().to_owned(),
+                arguments: command_argv.clone(),
+            },
+            forwarded_arguments: forwarded.to_vec(),
+        };
+        if let Some(applied) = applied_context.as_ref() {
+            plan.context = Some(applied.context_name.clone());
+            plan.secrets = plan_secrets_for_core(&applied.plan_secrets);
+            plan.context_env_set = applied.spawn_env_set.clone();
+            plan.environment_policy = applied.environment_policy.clone();
+        }
+
         Ok(PreparedTaskNode {
             id: task_id.to_owned(),
             program: snapshot.nix.nix.clone(),
-            arguments: plan.command.arguments.clone(),
+            arguments: command_argv,
             cwd: execution_directory,
             environment: node_environment,
             plan,
@@ -1207,6 +1558,7 @@ impl<'a> TaskNodePreparer<'a> {
             confirm,
             workspace_cache: Some(workspace_cache),
             flake_root: flake_root.to_path_buf(),
+            prep_stage: NodePrepStage::CasInputs,
         })
     }
 }
@@ -1377,6 +1729,120 @@ fn resolve_flake_relative_working_directory(
     }
     Ok(canonical)
 }
+
+/// Assemble nix-run argv used in action keys (same inputs as [`build_plan`]).
+fn assemble_nix_run_argv(
+    flake: &FlakeSelection,
+    adapter: &NixAdapter,
+    app: &App,
+    shell: Option<&str>,
+    shell_mode: ShellMode,
+    nix_flags: &OptionalNixFlags,
+    forwarded: &[String],
+) -> Result<Vec<String>, NixError> {
+    let run_argv = nix_run_args(&flake.nix_ref, &app.name, forwarded);
+    let wrap_shell = effective_shell_wrap(shell, shell_mode);
+    let base_arguments = match wrap_shell {
+        Some(shell_name) => {
+            nix_develop_wrap_run_args(adapter.nix.as_str(), &flake.nix_ref, shell_name, &run_argv)
+        }
+        None => run_argv,
+    };
+    adapter.compatible_argv(base_arguments, nix_flags)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_spawn_plan_parts(
+    document: &TaskDocument,
+    task_id: &str,
+    root_task_ids: &[String],
+    request_args: &[String],
+    root: bool,
+    cwd: Option<&str>,
+    shell: Option<&str>,
+    shell_mode: ShellMode,
+    environment_policy: &EnvironmentPolicy,
+    nix_flags: &OptionalNixFlags,
+    context_override: Option<&str>,
+    flake: &FlakeSelection,
+    nix: &NixAdapter,
+    apps: &BTreeMap<String, App>,
+    invocation_directory: &Utf8Path,
+    cas_node: &PreparedTaskNode,
+) -> Result<SpawnPlanParts, PrepareError> {
+    let definition = document
+        .tasks
+        .get(task_id)
+        .expect("execution plan only includes known task ids");
+    let app_list: Vec<App> = apps.values().cloned().collect();
+    let forwarded = if root_task_ids.iter().any(|id| id == task_id) {
+        request_args
+    } else {
+        &[][..]
+    };
+    let app = resolve_app_by_name(&app_list, definition.app.as_str())?;
+    let effective_context = context_override.or(definition.context.as_deref());
+    let applied_context = effective_context
+        .map(|name| apply_task_context(document, task_id, name, environment_policy))
+        .transpose()?;
+    let context_shell = applied_context
+        .as_ref()
+        .and_then(|applied| applied.shell.clone());
+    let effective_shell = resolve_effective_shell(shell, context_shell, definition.shell.clone());
+    let app_request = AppRequest {
+        flake_arg: None,
+        nix_override: None,
+        app: definition.app.as_str(),
+        args: forwarded,
+        root,
+        cwd,
+        shell: effective_shell.as_deref(),
+        shell_mode,
+        environment_policy: environment_policy.clone(),
+        nix_flags,
+    };
+    let mut plan = build_plan(
+        &app_request,
+        flake,
+        nix,
+        app,
+        invocation_directory,
+        &cas_node.cwd,
+        &strip_one_separator(forwarded),
+    )?;
+    if let Some(applied) = applied_context.as_ref() {
+        plan.context = Some(applied.context_name.clone());
+        plan.secrets = plan_secrets_for_core(&applied.plan_secrets);
+        plan.context_env_set = applied.spawn_env_set.clone();
+        plan.environment_policy = applied.environment_policy.clone();
+    }
+    let program = Utf8PathBuf::from(plan.command.program.as_str());
+    let arguments = plan.command.arguments.clone();
+    Ok(SpawnPlanParts {
+        plan,
+        program,
+        arguments,
+    })
+}
+
+#[cfg(test)]
+fn maybe_spawn_plan_test_delay(cancel: &AtomicBool) {
+    let delay_ms = SPAWN_PLAN_TEST_DELAY_MS.load(Ordering::Relaxed);
+    if delay_ms == 0 {
+        return;
+    }
+    let steps = delay_ms / 10;
+    for _ in 0..steps.max(1) {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[cfg(test)]
+static SPAWN_PLAN_TEST_DELAY_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 fn build_plan(
     request: &AppRequest<'_>,
@@ -1889,6 +2355,7 @@ fn nix_executable_identity(nix_path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::atomic::Ordering;
 
     use super::{
         AppRequest, PrepareError, build_plan, resolve_execution_directory,
@@ -2190,6 +2657,16 @@ mod tests {
         assert!(!super::lazy_prep_enabled_for_env(Some("NO")));
     }
 
+    #[test]
+    fn cas_plan_pipeline_kill_switch_parses_off_values() {
+        assert!(super::cas_plan_pipeline_enabled_for_env(None));
+        assert!(super::cas_plan_pipeline_enabled_for_env(Some("1")));
+        assert!(!super::cas_plan_pipeline_enabled_for_env(Some("off")));
+        assert!(!super::cas_plan_pipeline_enabled_for_env(Some("0")));
+        assert!(!super::cas_plan_pipeline_enabled_for_env(Some("false")));
+        assert!(!super::cas_plan_pipeline_enabled_for_env(Some("no")));
+    }
+
     fn chain_fixture() -> (
         super::WorkspaceSnapshot,
         nxr_task::TaskDocument,
@@ -2248,25 +2725,39 @@ mod tests {
         )
     }
 
-    #[test]
-    fn lazy_preparer_skips_never_run_successors() {
-        let (snapshot, document, serial_order, nix_flags) = chain_fixture();
-        let roots = vec!["c".to_owned()];
-        let policy = nxr_core::EnvironmentPolicy::Inherit;
+    fn pipeline_preparer<'a>(
+        snapshot: &'a super::WorkspaceSnapshot,
+        document: &'a nxr_task::TaskDocument,
+        roots: &'a [String],
+        nix_flags: &'a OptionalNixFlags,
+        policy: &'a nxr_core::EnvironmentPolicy,
+        pipeline: bool,
+    ) -> super::TaskNodePreparer<'a> {
         let mut preparer = super::TaskNodePreparer::new(
-            &snapshot,
-            &document,
-            &roots,
+            snapshot,
+            document,
+            roots,
             &[],
             false,
             None,
             None,
             ShellMode::Smart,
-            &policy,
-            &nix_flags,
+            policy,
+            nix_flags,
             None,
         )
         .expect("preparer");
+        preparer.set_pipeline_for_test(pipeline);
+        preparer
+    }
+
+    #[test]
+    fn lazy_preparer_skips_never_run_successors() {
+        let (snapshot, document, serial_order, nix_flags) = chain_fixture();
+        let roots = vec!["c".to_owned()];
+        let policy = nxr_core::EnvironmentPolicy::Inherit;
+        let mut preparer =
+            pipeline_preparer(&snapshot, &document, &roots, &nix_flags, &policy, true);
 
         // Simulate fail-fast after the first ready node: only prepare "a".
         preparer.ensure_prepared("a").expect("prepare a");
@@ -2301,20 +2792,8 @@ mod tests {
         let affected_order = vec!["a".to_owned(), "b".to_owned()];
         let roots = vec!["b".to_owned()];
         let policy = nxr_core::EnvironmentPolicy::Inherit;
-        let mut preparer = super::TaskNodePreparer::new(
-            &snapshot,
-            &document,
-            &roots,
-            &[],
-            false,
-            None,
-            None,
-            ShellMode::Smart,
-            &policy,
-            &nix_flags,
-            None,
-        )
-        .expect("preparer");
+        let mut preparer =
+            pipeline_preparer(&snapshot, &document, &roots, &nix_flags, &policy, true);
         preparer
             .prepare_all(&affected_order)
             .expect("prepare affected");
@@ -2331,20 +2810,8 @@ mod tests {
             .expect("plan");
         let roots = vec!["c".to_owned()];
         let policy = nxr_core::EnvironmentPolicy::Inherit;
-        let mut preparer = super::TaskNodePreparer::new(
-            &snapshot,
-            &document,
-            &roots,
-            &[],
-            false,
-            None,
-            None,
-            ShellMode::Smart,
-            &policy,
-            &nix_flags,
-            None,
-        )
-        .expect("preparer");
+        let mut preparer =
+            pipeline_preparer(&snapshot, &document, &roots, &nix_flags, &policy, true);
         preparer.ensure_prepared("a").expect("a");
         preparer
             .speculate_successors(&plan, &["a".to_owned()], 1)
@@ -2352,5 +2819,135 @@ mod tests {
         assert_eq!(preparer.prepare_count(), 2);
         assert!(preparer.prepared().contains_key("b"));
         assert!(!preparer.prepared().contains_key("c"));
+        // Speculation under pipelining stops at CasInputs for successors.
+        assert_eq!(
+            preparer.prepared()["b"].prep_stage,
+            super::NodePrepStage::CasInputs
+        );
+        assert_eq!(preparer.spawn_plan_count(), 1);
+    }
+
+    #[test]
+    fn cas_plan_pipeline_kill_switch_fuses_stages() {
+        let (snapshot, document, _order, nix_flags) = chain_fixture();
+        let roots = vec!["c".to_owned()];
+        let policy = nxr_core::EnvironmentPolicy::Inherit;
+        let mut preparer =
+            pipeline_preparer(&snapshot, &document, &roots, &nix_flags, &policy, false);
+        preparer
+            .ensure_stage("a", super::NodePrepStage::CasInputs)
+            .expect("fused cas");
+        assert_eq!(
+            preparer.prepared()["a"].prep_stage,
+            super::NodePrepStage::SpawnPlan
+        );
+        assert_eq!(preparer.spawn_plan_count(), 1);
+        assert_eq!(preparer.spawn_plan_cancelled(), 0);
+    }
+
+    #[test]
+    fn cas_plan_pipeline_splits_cas_from_spawn() {
+        let (snapshot, document, _order, nix_flags) = chain_fixture();
+        let roots = vec!["c".to_owned()];
+        let policy = nxr_core::EnvironmentPolicy::Inherit;
+        let mut preparer =
+            pipeline_preparer(&snapshot, &document, &roots, &nix_flags, &policy, true);
+        preparer
+            .ensure_stage("a", super::NodePrepStage::CasInputs)
+            .expect("cas");
+        assert_eq!(
+            preparer.prepared()["a"].prep_stage,
+            super::NodePrepStage::CasInputs
+        );
+        assert_eq!(preparer.spawn_plan_count(), 0);
+        preparer
+            .ensure_stage("a", super::NodePrepStage::SpawnPlan)
+            .expect("spawn");
+        assert_eq!(
+            preparer.prepared()["a"].prep_stage,
+            super::NodePrepStage::SpawnPlan
+        );
+        assert_eq!(preparer.spawn_plan_count(), 1);
+    }
+
+    #[test]
+    fn cas_plan_pipeline_hit_cancels_in_flight_spawn_plan() {
+        let (snapshot, document, _order, nix_flags) = chain_fixture();
+        let roots = vec!["c".to_owned()];
+        let policy = nxr_core::EnvironmentPolicy::Inherit;
+        let mut preparer =
+            pipeline_preparer(&snapshot, &document, &roots, &nix_flags, &policy, true);
+        preparer
+            .ensure_stage("a", super::NodePrepStage::CasInputs)
+            .expect("cas");
+        super::SPAWN_PLAN_TEST_DELAY_MS.store(200, Ordering::Relaxed);
+        let ticket = preparer.start_spawn_plan("a").expect("start");
+        // Simulate CAS hit winning the race.
+        preparer.cancel_spawn_plan(ticket);
+        super::SPAWN_PLAN_TEST_DELAY_MS.store(0, Ordering::Relaxed);
+        assert_eq!(preparer.spawn_plan_count(), 0);
+        assert_eq!(preparer.spawn_plan_cancelled(), 1);
+        assert_eq!(
+            preparer.prepared()["a"].prep_stage,
+            super::NodePrepStage::CasInputs
+        );
+    }
+
+    #[test]
+    fn cas_plan_pipeline_mixed_hit_prepares_fewer_spawn_plans() {
+        let (snapshot, document, _order, nix_flags) = chain_fixture();
+        let roots = vec!["c".to_owned()];
+        let policy = nxr_core::EnvironmentPolicy::Inherit;
+        let mut preparer =
+            pipeline_preparer(&snapshot, &document, &roots, &nix_flags, &policy, true);
+        preparer
+            .ensure_cas_inputs_many(&["a".to_owned(), "b".to_owned()])
+            .expect("cas both");
+        super::SPAWN_PLAN_TEST_DELAY_MS.store(80, Ordering::Relaxed);
+        let hit_ticket = preparer.start_spawn_plan("a").expect("start a");
+        let miss_ticket = preparer.start_spawn_plan("b").expect("start b");
+        // Cache hit on `a` cancels SpawnPlan; miss on `b` keeps it.
+        preparer.cancel_spawn_plan(hit_ticket);
+        preparer.join_spawn_plan(miss_ticket).expect("join b");
+        super::SPAWN_PLAN_TEST_DELAY_MS.store(0, Ordering::Relaxed);
+        assert_eq!(preparer.prepare_count(), 2);
+        assert_eq!(preparer.spawn_plan_count(), 1);
+        assert_eq!(preparer.spawn_plan_cancelled(), 1);
+        assert_eq!(
+            preparer.prepared()["a"].prep_stage,
+            super::NodePrepStage::CasInputs
+        );
+        assert_eq!(
+            preparer.prepared()["b"].prep_stage,
+            super::NodePrepStage::SpawnPlan
+        );
+    }
+
+    #[test]
+    fn cas_plan_pipeline_fail_fast_skips_never_run_spawn_plans() {
+        let (snapshot, document, _order, nix_flags) = chain_fixture();
+        let roots = vec!["c".to_owned()];
+        let policy = nxr_core::EnvironmentPolicy::Inherit;
+        let mut preparer =
+            pipeline_preparer(&snapshot, &document, &roots, &nix_flags, &policy, true);
+        // Fail-fast after first node: only CasInputs+SpawnPlan for `a`.
+        preparer.ensure_prepared("a").expect("a");
+        assert_eq!(preparer.spawn_plan_count(), 1);
+        assert!(!preparer.prepared().contains_key("b"));
+        assert!(!preparer.prepared().contains_key("c"));
+        // Cancel an in-flight speculative ticket as fail-fast would.
+        preparer
+            .ensure_stage("b", super::NodePrepStage::CasInputs)
+            .expect("cas b");
+        super::SPAWN_PLAN_TEST_DELAY_MS.store(150, Ordering::Relaxed);
+        let ticket = preparer.start_spawn_plan("b").expect("start b");
+        preparer.cancel_spawn_plan(ticket);
+        super::SPAWN_PLAN_TEST_DELAY_MS.store(0, Ordering::Relaxed);
+        assert_eq!(preparer.spawn_plan_count(), 1);
+        assert_eq!(preparer.spawn_plan_cancelled(), 1);
+        assert_eq!(
+            preparer.prepared()["b"].prep_stage,
+            super::NodePrepStage::CasInputs
+        );
     }
 }
