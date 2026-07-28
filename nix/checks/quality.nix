@@ -93,6 +93,15 @@ in
     '';
   };
 
+  cli-ref = mkCargoCheck {
+    name = "cli-ref";
+    command = ''
+      generated="$(mktemp)"
+      cargo run -p xtask --quiet -- cli-ref "$generated"
+      diff -u docs/CLI_GENERATED.md "$generated"
+    '';
+  };
+
   deny = mkCargoCheck {
     name = "deny";
     extraNativeBuildInputs = with pkgs; [

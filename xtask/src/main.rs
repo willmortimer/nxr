@@ -13,12 +13,12 @@ fn main() -> ExitCode {
         Some(other) => {
             eprintln!("unknown xtask: {other}");
             eprintln!("usage: cargo xtask man [OUT]");
-            eprintln!("       cargo xtask cli-ref [OUT]");
+            eprintln!("       cargo run -p xtask -- cli-ref [OUT]");
             ExitCode::from(2)
         }
         None => {
             eprintln!("usage: cargo xtask man [OUT]");
-            eprintln!("       cargo xtask cli-ref [OUT]");
+            eprintln!("       cargo run -p xtask -- cli-ref [OUT]");
             ExitCode::from(2)
         }
     }
@@ -76,7 +76,7 @@ fn generate_cli_ref(out: Option<String>) -> ExitCode {
     let rendered = format!(
         "# Generated CLI reference\n\n\
 This file is generated from Clap help output. Regenerate with:\n\n\
-```bash\ncargo xtask cli-ref\n```\n\n\
+```bash\ncargo run -p xtask -- cli-ref\n```\n\n\
 <!-- BEGIN GENERATED -->\n\n\
 ## `nxr --help`\n\n\
 ```text\n{help}```\n\n\

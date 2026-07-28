@@ -27,6 +27,7 @@ valid under pure `path:` flake refs (Nix 2.18+).
 | [diamond-dedupe](diamond-dedupe/) | Multi-root union with shared diamond ancestor |
 | [configurations](configurations/) | Minimal `nixosConfigurations` for list/inspect/build adapters |
 | [contexts](contexts/) | Named execution contexts with task `context` / `shell` refs (schema v2) |
+| [flake-parts-v2](flake-parts-v2/) | flake-parts module: task I/O, cache, resources, processes (schema v2) |
 | [golden](golden/) | Reference flake: apps, tasks, categories, contexts (schema v2) |
 
 ## Try them (without nxr yet)
@@ -39,6 +40,7 @@ nix run ./fixtures/basic-apps#pwd
 (cd fixtures/nested-directory/deep/down/here && nix run ../..#pwd)
 nix flake show ./fixtures/app-metadata
 nix eval --json ./fixtures/task-dag#nxr.aarch64-darwin
+nix eval --json ./fixtures/flake-parts-v2#nxr.aarch64-darwin
 nix eval --json ./fixtures/task-dag#nxr.x86_64-linux
 ```
 

@@ -1,4 +1,8 @@
 //! Resource reservations and exclusivity locks for cooperative scheduling.
+//!
+//! `cpu` and `memory` participate in the soft token pool ([`ResourceLimits`]).
+//! Task-schema `io` and `network` fields are informational only and are not
+//! read by the scheduler (no scheduling effect today).
 
 use serde::{Deserialize, Serialize};
 
@@ -84,6 +88,15 @@ impl ResourceLimits {
             memory_pool: memory_pool_from_env(),
         }
     }
+
+    /// Whether `resources` can ever run alone within this pool.
+    #[must_use]
+    pub fn can_schedule_node(&self, resources: &NodeResources) -> bool {
+        resources.cpu_tokens() <= self.cpu_pool
+            && (self.memory_pool == 0
+                || resources.memory_bytes == 0
+                || resources.memory_bytes <= self.memory_pool)
+    }
 }
 
 fn memory_pool_from_env() -> u64 {
@@ -124,6 +137,27 @@ mod tests {
         assert_eq!(node.cpu, 2);
         assert_eq!(node.memory_bytes, 512 * 1024 * 1024);
         assert_eq!(node.exclusive, vec!["cargo-target".to_owned()]);
+    }
+
+    #[test]
+    fn can_schedule_node_checks_pool_limits() {
+        let limits = ResourceLimits {
+            cpu_pool: 4,
+            memory_pool: 512 * 1024 * 1024,
+        };
+        assert!(limits.can_schedule_node(&NodeResources {
+            cpu: 4,
+            memory_bytes: 512 * 1024 * 1024,
+            exclusive: Vec::new(),
+        }));
+        assert!(!limits.can_schedule_node(&NodeResources {
+            cpu: 8,
+            ..NodeResources::EMPTY
+        }));
+        assert!(!limits.can_schedule_node(&NodeResources {
+            memory_bytes: 1024 * 1024 * 1024,
+            ..NodeResources::EMPTY
+        }));
     }
 
     #[test]

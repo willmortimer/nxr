@@ -388,6 +388,27 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                     &report_options,
                 )?;
                 watch::run(&request, runner).map_err(RunError::from)
+            } else if tasks
+                .iter()
+                .all(|token| !selectors::token_is_selector(token))
+            {
+                // Bare task names/aliases: resolve inside task::execute so unknown
+                // roots keep NOT_FOUND + `unknown task root` (not selector USAGE).
+                if tasks.is_empty() {
+                    return Err(RunError::Usage(
+                        "task requires a name or selector (or --affected / changed)".to_owned(),
+                    ));
+                }
+                let request = task_request(
+                    cli,
+                    &nix_flags,
+                    tasks.clone(),
+                    args,
+                    *jobs,
+                    *keep_going,
+                    &report_options,
+                )?;
+                task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
             } else {
                 let resolved = selectors::expand_task_tokens(
                     cli.flake.as_deref(),
@@ -1088,6 +1109,7 @@ fn task_request_in_shell<'a>(
         reports: report_paths_from_cli(cli, &TaskReportOptions::default())?,
         nix_flags,
         context_override: None,
+        refresh_discovery: cli.refresh_discovery,
     })
 }
 
@@ -1309,6 +1331,7 @@ fn task_request<'a>(
         reports: report_paths_from_cli(cli, report_options)?,
         nix_flags,
         context_override: None,
+        refresh_discovery: cli.refresh_discovery,
     })
 }
 

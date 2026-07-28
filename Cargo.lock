@@ -638,6 +638,7 @@ dependencies = [
  "clap_mangen",
  "dialoguer",
  "directories",
+ "fs2",
  "nix",
  "nxr-affected",
  "nxr-completion",
@@ -681,6 +682,7 @@ dependencies = [
  "blake3",
  "camino",
  "directories",
+ "fs2",
  "serde",
  "serde_json",
  "tempfile",
@@ -721,6 +723,7 @@ version = "3.1.2"
 dependencies = [
  "base64",
  "camino",
+ "globset",
  "nxr-core",
  "serde",
  "serde_json",

@@ -7,10 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Regenerated `docs/CLI_GENERATED.md`; README and schema v2 status matrix aligned
+  with 3.1 shipped CLI and experimental workspace cache / process preview.
+- `checks.<system>.cli-ref` fails CI when generated CLI help drifts from Clap.
+
 ### Fixed
 
 - `nxr plan <app>` on app-only flakes no longer fails with `unknown selector or task`
   (bare names were expanded as task selectors before app resolution).
+- `nxr task` bare names keep exit code 6 / `unknown task root` (selector expansion no
+  longer maps unknown tasks to usage exit 2).
+- `--refresh-discovery` is honored on the task execution path (was hardcoded off in
+  `WorkspaceSnapshot`, so coalesced refresh tests and CLI refresh were no-ops).
+- Hermetic `checks.*.test` skips live Nix capability-cache probes under
+  `NXR_SKIP_NIX_INTEGRATION` (sandbox cannot write `/nix/var/nix/profiles`).
 
 ## [3.1.2] - 2026-07-27
 

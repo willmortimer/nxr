@@ -19,7 +19,7 @@ use nxr_nix::{
 use nxr_task::{
     ContextError, PlanSecretEntry, SchemaError, SecretDelivery, TaskDocument,
     WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, WorkspaceCachePlan,
-    apply_task_context, build_workspace_cache_plan,
+    WorkspaceCachePlanOptions, apply_task_context, build_workspace_cache_plan,
 };
 
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
@@ -115,6 +115,7 @@ pub struct WorkspaceState<'a> {
     flake_arg: Option<&'a str>,
     nix_override: Option<&'a str>,
     nix_flags: &'a OptionalNixFlags,
+    refresh_discovery: bool,
     adapter: Option<NixAdapter>,
     snapshot_apps: Option<WorkspaceSnapshot>,
     snapshot_tasks: Option<WorkspaceSnapshot>,
@@ -128,10 +129,22 @@ impl<'a> WorkspaceState<'a> {
         nix_override: Option<&'a str>,
         nix_flags: &'a OptionalNixFlags,
     ) -> Self {
+        Self::with_refresh(flake_arg, nix_override, nix_flags, false)
+    }
+
+    /// Like [`Self::new`], optionally bypassing the discovery cache.
+    #[must_use]
+    pub fn with_refresh(
+        flake_arg: Option<&'a str>,
+        nix_override: Option<&'a str>,
+        nix_flags: &'a OptionalNixFlags,
+        refresh_discovery: bool,
+    ) -> Self {
         Self {
             flake_arg,
             nix_override,
             nix_flags,
+            refresh_discovery,
             adapter: None,
             snapshot_apps: None,
             snapshot_tasks: None,
@@ -192,6 +205,7 @@ impl<'a> WorkspaceState<'a> {
                     true,
                     self.nix_flags,
                     adapter,
+                    self.refresh_discovery,
                 )?);
             }
             return Ok(());
@@ -208,6 +222,7 @@ impl<'a> WorkspaceState<'a> {
                 false,
                 self.nix_flags,
                 adapter,
+                self.refresh_discovery,
             )?);
         }
         Ok(())
@@ -509,8 +524,19 @@ impl WorkspaceSnapshot {
         load_tasks: bool,
         nix_flags: &OptionalNixFlags,
     ) -> Result<Self, PrepareError> {
+        Self::load_with_refresh(flake_arg, nix_override, load_tasks, nix_flags, false)
+    }
+
+    /// Like [`Self::load`], optionally bypassing the discovery cache.
+    pub fn load_with_refresh(
+        flake_arg: Option<&str>,
+        nix_override: Option<&str>,
+        load_tasks: bool,
+        nix_flags: &OptionalNixFlags,
+        refresh_discovery: bool,
+    ) -> Result<Self, PrepareError> {
         let nix = build_adapter(nix_override)?;
-        Self::build(flake_arg, load_tasks, nix_flags, nix)
+        Self::build(flake_arg, load_tasks, nix_flags, nix, refresh_discovery)
     }
 
     fn build(
@@ -518,6 +544,7 @@ impl WorkspaceSnapshot {
         load_tasks: bool,
         nix_flags: &OptionalNixFlags,
         nix: NixAdapter,
+        refresh_discovery: bool,
     ) -> Result<Self, PrepareError> {
         let invocation_directory = current_invocation_directory()?;
         let flake = resolve_flake(flake_arg, &invocation_directory)?;
@@ -533,7 +560,7 @@ impl WorkspaceSnapshot {
         let discovery = discover_workspace_with_cache(
             &context,
             DiscoveryCacheOptions {
-                refresh: false,
+                refresh: refresh_discovery,
                 require_tasks: load_tasks,
             },
             || {
@@ -702,8 +729,8 @@ impl WorkspaceSnapshot {
                 &execution_directory,
                 &strip_one_separator(forwarded),
             )?;
-            if let Some(applied) = applied_context {
-                plan.context = Some(applied.context_name);
+            if let Some(applied) = applied_context.as_ref() {
+                plan.context = Some(applied.context_name.clone());
                 plan.secrets = plan_secrets_for_core(&applied.plan_secrets);
                 plan.context_env_set = applied.spawn_env_set.clone();
                 plan.environment_policy = applied.environment_policy.clone();
@@ -737,8 +764,23 @@ impl WorkspaceSnapshot {
                 &self.nix.system,
                 flake_root,
                 execution_directory.as_str(),
-                context_name.as_deref(),
                 &upstream_keys,
+                &WorkspaceCachePlanOptions {
+                    forwarded_args: forwarded.to_vec(),
+                    command_program: Some(self.nix.nix.to_string()),
+                    command_argv: plan.command.arguments.clone(),
+                    effective_shell: effective_shell.clone(),
+                    environment_policy: Some(node_environment.clone()),
+                    context_name: context_name.clone(),
+                    context_secrets: applied_context
+                        .as_ref()
+                        .map(|applied| applied.plan_secrets.clone())
+                        .unwrap_or_default(),
+                    context_spawn_env_set: applied_context
+                        .as_ref()
+                        .map(|applied| applied.spawn_env_set.clone())
+                        .unwrap_or_default(),
+                },
             )
             .map_err(PrepareError::WorkspaceCache)?;
             if let Some(key) = workspace_cache.action_key.as_ref() {

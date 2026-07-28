@@ -8,20 +8,23 @@ when security/execution fields are used is required as of 2.7.1 ([ADR-0144](adr/
 | Area | State | Notes |
 |---|---|---|
 | Strict parse (`deny_unknown_fields`) | **Shipped** | Document + task + nested v2 objects |
-| `inputs` / `outputs` / `cache` / `resources` types | **Parse-only** | Runtime cache/scheduling → 3.1 |
+| `inputs` / `outputs` declarations | **Partial** | Parsed and validated; fingerprinting for workspace CAS |
+| `cache` policy + workspace result cache | **Experimental 3.1** | Opt-in local CAS; `nxr cache explain` ([ADR-0147](adr/0147-two-tier-actions.md)) |
+| `resources` scheduling | **Experimental 3.1** | Exclusive locks + soft CPU/memory pools |
 | `contexts` module + emit | **Shipped** | `perSystem.nxr.contexts` |
 | Auto `schema_version = 2` when v2 fields present | **2.7.1** | Older runners reject instead of ignoring |
-| Env-provider secrets (`provider = "env"`) | **Partial** | Spawn inject; plans show `<runtime>` |
-| `provider` ≠ env / file / stdin delivery | **Planned 3.0** | Hard-error until implemented |
-| `confirm` enforcement | **2.7.1** | TTY / `NXR_ASSUME_YES`; trust DB → 3.0 |
+| Env-provider secrets (`provider = "env"`) | **Shipped** | Spawn inject; plans show `<runtime>` |
+| `provider` file / stdin / sops stubs | **Partial 3.0** | env/file/stdin shipped; Keychain/Vault later |
+| `confirm` enforcement | **2.7.1** | TTY / `NXR_ASSUME_YES`; trust DB **3.0** |
 | `context.shell` / `task.shell` | **2.7.1** | Via existing `nix develop` wrap path |
-| Full env keep/set/unset (inherit) | **3.0** | Clean and inherit modes apply keep/set/unset at spawn |
-| Project trust / `nxr context` CLI | **Planned 3.0** | |
-| Semantic validation (paths, CPU, locks) | **3.0** | Rejects invalid v2 metadata at load |
-| Result cache + resource scheduler | **Planned 3.1** | [ADR-0147](adr/0147-two-tier-actions.md) |
+| Full env keep/set/unset (inherit) | **Shipped 3.0** | Clean and inherit modes apply keep/set/unset at spawn |
+| Project trust / `nxr context` CLI | **Shipped 3.0** | `nxr trust`, `nxr context list\|inspect\|run` |
+| Semantic validation (paths, CPU, locks) | **Shipped 3.0** | Rejects invalid v2 metadata at load |
+| Remote workspace CAS / workers | **Later** | Local CAS only in 3.1 |
 
 Related ADRs: [0122](adr/README.md), [0144](adr/0144-auto-schema-v2.md),
-[0146](adr/0146-secret-provider-ref.md), [0149](adr/0149-context-shell-confirm.md).
+[0146](adr/0146-secret-provider-ref.md), [0147](adr/0147-two-tier-actions.md),
+[0149](adr/0149-context-shell-confirm.md).
 
 Schema v1 tolerates unknown task fields; **do not** emit security fields under
 v1. Schema v2 rejects unknown execution-affecting fields.
@@ -54,7 +57,7 @@ Same evaluable flake attribute as v1: `nxr.<system>`.
 | Field | Purpose |
 |---|---|
 | `inputs` | Declared paths, environment, Git state, upstream bindings |
-| `outputs` | Workspace artifacts for future result cache |
+| `outputs` | Workspace artifacts for opt-in result cache (local CAS when enabled) |
 | `cache` | Opt-in result cache policy (`disabled` by default) |
 | `resources` | CPU/memory/IO estimates and exclusivity locks |
 | `shell` | Optional `devShells.<name>` (shell-only context) |
@@ -69,8 +72,9 @@ when contexts or task `shell` / `context` fields are present.
 
 `delivery = "env"` secrets with `provider = "env"` (default) resolve from the
 caller environment at task spawn (see [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md)).
-Non-env providers error at resolve time. Contexts with `confirm = true` prompt
-before spawn (or require `NXR_ASSUME_YES=1` when stdin is not a TTY).
+Non-env providers error at resolve time unless bindings are configured. Contexts
+with `confirm = true` prompt before spawn (or require `NXR_ASSUME_YES=1` when
+stdin is not a TTY).
 
 ```nix
 perSystem.nxr.contexts.release = {

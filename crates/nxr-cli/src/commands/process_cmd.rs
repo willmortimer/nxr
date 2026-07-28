@@ -10,7 +10,10 @@ use std::time::{Duration, Instant};
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
 use nxr_nix::{OptionalNixFlags, resolve_app_by_name};
-use nxr_task::{ProcessDefinition, ProcessReadiness};
+use nxr_task::{
+    ProcessDefinition, ProcessNameError, ProcessReadiness, sanitize_process_log_name,
+    validate_node_id,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::commands::common::{AppRequest, PrepareError, WorkspaceSnapshot, prepare_fast_app_plan};
@@ -42,6 +45,10 @@ pub enum ProcessError {
     NoProcesses,
     #[error("failed to supervise process `{name}`: {message}")]
     Supervision { name: String, message: String },
+    #[error("invalid process name `{name}`: {message}")]
+    InvalidName { name: String, message: String },
+    #[error("process `{name}` pid {pid} no longer matches supervised identity")]
+    IdentityMismatch { name: String, pid: u32 },
 }
 
 impl ProcessError {
@@ -53,6 +60,8 @@ impl ProcessError {
             Self::NotFound { .. } | Self::NotRunning { .. } => exit::NOT_FOUND,
             Self::AlreadyRunning { .. } => exit::USAGE,
             Self::NoProcesses => exit::NOT_FOUND,
+            Self::InvalidName { .. } => exit::USAGE,
+            Self::IdentityMismatch { .. } => exit::PROCESS_SUPERVISION,
             Self::Supervision { .. } => exit::PROCESS_SUPERVISION,
             Self::Io(_) | Self::Json(_) => exit::EVALUATION,
         }
@@ -69,6 +78,8 @@ struct ProcessStateFile {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct RunningProcessRecord {
     pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    start_time: Option<u64>,
     app: String,
     log_path: String,
     started_at: String,
@@ -88,9 +99,13 @@ pub fn up(
     let mut state = load_state(&context.project_id)?;
 
     for name in targets {
-        if state.processes.contains_key(&name) {
-            let pid = state.processes[&name].pid;
-            return Err(ProcessError::AlreadyRunning { name, pid });
+        if let Some(record) = state.processes.get(&name)
+            && is_supervised_process_alive(record)
+        {
+            return Err(ProcessError::AlreadyRunning {
+                name,
+                pid: record.pid,
+            });
         }
         let definition = context
             .document
@@ -152,7 +167,7 @@ pub fn status(
     writeln!(stdout, "Processes for {}:", context.flake.display)?;
     for name in context.document.processes.keys() {
         if let Some(record) = state.processes.get(name) {
-            let alive = is_pid_alive(record.pid);
+            let alive = is_supervised_process_alive(record);
             let ready = alive && record.ready;
             writeln!(
                 stdout,
@@ -199,7 +214,7 @@ pub fn logs(
         loop {
             let read = file.read(&mut buffer)?;
             if read == 0 {
-                if !is_pid_alive(record.pid) {
+                if !is_supervised_process_alive(record) {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(200));
@@ -239,25 +254,30 @@ pub fn down(
         runner
             .info(format!("stopping process {name}"))
             .map_err(ProcessError::Io)?;
-        terminate_pid(record.pid)?;
+        if !is_supervised_process_alive(&record) {
+            continue;
+        }
+        terminate_supervised_process(&name, &record)?;
     }
 
     save_state(&context.project_id, &state)?;
     Ok(exit::SUCCESS)
 }
 
-struct ProcessContext {
+struct ProcessContext<'a> {
     flake: crate::flake::FlakeSelection,
+    nix_override: Option<&'a str>,
+    nix_flags: &'a OptionalNixFlags,
     apps: Vec<nxr_core::App>,
     document: nxr_task::TaskDocument,
     project_id: String,
 }
 
-fn discover_process_context(
-    flake_arg: Option<&str>,
-    nix_override: Option<&str>,
-    nix_flags: &OptionalNixFlags,
-) -> Result<ProcessContext, ProcessError> {
+fn discover_process_context<'a>(
+    flake_arg: Option<&'a str>,
+    nix_override: Option<&'a str>,
+    nix_flags: &'a OptionalNixFlags,
+) -> Result<ProcessContext<'a>, ProcessError> {
     let snapshot = WorkspaceSnapshot::load(flake_arg, nix_override, true, nix_flags)?;
     let document = snapshot
         .tasks
@@ -273,6 +293,8 @@ fn discover_process_context(
     );
     Ok(ProcessContext {
         flake: snapshot.flake,
+        nix_override,
+        nix_flags,
         apps: snapshot.apps.values().cloned().collect(),
         document,
         project_id,
@@ -287,6 +309,10 @@ fn resolve_targets(
         return Ok(processes.keys().cloned().collect());
     }
     for name in names {
+        validate_node_id(name).map_err(|error| ProcessError::InvalidName {
+            name: name.clone(),
+            message: process_name_error_message(&error),
+        })?;
         if !processes.contains_key(name) {
             return Err(ProcessError::NotFound { name: name.clone() });
         }
@@ -307,7 +333,7 @@ fn dependencies_ready(
 }
 
 fn spawn_process(
-    context: &ProcessContext,
+    context: &ProcessContext<'_>,
     name: &str,
     definition: &ProcessDefinition,
 ) -> Result<RunningProcessRecord, ProcessError> {
@@ -318,18 +344,7 @@ fn spawn_process(
         }
     })?;
     let environment_policy = EnvironmentPolicy::Inherit;
-    let app_request = AppRequest {
-        flake_arg: None,
-        nix_override: None,
-        app: definition.app.as_str(),
-        args: &[],
-        root: false,
-        cwd: None,
-        shell: None,
-        shell_mode: ShellMode::Smart,
-        environment_policy: environment_policy.clone(),
-        nix_flags: &OptionalNixFlags::default(),
-    };
+    let app_request = process_app_request(context, definition.app.as_str(), environment_policy);
     let prepared = prepare_fast_app_plan(&app_request)?;
 
     let log_path = process_log_path(&context.project_id, name)?;
@@ -354,13 +369,34 @@ fn spawn_process(
     })?;
 
     let ready = wait_for_readiness(definition.readiness.as_ref());
+    let start_time = capture_pid_start_time(pid);
     Ok(RunningProcessRecord {
         pid,
+        start_time,
         app: definition.app.clone(),
         log_path: log_path.display().to_string(),
         started_at: unix_timestamp(),
         ready,
     })
+}
+
+fn process_app_request<'a>(
+    context: &'a ProcessContext<'a>,
+    app: &'a str,
+    environment_policy: EnvironmentPolicy,
+) -> AppRequest<'a> {
+    AppRequest {
+        flake_arg: Some(context.flake.nix_ref.as_str()),
+        nix_override: context.nix_override,
+        app,
+        args: &[],
+        root: false,
+        cwd: None,
+        shell: None,
+        shell_mode: ShellMode::Smart,
+        environment_policy,
+        nix_flags: context.nix_flags,
+    }
 }
 
 fn spawn_background(
@@ -494,7 +530,9 @@ fn load_state(project_id: &str) -> Result<ProcessStateFile, ProcessError> {
     }
     let contents = fs::read_to_string(path)?;
     let mut state: ProcessStateFile = serde_json::from_str(&contents)?;
-    state.processes.retain(|_, record| is_pid_alive(record.pid));
+    state
+        .processes
+        .retain(|_, record| is_supervised_process_alive(record));
     Ok(state)
 }
 
@@ -502,11 +540,8 @@ fn save_state(project_id: &str, state: &ProcessStateFile) -> Result<(), ProcessE
     let Some(path) = state_path(project_id) else {
         return Ok(());
     };
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
     let contents = serde_json::to_string_pretty(state)?;
-    fs::write(path, contents)?;
+    write_state_atomically(&path, contents.as_bytes())?;
     Ok(())
 }
 
@@ -519,13 +554,146 @@ fn empty_state(project_id: &str) -> ProcessStateFile {
 }
 
 fn process_log_path(project_id: &str, name: &str) -> Result<PathBuf, ProcessError> {
+    validate_node_id(name).map_err(|error| ProcessError::InvalidName {
+        name: name.to_owned(),
+        message: process_name_error_message(&error),
+    })?;
     let dir = state_dir()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "state directory unavailable"))?;
     let safe_project = project_id
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
         .collect::<String>();
-    Ok(dir.join(safe_project).join(format!("{name}.log")))
+    let safe_name = sanitize_process_log_name(name);
+    Ok(dir.join(safe_project).join(format!("{safe_name}.log")))
+}
+
+fn process_name_error_message(error: &ProcessNameError) -> String {
+    match error {
+        ProcessNameError::Empty => "name must not be empty".to_owned(),
+        ProcessNameError::PathSeparator { .. } => {
+            "name must not contain path separators".to_owned()
+        }
+        ProcessNameError::ParentTraversal { .. } => "name must not contain `..`".to_owned(),
+    }
+}
+
+fn is_supervised_process_alive(record: &RunningProcessRecord) -> bool {
+    if !is_pid_alive(record.pid) {
+        return false;
+    }
+    pid_start_time_matches(record.pid, record.start_time)
+}
+
+fn pid_start_time_matches(pid: u32, expected: Option<u64>) -> bool {
+    let Some(expected) = expected else {
+        return true;
+    };
+    capture_pid_start_time(pid) == Some(expected)
+}
+
+fn capture_pid_start_time(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_pid_start_time(pid)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos_pid_start_time(pid)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_pid_start_time(pid: u32) -> Option<u64> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = stat.rsplit(')').next()?.trim();
+    let fields: Vec<&str> = after_comm.split_whitespace().collect();
+    fields.get(20)?.parse().ok()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_pid_start_time(pid: u32) -> Option<u64> {
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "lstart="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stamp = String::from_utf8(output.stdout).ok()?;
+    let stamp = stamp.trim();
+    if stamp.is_empty() {
+        return None;
+    }
+    Some(fnv1a64(stamp.as_bytes()))
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    const OFFSET: u64 = 0xcbf29ce484222325;
+    const PRIME: u64 = 0x00000100000001B3;
+    let mut hash = OFFSET;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
+fn write_state_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
+    use fs2::FileExt;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "missing parent directory"))?;
+    fs::create_dir_all(parent)?;
+
+    let lock_path = parent.join(format!(
+        ".{}.lock",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("state")
+    ));
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    lock_file.lock_exclusive()?;
+
+    let temp_path = parent.join(format!(
+        ".{}.{}.{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("state"),
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+
+    let write_result = (|| {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temp_path)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp_path, path)?;
+        Ok(())
+    })();
+
+    let _ = fs::remove_file(&temp_path);
+    lock_file.unlock()?;
+    write_result
 }
 
 fn is_pid_alive(pid: u32) -> bool {
@@ -540,6 +708,19 @@ fn is_pid_alive(pid: u32) -> bool {
         let _ = pid;
         false
     }
+}
+
+fn terminate_supervised_process(
+    name: &str,
+    record: &RunningProcessRecord,
+) -> Result<(), ProcessError> {
+    if !pid_start_time_matches(record.pid, record.start_time) {
+        return Err(ProcessError::IdentityMismatch {
+            name: name.to_owned(),
+            pid: record.pid,
+        });
+    }
+    terminate_pid(record.pid)
 }
 
 fn terminate_pid(pid: u32) -> Result<(), ProcessError> {
@@ -576,4 +757,99 @@ fn unix_timestamp() -> String {
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
     format!("{seconds}")
+}
+
+#[cfg(test)]
+mod tests {
+    use nxr_core::EnvironmentPolicy;
+    use nxr_nix::OptionalNixFlags;
+
+    use super::{
+        ProcessContext, RunningProcessRecord, process_app_request, process_log_path,
+        resolve_targets, terminate_supervised_process,
+    };
+    use crate::flake::FlakeSelection;
+    use crate::shell_mode::ShellMode;
+    use nxr_task::{ProcessDefinition, ProcessNameError, TaskDocument, validate_node_id};
+
+    fn sample_context<'a>(nix_ref: &'a str, nix_flags: &'a OptionalNixFlags) -> ProcessContext<'a> {
+        ProcessContext {
+            flake: FlakeSelection {
+                display: nix_ref.to_owned(),
+                nix_ref: nix_ref.to_owned(),
+                local_root: None,
+            },
+            nix_override: Some("/custom/nix"),
+            nix_flags,
+            apps: Vec::new(),
+            document: TaskDocument::new(Default::default()),
+            project_id: "fixture".to_owned(),
+        }
+    }
+
+    #[test]
+    fn process_app_request_propagates_selected_flake() {
+        let nix_flags = OptionalNixFlags::default();
+        let context = sample_context("path:/tmp/other-flake", &nix_flags);
+        let request = process_app_request(&context, "api-dev", EnvironmentPolicy::Inherit);
+        assert_eq!(request.flake_arg, Some("path:/tmp/other-flake"));
+        assert_eq!(request.nix_override, Some("/custom/nix"));
+        assert_eq!(request.nix_flags, &nix_flags);
+        assert_eq!(request.shell_mode, ShellMode::Smart);
+    }
+
+    #[test]
+    fn resolve_targets_rejects_unsafe_names() {
+        let mut processes = std::collections::BTreeMap::new();
+        processes.insert(
+            "api".to_owned(),
+            ProcessDefinition {
+                app: "api".to_owned(),
+                depends_on: Vec::new(),
+                readiness: None,
+                restart: None,
+            },
+        );
+        let err = resolve_targets(&processes, &["../escape".to_owned()])
+            .expect_err("unsafe name rejected");
+        assert!(matches!(
+            err,
+            super::ProcessError::InvalidName { name, .. } if name == "../escape"
+        ));
+    }
+
+    #[test]
+    fn process_log_path_sanitizes_special_characters() {
+        let path = process_log_path("fixture", "api:worker").expect("sanitized path");
+        assert!(path.ends_with("api_worker.log"));
+    }
+
+    #[test]
+    fn terminate_supervised_process_refuses_identity_mismatch() {
+        let record = RunningProcessRecord {
+            pid: std::process::id(),
+            start_time: Some(42),
+            app: "api".to_owned(),
+            log_path: "/tmp/api.log".to_owned(),
+            started_at: "0".to_owned(),
+            ready: true,
+        };
+        let err = terminate_supervised_process("api", &record).expect_err("identity mismatch");
+        assert!(matches!(
+            err,
+            super::ProcessError::IdentityMismatch { name, pid }
+                if name == "api" && pid == record.pid
+        ));
+    }
+
+    #[test]
+    fn validate_node_id_matches_task_style_rules() {
+        assert!(validate_node_id("worker").is_ok());
+        assert_eq!(
+            validate_node_id("a/b"),
+            Err(ProcessNameError::PathSeparator {
+                name: "a/b".to_owned()
+            })
+        );
+    }
 }
