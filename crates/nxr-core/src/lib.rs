@@ -17,7 +17,8 @@ pub mod trust;
 pub use action::{ActionTier, cache_mode_enabled, classify_action_tier, workspace_cache_enabled};
 pub use cas::{
     CAS_PROTOCOL_VERSION, CacheExplain, CacheLookupExplain, CasLookup, WORKSPACE_CAS_ENV,
-    clear_workspace_cas, digest_file, digest_repo_path, flake_lock_digest, hash_action_key,
+    clear_workspace_cas, digest_bytes, digest_file, digest_repo_path, flake_lock_digest,
+    hash_action_key,
     lookup_outputs, restore_outputs, save_outputs, workspace_cas_dir, workspace_cas_enabled,
     workspace_cas_status,
 };

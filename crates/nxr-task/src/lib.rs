@@ -24,7 +24,7 @@ pub mod schema;
 pub mod secrets;
 pub mod selectors;
 
-pub use action_key::{WorkspaceCachePlan, build_workspace_cache_plan};
+pub use action_key::{WorkspaceCachePlan, WorkspaceCachePlanOptions, build_workspace_cache_plan};
 pub use context::{
     AppliedTaskContext, ContextError, NXR_ASSUME_YES_ENV, PlanSecretEntry,
     PlanSecretValuePlaceholder, apply_task_context, enforce_context_confirm,

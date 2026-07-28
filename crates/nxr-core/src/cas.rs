@@ -99,8 +99,13 @@ fn cas_root() -> Option<PathBuf> {
 #[must_use]
 pub fn hash_action_key(key_material: &serde_json::Value) -> String {
     let canonical = serde_json::to_string(key_material).unwrap_or_default();
-    let hash = blake3::hash(canonical.as_bytes());
-    hash.to_hex().to_string()
+    digest_bytes(canonical.as_bytes())
+}
+
+/// Hex-encoded BLAKE3 digest of arbitrary bytes.
+#[must_use]
+pub fn digest_bytes(data: &[u8]) -> String {
+    blake3::hash(data).to_hex().to_string()
 }
 
 /// Digest a single file's contents (hex BLAKE3).
