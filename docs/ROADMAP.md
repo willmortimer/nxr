@@ -23,7 +23,7 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 | **V2.6** | Latency + ecosystem ergonomics | Capability cache, fingerprints, watch reuse, schema export, HM, `fmt`/`in`/`envrc`, doctor — `v2.6.0`. |
 | **V2.7.1** | Correctness + 2.7 polish | Cap-cache layers/v4 file digests, portable archives, flake check CI, mio drain/EOF, schema v2 auto-emit, contexts, env-provider secrets, confirm/shell — `v2.7.1`. |
 | **V3.0** | Secure execution contexts | Env policy, trust, secret bindings/delivery, `nxr context` — `v3.0.0`. |
-| **V3.1** | Workspace actions + process MVP | Local CAS, resources, `up`/`status`/`logs`/`down`, inventory, history, coalesced discovery — `v3.1.3` (correctness + docs/cli-ref drift check; earlier `v3.1.0`–`v3.1.2` packaging/release-smoke fixes). |
+| **V3.1** | Workspace actions + process MVP | Local CAS, resources, `up`/`status`/`logs`/`down`, inventory, history, coalesced discovery — `v3.1.3`. Next: cache safety ([#1](https://github.com/willmortimer/nxr/issues/1), [#2](https://github.com/willmortimer/nxr/issues/2)). |
 
 ## Active roadmap
 
@@ -61,7 +61,7 @@ Finish the security boundary before result caching:
 - `nxr context list|inspect|run`; one-shell DAG optimization
 - Semantic v2 validation (paths, cache policy, resources, secret slots)
 
-### 3.1 — Workspace actions (“Nix Turborepo”) + process MVP — shipped as `v3.1.0`
+### 3.1 — Workspace actions (“Nix Turborepo”) + process MVP — shipped as `v3.1.0`–`v3.1.3`
 
 Two execution tiers ([ADR-0147](adr/0147-two-tier-actions.md)):
 
@@ -72,9 +72,25 @@ Plus: resource-aware scheduling / exclusivity locks; inventory CLI + coalesced
 discovery ([ADR-0150](adr/0150-inventory-coalesce.md)); process MVP
 (`up` / `status` / `logs` / `down`, readiness) per ADR-0132.
 
+Correctness follow-ups through **v3.1.3**: cache-hit scheduler hang, complete
+action keys, CAS atomic publish/restore, process flake/PID hardening,
+flake-parts 3.1 options, `checks.*.cli-ref`.
+
+### 3.1.4 — Workspace cache safety (next)
+
+Tracked on GitHub; blocks trustworthy secret-bearing / shared-mode cache use:
+
+1. **[#1](https://github.com/willmortimer/nxr/issues/1)** — Disable workspace
+   caching by default for secret-bearing tasks (env `secret = true` / context
+   secrets). Optional expert override; surface reason in `nxr cache explain`.
+2. **[#2](https://github.com/willmortimer/nxr/issues/2)** — Reject or warn when
+   `cache.mode` is `shared-read` / `shared` until a shared transport exists
+   (today they silently use local CAS).
+
 ### Later
 
-- Remote workspace CAS transport; deterministic CI sharding; indexing daemon
+- Remote workspace CAS transport (unblocks honest `shared` / `shared-read`);
+  deterministic CI sharding; indexing daemon
 - Native Nix remote builders first; GPU/capability advertisement
 - Distributed workers / control plane ([ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md))
 - Full Determinate feature matrix beyond doctor diagnostics

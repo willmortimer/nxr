@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Roadmap **3.1.4** tracks workspace cache safety: secret-bearing tasks
+  ([#1](https://github.com/willmortimer/nxr/issues/1)) and honest
+  `shared` / `shared-read` handling ([#2](https://github.com/willmortimer/nxr/issues/2)).
+  Docs/Nix option text no longer claim those behaviors are already shipped.
+
 ## [3.1.3] - 2026-07-28
 
 Correctness hardening for the 3.1 workspace-actions / process surface.

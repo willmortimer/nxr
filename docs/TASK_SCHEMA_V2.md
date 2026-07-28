@@ -9,7 +9,7 @@ when security/execution fields are used is required as of 2.7.1 ([ADR-0144](adr/
 |---|---|---|
 | Strict parse (`deny_unknown_fields`) | **Shipped** | Document + task + nested v2 objects |
 | `inputs` / `outputs` declarations | **Partial** | Parsed and validated; fingerprinting for workspace CAS |
-| `cache` policy + workspace result cache | **Experimental 3.1** | Opt-in local CAS; `nxr cache explain` ([ADR-0147](adr/0147-two-tier-actions.md)) |
+| `cache` policy + workspace result cache | **Experimental 3.1** | Opt-in **local** CAS; `nxr cache explain` ([ADR-0147](adr/0147-two-tier-actions.md)). `shared` / `shared-read` not transported yet ([#2](https://github.com/willmortimer/nxr/issues/2)). Secret-bearing tasks do not yet auto-disable cache ([#1](https://github.com/willmortimer/nxr/issues/1)). |
 | `resources` scheduling | **Experimental 3.1** | Exclusive locks + soft CPU/memory pools |
 | `contexts` module + emit | **Shipped** | `perSystem.nxr.contexts` |
 | Auto `schema_version = 2` when v2 fields present | **2.7.1** | Older runners reject instead of ignoring |
@@ -20,7 +20,7 @@ when security/execution fields are used is required as of 2.7.1 ([ADR-0144](adr/
 | Full env keep/set/unset (inherit) | **Shipped 3.0** | Clean and inherit modes apply keep/set/unset at spawn |
 | Project trust / `nxr context` CLI | **Shipped 3.0** | `nxr trust`, `nxr context list\|inspect\|run` |
 | Semantic validation (paths, CPU, locks) | **Shipped 3.0** | Rejects invalid v2 metadata at load |
-| Remote workspace CAS / workers | **Later** | Local CAS only in 3.1 |
+| Remote workspace CAS / workers | **Later** | Local CAS only in 3.1; shared modes tracked in [#2](https://github.com/willmortimer/nxr/issues/2) |
 
 Related ADRs: [0122](adr/README.md), [0144](adr/0144-auto-schema-v2.md),
 [0146](adr/0146-secret-provider-ref.md), [0147](adr/0147-two-tier-actions.md),

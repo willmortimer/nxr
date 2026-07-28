@@ -50,8 +50,12 @@ let
         type = types.bool;
         default = false;
         description = ''
-          When true, the variable is secret metadata and disables caching by
-          default. Secret values never appear in plans or events.
+          When true, the variable is secret metadata: values never appear in
+          plans or events, and the action key records presence as `"secret"`
+          rather than the value. Auto-disabling workspace cache for
+          secret-bearing tasks is tracked as a follow-up (nxr#1); until then
+          set `cache.mode = "disabled"` explicitly when outputs depend on the
+          secret value.
         '';
       };
     };
@@ -136,6 +140,9 @@ let
         default = null;
         description = ''
           Cache scope (`disabled`, `local`, `shared-read`, or `shared`).
+          Only local CAS is implemented today; `shared-read` / `shared` still
+          use the local path (honest reject-or-warn is nxr#2). Prefer `local`
+          or `disabled` until a shared transport ships.
         '';
       };
 
