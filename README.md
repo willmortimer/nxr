@@ -214,7 +214,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**3.2.0** — local orchestration performance (plan/store-exe caches, digests/Merkle, optional `nxrd`, lazy prep, watch snapshot/coalesce/prewarm, lean CLI, I/O batching, Determinate eval strategy, optional `nxrMetadata`); workspace CAS/actions remain **experimental**, process MVP **preview**.
+**3.2.1** — local orchestration performance plus store-exe source-identity correctness, process metadata honesty (dep closure/topo, restart reject, process contexts, readiness fail-closed), and Home Manager `services.nxrd`; workspace CAS/actions remain **experimental**, process MVP **preview**.
 
 History: [CHANGELOG.md](CHANGELOG.md). Next: [docs/ROADMAP.md](docs/ROADMAP.md)
 (Later: remote CAS, workers; full process supervision).

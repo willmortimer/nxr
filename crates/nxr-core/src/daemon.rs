@@ -1430,6 +1430,7 @@ mod tests {
             nix_path: "/nix/var/nix".to_owned(),
             nix_version: "2.24.0".to_owned(),
             nix_file_identity: None,
+            source_identity: None,
         }
     }
 

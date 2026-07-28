@@ -57,6 +57,9 @@ pub fn render_envrc_content(shell: Option<&str>) -> String {
     lines.push(
         "# Optional: load nxr shell completions when direnv activates this directory.".to_owned(),
     );
+    lines.push(
+        "# nxrd: prefer Home Manager `services.nxrd.enable` or `nxr daemon start` — do not start the daemon from direnv (wrong lifecycle).".to_owned(),
+    );
     lines.join("\n")
 }
 

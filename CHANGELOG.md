@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.1] - 2026-07-28
+
+Correctness polish on the 3.2 performance surface: store-exe source identity,
+process metadata honesty, Home Manager `nxrd`, and regression coverage.
+
+### Fixed
+
+- Store-exe / prepared-plan fingerprints now include git source identity and real
+  `discoveryInputs` (schema v2). Dirty trees without declared discovery inputs
+  refuse store-exe reuse so package `src/` edits cannot spawn a stale
+  `/nix/store` program ([ADR-0153](docs/adr/0153-store-exe-cache.md)).
+- Process `up` expands `dependsOn` closure and starts in topological order;
+  rejects `restart` other than `never`; fails when readiness times out or the
+  child exits; rejects `https://` readiness URLs; supports process `context`,
+  `workingDirectory`, `arguments`, and `shell`.
+
+### Added
+
+- Home Manager `services.nxrd.enable` (systemd-user / launchd) for long-lived
+  `nxrd`; `nxr envrc` documents that direnv must not start the daemon.
+- Package-backed `fixtures/package-app` + store-exe source-edit regression test.
+
+### Changed
+
+- ROADMAP 2.8: typed parameters / matrix expansion marked planned; coverage and
+  benchmark reports labeled scaffold stubs.
+- Workspace and Nix package version **3.2.1**.
+
 ## [3.2.0] - 2026-07-28
 
 Local orchestration performance: caches, digests/Merkle, optional `nxrd`, watch

@@ -20,6 +20,7 @@ pub mod projects;
 pub mod repo_path;
 pub mod run_history;
 pub mod sanitize;
+pub mod source_identity;
 pub mod store_exe_cache;
 pub mod trust;
 
@@ -104,6 +105,7 @@ pub use run_history::{
     RunSummaryInput, RunTargetKind, clear_runs, list_runs, record_run, record_run_result,
 };
 pub use sanitize::sanitize_terminal_text;
+pub use source_identity::{GitSourceIdentity, git_source_identity};
 pub use store_exe_cache::{
     DEFAULT_STORE_EXE_CACHE_TTL_SECS, STORE_EXE_CACHE_ENV, STORE_EXE_CACHE_SCHEMA_VERSION,
     STORE_EXE_CACHE_TTL_ENV, StoreExeCacheHit, StoreExeCacheKeyMaterial, StoreExeCacheStatus,

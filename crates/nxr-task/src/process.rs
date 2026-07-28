@@ -41,6 +41,9 @@ pub struct ProcessReadiness {
 }
 
 /// Restart policy for supervised processes.
+///
+/// Only [`Self::Never`] is implemented. Other values are rejected at validate time
+/// so execution-affecting metadata is never silently ignored.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProcessRestart {
@@ -60,6 +63,28 @@ pub struct ProcessDefinition {
     pub readiness: Option<ProcessReadiness>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart: Option<ProcessRestart>,
+    /// Named execution context (same machinery as tasks).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// Working directory token or flake-relative path (same as tasks).
+    #[serde(
+        default,
+        rename = "workingDirectory",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub working_directory: Option<String>,
+    /// Extra arguments forwarded to the app after `--`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arguments: Vec<String>,
+    /// Optional named `devShells.<name>` wrap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+}
+
+/// Base process id from a dependency token (`database@ready` → `database`).
+#[must_use]
+pub fn dependency_base_name(dependency: &str) -> &str {
+    dependency.split('@').next().unwrap_or(dependency)
 }
 
 /// Validate a process or task node identifier.
@@ -119,8 +144,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ProcessNameError, ProcessReadiness, parse_processes, sanitize_process_log_name,
-        validate_node_id,
+        ProcessNameError, ProcessReadiness, dependency_base_name, parse_processes,
+        sanitize_process_log_name, validate_node_id,
     };
 
     #[test]
@@ -132,10 +157,14 @@ mod tests {
                 "api": {
                     "app": "api-dev",
                     "dependsOn": ["database@ready"],
+                    "context": "agent",
+                    "workingDirectory": "flake-root",
+                    "arguments": ["--port", "8080"],
+                    "shell": "backend",
                     "readiness": {
                         "http": { "url": "http://127.0.0.1:8080/health" }
                     },
-                    "restart": "on-failure"
+                    "restart": "never"
                 }
             }
         });
@@ -144,6 +173,10 @@ mod tests {
         let api = processes.get("api").expect("api");
         assert_eq!(api.app, "api-dev");
         assert_eq!(api.depends_on, vec!["database@ready".to_owned()]);
+        assert_eq!(api.context.as_deref(), Some("agent"));
+        assert_eq!(api.working_directory.as_deref(), Some("flake-root"));
+        assert_eq!(api.arguments, vec!["--port".to_owned(), "8080".to_owned()]);
+        assert_eq!(api.shell.as_deref(), Some("backend"));
         assert!(matches!(
             api.readiness,
             Some(ProcessReadiness {
@@ -151,6 +184,12 @@ mod tests {
                 tcp: None
             })
         ));
+    }
+
+    #[test]
+    fn dependency_base_strips_readiness_suffix() {
+        assert_eq!(dependency_base_name("database@ready"), "database");
+        assert_eq!(dependency_base_name("api"), "api");
     }
 
     #[test]

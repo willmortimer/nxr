@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-28
-- **Target release:** Unreleased (perf Wave 1a)
+- **Target release:** 3.2.0 / 3.2.1
 - **Related ADRs:** ADR-0010, ADR-0015, ADR-0134, ADR-0151
 
 ## Context
@@ -20,7 +20,7 @@ never persist secret values.
 ## Decision
 
 1. Add an **optional** on-disk prepared-plan cache (`~/.cache/nxr/plans` or OS
-   equivalent), schema version **1**, env kill-switch `NXR_PLAN_CACHE=off`
+   equivalent), schema version **2**, env kill-switch `NXR_PLAN_CACHE=off`
    (also `0` / `false` / `no`). Default: enabled when a cache directory exists.
 2. Key entries by:
    - prepare kind (`fast` vs `discovered`)
@@ -32,8 +32,11 @@ never persist secret values.
    - working-directory policy (`--root` / `--cwd` + resolved paths)
    - environment **policy** digest (shape + CLI `--set` values; not secrets)
    - forwarded arguments
-   - shared fingerprints: Nix-tree fingerprint, discovery-inputs fingerprint,
-     optional `flake.lock` digest (ADR-0134 fingerprint machinery)
+   - shared fingerprints: Nix-tree fingerprint, discovery-inputs fingerprint
+     (from declared `discoveryInputs` / discovery-cache hint — never an empty
+     hardcoded list when inputs are known), optional `flake.lock` digest, and
+     optional **source identity** (git HEAD + pathspec-scoped porcelain digest
+     for the flake root; ADR-0153)
 3. Miss → today’s prepare path, then store. Hit → reuse stored `Plan` + nix path +
    execution directory. **Live env and secrets are still resolved at spawn** —
    never from the cache entry.

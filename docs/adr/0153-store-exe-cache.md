@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-28
-- **Target release:** Unreleased (perf Wave 1b)
+- **Target release:** 3.2.0 / 3.2.1 (source-identity correctness in 3.2.1)
 - **Related ADRs:** ADR-0010, ADR-0015, ADR-0147, ADR-0151, ADR-0152
 
 ## Context
@@ -19,13 +19,20 @@ Workspace CAS must not absorb hermetic package store paths
 ## Decision
 
 1. Add an **optional** on-disk store-exe cache (`~/.cache/nxr/store-exe` or OS
-   equivalent), schema version **1**, kill-switch `NXR_STORE_EXE_CACHE=off`
+   equivalent), schema version **2**, kill-switch `NXR_STORE_EXE_CACHE=off`
    (also `0` / `false` / `no`). Default: enabled when a cache directory exists.
 2. Reuse `PlanCacheSharedFingerprints` from ADR-0152 for lock /
-   discovery / Nix identity invalidation. Do **not** invent a second fingerprint
-   scheme. Key material additionally includes flake ref, local root, system, app
+   discovery / Nix identity invalidation, plus **source identity**:
+   - Git HEAD + porcelain scoped to the flake root (`git status --porcelain -- .`)
+   - Declared `discoveryInputs` content fingerprint (hinted from discovery cache
+     when a full discovery context is not yet available)
+   - **Refuse** direct store-exe reuse when the tree is dirty and no
+     `discoveryInputs` are known, or when neither git identity nor discovery
+     inputs are available (non-git path flakes without declared inputs).
+   Do **not** invent a second fingerprint scheme beyond these shared fields.
+   Key material additionally includes flake ref, local root, system, app
    name / attr path, and Nix flags digest. Forwarded argv is **not** part of the
-   key (args are applied at spawn).
+   key (args are applied at spawn). Key domain prefix is `store-exe-v2`.
 3. **Miss / cold:** `nix eval --raw <flake>#apps.<system>.<app>.program`, then
    `nix build --no-link --print-out-paths <store-output>` when the program file
    is not yet usable; cache program + store output; spawn the program with the
@@ -61,6 +68,9 @@ The two caches are independent:
 - Integration: warm `nxr --flake fixtures/basic-apps hello` with `NXR_NIX`
   counting shim shows `run == 0` on the second invocation when fingerprints
   match; `NXR_STORE_EXE_CACHE=off` preserves classic `run == 1` budgets.
+- Integration: package-backed `fixtures/package-app` — after a warm hit, editing
+  `src/message.txt` must not spawn the previous `/nix/store` program (miss /
+  re-realise / new greeting).
 
 ## Non-goals (Wave 1b)
 

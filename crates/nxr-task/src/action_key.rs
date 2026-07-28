@@ -5,7 +5,6 @@
 
 use std::collections::BTreeMap;
 use std::io;
-use std::process::Command;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use globset::Glob;
@@ -15,7 +14,7 @@ use nxr_core::cas::{
 };
 use nxr_core::{
     ActionTier, EnvironmentPolicy, RunDigestCache, cache_mode_shared_unimplemented,
-    classify_action_tier, workspace_cache_enabled,
+    classify_action_tier, git_source_identity, workspace_cache_enabled,
 };
 use nxr_core::{normalize_repo_relative_path, validate_repo_relative_path};
 use serde::Serialize;
@@ -302,10 +301,10 @@ pub fn build_workspace_cache_plan(
     }
 
     let git_state_digest = if include_git_state {
-        match compute_git_state_digest(flake_root)? {
-            Some(digest) => {
-                key_components.insert("git_state".to_owned(), digest.clone());
-                Some(digest)
+        match git_source_identity(flake_root)? {
+            Some(identity) => {
+                key_components.insert("git_state".to_owned(), identity.digest.clone());
+                Some(identity.digest)
             }
             None => {
                 key_components.insert(
@@ -592,30 +591,6 @@ fn env_state_label(state: &EnvInputState) -> String {
         EnvInputState::ValueDigest(digest) => format!("digest:{digest}"),
         EnvInputState::Secret => "secret".to_owned(),
     }
-}
-
-fn compute_git_state_digest(flake_root: &Utf8Path) -> io::Result<Option<String>> {
-    let head = Command::new("git")
-        .args(["-C", flake_root.as_str(), "rev-parse", "HEAD"])
-        .output()?;
-    if !head.status.success() {
-        return Ok(None);
-    }
-    let head_sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
-    if head_sha.is_empty() {
-        return Ok(None);
-    }
-
-    let status = Command::new("git")
-        .args(["-C", flake_root.as_str(), "status", "--porcelain"])
-        .output()?;
-    if !status.status.success() {
-        return Ok(None);
-    }
-    let dirty_digest = digest_bytes(&status.stdout);
-    Ok(Some(digest_bytes(
-        format!("{head_sha}:{dirty_digest}").as_bytes(),
-    )))
 }
 
 fn output_contract_material(outputs: &[TaskOutput]) -> Vec<OutputMaterial> {

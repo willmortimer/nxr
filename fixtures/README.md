@@ -10,6 +10,7 @@ valid under pure `path:` flake refs (Nix 2.18+).
 | Fixture | Purpose |
 |---|---|
 | [basic-apps](basic-apps/) | Common leaf apps: hello, echo-args, succeed, fail, pwd |
+| [package-app](package-app/) | Package-backed greet app + `discoveryInputs = [ "src" ]` for store-exe source invalidation |
 | [app-metadata](app-metadata/) | Apps with `meta.description` for listing UX |
 | [nested-directory](nested-directory/) | Flake with a deep subdirectory for CWD / discovery tests |
 | [broken-flake](broken-flake/) | Intentionally invalid flake for diagnostics |

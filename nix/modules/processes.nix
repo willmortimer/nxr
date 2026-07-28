@@ -2,6 +2,8 @@
 #
 # Process nodes declare flake apps to supervise with optional readiness probes,
 # restart policy, and dependency ordering. Emitted on `nxr.<system>.processes`.
+#
+# Only restart = "never" (or omit) is supported until a durable supervisor exists.
 {
   lib,
   ...
@@ -11,6 +13,7 @@ let
 
   processRestart = types.enum [
     "never"
+    # Declared for forward-compat / honest rejection at validate time:
     "on-failure"
     "always"
   ];
@@ -35,7 +38,7 @@ let
           types.submodule {
             options.url = lib.mkOption {
               type = types.str;
-              description = "HTTP URL to probe for readiness.";
+              description = "HTTP URL to probe for readiness (http:// only; HTTPS not implemented).";
             };
           }
         );
@@ -57,6 +60,7 @@ let
         default = [ ];
         description = ''
           Process or readiness dependencies (for example `database@ready`).
+          `nxr up <name>` expands and topologically orders this closure.
         '';
       };
 
@@ -69,7 +73,34 @@ let
       restart = lib.mkOption {
         type = types.nullOr processRestart;
         default = null;
-        description = "Restart policy when the supervised app exits.";
+        description = ''
+          Restart policy when the supervised app exits. Only `never` (or omit) is
+          implemented; other values are rejected at validate/`up` time.
+        '';
+      };
+
+      context = lib.mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Named execution context (env policy / secrets), same as tasks.";
+      };
+
+      workingDirectory = lib.mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Working directory token or flake-relative path (same as tasks).";
+      };
+
+      arguments = lib.mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = "Extra arguments forwarded to the app after `--`.";
+      };
+
+      shell = lib.mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Optional named `devShells.<name>` wrap.";
       };
     };
   };

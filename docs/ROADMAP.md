@@ -41,16 +41,17 @@ Design: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md). ADRs: [adr/README.md](adr/
 7. ~~Authoritative schema-v2 shipped/partial/planned matrix; PERFORMANCE accuracy~~.
 8. ~~Tag **v2.7.1**~~.
 
-### 2.8 — Automation ergonomics — shipped as `v2.8.0`
+### 2.8 — Automation ergonomics — shipped as `v2.8.0` (partial)
 
 Mise/Just-class UX without abandoning Nix leaves ([ADR-0148](adr/0148-automation-ergonomics.md)):
 
-- `nxr init` templates; `nxr migrate justfile|mise`
-- Typed task parameters + generated completion
-- Selectors (`category:`, `project:`, `changed`); matrix expansion
-- Reports: JUnit, SARIF, coverage, benchmark JSON
-- `nxr ci plan --json`; dogfood one canonical local/CI graph
-- Generated CLI reference; golden example fixture
+- ~~`nxr init` templates; `nxr migrate justfile|mise`~~
+- Typed task parameters + generated completion — **planned** (not in schema yet)
+- ~~Selectors (`category:`, `project:`, `changed`)~~; matrix expansion — **planned**
+- Reports: JUnit + task SARIF shipped; **coverage and benchmark remain scaffold stubs**
+  (empty valid documents until artifact collection exists)
+- ~~`nxr ci plan --json`~~; dogfood one canonical local/CI graph — **partial**
+- ~~Generated CLI reference; golden example fixture~~
 
 ### 3.0 — Secure execution contexts — shipped as `v3.0.0`
 
@@ -94,6 +95,12 @@ plan + store-exe caches; run/Git digests; Merkle affected index; optional
 `nxrd`; lazy node prep + CAS‖SpawnPlan; watch snapshot/coalesce/prewarm; lean
 CLI; child I/O batching + log broker; Determinate eval strategy; batched store
 queries; optional `nxrMetadata`; experimental opt-in eval worker.
+
+### 3.2.1 — Correctness polish — shipped as `v3.2.1`
+
+Store-exe source identity; process metadata honesty (dep closure/topo, reject
+unsupported restart, process context fields, readiness fail-on-timeout); Home
+Manager `services.nxrd`; regression coverage.
 
 ### Later
 

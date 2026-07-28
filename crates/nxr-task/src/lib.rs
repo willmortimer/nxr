@@ -45,8 +45,9 @@ pub use plan_exec::{
 };
 pub use planner::{PlanError, plan_mermaid, plan_serial, plan_serial_union, plan_text};
 pub use process::{
-    ProcessDefinition, ProcessNameError, ProcessReadiness, ProcessRestart, parse_processes,
-    sanitize_process_log_name, validate_node_id,
+    ProcessDefinition, ProcessNameError, ProcessReadiness, ProcessRestart, ReadinessHttp,
+    ReadinessTcp, dependency_base_name, parse_processes, sanitize_process_log_name,
+    validate_node_id,
 };
 pub use resolve::{
     ResolveTaskError, enrich_apps_with_listing_metadata, listable_tasks, listable_tasks_filtered,

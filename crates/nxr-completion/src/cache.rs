@@ -361,6 +361,45 @@ pub struct DiscoveryCacheExplain {
     pub discovery_eval_strategy: nxr_nix::DiscoveryEvalStrategy,
 }
 
+/// Best-effort `discoveryInputs` from any on-disk discovery cache entry for this root.
+///
+/// Used by plan/store-exe fingerprinting when a full discovery context is not
+/// available yet. Returns an empty list when the cache is cold or unavailable.
+#[must_use]
+pub fn hint_discovery_inputs_for_root(local_root: &Utf8Path) -> Vec<String> {
+    let Some(root) = cache_root() else {
+        return Vec::new();
+    };
+    if !root.is_dir() {
+        return Vec::new();
+    }
+    let canonical = canonical_flake_root(local_root);
+    let Ok(entries) = fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    let mut best: Option<(u64, Vec<String>)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || path.extension().is_none_or(|ext| ext != "json") {
+            continue;
+        }
+        let Ok(contents) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(cached) = serde_json::from_str::<CachedDiscovery>(&contents) else {
+            continue;
+        };
+        if cached.flake_root != canonical.as_str() || cached.discovery_inputs.is_empty() {
+            continue;
+        }
+        match &best {
+            Some((at, _)) if *at >= cached.cached_at => {}
+            _ => best = Some((cached.cached_at, cached.discovery_inputs)),
+        }
+    }
+    best.map(|(_, inputs)| inputs).unwrap_or_default()
+}
+
 /// Remove all discovery cache entries.
 ///
 /// Returns the number of cache files removed. Missing cache directories are

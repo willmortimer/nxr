@@ -77,7 +77,14 @@ let
               url = "http://127.0.0.1:8080/health";
             };
           };
-          restart = "on-failure";
+          restart = "never";
+          context = null;
+          workingDirectory = "flake-root";
+          arguments = [
+            "--port"
+            "8080"
+          ];
+          shell = "backend";
         };
       };
     };
@@ -95,6 +102,13 @@ assert build.cache.mode == "local";
 assert build.resources.cpu == 2;
 assert build.resources.exclusive == [ "cargo-target" ];
 assert doc.processes.api.app == "api";
-assert doc.processes.api.restart == "on-failure";
+assert doc.processes.api.restart == "never";
 assert doc.processes.api.readiness.http.url == "http://127.0.0.1:8080/health";
+assert doc.processes.api.workingDirectory == "flake-root";
+assert doc.processes.api.arguments == [
+  "--port"
+  "8080"
+];
+assert doc.processes.api.shell == "backend";
+assert !(doc.processes.api ? context);
 pkgs.runCommand "nxr-flake-parts-v2-fields" { } "touch $out"

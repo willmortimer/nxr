@@ -10,7 +10,9 @@ use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 
-use crate::process::{ProcessDefinition, ProcessNameError, validate_node_id};
+use crate::process::{
+    ProcessDefinition, ProcessNameError, ProcessRestart, dependency_base_name, validate_node_id,
+};
 use serde_json::Value as JsonValue;
 use thiserror::Error;
 
@@ -99,6 +101,9 @@ pub enum SchemaError {
     /// Process node name is invalid.
     #[error("process {process}: {message}")]
     InvalidProcessName { process: String, message: String },
+    /// Process metadata is invalid or unsupported.
+    #[error("process {process}: {message}")]
+    InvalidProcess { process: String, message: String },
 }
 
 /// Versioned task document: `schema_version` plus named task definitions.
@@ -220,8 +225,101 @@ impl TaskDocument {
                 message: process_name_error_message(&error),
             })?;
         }
+        for (process, definition) in &self.processes {
+            match definition.restart {
+                None | Some(ProcessRestart::Never) => {}
+                Some(ProcessRestart::OnFailure) | Some(ProcessRestart::Always) => {
+                    return Err(SchemaError::InvalidProcess {
+                        process: process.clone(),
+                        message: "restart policies other than `never` are not implemented; omit restart or set restart = \"never\"".to_owned(),
+                    });
+                }
+            }
+            if let Some(context) = &definition.context
+                && !self.contexts.contains_key(context)
+            {
+                return Err(SchemaError::UnknownContext {
+                    task: format!("process:{process}"),
+                    context: context.clone(),
+                });
+            }
+            if let Some(working_directory) = &definition.working_directory {
+                validate_working_directory(&format!("process:{process}"), working_directory)?;
+            }
+            if let Some(shell) = &definition.shell {
+                validate_shell_name(&format!("process:{process}"), shell)?;
+            }
+            if let Some(readiness) = &definition.readiness
+                && let Some(http) = &readiness.http
+            {
+                let url = http.url.trim();
+                if url.starts_with("https://") {
+                    return Err(SchemaError::InvalidProcess {
+                        process: process.clone(),
+                        message:
+                            "readiness.http.url must use http:// (TLS probes are not implemented)"
+                                .to_owned(),
+                    });
+                }
+                if !url.starts_with("http://") {
+                    return Err(SchemaError::InvalidProcess {
+                        process: process.clone(),
+                        message: "readiness.http.url must start with http://".to_owned(),
+                    });
+                }
+            }
+            for dependency in &definition.depends_on {
+                let base = dependency_base_name(dependency);
+                if !self.processes.contains_key(base) {
+                    return Err(SchemaError::InvalidProcess {
+                        process: process.clone(),
+                        message: format!("unknown dependency `{dependency}`"),
+                    });
+                }
+            }
+        }
+        detect_process_cycles(&self.processes)?;
         Ok(())
     }
+}
+
+fn detect_process_cycles(
+    processes: &BTreeMap<String, ProcessDefinition>,
+) -> Result<(), SchemaError> {
+    let mut visiting = BTreeMap::<String, bool>::new();
+    let mut visited = BTreeMap::<String, bool>::new();
+
+    fn visit(
+        name: &str,
+        processes: &BTreeMap<String, ProcessDefinition>,
+        visiting: &mut BTreeMap<String, bool>,
+        visited: &mut BTreeMap<String, bool>,
+    ) -> Result<(), SchemaError> {
+        if visited.get(name).copied().unwrap_or(false) {
+            return Ok(());
+        }
+        if visiting.get(name).copied().unwrap_or(false) {
+            return Err(SchemaError::InvalidProcess {
+                process: name.to_owned(),
+                message: "dependency cycle detected".to_owned(),
+            });
+        }
+        visiting.insert(name.to_owned(), true);
+        if let Some(definition) = processes.get(name) {
+            for dependency in &definition.depends_on {
+                let base = dependency_base_name(dependency);
+                visit(base, processes, visiting, visited)?;
+            }
+        }
+        visiting.insert(name.to_owned(), false);
+        visited.insert(name.to_owned(), true);
+        Ok(())
+    }
+
+    for name in processes.keys() {
+        visit(name, processes, &mut visiting, &mut visited)?;
+    }
+    Ok(())
 }
 
 fn process_name_error_message(error: &ProcessNameError) -> String {
@@ -1702,6 +1800,129 @@ mod tests {
         });
         let err = parse_task_document(&value).expect_err("invalid process name");
         assert!(matches!(err, SchemaError::InvalidProcessName { .. }));
+    }
+
+    #[test]
+    fn v2_rejects_process_restart_on_failure() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {},
+            "processes": {
+                "worker": { "app": "worker", "restart": "on-failure" }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("on-failure restart rejected");
+        assert!(matches!(err, SchemaError::InvalidProcess { .. }));
+    }
+
+    #[test]
+    fn v2_rejects_process_restart_always() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {},
+            "processes": {
+                "worker": { "app": "worker", "restart": "always" }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("always restart rejected");
+        assert!(matches!(err, SchemaError::InvalidProcess { .. }));
+    }
+
+    #[test]
+    fn v2_accepts_process_restart_never() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {},
+            "processes": {
+                "worker": { "app": "worker", "restart": "never" }
+            }
+        });
+        parse_task_document(&value).expect("restart = never is accepted");
+    }
+
+    #[test]
+    fn v2_rejects_process_readiness_https_url() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {},
+            "processes": {
+                "api": {
+                    "app": "api",
+                    "readiness": { "http": { "url": "https://127.0.0.1:8080/health" } }
+                }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("https readiness url rejected");
+        assert!(matches!(err, SchemaError::InvalidProcess { .. }));
+    }
+
+    #[test]
+    fn v2_rejects_process_unknown_dependency() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {},
+            "processes": {
+                "api": { "app": "api", "dependsOn": ["missing@ready"] }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("unknown dependency rejected");
+        assert!(matches!(err, SchemaError::InvalidProcess { .. }));
+    }
+
+    #[test]
+    fn v2_rejects_process_dependency_cycle() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {},
+            "processes": {
+                "a": { "app": "a", "dependsOn": ["b"] },
+                "b": { "app": "b", "dependsOn": ["a"] }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("dependency cycle rejected");
+        assert!(matches!(err, SchemaError::InvalidProcess { .. }));
+    }
+
+    #[test]
+    fn v2_rejects_process_unknown_context() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {},
+            "processes": {
+                "api": { "app": "api", "context": "missing" }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("unknown context rejected");
+        assert!(matches!(err, SchemaError::UnknownContext { .. }));
+    }
+
+    #[test]
+    fn v2_accepts_process_new_fields() {
+        let value = json!({
+            "schema_version": 2,
+            "contexts": {
+                "dev": {}
+            },
+            "tasks": {},
+            "processes": {
+                "api": {
+                    "app": "api",
+                    "context": "dev",
+                    "workingDirectory": "flake-root",
+                    "arguments": ["--port", "8080"],
+                    "shell": "default"
+                }
+            }
+        });
+        let doc = parse_task_document(&value).expect("new process fields accepted");
+        let process = doc.processes.get("api").expect("process present");
+        assert_eq!(process.context.as_deref(), Some("dev"));
+        assert_eq!(process.working_directory.as_deref(), Some("flake-root"));
+        assert_eq!(
+            process.arguments,
+            vec!["--port".to_owned(), "8080".to_owned()]
+        );
+        assert_eq!(process.shell.as_deref(), Some("default"));
     }
 
     #[test]

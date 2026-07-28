@@ -3,13 +3,15 @@
 use std::path::Path;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use nxr_completion::{discovery_inputs_fingerprint, nix_tree_fingerprint};
+use nxr_completion::{
+    discovery_inputs_fingerprint, hint_discovery_inputs_for_root, nix_tree_fingerprint,
+};
 use nxr_core::cas::flake_lock_digest;
 use nxr_core::{
     PLAN_SECRET_RUNTIME_PLACEHOLDER, Plan, PlanCacheSharedFingerprints, PlanSecretRef,
-    StoreExeCacheKeyMaterial, digest_nix_flags, lookup_store_exe, record_store_exe_hit,
-    record_store_exe_miss, store_exe_cache_enabled, store_exe_cache_key_digest,
-    store_exe_path_usable, store_store_exe,
+    StoreExeCacheKeyMaterial, digest_nix_flags, git_source_identity, lookup_store_exe,
+    record_store_exe_hit, record_store_exe_miss, store_exe_cache_enabled,
+    store_exe_cache_key_digest, store_exe_path_usable, store_store_exe,
 };
 use nxr_nix::{
     OptionalNixFlags, batched_store_queries_enabled_for_nix, detect_system,
@@ -218,16 +220,28 @@ fn shared_fingerprints(
     nix_version: &str,
 ) -> Option<PlanCacheSharedFingerprints> {
     let nix_tree = nix_tree_fingerprint(local_root).ok()?;
-    let discovery_inputs = discovery_inputs_fingerprint(local_root, &[]).ok()?;
+    let discovery_inputs = hint_discovery_inputs_for_root(local_root);
+    let discovery_fp = discovery_inputs_fingerprint(local_root, &discovery_inputs).ok()?;
+    let git = git_source_identity(local_root).ok().flatten();
+    // Refuse reuse when we lack both git identity and declared discovery inputs,
+    // or when the tree is dirty with no discoveryInputs (gitignore / untracked
+    // package sources would otherwise stay invisible).
+    let source_identity = match &git {
+        Some(identity) if identity.dirty && discovery_inputs.is_empty() => return None,
+        Some(identity) => Some(identity.digest.clone()),
+        None if discovery_inputs.is_empty() => return None,
+        None => None,
+    };
     let flake_lock = flake_lock_digest(local_root).ok().flatten();
     let nix_file_identity = nix_executable_identity(nix_path);
     Some(PlanCacheSharedFingerprints {
         nix_tree_fingerprint: nix_tree,
-        discovery_inputs_fingerprint: discovery_inputs,
+        discovery_inputs_fingerprint: discovery_fp,
         flake_lock_digest: flake_lock,
         nix_path: nix_path.to_owned(),
         nix_version: nix_version.to_owned(),
         nix_file_identity,
+        source_identity,
     })
 }
 

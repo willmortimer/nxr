@@ -21,7 +21,7 @@ use crate::{add_bytes_hashed, record_fs_metadata};
 pub const STORE_EXE_CACHE_ENV: &str = "NXR_STORE_EXE_CACHE";
 
 /// On-disk schema version for store-exe cache entries.
-pub const STORE_EXE_CACHE_SCHEMA_VERSION: u32 = 1;
+pub const STORE_EXE_CACHE_SCHEMA_VERSION: u32 = 2;
 
 /// Default TTL backstop (24 hours). `NXR_STORE_EXE_CACHE_TTL_SECS=0` disables TTL.
 pub const DEFAULT_STORE_EXE_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
@@ -102,7 +102,7 @@ pub fn store_exe_cache_dir() -> Option<PathBuf> {
 #[must_use]
 pub fn store_exe_cache_key_digest(material: &StoreExeCacheKeyMaterial) -> String {
     let mut hasher = Hasher::new();
-    hash_str(&mut hasher, "store-exe-v1");
+    hash_str(&mut hasher, "store-exe-v2");
     hash_str(&mut hasher, &material.flake_ref);
     hash_str(&mut hasher, &material.local_root);
     hash_str(&mut hasher, &material.system);
@@ -124,6 +124,7 @@ pub fn store_exe_cache_key_digest(material: &StoreExeCacheKeyMaterial) -> String
         &mut hasher,
         material.fingerprints.nix_file_identity.as_deref(),
     );
+    hash_opt_str(&mut hasher, material.fingerprints.source_identity.as_deref());
     let digest = hasher.finalize();
     add_bytes_hashed(digest.as_bytes().len() as u64);
     digest.to_hex().to_string()
@@ -423,6 +424,7 @@ mod tests {
             nix_path: "/nix/bin/nix".to_owned(),
             nix_version: "2.34.0".to_owned(),
             nix_file_identity: Some("1:2:3".to_owned()),
+            source_identity: Some("src".to_owned()),
         }
     }
 

@@ -810,7 +810,7 @@ nxr.processes = {
   database = {
     app = "postgres-dev";
     readiness.tcp.port = 5432;
-    restart = "on-failure";
+    restart = "never"; # only "never" is implemented today
   };
   api = {
     app = "api-dev";

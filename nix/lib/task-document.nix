@@ -145,6 +145,18 @@ let
     }
     // lib.optionalAttrs (process.restart != null) {
       restart = process.restart;
+    }
+    // lib.optionalAttrs (process.context != null) {
+      context = process.context;
+    }
+    // lib.optionalAttrs (process.workingDirectory != null) {
+      workingDirectory = process.workingDirectory;
+    }
+    // lib.optionalAttrs (process.arguments != [ ]) {
+      arguments = process.arguments;
+    }
+    // lib.optionalAttrs (process.shell != null) {
+      shell = process.shell;
     };
 
   contextEnvironmentToJson =

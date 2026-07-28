@@ -3141,6 +3141,87 @@ fn warm_store_exe_skips_nix_run() {
 }
 
 #[test]
+fn store_exe_invalidates_on_package_source_edit() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let home = tempfile::TempDir::new().expect("cache home");
+    let cache = home.path().join("cache");
+    let flake = isolated_package_app_flake();
+    let flake_path = flake.path().join("package-app");
+
+    // Clean git identity so store-exe may key on HEAD + discoveryInputs.
+    let git_init = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&flake_path)
+        .status()
+        .expect("git init");
+    assert!(git_init.success());
+    let _ = std::process::Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(&flake_path)
+        .status();
+    let _ = std::process::Command::new("git")
+        .args(["config", "user.name", "test"])
+        .current_dir(&flake_path)
+        .status();
+    let add = std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(&flake_path)
+        .status()
+        .expect("git add");
+    assert!(add.success());
+    let commit = std::process::Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(&flake_path)
+        .status()
+        .expect("git commit");
+    assert!(commit.success());
+
+    let flake_arg = flake_path.to_str().expect("utf8");
+
+    // Seed discovery cache so discoveryInputs=["src"] participate in fingerprints.
+    cargo_bin_cmd!("nxr")
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", &cache)
+        .args(["--flake", flake_arg, "list"])
+        .assert()
+        .success();
+
+    cargo_bin_cmd!("nxr")
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", &cache)
+        .args(["--flake", flake_arg, "greet"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("greeting from package-app"));
+
+    cargo_bin_cmd!("nxr")
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", &cache)
+        .args(["--flake", flake_arg, "greet"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("greeting from package-app"));
+
+    std::fs::write(
+        flake_path.join("src/message.txt"),
+        "greeting after source edit\n",
+    )
+    .expect("edit source");
+
+    cargo_bin_cmd!("nxr")
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", &cache)
+        .args(["--flake", flake_arg, "greet"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("greeting after source edit"))
+        .stdout(predicate::str::contains("greeting from package-app").not());
+}
+
+#[test]
 fn task_ci_uses_o1_discovery_not_per_node_flake_show() {
     let Some(()) = require_nix() else {
         return;
@@ -3682,6 +3763,14 @@ fn isolated_basic_apps_flake() -> tempfile::TempDir {
     let src = repo_root().join("fixtures/basic-apps");
     let dst = temp.path().join("basic-apps");
     copy_dir_recursive(&src, &dst).expect("copy basic-apps fixture");
+    temp
+}
+
+fn isolated_package_app_flake() -> tempfile::TempDir {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let src = repo_root().join("fixtures/package-app");
+    let dst = temp.path().join("package-app");
+    copy_dir_recursive(&src, &dst).expect("copy package-app fixture");
     temp
 }
 
@@ -5655,7 +5744,131 @@ fn process_status_lists_declared_processes() {
         stdout.contains("worker"),
         "expected worker process in status output:\n{stdout}"
     );
+    assert!(
+        stdout.contains("base"),
+        "expected base process in status output:\n{stdout}"
+    );
     assert!(stdout.contains("stopped"));
+}
+
+#[test]
+fn process_up_worker_starts_dependency_closure() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let home = tempfile::TempDir::new().expect("home");
+    let repo_root = repo_root();
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .args(["--flake", "fixtures/processes", "up", "worker"])
+        .assert()
+        .success();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap_or_default();
+    assert!(
+        stderr.contains("starting process base") || stderr.contains("base"),
+        "expected base to start before worker; stderr={stderr}"
+    );
+
+    let status = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .args(["--flake", "fixtures/processes", "status"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(status.get_output().stdout.clone()).expect("utf-8");
+    assert!(
+        stdout.contains("base") && stdout.contains("running"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("worker") && stdout.contains("running"),
+        "{stdout}"
+    );
+
+    let _ = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .args(["--flake", "fixtures/processes", "down"])
+        .assert();
+}
+
+#[test]
+fn daemon_warm_list_across_invocations() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    use std::process::{Command, Stdio};
+
+    use assert_cmd::cargo::CommandCargoExt;
+
+    let home = tempfile::TempDir::new().expect("home");
+    let runtime = home.path().join("run");
+    std::fs::create_dir_all(&runtime).expect("runtime");
+    let socket = runtime.join("nxr").join("nxrd.sock");
+    std::fs::create_dir_all(socket.parent().expect("parent")).expect("sock dir");
+
+    let mut daemon = Command::cargo_bin("nxr")
+        .expect("nxr bin")
+        .env("HOME", home.path())
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .args([
+            "daemon",
+            "start",
+            "--foreground",
+            "--socket",
+            socket.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn daemon");
+
+    // Wait for socket.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !socket.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if !socket.exists() {
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+        return;
+    }
+
+    let counter = NixCallCounter::install();
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("NXR_DAEMON_SOCKET", &socket)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "list"])
+        .assert()
+        .success();
+    std::fs::write(&counter.log, "").expect("reset");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("NXR_DAEMON_SOCKET", &socket)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "list"])
+        .assert()
+        .success();
+
+    let warm_log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(
+        counter.count("flake-show"),
+        0,
+        "warm list with nxrd should avoid flake show; log={warm_log}"
+    );
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
 }
 
 #[test]

@@ -141,19 +141,20 @@ in
       };
     };
 
-    # Stub surfaces for 3.0 — references/paths only; never secret values.
+    # Stub surfaces — references/paths only; never secret values.
+    # Not yet wired into trust/config generation (still unused).
     trustedProjects = mkOption {
       type = types.attrsOf (
         types.submodule {
           options.allowedSecrets = mkOption {
             type = types.listOf types.str;
             default = [ ];
-            description = "Logical secret references allowed for this project (3.0).";
+            description = "Logical secret references allowed for this project (stub; unused).";
           };
         }
       );
       default = { };
-      description = "Project trust allow-lists (references only; unused until schema v2).";
+      description = "Project trust allow-lists (references only; stub — unused).";
     };
 
     secretBindings = mkOption {
@@ -172,22 +173,91 @@ in
         }
       );
       default = { };
-      description = "Logical secret ref → provider path bindings (3.0; never store values).";
+      description = "Logical secret ref → provider path bindings (stub — unused; never store values).";
     };
   };
 
-  config = mkIf cfg.enable {
-    home.packages = [ cfg.package ];
+  options.services.nxrd = {
+    enable = mkEnableOption "optional local nxr cache/coordination daemon (nxrd)";
 
-    xdg.configFile."nxr/config.toml".text = settingsToml;
+    package = mkOption {
+      type = types.package;
+      description = "Package providing `nxr` (`nxr daemon start --foreground`).";
+    };
 
-    programs.bash.initExtra = mkIf cfg.shellIntegration.bash (completionHook "bash");
-    programs.zsh.initExtra = mkIf cfg.shellIntegration.zsh (completionHook "zsh");
-    programs.fish.interactiveShellInit = mkIf cfg.shellIntegration.fish (completionHook "fish");
+    evalWorker = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Set NXR_EVAL_WORKER=1 (experimental; Determinate-eligible hosts only).";
+    };
 
-    programs.direnv = mkIf cfg.direnvIntegration.enable {
-      enable = true;
-      nix-direnv.enable = cfg.direnvIntegration.nixDirenv;
+    logBroker = mkOption {
+      type = types.bool;
+      default = true;
+      description = "Leave process log broker enabled (set NXR_LOG_BROKER=off when false).";
     };
   };
+
+  config = lib.mkMerge [
+    (mkIf cfg.enable {
+      home.packages = [ cfg.package ];
+
+      # When the CLI is enabled, default the daemon package to the same binary.
+      services.nxrd.package = lib.mkDefault cfg.package;
+
+      xdg.configFile."nxr/config.toml".text = settingsToml;
+
+      programs.bash.initExtra = mkIf cfg.shellIntegration.bash (completionHook "bash");
+      programs.zsh.initExtra = mkIf cfg.shellIntegration.zsh (completionHook "zsh");
+      programs.fish.interactiveShellInit = mkIf cfg.shellIntegration.fish (completionHook "fish");
+
+      programs.direnv = mkIf cfg.direnvIntegration.enable {
+        enable = true;
+        nix-direnv.enable = cfg.direnvIntegration.nixDirenv;
+      };
+    })
+
+    (mkIf config.services.nxrd.enable (
+      let
+        nxrdPkg = config.services.nxrd.package;
+        nxrdEnv =
+          lib.optionalAttrs config.services.nxrd.evalWorker {
+            NXR_EVAL_WORKER = "1";
+          }
+          // lib.optionalAttrs (!config.services.nxrd.logBroker) {
+            NXR_LOG_BROKER = "off";
+          };
+      in
+      {
+        systemd.user.services.nxrd = lib.mkIf pkgs.stdenv.isLinux {
+          Unit = {
+            Description = "nxr local cache/coordination daemon (nxrd)";
+            Documentation = "https://github.com/willmortimer/nxr";
+          };
+          Service = {
+            ExecStart = "${nxrdPkg}/bin/nxr daemon start --foreground";
+            Restart = "on-failure";
+            Environment = lib.mapAttrsToList (k: v: "${k}=${v}") nxrdEnv;
+          };
+          Install.WantedBy = [ "default.target" ];
+        };
+
+        launchd.agents.nxrd = lib.mkIf pkgs.stdenv.isDarwin {
+          enable = true;
+          config = {
+            Label = "dev.nxr.nxrd";
+            ProgramArguments = [
+              "${nxrdPkg}/bin/nxr"
+              "daemon"
+              "start"
+              "--foreground"
+            ];
+            RunAtLoad = true;
+            KeepAlive = true;
+            EnvironmentVariables = nxrdEnv;
+          };
+        };
+      }
+    ))
+  ];
 }

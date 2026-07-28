@@ -1,6 +1,6 @@
 //! `nxr up` / `status` / `logs` / `down` for long-running process nodes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -12,12 +12,16 @@ use nxr_core::diagnostics::exit;
 use nxr_core::{DaemonClientError, daemon_socket_path, log_broker_enabled, try_connect};
 use nxr_nix::{OptionalNixFlags, resolve_app_by_name};
 use nxr_task::{
-    ProcessDefinition, ProcessNameError, ProcessReadiness, sanitize_process_log_name,
+    ProcessDefinition, ProcessNameError, ProcessReadiness, SchemaError, apply_task_context,
+    dependency_base_name, resolve_env_provider_secrets_with, sanitize_process_log_name,
     validate_node_id,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::commands::common::{AppRequest, PrepareError, WorkspaceSnapshot, prepare_fast_app_plan};
+use crate::commands::common::{
+    AppRequest, PrepareError, WorkspaceSnapshot, prepare_fast_app_plan,
+    resolve_task_execution_directory,
+};
 use crate::flake::FlakeResolveError;
 use crate::runner_output::RunnerOutput;
 use crate::shell_mode::ShellMode;
@@ -50,6 +54,10 @@ pub enum ProcessError {
     InvalidName { name: String, message: String },
     #[error("process `{name}` pid {pid} no longer matches supervised identity")]
     IdentityMismatch { name: String, pid: u32 },
+    #[error(transparent)]
+    Schema(#[from] SchemaError),
+    #[error(transparent)]
+    Context(#[from] nxr_task::ContextError),
 }
 
 impl ProcessError {
@@ -64,6 +72,7 @@ impl ProcessError {
             Self::InvalidName { .. } => exit::USAGE,
             Self::IdentityMismatch { .. } => exit::PROCESS_SUPERVISION,
             Self::Supervision { .. } => exit::PROCESS_SUPERVISION,
+            Self::Schema(_) | Self::Context(_) => exit::USAGE,
             Self::Io(_) | Self::Json(_) => exit::EVALUATION,
         }
     }
@@ -96,6 +105,7 @@ pub fn up(
     runner: RunnerOutput,
 ) -> Result<i32, ProcessError> {
     let context = discover_process_context(flake_arg, nix_override, nix_flags)?;
+    context.document.validate()?;
     let targets = resolve_targets(&context.document.processes, names)?;
     let mut state = load_state(&context.project_id)?;
 
@@ -124,9 +134,9 @@ pub fn up(
             .map_err(ProcessError::Io)?;
         let record = spawn_process(&context, &name, definition)?;
         state.processes.insert(name.clone(), record);
+        save_state(&context.project_id, &state)?;
     }
 
-    save_state(&context.project_id, &state)?;
     Ok(exit::SUCCESS)
 }
 
@@ -407,19 +417,84 @@ fn resolve_targets(
     processes: &BTreeMap<String, ProcessDefinition>,
     names: &[String],
 ) -> Result<Vec<String>, ProcessError> {
-    if names.is_empty() {
-        return Ok(processes.keys().cloned().collect());
-    }
-    for name in names {
-        validate_node_id(name).map_err(|error| ProcessError::InvalidName {
-            name: name.clone(),
-            message: process_name_error_message(&error),
-        })?;
-        if !processes.contains_key(name) {
-            return Err(ProcessError::NotFound { name: name.clone() });
+    let seeds: Vec<String> = if names.is_empty() {
+        processes.keys().cloned().collect()
+    } else {
+        for name in names {
+            validate_node_id(name).map_err(|error| ProcessError::InvalidName {
+                name: name.clone(),
+                message: process_name_error_message(&error),
+            })?;
+            if !processes.contains_key(name) {
+                return Err(ProcessError::NotFound { name: name.clone() });
+            }
+        }
+        names.to_vec()
+    };
+
+    let mut needed = BTreeSet::new();
+    let mut stack = seeds;
+    while let Some(name) = stack.pop() {
+        if !needed.insert(name.clone()) {
+            continue;
+        }
+        let definition = processes
+            .get(&name)
+            .ok_or_else(|| ProcessError::NotFound { name: name.clone() })?;
+        for dependency in &definition.depends_on {
+            let base = dependency_base_name(dependency).to_owned();
+            if !processes.contains_key(&base) {
+                return Err(ProcessError::Supervision {
+                    name: name.clone(),
+                    message: format!("unknown dependency `{dependency}`"),
+                });
+            }
+            stack.push(base);
         }
     }
-    Ok(names.to_vec())
+
+    // Kahn topo among the closed set.
+    let mut indegree: BTreeMap<String, usize> = needed.iter().map(|n| (n.clone(), 0)).collect();
+    let mut adjacency: BTreeMap<String, Vec<String>> =
+        needed.iter().map(|n| (n.clone(), Vec::new())).collect();
+    for name in &needed {
+        let definition = processes.get(name).expect("needed process");
+        for dependency in &definition.depends_on {
+            let base = dependency_base_name(dependency).to_owned();
+            if !needed.contains(&base) {
+                continue;
+            }
+            adjacency.get_mut(&base).expect("adj").push(name.clone());
+            *indegree.get_mut(name).expect("indegree") += 1;
+        }
+    }
+
+    let mut ready: BTreeSet<String> = indegree
+        .iter()
+        .filter(|&(_, degree)| *degree == 0)
+        .map(|(name, _)| name.clone())
+        .collect();
+    let mut ordered = Vec::with_capacity(needed.len());
+    while let Some(name) = ready.iter().next().cloned() {
+        ready.remove(&name);
+        ordered.push(name.clone());
+        let next = adjacency.remove(&name).unwrap_or_default();
+        for child in next {
+            let degree = indegree.get_mut(&child).expect("indegree");
+            *degree = degree.saturating_sub(1);
+            if *degree == 0 {
+                ready.insert(child);
+            }
+        }
+    }
+
+    if ordered.len() != needed.len() {
+        return Err(ProcessError::Supervision {
+            name: "processes".to_owned(),
+            message: "dependency cycle detected".to_owned(),
+        });
+    }
+    Ok(ordered)
 }
 
 fn dependencies_ready(
@@ -427,10 +502,10 @@ fn dependencies_ready(
     running: &BTreeMap<String, RunningProcessRecord>,
 ) -> bool {
     definition.depends_on.iter().all(|dependency| {
-        let base = dependency.split('@').next().unwrap_or(dependency);
+        let base = dependency_base_name(dependency);
         running
             .get(base)
-            .is_some_and(|record| record.ready || !dependency.contains("@ready"))
+            .is_some_and(|record| record.ready || !dependency.contains('@'))
     })
 }
 
@@ -445,9 +520,53 @@ fn spawn_process(
             message: error.to_string(),
         }
     })?;
-    let environment_policy = EnvironmentPolicy::Inherit;
-    let app_request = process_app_request(context, definition.app.as_str(), environment_policy);
-    let prepared = prepare_fast_app_plan(&app_request)?;
+
+    let cli_policy = EnvironmentPolicy::Inherit;
+    let (environment_policy, spawn_overrides, shell_name) =
+        if let Some(context_name) = definition.context.as_deref() {
+            let applied = apply_task_context(
+                &context.document,
+                &format!("process:{name}"),
+                context_name,
+                &cli_policy,
+            )?;
+            if applied.confirm {
+                return Err(ProcessError::Supervision {
+                    name: name.to_owned(),
+                    message: "process contexts with confirm=true are not supported for `nxr up`"
+                        .to_owned(),
+                });
+            }
+            let mut overrides = applied.spawn_env_set;
+            let secrets = resolve_env_provider_secrets_with(&applied.plan_secrets, |reference| {
+                std::env::var(reference).ok()
+            })?;
+            overrides.extend(secrets);
+            let shell = definition.shell.clone().or(applied.shell);
+            (applied.environment_policy, overrides, shell)
+        } else {
+            (cli_policy, BTreeMap::new(), definition.shell.clone())
+        };
+
+    let app_request = process_app_request(
+        context,
+        definition.app.as_str(),
+        &definition.arguments,
+        shell_name.as_deref(),
+        environment_policy.clone(),
+    );
+    let mut prepared = prepare_fast_app_plan(&app_request)?;
+    if definition.working_directory.is_some() {
+        let invocation_cwd = crate::commands::common::current_invocation_directory()?;
+        prepared.execution_directory = resolve_task_execution_directory(
+            &invocation_cwd,
+            &context.flake,
+            false,
+            None,
+            definition.working_directory.as_deref(),
+        )?;
+    }
+
     let spawn = crate::commands::store_exe::resolve_app_spawn(
         &prepared.plan,
         &prepared.nix,
@@ -472,7 +591,8 @@ fn spawn_process(
         spawn.program.as_std_path(),
         &spawn.arguments,
         prepared.execution_directory.as_std_path(),
-        &prepared.plan.environment_policy,
+        &environment_policy,
+        &spawn_overrides,
         log_file,
     )
     .map_err(|error| ProcessError::Supervision {
@@ -480,8 +600,17 @@ fn spawn_process(
         message: error.to_string(),
     })?;
 
-    let ready = wait_for_readiness(definition.readiness.as_ref());
     let start_time = capture_pid_start_time(pid);
+    let ready = match wait_for_readiness(definition.readiness.as_ref(), pid) {
+        Ok(ready) => ready,
+        Err(message) => {
+            let _ = terminate_pid(pid);
+            return Err(ProcessError::Supervision {
+                name: name.to_owned(),
+                message,
+            });
+        }
+    };
     Ok(RunningProcessRecord {
         pid,
         start_time,
@@ -495,16 +624,18 @@ fn spawn_process(
 fn process_app_request<'a>(
     context: &'a ProcessContext<'a>,
     app: &'a str,
+    args: &'a [String],
+    shell: Option<&'a str>,
     environment_policy: EnvironmentPolicy,
 ) -> AppRequest<'a> {
     AppRequest {
         flake_arg: Some(context.flake.nix_ref.as_str()),
         nix_override: context.nix_override,
         app,
-        args: &[],
+        args,
         root: false,
         cwd: None,
-        shell: None,
+        shell,
         shell_mode: ShellMode::Smart,
         environment_policy,
         nix_flags: context.nix_flags,
@@ -516,6 +647,7 @@ fn spawn_background(
     args: &[String],
     cwd: &Path,
     environment: &EnvironmentPolicy,
+    overrides: &BTreeMap<String, String>,
     log_file: File,
 ) -> io::Result<u32> {
     #[cfg(unix)]
@@ -530,14 +662,14 @@ fn spawn_background(
             .stdout(Stdio::from(log_file.try_clone()?))
             .stderr(Stdio::from(log_file))
             .process_group(0);
-        environment.apply_with_overrides(&mut command, &BTreeMap::new());
+        environment.apply_with_overrides(&mut command, overrides);
         let child = command.spawn()?;
         Ok(child.id())
     }
 
     #[cfg(not(unix))]
     {
-        let _ = (program, args, cwd, environment, log_file);
+        let _ = (program, args, cwd, environment, overrides, log_file);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "background process spawn is not supported on this platform",
@@ -545,27 +677,30 @@ fn spawn_background(
     }
 }
 
-fn wait_for_readiness(readiness: Option<&ProcessReadiness>) -> bool {
+fn wait_for_readiness(readiness: Option<&ProcessReadiness>, pid: u32) -> Result<bool, String> {
     let Some(readiness) = readiness else {
-        return true;
+        return Ok(true);
     };
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
+        if !is_pid_alive(pid) {
+            return Err("process exited before readiness succeeded".to_owned());
+        }
         if Instant::now() >= deadline {
-            return false;
+            return Err("readiness probe timed out after 30s".to_owned());
         }
         let ready = match readiness {
             ProcessReadiness { tcp: Some(tcp), .. } => probe_tcp(tcp.port),
             ProcessReadiness {
                 http: Some(http), ..
-            } => probe_http(&http.url),
+            } => probe_http(&http.url)?,
             ProcessReadiness {
                 tcp: None,
                 http: None,
             } => true,
         };
         if ready {
-            return true;
+            return Ok(true);
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -577,31 +712,33 @@ fn probe_tcp(port: u16) -> bool {
     TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_ok()
 }
 
-fn probe_http(url: &str) -> bool {
+fn probe_http(url: &str) -> Result<bool, String> {
+    if url.trim().starts_with("https://") {
+        return Err(
+            "readiness.http.url must use http:// (TLS probes are not implemented)".to_owned(),
+        );
+    }
     let Ok((host, port, path)) = parse_http_url(url) else {
-        return false;
+        return Ok(false);
     };
     use std::net::TcpStream;
     let address = format!("{host}:{port}");
     let Ok(mut stream) = TcpStream::connect(&address) else {
-        return false;
+        return Ok(false);
     };
     let request = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
     if stream.write_all(request.as_bytes()).is_err() {
-        return false;
+        return Ok(false);
     }
     let mut response = String::new();
     if stream.read_to_string(&mut response).is_err() {
-        return false;
+        return Ok(false);
     }
-    response.contains("HTTP/1.1 200") || response.contains("HTTP/1.0 200")
+    Ok(response.contains("HTTP/1.1 200") || response.contains("HTTP/1.0 200"))
 }
 
 fn parse_http_url(url: &str) -> Result<(String, u16, String), ()> {
-    let without_scheme = url
-        .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"))
-        .ok_or(())?;
+    let without_scheme = url.strip_prefix("http://").ok_or(())?;
     let (host_port, path) = match without_scheme.split_once('/') {
         Some((host_port, rest)) => (host_port, format!("/{rest}")),
         None => (without_scheme, "/".to_owned()),
@@ -880,12 +1017,15 @@ mod tests {
     use nxr_nix::OptionalNixFlags;
 
     use super::{
-        ProcessContext, RunningProcessRecord, process_app_request, process_log_path,
-        resolve_targets, terminate_supervised_process,
+        ProcessContext, RunningProcessRecord, probe_http, process_app_request, process_log_path,
+        resolve_targets, terminate_supervised_process, wait_for_readiness,
     };
     use crate::flake::FlakeSelection;
     use crate::shell_mode::ShellMode;
-    use nxr_task::{ProcessDefinition, ProcessNameError, TaskDocument, validate_node_id};
+    use nxr_task::{
+        ProcessDefinition, ProcessNameError, ProcessReadiness, ReadinessTcp, TaskDocument,
+        validate_node_id,
+    };
 
     fn sample_context<'a>(nix_ref: &'a str, nix_flags: &'a OptionalNixFlags) -> ProcessContext<'a> {
         ProcessContext {
@@ -906,7 +1046,8 @@ mod tests {
     fn process_app_request_propagates_selected_flake() {
         let nix_flags = OptionalNixFlags::default();
         let context = sample_context("path:/tmp/other-flake", &nix_flags);
-        let request = process_app_request(&context, "api-dev", EnvironmentPolicy::Inherit);
+        let request =
+            process_app_request(&context, "api-dev", &[], None, EnvironmentPolicy::Inherit);
         assert_eq!(request.flake_arg, Some("path:/tmp/other-flake"));
         assert_eq!(request.nix_override, Some("/custom/nix"));
         assert_eq!(request.nix_flags, &nix_flags);
@@ -923,6 +1064,10 @@ mod tests {
                 depends_on: Vec::new(),
                 readiness: None,
                 restart: None,
+                context: None,
+                working_directory: None,
+                arguments: Vec::new(),
+                shell: None,
             },
         );
         let err = resolve_targets(&processes, &["../escape".to_owned()])
@@ -930,6 +1075,108 @@ mod tests {
         assert!(matches!(
             err,
             super::ProcessError::InvalidName { name, .. } if name == "../escape"
+        ));
+    }
+
+    #[test]
+    fn resolve_targets_expands_dependency_closure_in_topo_order() {
+        let mut processes = std::collections::BTreeMap::new();
+        processes.insert(
+            "agentd".to_owned(),
+            ProcessDefinition {
+                app: "agentd".to_owned(),
+                depends_on: vec!["latticed@ready".to_owned()],
+                readiness: None,
+                restart: None,
+                context: None,
+                working_directory: None,
+                arguments: Vec::new(),
+                shell: None,
+            },
+        );
+        processes.insert(
+            "latticed".to_owned(),
+            ProcessDefinition {
+                app: "latticed".to_owned(),
+                depends_on: Vec::new(),
+                readiness: None,
+                restart: None,
+                context: None,
+                working_directory: None,
+                arguments: Vec::new(),
+                shell: None,
+            },
+        );
+        let ordered = resolve_targets(&processes, &["agentd".to_owned()]).expect("topo");
+        assert_eq!(ordered, vec!["latticed".to_owned(), "agentd".to_owned()]);
+    }
+
+    #[test]
+    fn resolve_targets_with_empty_names_orders_all_processes() {
+        let mut processes = std::collections::BTreeMap::new();
+        processes.insert(
+            "agentd".to_owned(),
+            ProcessDefinition {
+                app: "agentd".to_owned(),
+                depends_on: vec!["latticed@ready".to_owned()],
+                readiness: None,
+                restart: None,
+                context: None,
+                working_directory: None,
+                arguments: Vec::new(),
+                shell: None,
+            },
+        );
+        processes.insert(
+            "latticed".to_owned(),
+            ProcessDefinition {
+                app: "latticed".to_owned(),
+                depends_on: Vec::new(),
+                readiness: None,
+                restart: None,
+                context: None,
+                working_directory: None,
+                arguments: Vec::new(),
+                shell: None,
+            },
+        );
+        let ordered = resolve_targets(&processes, &[]).expect("topo order for all processes");
+        assert_eq!(ordered, vec!["latticed".to_owned(), "agentd".to_owned()]);
+    }
+
+    #[test]
+    fn resolve_targets_rejects_dependency_cycle() {
+        let mut processes = std::collections::BTreeMap::new();
+        processes.insert(
+            "a".to_owned(),
+            ProcessDefinition {
+                app: "a".to_owned(),
+                depends_on: vec!["b".to_owned()],
+                readiness: None,
+                restart: None,
+                context: None,
+                working_directory: None,
+                arguments: Vec::new(),
+                shell: None,
+            },
+        );
+        processes.insert(
+            "b".to_owned(),
+            ProcessDefinition {
+                app: "b".to_owned(),
+                depends_on: vec!["a".to_owned()],
+                readiness: None,
+                restart: None,
+                context: None,
+                working_directory: None,
+                arguments: Vec::new(),
+                shell: None,
+            },
+        );
+        let err = resolve_targets(&processes, &[]).expect_err("cycle rejected");
+        assert!(matches!(
+            err,
+            super::ProcessError::Supervision { message, .. } if message.contains("cycle")
         ));
     }
 
@@ -955,6 +1202,37 @@ mod tests {
             super::ProcessError::IdentityMismatch { name, pid }
                 if name == "api" && pid == record.pid
         ));
+    }
+
+    #[test]
+    fn wait_for_readiness_fails_when_process_exits_before_ready() {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn short-lived child");
+        let pid = child.id();
+        child.wait().expect("child exits promptly");
+
+        let readiness = ProcessReadiness {
+            tcp: Some(ReadinessTcp { port: 1 }),
+            http: None,
+        };
+        let err = wait_for_readiness(Some(&readiness), pid).expect_err("dead pid never ready");
+        assert!(
+            err.contains("exited"),
+            "expected exit-before-ready message, got {err}"
+        );
+    }
+
+    #[test]
+    fn wait_for_readiness_without_probe_succeeds_immediately() {
+        let ready = wait_for_readiness(None, std::process::id()).expect("no probe means ready");
+        assert!(ready);
+    }
+
+    #[test]
+    fn probe_http_rejects_https_url() {
+        let err = probe_http("https://127.0.0.1:8080/health").expect_err("https rejected");
+        assert!(err.contains("http://"), "unexpected message: {err}");
     }
 
     #[test]

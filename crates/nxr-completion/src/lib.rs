@@ -12,7 +12,7 @@ pub use cache::{
     WorkspaceDiscovery, cached_apps, cached_workspace, cached_workspace_best_effort,
     clear_discovery_cache, discover_with_cache, discover_workspace_with_cache, discovery_cache_dir,
     discovery_cache_entry, discovery_cache_entry_with_options, discovery_cache_status,
-    explain_discovery_cache,
+    explain_discovery_cache, hint_discovery_inputs_for_root,
 };
 pub use dynamic::{
     CompleteTarget, DISCOVERY_TIMEOUT, discover_app_candidates, write_app_candidates,

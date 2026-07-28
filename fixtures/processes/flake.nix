@@ -32,12 +32,14 @@
         schema_version = 2;
         tasks = { };
         processes = {
+          base = {
+            app = "base";
+            restart = "never";
+          };
           worker = {
             app = "worker";
-            readiness = {
-              tcp = { port = 9876; };
-            };
-            restart = "on-failure";
+            dependsOn = [ "base" ];
+            restart = "never";
           };
         };
       };
@@ -49,6 +51,10 @@
           pkgs = nixpkgs.legacyPackages.${system};
         in
         {
+          base = mkApp pkgs "fixture-base" ''
+            echo "base started"
+            while true; do sleep 3600; done
+          '';
           worker = mkApp pkgs "fixture-worker" ''
             echo "worker started"
             while true; do sleep 3600; done

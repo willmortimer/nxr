@@ -12,16 +12,18 @@ use camino::{Utf8Path, Utf8PathBuf};
 use nxr_completion::cache::{
     DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_workspace_with_cache,
 };
-use nxr_completion::{discovery_inputs_fingerprint, nix_tree_fingerprint};
+use nxr_completion::{
+    discovery_inputs_fingerprint, hint_discovery_inputs_for_root, nix_tree_fingerprint,
+};
 use nxr_core::PlanPrepareGuard;
 use nxr_core::diagnostics::exit;
 use nxr_core::{
     App, EnvironmentPolicy, Plan, PlanCacheKeyMaterial, PlanCacheSharedFingerprints, PlanCommand,
     PlanKind, PlanPrepareKind, PlanSecretRef, RunDigestCache, daemon_plan_entry,
     daemon_plan_to_hit, digest_environment_policy, digest_nix_flags, flake_lock_digest,
-    lookup_prepared_plan, plan_cache_enabled, plan_cache_key_digest, record_node_prepared,
-    record_plan_cache_hit, record_plan_cache_miss, record_spawn_plan_cancelled,
-    record_spawn_plan_prepared, store_prepared_plan, try_once,
+    git_source_identity, lookup_prepared_plan, plan_cache_enabled, plan_cache_key_digest,
+    record_node_prepared, record_plan_cache_hit, record_plan_cache_miss,
+    record_spawn_plan_cancelled, record_spawn_plan_prepared, store_prepared_plan, try_once,
 };
 use nxr_nix::{
     AppNotFoundError, NixAdapter, NixCapabilities, NixError, OptionalNixFlags, OutputTable,
@@ -2492,19 +2494,25 @@ fn shared_fingerprints(
         Ok(value) => value,
         Err(_) => return Ok(None),
     };
-    let discovery_inputs = match discovery_inputs_fingerprint(local_root, &[]) {
+    let discovery_inputs = hint_discovery_inputs_for_root(local_root);
+    let discovery_inputs_fp = match discovery_inputs_fingerprint(local_root, &discovery_inputs) {
         Ok(value) => value,
         Err(_) => return Ok(None),
     };
+    let source_identity = git_source_identity(local_root)
+        .ok()
+        .flatten()
+        .map(|identity| identity.digest);
     let flake_lock = flake_lock_digest(local_root).ok().flatten();
     let nix_file_identity = nix_executable_identity(nix_path);
     Ok(Some(PlanCacheSharedFingerprints {
         nix_tree_fingerprint: nix_tree,
-        discovery_inputs_fingerprint: discovery_inputs,
+        discovery_inputs_fingerprint: discovery_inputs_fp,
         flake_lock_digest: flake_lock,
         nix_path: nix_path.to_owned(),
         nix_version: nix_version.to_owned(),
         nix_file_identity,
+        source_identity,
     }))
 }
 

@@ -1,4 +1,7 @@
 //! Opt-in report writers after task runs (JUnit, SARIF, coverage, benchmark).
+//!
+//! Coverage and benchmark writers are **scaffold stubs**: they emit valid empty
+//! documents until tasks can declare collectable report artifacts.
 
 mod benchmark;
 mod coverage;

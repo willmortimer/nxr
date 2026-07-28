@@ -21,7 +21,7 @@ use crate::{add_bytes_hashed, record_fs_metadata};
 pub const PLAN_CACHE_ENV: &str = "NXR_PLAN_CACHE";
 
 /// On-disk schema version for prepared-plan cache entries.
-pub const PLAN_CACHE_SCHEMA_VERSION: u32 = 1;
+pub const PLAN_CACHE_SCHEMA_VERSION: u32 = 2;
 
 /// Placeholder written into [`PlanSecretRef::value`] (never a real secret).
 pub const PLAN_SECRET_RUNTIME_PLACEHOLDER: &str = "<runtime>";
@@ -46,6 +46,9 @@ pub enum PlanPrepareKind {
 ///
 /// Callers compute these with existing discovery / lock / Nix identity helpers.
 /// Values are digests or paths — never secret contents.
+///
+/// `source_identity` is the git HEAD+porcelain digest for the flake root (ADR-0153
+/// source invalidation). Absent when the tree is not a git checkout.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PlanCacheSharedFingerprints {
     pub nix_tree_fingerprint: String,
@@ -57,6 +60,9 @@ pub struct PlanCacheSharedFingerprints {
     /// Compact executable identity (`size:mtime_secs:mtime_nanos[:dev:ino]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nix_file_identity: Option<String>,
+    /// Git HEAD + pathspec-scoped porcelain digest for the local flake root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_identity: Option<String>,
 }
 
 /// Inputs that identify a cached prepared plan (hashed into the file key).
@@ -133,7 +139,7 @@ pub fn plan_cache_dir() -> Option<PathBuf> {
 #[must_use]
 pub fn plan_cache_key_digest(material: &PlanCacheKeyMaterial) -> String {
     let mut hasher = Hasher::new();
-    hash_str(&mut hasher, "v1");
+    hash_str(&mut hasher, "v2");
     hash_prepare_kind(&mut hasher, material.prepare_kind);
     hash_str(&mut hasher, &material.flake_ref);
     hash_str(&mut hasher, &material.local_root);
@@ -168,6 +174,7 @@ pub fn plan_cache_key_digest(material: &PlanCacheKeyMaterial) -> String {
         &mut hasher,
         material.fingerprints.nix_file_identity.as_deref(),
     );
+    hash_opt_str(&mut hasher, material.fingerprints.source_identity.as_deref());
     let digest = hasher.finalize();
     add_bytes_hashed(digest.as_bytes().len() as u64);
     digest.to_hex().to_string()
@@ -516,6 +523,7 @@ mod tests {
             nix_path: "/nix/bin/nix".to_owned(),
             nix_version: "2.34.0".to_owned(),
             nix_file_identity: Some("1:2:3".to_owned()),
+            source_identity: Some("src".to_owned()),
         }
     }
 
