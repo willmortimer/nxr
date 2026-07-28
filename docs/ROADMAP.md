@@ -24,6 +24,7 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 | **V2.7.1** | Correctness + 2.7 polish | Cap-cache layers/v4 file digests, portable archives, flake check CI, mio drain/EOF, schema v2 auto-emit, contexts, env-provider secrets, confirm/shell — `v2.7.1`. |
 | **V3.0** | Secure execution contexts | Env policy, trust, secret bindings/delivery, `nxr context` — `v3.0.0`. |
 | **V3.1** | Workspace actions + process MVP | Local CAS, resources, `up`/`status`/`logs`/`down`, inventory, history, coalesced discovery — `v3.1.0`–`v3.1.4`. Cache safety ([#1](https://github.com/willmortimer/nxr/issues/1), [#2](https://github.com/willmortimer/nxr/issues/2)) shipped in **v3.1.4**. |
+| **V3.2** | Local orchestration performance | Plan/store-exe caches, digests/Merkle, optional `nxrd`, lazy prep, watch fast path, lean CLI, I/O batching, Determinate eval strategy, optional `nxrMetadata` — `v3.2.0` (ADR-0151–0168). |
 
 ## Active roadmap
 
@@ -86,16 +87,18 @@ Closes trust holes before heavier CAS/context use:
 2. ~~**[#2](https://github.com/willmortimer/nxr/issues/2)** — Reject
    `cache.mode` `shared-read` / `shared` until a shared transport exists.~~
 
+### 3.2 — Local orchestration performance — shipped as `v3.2.0`
+
+Additive caches and coordination with kill-switches (ADR-0151–0168): prepared
+plan + store-exe caches; run/Git digests; Merkle affected index; optional
+`nxrd`; lazy node prep + CAS‖SpawnPlan; watch snapshot/coalesce/prewarm; lean
+CLI; child I/O batching + log broker; Determinate eval strategy; batched store
+queries; optional `nxrMetadata`; experimental opt-in eval worker.
+
 ### Later
 
-- Optional local cache daemon deepening (watch Merkle session Wave 5; log broker
-  Wave 7c shipped via [ADR-0164](adr/0164-process-log-broker.md)) — MVP daemon
-  in Unreleased via [ADR-0157](adr/0157-optional-nxrd.md);
-  lazy prep + CAS‖plan shipped ([ADR-0158](adr/0158-lazy-node-prep.md),
-  [ADR-0159](adr/0159-cas-plan-pipeline.md)); optional `nxrMetadata` single-eval
-  discovery ([ADR-0166](adr/0166-nxr-metadata-endpoint.md)); experimental opt-in
-  eval worker ([ADR-0168](adr/0168-experimental-eval-worker.md)); full control
-  plane remains deferred (ADR-0301 / ADR-0302)
+- Optional local cache daemon deepening beyond the `v3.2.0` MVP (`nxrd`); full
+  control plane remains deferred (ADR-0301 / ADR-0302)
 - Remote workspace CAS transport (unblocks honest `shared` / `shared-read`);
   deterministic CI sharding; indexing daemon
 - Native Nix remote builders first; GPU/capability advertisement

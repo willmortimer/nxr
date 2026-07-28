@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-07-28
+
+Local orchestration performance: caches, digests/Merkle, optional `nxrd`, watch
+fast path, lean CLI, I/O batching, and Determinate-aware discovery — all
+additive with kill-switches; `nix run` escape hatch preserved.
+
 ### Added
 
 - Optional performance counters via `NXR_PERF_STATS=1` (JSON line on stderr at exit; [ADR-0151](docs/adr/0151-perf-counters.md)).
@@ -29,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional `nxrMetadata.<system>` single-eval discovery endpoint ([ADR-0166](docs/adr/0166-nxr-metadata-endpoint.md)). flake-parts emits a compact index; cold discovery prefers one targeted eval then falls back to coalesce/show+eval. `NXR_NXR_METADATA=off` kill-switch. Output is never required; standard flake outputs remain authoritative.
 - Batched Nix store path queries ([ADR-0167](docs/adr/0167-batched-store-queries.md)). `store_query` batches `nix path-info --json` for store-exe validation when lazy trees are not disabled; `NXR_STORE_QUERIES=fs` kill-switch. Falls back to filesystem checks on failure.
 - Experimental optional Nix eval worker via `nxrd` (perf Wave 8c; [ADR-0168](docs/adr/0168-experimental-eval-worker.md)). Opt-in `NXR_EVAL_WORKER=1` on Determinate-eligible hosts; `eval.prepare` / `eval.get` / `eval.put` retain metadata/tasks/list JSON across invocations. Default path unchanged; always falls back to subprocess `nix eval`. Not required for correctness.
+
+### Changed
+
+- Workspace and Nix package version **3.2.0**.
 
 ## [3.1.4] - 2026-07-28
 

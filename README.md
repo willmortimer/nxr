@@ -214,7 +214,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**3.1.4** — workspace CAS/actions (**experimental**), resource scheduling, process MVP (**preview**), inventory CLI, history, coalesced discovery; cache safety for secret-bearing tasks and honest `shared` / `shared-read` reject ([#1](https://github.com/willmortimer/nxr/issues/1), [#2](https://github.com/willmortimer/nxr/issues/2)).
+**3.2.0** — local orchestration performance (plan/store-exe caches, digests/Merkle, optional `nxrd`, lazy prep, watch snapshot/coalesce/prewarm, lean CLI, I/O batching, Determinate eval strategy, optional `nxrMetadata`); workspace CAS/actions remain **experimental**, process MVP **preview**.
 
 History: [CHANGELOG.md](CHANGELOG.md). Next: [docs/ROADMAP.md](docs/ROADMAP.md)
 (Later: remote CAS, workers; full process supervision).

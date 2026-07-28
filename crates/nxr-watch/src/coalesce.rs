@@ -217,10 +217,8 @@ fn editor_temp_stem(path: &str) -> Option<String> {
         rest.strip_suffix('.').unwrap_or(rest)
     } else if let Some(base) = name.strip_suffix(".tmp") {
         base
-    } else if let Some(base) = name.strip_suffix('~') {
-        base
     } else {
-        return None;
+        name.strip_suffix('~')?
     };
     if parent.is_empty() {
         Some(stem.to_owned())
