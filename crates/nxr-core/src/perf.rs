@@ -24,6 +24,8 @@ static BYTES_HASHED: AtomicU64 = AtomicU64::new(0);
 static PLAN_PREPARE_US: AtomicU64 = AtomicU64::new(0);
 static CAS_LOOKUP_US: AtomicU64 = AtomicU64::new(0);
 static SPAWN_TO_CHILD_OUTPUT_US: AtomicU64 = AtomicU64::new(0);
+static PLAN_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static PLAN_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 
 fn env_enabled() -> bool {
     match std::env::var(PERF_STATS_ENV) {
@@ -112,6 +114,22 @@ pub fn record_spawn_to_child_output_us(micros: u64) {
     }
 }
 
+/// Record one prepared-plan disk cache hit.
+#[inline]
+pub fn record_plan_cache_hit() {
+    if enabled() {
+        PLAN_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Record one prepared-plan disk cache miss (prepare path ran).
+#[inline]
+pub fn record_plan_cache_miss() {
+    if enabled() {
+        PLAN_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// RAII timer for plan preparation.
 pub struct PlanPrepareGuard {
     started: Option<Instant>,
@@ -168,10 +186,15 @@ pub struct PerfStats {
     pub plan_prepare_us: u64,
     pub cas_lookup_us: u64,
     pub spawn_to_child_output_us: u64,
+    /// Prepared-plan disk cache hits (schema v2+).
+    pub plan_cache_hits: u64,
+    /// Prepared-plan disk cache misses (schema v2+).
+    pub plan_cache_misses: u64,
 }
 
 impl PerfStats {
-    const SCHEMA_VERSION: u32 = 1;
+    /// Schema v2 adds `plan_cache_hits` / `plan_cache_misses` (ADR-0152).
+    const SCHEMA_VERSION: u32 = 2;
 
     /// Collect current counter values.
     #[must_use]
@@ -184,6 +207,8 @@ impl PerfStats {
             plan_prepare_us: PLAN_PREPARE_US.load(Ordering::Relaxed),
             cas_lookup_us: CAS_LOOKUP_US.load(Ordering::Relaxed),
             spawn_to_child_output_us: SPAWN_TO_CHILD_OUTPUT_US.load(Ordering::Relaxed),
+            plan_cache_hits: PLAN_CACHE_HITS.load(Ordering::Relaxed),
+            plan_cache_misses: PLAN_CACHE_MISSES.load(Ordering::Relaxed),
         }
     }
 }
@@ -206,13 +231,18 @@ pub fn emit_stderr() -> io::Result<()> {
 
 #[cfg(test)]
 pub(crate) fn test_reset(enabled: bool) {
-    FORCE.store(if enabled { FORCE_ON } else { FORCE_OFF }, Ordering::Relaxed);
+    FORCE.store(
+        if enabled { FORCE_ON } else { FORCE_OFF },
+        Ordering::Relaxed,
+    );
     NIX_SPAWNS.store(0, Ordering::Relaxed);
     FS_METADATA.store(0, Ordering::Relaxed);
     BYTES_HASHED.store(0, Ordering::Relaxed);
     PLAN_PREPARE_US.store(0, Ordering::Relaxed);
     CAS_LOOKUP_US.store(0, Ordering::Relaxed);
     SPAWN_TO_CHILD_OUTPUT_US.store(0, Ordering::Relaxed);
+    PLAN_CACHE_HITS.store(0, Ordering::Relaxed);
+    PLAN_CACHE_MISSES.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -228,6 +258,8 @@ mod tests {
         add_plan_prepare_us(50);
         add_cas_lookup_us(25);
         record_spawn_to_child_output_us(10);
+        record_plan_cache_hit();
+        record_plan_cache_miss();
         let stats = PerfStats::snapshot();
         assert_eq!(stats.nix_spawns, 0);
         assert_eq!(stats.bytes_hashed, 0);
@@ -235,6 +267,8 @@ mod tests {
         assert_eq!(stats.plan_prepare_us, 0);
         assert_eq!(stats.cas_lookup_us, 0);
         assert_eq!(stats.spawn_to_child_output_us, 0);
+        assert_eq!(stats.plan_cache_hits, 0);
+        assert_eq!(stats.plan_cache_misses, 0);
     }
 
     #[test]
@@ -248,6 +282,9 @@ mod tests {
         add_cas_lookup_us(200);
         record_spawn_to_child_output_us(30);
         record_spawn_to_child_output_us(99);
+        record_plan_cache_hit();
+        record_plan_cache_miss();
+        record_plan_cache_miss();
         let stats = PerfStats::snapshot();
         assert_eq!(stats.nix_spawns, 2);
         assert_eq!(stats.bytes_hashed, 1_024);
@@ -255,6 +292,9 @@ mod tests {
         assert_eq!(stats.plan_prepare_us, 100);
         assert_eq!(stats.cas_lookup_us, 200);
         assert_eq!(stats.spawn_to_child_output_us, 30);
+        assert_eq!(stats.plan_cache_hits, 1);
+        assert_eq!(stats.plan_cache_misses, 2);
+        assert_eq!(stats.schema_version, 2);
     }
 
     #[test]

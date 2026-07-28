@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Optional performance counters via `NXR_PERF_STATS=1` (JSON line on stderr at exit; [ADR-0151](docs/adr/0151-perf-counters.md)).
 - Extended perf harness [`scripts/perf/measure-matrix.sh`](scripts/perf/measure-matrix.sh) for task DAG, affected, and fingerprint scenarios.
+- Optional prepared app-plan disk cache (schema v1; `NXR_PLAN_CACHE=off` kill-switch; [ADR-0152](docs/adr/0152-prepared-plan-cache.md)). Warm `nxr plan` / prepare reuses argv when fingerprints match; secrets are never stored. `nxr cache clear`/`status` include the plans cache. `NXR_PERF_STATS` schema **v2** adds `plan_cache_hits` / `plan_cache_misses`.
 
 ## [3.1.4] - 2026-07-28
 

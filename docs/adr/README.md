@@ -105,6 +105,7 @@ Rejected   considered and explicitly not chosen
 | ADR-0149 | Context shell and confirmation must not be silently ignored | Accepted | 2.7.1 / 3.0 |
 | ADR-0150 | Generic inventory and coalesced discovery | Proposed | 3.1 |
 | ADR-0151 | Optional perf counters via `NXR_PERF_STATS` | Accepted | Unreleased |
+| ADR-0152 | Optional prepared app-plan disk cache | Accepted | Unreleased |
 
 Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0144-auto-schema-v2.md`](0144-auto-schema-v2.md),
@@ -114,7 +115,8 @@ Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0148-automation-ergonomics.md`](0148-automation-ergonomics.md),
 [`0149-context-shell-confirm.md`](0149-context-shell-confirm.md),
 [`0150-inventory-coalesce.md`](0150-inventory-coalesce.md),
-[`0151-perf-counters.md`](0151-perf-counters.md).
+[`0151-perf-counters.md`](0151-perf-counters.md),
+[`0152-prepared-plan-cache.md`](0152-prepared-plan-cache.md).
 
 Audit absorb (2026-07, post-`a040e50`): remaps active delivery to
 **2.7.1 → 2.8 → 3.0 → 3.1** (process workflows remain in 3.1 MVP; distributed

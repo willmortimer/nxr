@@ -9,6 +9,7 @@ pub mod env_policy;
 pub mod model;
 pub mod perf;
 pub mod plan;
+pub mod plan_cache;
 pub mod projects;
 pub mod repo_path;
 pub mod run_history;
@@ -39,9 +40,17 @@ pub use model::{App, AppList, FlakeOutput, FlakeRef, ListApp, OutputList};
 pub use perf::{
     CasLookupGuard, PERF_STATS_ENV, PerfStats, PlanPrepareGuard, add_bytes_hashed,
     add_cas_lookup_us, add_plan_prepare_us, emit_stderr, enabled as perf_enabled,
-    record_fs_metadata, record_nix_spawn, record_spawn_to_child_output_us,
+    record_fs_metadata, record_nix_spawn, record_plan_cache_hit, record_plan_cache_miss,
+    record_spawn_to_child_output_us,
 };
 pub use plan::{Plan, PlanCommand, PlanKind, PlanSecretRef};
+pub use plan_cache::{
+    DEFAULT_PLAN_CACHE_TTL_SECS, PLAN_CACHE_ENV, PLAN_CACHE_SCHEMA_VERSION, PLAN_CACHE_TTL_ENV,
+    PLAN_SECRET_RUNTIME_PLACEHOLDER, PlanCacheKeyMaterial, PlanCacheSharedFingerprints,
+    PlanCacheStatus, PlanPrepareKind, PreparedPlanCacheHit, clear_plan_cache,
+    digest_environment_policy, digest_nix_flags, lookup_prepared_plan, plan_cache_dir,
+    plan_cache_enabled, plan_cache_key_digest, plan_cache_status, store_prepared_plan,
+};
 pub use projects::{
     NXR_CATEGORY_KEY, PROJECTS_FILENAME, PROJECTS_SCHEMA_VERSION, ProjectDefinition,
     ProjectMemberKind, ProjectsDocument, ProjectsError, UnknownProjectMember, app_category,

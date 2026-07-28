@@ -16,7 +16,7 @@ Set `NXR_PERF_STATS=1` to accumulate counters for one CLI invocation. On exit,
 nxr prints a single JSON line on stderr:
 
 ```text
-nxr-perf-stats: {"schema_version":1,"nix_spawns":…,…}
+nxr-perf-stats: {"schema_version":2,"nix_spawns":…,…}
 ```
 
 | Counter | Meaning |
@@ -27,9 +27,22 @@ nxr-perf-stats: {"schema_version":1,"nix_spawns":…,…}
 | `plan_prepare_us` | Plan/prepare wall time (µs, accumulated) |
 | `cas_lookup_us` | Workspace CAS lookup wall time (µs) |
 | `spawn_to_child_output_us` | Spawn to first piped child stderr byte (µs) |
+| `plan_cache_hits` | Prepared-plan disk cache hits |
+| `plan_cache_misses` | Prepared-plan disk cache misses |
 
 Counters are **off by default**; no semantic change when unset. See
-[ADR-0151](adr/0151-perf-counters.md).
+[ADR-0151](adr/0151-perf-counters.md) and [ADR-0152](adr/0152-prepared-plan-cache.md).
+
+## Prepared-plan disk cache
+
+Optional cache of prepared app command plans (argv / plan envelope) keyed by flake
+identity, system, app, Nix identity + flags, shell/cwd/env **policy** digests, and
+discovery/lock fingerprints. Schema **v1**. Miss → today’s prepare path; hit →
+reuse the stored plan. Live environment and secret values are still resolved at
+spawn — never stored. Set `NXR_PLAN_CACHE=off` to disable. TTL default 24h
+(`NXR_PLAN_CACHE_TTL_SECS`; `0` disables). `nxr cache clear` / `status` cover this
+cache alongside discovery, capabilities, and workspace CAS. See
+[ADR-0152](adr/0152-prepared-plan-cache.md).
 
 ## Process supervision
 

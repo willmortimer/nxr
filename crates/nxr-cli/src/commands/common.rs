@@ -1,6 +1,7 @@
 //! Shared helpers for list / run / plan commands.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -8,9 +9,15 @@ use camino::{Utf8Path, Utf8PathBuf};
 use nxr_completion::cache::{
     DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_workspace_with_cache,
 };
+use nxr_completion::{discovery_inputs_fingerprint, nix_tree_fingerprint};
 use nxr_core::PlanPrepareGuard;
 use nxr_core::diagnostics::exit;
-use nxr_core::{App, EnvironmentPolicy, Plan, PlanCommand, PlanKind, PlanSecretRef};
+use nxr_core::{
+    App, EnvironmentPolicy, Plan, PlanCacheKeyMaterial, PlanCacheSharedFingerprints, PlanCommand,
+    PlanKind, PlanPrepareKind, PlanSecretRef, digest_environment_policy, digest_nix_flags,
+    flake_lock_digest, lookup_prepared_plan, plan_cache_enabled, plan_cache_key_digest,
+    record_plan_cache_hit, record_plan_cache_miss, store_prepared_plan,
+};
 use nxr_nix::{
     AppNotFoundError, NixAdapter, NixCapabilities, NixError, OptionalNixFlags, OutputTable,
     TESTED_NIX_SUPPORT_FLOOR, detect_capabilities, flake_show_has_nxr_for_system, locate_nix,
@@ -352,6 +359,9 @@ pub fn prepare_app_plan(request: &AppRequest<'_>) -> Result<PreparedPlan, Prepar
 
 /// Prepare an app plan using a shared per-invocation workspace holder.
 ///
+/// When the prepared-plan disk cache is enabled and fingerprints match, skips
+/// discovery and argv assembly. Live env/secret values are still resolved at spawn.
+///
 /// # Errors
 ///
 /// Same as [`prepare_app_plan`].
@@ -360,8 +370,25 @@ pub fn prepare_app_plan_in_state(
     state: &mut WorkspaceState<'_>,
 ) -> Result<PreparedPlan, PrepareError> {
     let _timer = PlanPrepareGuard::start();
+    if plan_cache_enabled()
+        && let Some(hit) = try_prepared_plan_cache(request, state, PlanPrepareKind::Discovered)?
+    {
+        record_plan_cache_hit();
+        return Ok(hit);
+    }
     let snapshot = state.snapshot(false)?;
-    snapshot.prepare_discovered_app(request)
+    let prepared = snapshot.prepare_discovered_app(request)?;
+    if plan_cache_enabled() {
+        store_prepared_plan_cache_with_version(
+            request,
+            &snapshot.flake,
+            PlanPrepareKind::Discovered,
+            &prepared,
+            &snapshot.nix.capabilities.version.to_string(),
+        );
+        record_plan_cache_miss();
+    }
+    Ok(prepared)
 }
 
 /// Build a [`Plan`] for `nix run <flake>#<app>` without adapter probes.
@@ -371,6 +398,9 @@ pub fn prepare_app_plan_in_state(
 /// a one-shot capability check. Missing apps surface as Nix failures; callers
 /// may optionally discover afterward for "did you mean?" suggestions when
 /// stderr indicates an installable-resolution failure.
+///
+/// When the prepared-plan disk cache hits, reuses the stored argv without
+/// rebuilding it. Live env values are still applied at spawn.
 ///
 /// # Errors
 ///
@@ -382,6 +412,20 @@ pub fn prepare_fast_app_plan(request: &AppRequest<'_>) -> Result<PreparedPlan, P
     let execution_directory =
         resolve_execution_directory(&invocation_cwd, &flake, request.root, request.cwd)?;
     let nix = locate_nix_path(request.nix_override)?;
+
+    if plan_cache_enabled()
+        && let Some(hit) = try_fast_prepared_plan_cache(
+            request,
+            &flake,
+            &nix,
+            &invocation_cwd,
+            &execution_directory,
+        )?
+    {
+        record_plan_cache_hit();
+        return Ok(hit);
+    }
+
     // Display-only placeholder: `nix run <flake>#<app>` does not need currentSystem.
     let app = synthetic_app(request.app, &flake.nix_ref, "local");
     let forwarded = strip_one_separator(request.args);
@@ -395,11 +439,22 @@ pub fn prepare_fast_app_plan(request: &AppRequest<'_>) -> Result<PreparedPlan, P
         &forwarded,
     )?;
 
-    Ok(PreparedPlan {
+    let prepared = PreparedPlan {
         plan,
         nix,
         execution_directory,
-    })
+    };
+    if plan_cache_enabled() {
+        store_prepared_plan_cache_with_version(
+            request,
+            &flake,
+            PlanPrepareKind::Fast,
+            &prepared,
+            "",
+        );
+        record_plan_cache_miss();
+    }
+    Ok(prepared)
 }
 
 /// Locate `nix` without system/capability probes.
@@ -1105,6 +1160,242 @@ fn secret_delivery_label(delivery: SecretDelivery) -> &'static str {
         SecretDelivery::Env => "env",
         SecretDelivery::File => "file",
         SecretDelivery::Stdin => "stdin",
+    }
+}
+
+fn try_prepared_plan_cache(
+    request: &AppRequest<'_>,
+    state: &mut WorkspaceState<'_>,
+    prepare_kind: PlanPrepareKind,
+) -> Result<Option<PreparedPlan>, PrepareError> {
+    let invocation_cwd = current_invocation_directory()?;
+    let flake = resolve_flake(request.flake_arg, &invocation_cwd)?;
+    let Some(local_root) = flake.local_root.as_ref() else {
+        return Ok(None);
+    };
+    let adapter = state.adapter().map_err(PrepareError::Nix)?;
+    let execution_directory =
+        resolve_execution_directory(&invocation_cwd, &flake, request.root, request.cwd)?;
+    let app = synthetic_app(request.app, &flake.nix_ref, &adapter.system);
+    let fingerprints = shared_fingerprints(
+        local_root,
+        adapter.nix.as_str(),
+        &adapter.capabilities.version.to_string(),
+    )?;
+    let Some(fingerprints) = fingerprints else {
+        return Ok(None);
+    };
+    let key = build_plan_cache_key(
+        request,
+        prepare_kind,
+        &flake,
+        local_root.as_str(),
+        &adapter.system,
+        &app.attr_path,
+        invocation_cwd.as_str(),
+        execution_directory.as_str(),
+        fingerprints.clone(),
+    );
+    let key_digest = plan_cache_key_digest(&key);
+    let Some(hit) = lookup_prepared_plan(&key_digest, &fingerprints) else {
+        return Ok(None);
+    };
+    if hit.prepare_kind != prepare_kind {
+        return Ok(None);
+    }
+    Ok(Some(PreparedPlan {
+        plan: hit.plan,
+        nix: Utf8PathBuf::from(hit.nix),
+        execution_directory: Utf8PathBuf::from(hit.execution_directory),
+    }))
+}
+
+fn try_fast_prepared_plan_cache(
+    request: &AppRequest<'_>,
+    flake: &FlakeSelection,
+    nix: &Utf8Path,
+    invocation_cwd: &Utf8Path,
+    execution_directory: &Utf8Path,
+) -> Result<Option<PreparedPlan>, PrepareError> {
+    let Some(local_root) = flake.local_root.as_ref() else {
+        return Ok(None);
+    };
+    let app = synthetic_app(request.app, &flake.nix_ref, "local");
+    let fingerprints = shared_fingerprints(local_root, nix.as_str(), "")?;
+    let Some(fingerprints) = fingerprints else {
+        return Ok(None);
+    };
+    let key = build_plan_cache_key(
+        request,
+        PlanPrepareKind::Fast,
+        flake,
+        local_root.as_str(),
+        "local",
+        &app.attr_path,
+        invocation_cwd.as_str(),
+        execution_directory.as_str(),
+        fingerprints.clone(),
+    );
+    let key_digest = plan_cache_key_digest(&key);
+    let Some(hit) = lookup_prepared_plan(&key_digest, &fingerprints) else {
+        return Ok(None);
+    };
+    if hit.prepare_kind != PlanPrepareKind::Fast {
+        return Ok(None);
+    }
+    Ok(Some(PreparedPlan {
+        plan: hit.plan,
+        nix: Utf8PathBuf::from(hit.nix),
+        execution_directory: Utf8PathBuf::from(hit.execution_directory),
+    }))
+}
+
+fn store_prepared_plan_cache_with_version(
+    request: &AppRequest<'_>,
+    flake: &FlakeSelection,
+    prepare_kind: PlanPrepareKind,
+    prepared: &PreparedPlan,
+    nix_version: &str,
+) {
+    let Some(local_root) = flake.local_root.as_ref() else {
+        return;
+    };
+    let Ok(Some(fingerprints)) =
+        shared_fingerprints(local_root, prepared.nix.as_str(), nix_version)
+    else {
+        return;
+    };
+    let system = match prepare_kind {
+        PlanPrepareKind::Fast => "local",
+        PlanPrepareKind::Discovered => prepared.plan.system.as_str(),
+    };
+    // Keep attr_path key material aligned with the lookup path (synthetic apps.<system>.<name>).
+    let attr_path = format!("apps.{system}.{}", request.app);
+    let key = build_plan_cache_key(
+        request,
+        prepare_kind,
+        flake,
+        local_root.as_str(),
+        system,
+        &attr_path,
+        prepared.plan.invocation_directory.as_str(),
+        prepared.execution_directory.as_str(),
+        fingerprints.clone(),
+    );
+    let key_digest = plan_cache_key_digest(&key);
+    let _ = store_prepared_plan(
+        &key_digest,
+        prepare_kind,
+        &prepared.plan,
+        prepared.nix.as_str(),
+        prepared.execution_directory.as_str(),
+        fingerprints,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_plan_cache_key(
+    request: &AppRequest<'_>,
+    prepare_kind: PlanPrepareKind,
+    flake: &FlakeSelection,
+    local_root: &str,
+    system: &str,
+    attr_path: &str,
+    invocation_directory: &str,
+    execution_directory: &str,
+    fingerprints: PlanCacheSharedFingerprints,
+) -> PlanCacheKeyMaterial {
+    PlanCacheKeyMaterial {
+        prepare_kind,
+        flake_ref: flake.nix_ref.clone(),
+        local_root: local_root.to_owned(),
+        system: system.to_owned(),
+        app_name: request.app.to_owned(),
+        attr_path: attr_path.to_owned(),
+        nix_flags_digest: digest_nix_flags(
+            request.nix_flags.offline,
+            request.nix_flags.no_write_lock_file,
+            request.nix_flags.accept_flake_config,
+            request.nix_flags.json_log_format,
+            &request.nix_flags.nix_options,
+            &request.nix_flags.extra_argv,
+        ),
+        shell_name: request.shell.map(str::to_owned),
+        shell_mode: shell_mode_label(request.shell_mode).to_owned(),
+        active_shell: active_dev_shell(),
+        root: request.root,
+        cwd: request.cwd.map(str::to_owned),
+        invocation_directory: invocation_directory.to_owned(),
+        execution_directory: execution_directory.to_owned(),
+        environment_policy_digest: digest_environment_policy(&request.environment_policy),
+        forwarded_arguments: strip_one_separator(request.args),
+        fingerprints,
+    }
+}
+
+fn shell_mode_label(mode: ShellMode) -> &'static str {
+    match mode {
+        ShellMode::Smart => "smart",
+        ShellMode::Always => "always",
+        ShellMode::Never => "never",
+    }
+}
+
+fn shared_fingerprints(
+    local_root: &Utf8Path,
+    nix_path: &str,
+    nix_version: &str,
+) -> Result<Option<PlanCacheSharedFingerprints>, PrepareError> {
+    let nix_tree = match nix_tree_fingerprint(local_root) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    let discovery_inputs = match discovery_inputs_fingerprint(local_root, &[]) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    let flake_lock = flake_lock_digest(local_root).ok().flatten();
+    let nix_file_identity = nix_executable_identity(nix_path);
+    Ok(Some(PlanCacheSharedFingerprints {
+        nix_tree_fingerprint: nix_tree,
+        discovery_inputs_fingerprint: discovery_inputs,
+        flake_lock_digest: flake_lock,
+        nix_path: nix_path.to_owned(),
+        nix_version: nix_version.to_owned(),
+        nix_file_identity,
+    }))
+}
+
+fn nix_executable_identity(nix_path: &str) -> Option<String> {
+    let path = Utf8Path::new(nix_path);
+    let canonical = path
+        .canonicalize_utf8()
+        .unwrap_or_else(|_| path.to_path_buf());
+    let metadata = fs::metadata(canonical.as_std_path()).ok()?;
+    let modified = metadata.modified().ok()?;
+    let since_epoch = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    let modified_secs = since_epoch.as_secs();
+    let modified_nanos = since_epoch.subsec_nanos();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(format!(
+            "{}:{}:{}:{}:{}",
+            metadata.len(),
+            modified_secs,
+            modified_nanos,
+            metadata.dev(),
+            metadata.ino()
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        Some(format!(
+            "{}:{}:{}",
+            metadata.len(),
+            modified_secs,
+            modified_nanos
+        ))
     }
 }
 
