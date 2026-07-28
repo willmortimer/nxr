@@ -12,6 +12,8 @@ pub mod inventory;
 pub mod inventory_list;
 pub mod resolve;
 pub mod store_exe;
+pub mod store_query;
+pub mod strategy;
 pub mod suggest;
 pub mod tasks;
 
@@ -32,9 +34,8 @@ pub use capability_cache::{
     detect_nix_environment,
 };
 pub use coalesce::{
-    CoalescedDiscovery, CoalescedDiscoveryError, CoalescedWorkspace, FORCE_COALESCED_DISCOVERY_ENV,
-    coalesced_discovery_args, coalesced_discovery_available, coalesced_discovery_expr,
-    discover_coalesced,
+    CoalescedDiscovery, CoalescedDiscoveryError, CoalescedWorkspace, coalesced_discovery_args,
+    coalesced_discovery_available, coalesced_discovery_expr, discover_coalesced,
 };
 pub use command::{
     NIX_EXECUTABLE_ENV, attr_installable, check_installable, current_system_args,
@@ -68,6 +69,11 @@ pub use resolve::{
     AppNotFoundError, OutputNotFoundError, resolve_app_by_name, resolve_output_by_name,
 };
 pub use store_exe::{RealisedAppProgram, realise_flake_app_program};
+pub use store_query::prefer_batched_store_queries;
+pub use strategy::{
+    DiscoveryEvalPlan, DiscoveryEvalStrategy, FORCE_COALESCED_DISCOVERY_ENV,
+    FORCE_COMPATIBILITY_STRATEGY_ENV, plan_discovery_eval,
+};
 pub use suggest::{DEFAULT_SUGGESTION_LIMIT, rank_app_suggestions, rank_name_suggestions};
 pub use tasks::{TaskDiscoveryError, discover_tasks, parse_task_document, tasks_attr_path};
 

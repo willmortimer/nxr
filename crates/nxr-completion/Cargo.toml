@@ -16,6 +16,7 @@ directories = { workspace = true }
 fs2 = { workspace = true }
 globset = { workspace = true }
 nxr-core = { path = "../nxr-core" }
+nxr-nix = { path = "../nxr-nix" }
 nxr-task = { path = "../nxr-task" }
 serde = { workspace = true }
 serde_json = { workspace = true }

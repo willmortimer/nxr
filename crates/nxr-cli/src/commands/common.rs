@@ -566,9 +566,10 @@ pub(crate) fn cold_discover_workspace(
     load_tasks: bool,
     nix_flags: &OptionalNixFlags,
 ) -> Result<ColdWorkspaceDiscovery, PrepareError> {
-    let use_coalesced = load_tasks && nxr_nix::coalesced_discovery_available(&nix.version_banner);
+    let eval_plan =
+        nxr_nix::plan_discovery_eval(&nix.version_banner, nix.config_json.as_deref(), load_tasks);
 
-    if use_coalesced {
+    if eval_plan.use_coalesced_discovery {
         let mut discovery_flags = nix_flags.clone();
         discovery_flags.no_write_lock_file = true;
         let args = nix.compatible_argv(

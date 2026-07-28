@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Watch incremental workspace snapshot ([ADR-0160](docs/adr/0160-watch-incremental-snapshot.md)). Source-only generations patch in-process digest / Merkle state and drop only affected prepared task nodes. `NXR_WATCH_SNAPSHOT=off` kill-switch. `NXR_PERF_STATS` schema **v8** adds watch snapshot counters. Prewarm hook reserved for 5c.
 - Watch semantic change coalesce ([ADR-0161](docs/adr/0161-watch-semantic-coalesce.md)). After debounce, drop editor temporaries, collapse formatter bursts, narrow lockfile batches, and ignore fixture-only / task-owned output paths. `NXR_WATCH_COALESCE=off` kill-switch.
 - Child output event batching + terminal write coalescing (perf Wave 7a + 7b; [ADR-0162](docs/adr/0162-child-output-batching.md)). Adjacent pipe reads coalesce before chunk events; live mode batches terminal writes. Wave 7c log broker deferred.
+- Determinate discovery/evaluation strategy planner ([ADR-0165](docs/adr/0165-determinate-eval-strategy.md)). `plan_discovery_eval` selects coalesced parallel eval, lazy-trees compatible, or compatibility paths from capability probes; `NXR_EVAL_STRATEGY=compatibility` kill-switch. `nxr cache explain` reports `discovery_eval_strategy`. Store-query (8b) and eval-worker (8c) hooks reserved.
 
 ## [3.1.4] - 2026-07-28
 

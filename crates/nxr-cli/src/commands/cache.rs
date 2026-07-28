@@ -13,8 +13,7 @@ use nxr_core::{
     clear_store_exe_cache, merkle_index_status, plan_cache_status, store_exe_cache_status,
 };
 use nxr_nix::{
-    OptionalNixFlags, capability_cache_status, clear_capability_cache,
-    coalesced_discovery_available,
+    OptionalNixFlags, capability_cache_status, clear_capability_cache, plan_discovery_eval,
 };
 use nxr_task::{PlanError, build_execution_plan_roots, resolve_task_name};
 use serde::Serialize;
@@ -345,14 +344,19 @@ pub fn explain(
     let mut state = WorkspaceState::new(flake_arg, nix_override, nix_flags);
     let context = state.discovery_context().map_err(CacheError::Prepare)?;
     let adapter = state.adapter().map_err(CacheError::Nix)?;
-    let coalesced = coalesced_discovery_available(&adapter.version_banner);
+    let eval_plan = plan_discovery_eval(
+        &adapter.version_banner,
+        adapter.config_json.as_deref(),
+        require_tasks,
+    );
     let report = explain_discovery_cache(
         &context,
         DiscoveryCacheOptions {
             refresh: false,
             require_tasks,
         },
-        coalesced,
+        eval_plan.use_coalesced_discovery,
+        eval_plan.strategy,
     )?;
 
     if json {
@@ -386,6 +390,12 @@ pub fn explain(
             .info(format!("cached_invalidation_key: {key}"))
             .map_err(CacheError::Io)?;
     }
+    runner
+        .info(format!(
+            "discovery_eval_strategy: {}",
+            serde_json::to_string(&report.discovery_eval_strategy).map_err(CacheError::Json)?
+        ))
+        .map_err(CacheError::Io)?;
     runner
         .info(format!(
             "coalesced_discovery_available: {}",

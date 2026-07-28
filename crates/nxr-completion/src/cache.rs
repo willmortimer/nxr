@@ -358,6 +358,7 @@ pub enum DiscoveryCacheMissReason {
 pub struct DiscoveryCacheExplain {
     pub entry: DiscoveryCacheEntry,
     pub coalesced_discovery_available: bool,
+    pub discovery_eval_strategy: nxr_nix::DiscoveryEvalStrategy,
 }
 
 /// Remove all discovery cache entries.
@@ -453,11 +454,13 @@ pub fn explain_discovery_cache(
     context: &DiscoveryContext,
     options: DiscoveryCacheOptions,
     coalesced_discovery_available: bool,
+    discovery_eval_strategy: nxr_nix::DiscoveryEvalStrategy,
 ) -> io::Result<DiscoveryCacheExplain> {
     let entry = discovery_cache_entry_with_options(context, options)?;
     Ok(DiscoveryCacheExplain {
         entry,
         coalesced_discovery_available,
+        discovery_eval_strategy,
     })
 }
 

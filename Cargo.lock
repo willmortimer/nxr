@@ -669,6 +669,7 @@ dependencies = [
  "fs2",
  "globset",
  "nxr-core",
+ "nxr-nix",
  "nxr-task",
  "serde",
  "serde_json",

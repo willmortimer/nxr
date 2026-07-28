@@ -92,6 +92,17 @@ generations ([ADR-0160](adr/0160-watch-incremental-snapshot.md)):
   lockfile batches, ignore fixture-only and task-owned output paths.
   `NXR_WATCH_COALESCE=off` kill-switch. Wave **5c** (prewarm) hook reserved.
 
+## Determinate discovery strategy
+
+Cold workspace discovery consults `plan_discovery_eval` ([ADR-0165](adr/0165-determinate-eval-strategy.md)):
+
+- **Coalesced parallel eval** on Determinate (single `nix eval` when safe).
+- **Lazy-trees compatible** separate evals when lazy trees are enabled or assumed.
+- **Compatibility** `flake show` + targeted evals for upstream/Lix or
+  `NXR_EVAL_STRATEGY=compatibility`.
+- `nxr cache explain` reports `discovery_eval_strategy`. Store-query batching
+  (8b) and eval-worker (8c) hooks are reserved on the plan.
+
 ## Optional local cache daemon (`nxrd`)
 
 Optional per-user daemon for warm multi-invocation sessions
