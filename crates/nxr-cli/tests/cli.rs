@@ -3508,6 +3508,8 @@ fn watch_unprefixed_app_skips_task_eval_on_first_generation() {
         .expect("nxr binary")
         .current_dir(&repo_root)
         .env("NXR_NIX", &counter.wrapper)
+        .env("NXR_NXR_METADATA", "off")
+        .env("NXR_STORE_EXE_CACHE", "off")
         .args(["--flake", "fixtures/basic-apps", "watch", "hello"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -3545,10 +3547,14 @@ fn watch_unprefixed_app_skips_task_eval_on_first_generation() {
     let _ = child.wait();
 
     let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert!(
+        (1..=2).contains(&counter.count("eval")),
+        "currentSystem plus at most one discovery/coalesce eval; task metadata must stay skipped; log={log}"
+    );
     assert_eq!(
-        counter.count("eval"),
-        1,
-        "only currentSystem eval; task metadata eval is skipped; log={log}"
+        counter.count("flake-show"),
+        0,
+        "unprefixed app watch must not flake-show the catalog; log={log}"
     );
 }
 
@@ -3807,9 +3813,15 @@ fn watch_source_restart_skips_discovery_nix_calls() {
         0,
         "source-only restart must not re-eval tasks; log={log}"
     );
+    // Second generation is proven by two "hello" occurrences above. Warm
+    // store-exe reuse (ADR-0153) may spawn the cached program without `nix run`,
+    // so the NXR_NIX shim may log zero `run` lines.
     assert!(
-        counter.count("run") >= 1,
-        "expected at least one rerun; log={log}"
+        String::from_utf8_lossy(&output)
+            .matches("hello from basic-apps")
+            .count()
+            >= 2,
+        "expected at least two generations in output; log={log}"
     );
 }
 
@@ -3854,8 +3866,8 @@ fn watch_metadata_restart_rediscovers_apps() {
 
     let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
     assert!(
-        counter.count("flake-show") >= 1,
-        "metadata restart must rediscover apps; log={log}"
+        counter.count("flake-show") >= 1 || counter.count("eval") >= 1,
+        "metadata restart must rediscover apps (flake-show or metadata/coalesce eval); log={log}"
     );
 }
 
