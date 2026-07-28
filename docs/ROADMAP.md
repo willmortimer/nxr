@@ -93,8 +93,9 @@ Closes trust holes before heavier CAS/context use:
   in Unreleased via [ADR-0157](adr/0157-optional-nxrd.md);
   lazy prep + CAS‖plan shipped ([ADR-0158](adr/0158-lazy-node-prep.md),
   [ADR-0159](adr/0159-cas-plan-pipeline.md)); optional `nxrMetadata` single-eval
-  discovery ([ADR-0166](adr/0166-nxr-metadata-endpoint.md)); full control plane
-  remains deferred (ADR-0301 / ADR-0302)
+  discovery ([ADR-0166](adr/0166-nxr-metadata-endpoint.md)); experimental opt-in
+  eval worker ([ADR-0168](adr/0168-experimental-eval-worker.md)); full control
+  plane remains deferred (ADR-0301 / ADR-0302)
 - Remote workspace CAS transport (unblocks honest `shared` / `shared-read`);
   deterministic CI sharding; indexing daemon
 - Native Nix remote builders first; GPU/capability advertisement

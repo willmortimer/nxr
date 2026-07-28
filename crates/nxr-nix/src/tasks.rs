@@ -5,8 +5,9 @@ use nxr_task::{SchemaError, TaskDocument};
 use serde_json::Value as JsonValue;
 
 use crate::NixError;
-use crate::capabilities::{NixFailureKind, run_nix};
+use crate::capabilities::NixFailureKind;
 use crate::command;
+use crate::eval_worker::{EvalWorkerContext, eval_json_with_worker};
 
 /// Errors while discovering or parsing flake task metadata.
 #[derive(Debug)]
@@ -121,8 +122,23 @@ pub fn discover_tasks_with_args(
     system: &str,
     args: &[String],
 ) -> Result<TaskDocument, TaskDiscoveryError> {
+    discover_tasks_with_worker(nix, system, args, None)
+}
+
+/// Discover tasks using a pre-built argv and optional eval-worker context.
+///
+/// # Errors
+///
+/// Returns [`TaskDiscoveryError`] when Nix evaluation fails for reasons other
+/// than a missing tasks attribute, or when the JSON/schema is invalid.
+pub fn discover_tasks_with_worker(
+    nix: &Utf8Path,
+    system: &str,
+    args: &[String],
+    worker: Option<&EvalWorkerContext>,
+) -> Result<TaskDocument, TaskDiscoveryError> {
     let attr = tasks_attr_path(system);
-    let stdout = match run_nix(nix, args, NixFailureKind::Evaluation) {
+    let stdout = match eval_json_with_worker(nix, args, nxr_core::EvalKind::Tasks, &attr, worker) {
         Ok(stdout) => stdout,
         Err(error) if is_missing_nxr_attr(&error, &attr) => {
             return Ok(TaskDocument::new(std::collections::BTreeMap::new()));

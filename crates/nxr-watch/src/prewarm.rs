@@ -10,10 +10,9 @@ use camino::{Utf8Path, Utf8PathBuf};
 use nxr_affected::{AffectedGraph, roots_may_overlap_changes};
 use nxr_core::EnvironmentPolicy;
 use nxr_core::{
-    record_watch_prewarm_cas_hit, record_watch_prewarm_cas_miss,
-    record_watch_prewarm_context_hit, record_watch_prewarm_context_miss,
-    record_watch_prewarm_ownership_shortcut, record_watch_prewarm_store_exe_hit,
-    record_watch_prewarm_store_exe_miss,
+    record_watch_prewarm_cas_hit, record_watch_prewarm_cas_miss, record_watch_prewarm_context_hit,
+    record_watch_prewarm_context_miss, record_watch_prewarm_ownership_shortcut,
+    record_watch_prewarm_store_exe_hit, record_watch_prewarm_store_exe_miss,
 };
 use nxr_task::{AppliedTaskContext, WorkspaceCachePlan};
 
@@ -83,7 +82,9 @@ impl WatchOwnershipIndex {
         plan_node_ids: &[String],
         changed_paths: &[String],
     ) -> bool {
-        plan_node_ids.iter().any(|id| self.may_overlap(id, changed_paths))
+        plan_node_ids
+            .iter()
+            .any(|id| self.may_overlap(id, changed_paths))
     }
 
     /// Whether one task's declared roots may overlap `changed_paths`.
@@ -356,10 +357,7 @@ mod tests {
         let index = WatchOwnershipIndex::from_graph(&graph);
         assert!(index.may_overlap("lint", &["src/a.rs".to_owned()]));
         assert!(!index.may_overlap("test", &["src/a.rs".to_owned()]));
-        assert!(!index.any_plan_node_may_overlap(
-            &["test".to_owned()],
-            &["src/a.rs".to_owned()]
-        ));
+        assert!(!index.any_plan_node_may_overlap(&["test".to_owned()], &["src/a.rs".to_owned()]));
     }
 
     #[test]
@@ -395,10 +393,9 @@ mod tests {
         ];
         let graph = nxr_affected::build_graph(&apps, &document);
         prewarm.set_ownership_from_graph(&graph);
-        assert!(prewarm.can_skip_affected_analysis(
-            &["test".to_owned()],
-            &["src/main.rs".to_owned()]
-        ));
+        assert!(
+            prewarm.can_skip_affected_analysis(&["test".to_owned()], &["src/main.rs".to_owned()])
+        );
         assert!(!prewarm.can_skip_affected_analysis(
             &["lint".to_owned(), "test".to_owned()],
             &["src/main.rs".to_owned()]

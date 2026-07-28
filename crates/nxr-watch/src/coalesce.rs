@@ -81,11 +81,7 @@ impl WatchSemanticCoalescer {
 
     /// Apply semantic coalesce rules to a debounced path batch.
     #[must_use]
-    pub fn coalesce_paths(
-        &mut self,
-        root: &Utf8Path,
-        paths: Vec<Utf8PathBuf>,
-    ) -> Vec<Utf8PathBuf> {
+    pub fn coalesce_paths(&mut self, root: &Utf8Path, paths: Vec<Utf8PathBuf>) -> Vec<Utf8PathBuf> {
         if !Self::enabled() || paths.is_empty() {
             return paths;
         }
@@ -124,9 +120,7 @@ impl WatchSemanticCoalescer {
             .paths_dropped
             .saturating_add(after_owned.saturating_sub(final_len));
 
-        kept.into_iter()
-            .map(|path| root.join(path))
-            .collect()
+        kept.into_iter().map(|path| root.join(path)).collect()
     }
 }
 
@@ -136,10 +130,7 @@ fn relative_path(root: &Utf8Path, path: &Utf8Path) -> Option<String> {
 }
 
 fn is_fixture_only_batch(paths: &[String]) -> bool {
-    !paths.is_empty()
-        && paths
-            .iter()
-            .all(|path| is_fixture_relative_path(path))
+    !paths.is_empty() && paths.iter().all(|path| is_fixture_relative_path(path))
 }
 
 fn is_fixture_relative_path(path: &str) -> bool {
@@ -240,7 +231,8 @@ fn editor_temp_stem(path: &str) -> Option<String> {
 
 fn path_stem(path: &str) -> Option<&str> {
     let file = path.rsplit('/').next()?;
-    file.rsplit_once('.').map_or(Some(file), |(stem, _)| Some(stem))
+    file.rsplit_once('.')
+        .map_or(Some(file), |(stem, _)| Some(stem))
 }
 
 /// `flake.lock` forces metadata invalidation — sibling paths add no signal.
@@ -287,10 +279,7 @@ mod tests {
     fn coalesce(root: &str, paths: &[&str]) -> Vec<String> {
         let mut coalescer = WatchSemanticCoalescer::default();
         let root = Utf8Path::new(root);
-        let paths = paths
-            .iter()
-            .map(|path| root.join(path))
-            .collect::<Vec<_>>();
+        let paths = paths.iter().map(|path| root.join(path)).collect::<Vec<_>>();
         coalescer
             .coalesce_paths(root, paths)
             .into_iter()
@@ -311,13 +300,7 @@ mod tests {
     fn formatter_burst_collapses_same_directory() {
         let out = coalesce(
             "/proj",
-            &[
-                "src/a.rs",
-                "src/b.rs",
-                "src/c.rs",
-                "src/d.rs",
-                "other/x.rs",
-            ],
+            &["src/a.rs", "src/b.rs", "src/c.rs", "src/d.rs", "other/x.rs"],
         );
         assert_eq!(out, vec!["other/x.rs", "src"]);
     }
@@ -363,7 +346,10 @@ mod tests {
     fn fixture_only_batch_is_empty() {
         let out = coalesce(
             "/proj",
-            &["fixtures/basic-apps/flake.nix", "fixtures/task-dag/nxr.json"],
+            &[
+                "fixtures/basic-apps/flake.nix",
+                "fixtures/task-dag/nxr.json",
+            ],
         );
         assert!(out.is_empty());
     }

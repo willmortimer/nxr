@@ -572,6 +572,36 @@ pub(crate) fn cold_discover_workspace(
     load_tasks: bool,
     nix_flags: &OptionalNixFlags,
 ) -> Result<ColdWorkspaceDiscovery, PrepareError> {
+    cold_discover_workspace_with_root(nix, flake_ref, None, load_tasks, nix_flags)
+}
+
+pub(crate) fn cold_discover_workspace_with_root(
+    nix: &NixAdapter,
+    flake_ref: &str,
+    local_root: Option<&Utf8Path>,
+    load_tasks: bool,
+    nix_flags: &OptionalNixFlags,
+) -> Result<ColdWorkspaceDiscovery, PrepareError> {
+    let worker = local_root
+        .and_then(|root| {
+            nxr_nix::eval_worker_context_for(
+                nix.nix.as_str(),
+                &nix.version_banner,
+                nix.config_json.as_deref(),
+                root,
+            )
+        })
+        .or_else(|| {
+            nxr_nix::local_root_from_flake_ref(flake_ref).and_then(|root| {
+                nxr_nix::eval_worker_context_for(
+                    nix.nix.as_str(),
+                    &nix.version_banner,
+                    nix.config_json.as_deref(),
+                    &root,
+                )
+            })
+        });
+
     if nxr_nix::nxr_metadata_preferred() {
         let mut discovery_flags = nix_flags.clone();
         discovery_flags.no_write_lock_file = true;
@@ -579,7 +609,12 @@ pub(crate) fn cold_discover_workspace(
             nxr_nix::nxr_metadata_eval_args(flake_ref, &nix.system),
             &discovery_flags,
         )?;
-        match nxr_nix::discover_nxr_metadata(&nix.nix, &nix.system, &args) {
+        match nxr_nix::discover_nxr_metadata_with_worker(
+            &nix.nix,
+            &nix.system,
+            &args,
+            worker.as_ref(),
+        ) {
             Ok(Some(document)) => match document.into_workspace(flake_ref, &nix.system, load_tasks)
             {
                 Ok(workspace) => {
@@ -645,8 +680,14 @@ pub(crate) fn cold_discover_workspace(
     let apps = parse_apps_from_flake_show(&show, flake_ref, &nix.system)
         .map_err(|error| PrepareError::Nix(error.into()))?;
     let tasks = if load_tasks {
+        let mut discovery_flags = nix_flags.clone();
+        discovery_flags.no_write_lock_file = true;
+        let args = nix.compatible_argv(
+            nxr_nix::flake_eval_json_args(flake_ref, &nxr_nix::tasks_attr_path(&nix.system)),
+            &discovery_flags,
+        )?;
         Some(
-            nix.discover_tasks(flake_ref, nix_flags)
+            nxr_nix::discover_tasks_with_worker(&nix.nix, &nix.system, &args, worker.as_ref())
                 .map_err(PrepareError::TaskDiscovery)?,
         )
     } else if flake_show_has_nxr_for_system(&show, &nix.system) {
@@ -733,7 +774,13 @@ impl WorkspaceSnapshot {
                     require_tasks: load_tasks,
                 },
                 || {
-                    let cold = cold_discover_workspace(&nix, &flake_ref, load_tasks, nix_flags)?;
+                    let cold = cold_discover_workspace_with_root(
+                        &nix,
+                        &flake_ref,
+                        flake.local_root.as_deref(),
+                        load_tasks,
+                        nix_flags,
+                    )?;
                     Ok::<WorkspaceDiscovery, PrepareError>(cold.discovery)
                 },
             )?;

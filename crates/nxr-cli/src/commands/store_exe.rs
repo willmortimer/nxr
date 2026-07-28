@@ -8,8 +8,8 @@ use nxr_core::cas::flake_lock_digest;
 use nxr_core::{
     PLAN_SECRET_RUNTIME_PLACEHOLDER, Plan, PlanCacheSharedFingerprints, PlanSecretRef,
     StoreExeCacheKeyMaterial, digest_nix_flags, lookup_store_exe, record_store_exe_hit,
-    record_store_exe_miss, store_exe_cache_enabled, store_exe_cache_key_digest, store_exe_path_usable,
-    store_store_exe,
+    record_store_exe_miss, store_exe_cache_enabled, store_exe_cache_key_digest,
+    store_exe_path_usable, store_store_exe,
 };
 use nxr_nix::{
     OptionalNixFlags, batched_store_queries_enabled_for_nix, detect_system,
@@ -39,15 +39,7 @@ pub fn resolve_app_spawn(
     nix_version: &str,
     cwd: Option<&Path>,
 ) -> ResolvedAppSpawn {
-    resolve_app_spawn_with_prewarm(
-        plan,
-        nix,
-        local_root,
-        nix_flags,
-        nix_version,
-        cwd,
-        None,
-    )
+    resolve_app_spawn_with_prewarm(plan, nix, local_root, nix_flags, nix_version, cwd, None)
 }
 
 /// Like [`resolve_app_spawn`], consulting an optional watch-session prewarm cache.
@@ -99,18 +91,17 @@ pub fn resolve_app_spawn_with_prewarm(
     let key_digest = store_exe_cache_key_digest(&key);
     let batched = batched_store_queries_enabled_for_nix(nix);
 
-    if let Some(prewarm) = prewarm.as_mut() {
-        if let Some(hit) = prewarm.lookup_store_exe(&key_digest) {
-            if store_exe_path_usable(hit.program.as_std_path()) {
-                let resolved = ResolvedAppSpawn {
-                    program: hit.program.clone(),
-                    arguments: hit.arguments.clone(),
-                    used_store_exe: true,
-                };
-                prewarm.record_store_exe_hit();
-                return resolved;
-            }
-        }
+    if let Some(prewarm) = prewarm.as_mut()
+        && let Some(hit) = prewarm.lookup_store_exe(&key_digest)
+        && store_exe_path_usable(hit.program.as_std_path())
+    {
+        let resolved = ResolvedAppSpawn {
+            program: hit.program.clone(),
+            arguments: hit.arguments.clone(),
+            used_store_exe: true,
+        };
+        prewarm.record_store_exe_hit();
+        return resolved;
     }
 
     if let Some(hit) = lookup_store_exe(&key_digest, &fingerprints) {

@@ -9,8 +9,9 @@ use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
 use crate::NixError;
-use crate::capabilities::{NixFailureKind, run_nix};
+use crate::capabilities::NixFailureKind;
 use crate::command;
+use crate::eval_worker::{EvalWorkerContext, eval_json_with_worker};
 use crate::tasks::{self, TaskDiscoveryError};
 
 /// Environment variable disabling `nxrMetadata` preference (integration / bisection).
@@ -147,6 +148,9 @@ pub fn nxr_metadata_eval_args(flake_ref: &str, system: &str) -> Vec<String> {
 /// Returns `Ok(None)` when the attribute is absent so callers can fall back to
 /// coalesced discovery or `flake show` + task eval.
 ///
+/// When `worker` is set and `NXR_EVAL_WORKER=1` on an eligible host, consult the
+/// experimental eval worker before spawning `nix` ([ADR-0168]).
+///
 /// # Errors
 ///
 /// Returns [`MetadataDiscoveryError`] when evaluation fails for reasons other
@@ -156,8 +160,24 @@ pub fn discover_nxr_metadata(
     system: &str,
     args: &[String],
 ) -> Result<Option<NxrMetadataDocument>, MetadataDiscoveryError> {
+    discover_nxr_metadata_with_worker(nix, system, args, None)
+}
+
+/// Discover `nxrMetadata.<system>` with an optional eval-worker context.
+///
+/// # Errors
+///
+/// Returns [`MetadataDiscoveryError`] when evaluation fails for reasons other
+/// than a missing attribute, or when the JSON/schema is invalid.
+pub fn discover_nxr_metadata_with_worker(
+    nix: &Utf8Path,
+    system: &str,
+    args: &[String],
+    worker: Option<&EvalWorkerContext>,
+) -> Result<Option<NxrMetadataDocument>, MetadataDiscoveryError> {
     let attr = nxr_metadata_attr_path(system);
-    let stdout = match run_nix(nix, args, NixFailureKind::Evaluation) {
+    let stdout = match eval_json_with_worker(nix, args, nxr_core::EvalKind::Metadata, &attr, worker)
+    {
         Ok(stdout) => stdout,
         Err(error) if is_missing_nxr_metadata_attr(&error, &attr) => return Ok(None),
         Err(error) => return Err(MetadataDiscoveryError::Nix(error)),

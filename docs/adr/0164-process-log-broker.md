@@ -65,5 +65,6 @@ explicitly deferred socket follow.
 
 - Operators running `nxr daemon start` get lower-latency process log follow.
 - Standalone `logs --follow` behavior is unchanged when the daemon is down.
-- Reserved `log.append` is now implemented; `eval.prepare` /
-  `worker.register` remain `not_implemented`.
+- Reserved `log.append` is now implemented; experimental `eval.prepare` /
+  `eval.get` / `eval.put` are Wave 8c ([ADR-0168](0168-experimental-eval-worker.md));
+  `worker.register` remains `not_implemented`.

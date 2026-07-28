@@ -38,7 +38,7 @@ pub struct DiscoveryEvalPlan {
     pub use_coalesced_discovery: bool,
     /// Wave 8b: prefer batched `nix path-info --json` for store lookups.
     pub batched_store_queries: bool,
-    /// Wave 8c: optional eval worker may accelerate repeated eval (not implemented).
+    /// Wave 8c: experimental eval worker may cache metadata/list JSON when opted in.
     pub eval_worker_eligible: bool,
 }
 
@@ -152,7 +152,7 @@ fn batched_store_queries_from(features: &DeterminatePerformanceFeatures) -> bool
 }
 
 fn eval_worker_eligible_from(distribution: &crate::capabilities::NixDistribution) -> bool {
-    // Wave 8c hook: eligibility only; worker remains off by default.
+    // Determinate-oriented until a durable warm evaluator is proven (ADR-0168).
     distribution.is_determinate()
 }
 

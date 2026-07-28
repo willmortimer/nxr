@@ -8,6 +8,7 @@ pub mod diagnostics;
 pub mod digest_cache;
 pub mod ecosystem;
 pub mod env_policy;
+pub mod eval_worker;
 pub mod incremental_digest;
 pub mod log_broker;
 pub mod merkle_index;
@@ -50,6 +51,10 @@ pub use ecosystem::{
     EdgeConfidence, EdgeKind, GraphEdge, GraphNode, StaticJsonAdapter,
 };
 pub use env_policy::{CLEAN_ENV_ALLOWLIST, EnvironmentPolicy, parse_env_name, parse_set_env};
+pub use eval_worker::{
+    EVAL_WORKER_ENV, EvalKind, EvalPrepareParams, EvalWorkerCache, MAX_EVAL_ENTRIES,
+    MAX_EVAL_JSON_BYTES, eval_worker_enabled,
+};
 pub use incremental_digest::{
     ACTION_DIGEST_INDEX_ENV, ACTION_DIGEST_INDEX_SCHEMA_VERSION, ActionDigestIndexStatus,
     GIT_BLOB_DIGEST_DOMAIN, GIT_DIGESTS_ENV, action_digest_index_dir, action_digest_index_enabled,
@@ -74,10 +79,10 @@ pub use perf::{
     record_plan_cache_miss, record_spawn_plan_cancelled, record_spawn_plan_prepared,
     record_spawn_to_child_output_us, record_store_exe_hit, record_store_exe_miss,
     record_watch_paths_invalidated, record_watch_prepared_nodes_dropped,
-    record_watch_prewarm_cas_hit, record_watch_prewarm_cas_miss,
-    record_watch_prewarm_context_hit, record_watch_prewarm_context_miss,
-    record_watch_prewarm_ownership_shortcut, record_watch_prewarm_store_exe_hit,
-    record_watch_prewarm_store_exe_miss, record_watch_snapshot_patch,
+    record_watch_prewarm_cas_hit, record_watch_prewarm_cas_miss, record_watch_prewarm_context_hit,
+    record_watch_prewarm_context_miss, record_watch_prewarm_ownership_shortcut,
+    record_watch_prewarm_store_exe_hit, record_watch_prewarm_store_exe_miss,
+    record_watch_snapshot_patch,
 };
 pub use plan::{Plan, PlanCommand, PlanKind, PlanSecretRef};
 pub use plan_cache::{

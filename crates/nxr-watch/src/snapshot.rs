@@ -92,10 +92,7 @@ impl WatchIncrementalSnapshot {
 
     /// Apply semantic coalesce to a debounced path batch ([ADR-0161]).
     #[must_use]
-    pub fn coalesce_pending_paths(
-        &mut self,
-        paths: Vec<Utf8PathBuf>,
-    ) -> Vec<Utf8PathBuf> {
+    pub fn coalesce_pending_paths(&mut self, paths: Vec<Utf8PathBuf>) -> Vec<Utf8PathBuf> {
         self.coalesce.coalesce_paths(&self.root, paths)
     }
 

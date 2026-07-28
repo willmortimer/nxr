@@ -12,9 +12,7 @@ pub use change::{
     ChangeClass, MetadataInputRegistry, classify_pending_changes, classify_watch_path,
     merge_change_classes,
 };
-pub use coalesce::{
-    WATCH_COALESCE_ENV, WatchCoalesceStats, WatchSemanticCoalescer,
-};
+pub use coalesce::{WATCH_COALESCE_ENV, WatchCoalesceStats, WatchSemanticCoalescer};
 pub use filter::{PathFilterError, PathFilters, should_ignore_path};
 pub use prewarm::{
     PrewarmCasHandle, PrewarmContext, PrewarmStoreExe, WATCH_PREWARM_ENV, WatchOwnershipIndex,

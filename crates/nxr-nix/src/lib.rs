@@ -8,6 +8,7 @@ pub mod command;
 pub mod configurations;
 pub mod determinate;
 pub mod discovery;
+pub mod eval_worker;
 pub mod inventory;
 pub mod inventory_list;
 pub mod metadata;
@@ -59,6 +60,11 @@ pub use discovery::{
     OutputTable, discover_apps, discover_outputs_with_args, flake_show_has_nxr_for_system,
     parse_apps_from_flake_show, parse_outputs_from_flake_show,
 };
+pub use eval_worker::{
+    EvalWorkerContext, eval_cache_key, eval_json_with_worker, eval_worker_context_for,
+    fingerprint_bytes, flake_inputs_fingerprint, local_root_from_flake_ref, nix_identity,
+    try_worker_get,
+};
 pub use inventory::{
     FlakeInventory, InventoryNode, StandardOutputEntry, StandardOutputKind, list_standard_outputs,
     parse_flake_inventory,
@@ -69,8 +75,10 @@ pub use inventory_list::{
 pub use metadata::{
     FORCE_NXR_METADATA_ENV, MetadataDiscoveryError, MetadataInventory, MetadataWorkspace,
     NXR_METADATA_ENV, NXR_METADATA_SCHEMA_VERSION, NxrMetadataDocument, discover_nxr_metadata,
-    nxr_metadata_attr_path, nxr_metadata_eval_args, nxr_metadata_preferred, parse_nxr_metadata,
+    discover_nxr_metadata_with_worker, nxr_metadata_attr_path, nxr_metadata_eval_args,
+    nxr_metadata_preferred, parse_nxr_metadata,
 };
+pub use nxr_core::{EVAL_WORKER_ENV, eval_worker_enabled};
 pub use resolve::{
     AppNotFoundError, OutputNotFoundError, resolve_app_by_name, resolve_output_by_name,
 };
@@ -85,7 +93,10 @@ pub use strategy::{
     FORCE_COMPATIBILITY_STRATEGY_ENV, plan_discovery_eval,
 };
 pub use suggest::{DEFAULT_SUGGESTION_LIMIT, rank_app_suggestions, rank_name_suggestions};
-pub use tasks::{TaskDiscoveryError, discover_tasks, parse_task_document, tasks_attr_path};
+pub use tasks::{
+    TaskDiscoveryError, discover_tasks, discover_tasks_with_args, discover_tasks_with_worker,
+    parse_task_document, tasks_attr_path,
+};
 
 /// Errors from the Nix adapter boundary.
 #[derive(Debug)]

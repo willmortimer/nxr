@@ -1,13 +1,16 @@
 //! Optional local cache/coordination daemon (`nxrd` / `nxr daemon`).
 //!
 //! Retains warm discovery, prepared-plan, fingerprint, Merkle invalidation,
-//! recent action-key material, and an optional process-log broker across CLI
-//! invocations over a per-user Unix socket. The daemon is **not** an execution
-//! authority and is never required for correctness
+//! recent action-key material, an optional process-log broker, and an
+//! experimental eval-result worker across CLI invocations over a per-user Unix
+//! socket. The daemon is **not** an execution authority and is never required
+//! for correctness
 //! ([ADR-0157](../../../docs/adr/0157-optional-nxrd.md);
-//! [ADR-0164](../../../docs/adr/0164-process-log-broker.md); ADR-0301 spirit).
+//! [ADR-0164](../../../docs/adr/0164-process-log-broker.md);
+//! [ADR-0168](../../../docs/adr/0168-experimental-eval-worker.md); ADR-0301 spirit).
 //! Kill-switch: [`DAEMON_ENV`]=`off`. Log broker follow kill-switch:
-//! [`crate::log_broker::LOG_BROKER_ENV`].
+//! [`crate::log_broker::LOG_BROKER_ENV`]. Eval worker opt-in:
+//! [`crate::eval_worker::EVAL_WORKER_ENV`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -20,6 +23,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::eval_worker::{EvalKind, EvalPrepareParams, EvalWorkerCache};
 use crate::log_broker::{FILE_POLL_MS, LogBroker, LogEvent, decode_log_bytes, encode_log_bytes};
 use crate::merkle_index::touched_directories;
 use crate::plan::{Plan, PlanSecretRef};
@@ -145,6 +149,7 @@ pub struct DaemonStatus {
     pub merkle_roots: usize,
     pub action_key_entries: usize,
     pub log_streams: usize,
+    pub eval_entries: usize,
 }
 
 /// Prepared-plan entry retained in daemon memory.
@@ -169,6 +174,8 @@ pub struct DaemonState {
     action_keys: BTreeMap<String, String>,
     /// Optional process-log broker ([ADR-0164]).
     pub(crate) logs: LogBroker,
+    /// Experimental eval JSON worker ([ADR-0168]).
+    pub(crate) evals: EvalWorkerCache,
     started_at: Option<Instant>,
     stop: bool,
 }
@@ -202,6 +209,7 @@ impl DaemonState {
             merkle_roots: self.merkle_invalidated.len(),
             action_key_entries: self.action_keys.len(),
             log_streams: self.logs.stream_count(),
+            eval_entries: self.evals.len(),
         }
     }
 
@@ -484,17 +492,125 @@ pub fn handle_request(
             "invalid_params",
             "log.subscribe must be handled as a streaming connection method",
         ),
-        // Reserved for Wave 4b / 8c — refuse so clients fall back.
-        "eval.prepare" | "worker.register" => error_response(
+        "eval.prepare" => {
+            let params: EvalPrepareParams =
+                match serde_json::from_value(request.params.clone().unwrap_or(Value::Null)) {
+                    Ok(params) => params,
+                    Err(error) => {
+                        return error_response(
+                            request,
+                            "invalid_params",
+                            format!("eval.prepare params: {error}"),
+                        );
+                    }
+                };
+            if params.nix_identity.trim().is_empty()
+                || params.flake_root.trim().is_empty()
+                || params.flake_fingerprint.trim().is_empty()
+            {
+                return error_response(
+                    request,
+                    "invalid_params",
+                    "eval.prepare requires nix_identity, flake_root, and flake_fingerprint",
+                );
+            }
+            let invalidated = state.evals.prepare(&params);
+            ok_json(
+                request,
+                &serde_json::json!({
+                    "prepared": true,
+                    "invalidated": invalidated,
+                    "entries": state.evals.len(),
+                }),
+            )
+        }
+        "eval.get" => {
+            let params: EvalPrepareParams = match eval_session_params(request) {
+                Ok(params) => params,
+                Err(resp) => return resp,
+            };
+            let kind = match eval_kind_param(request) {
+                Ok(kind) => kind,
+                Err(resp) => return resp,
+            };
+            let cache_key = match param_str(request, "cache_key") {
+                Ok(key) => key,
+                Err(resp) => return resp,
+            };
+            match state.evals.get(&params, kind, &cache_key) {
+                Some(json) => ok_json(request, &serde_json::json!({ "hit": true, "json": json })),
+                None => ok_json(request, &serde_json::json!({ "hit": false })),
+            }
+        }
+        "eval.put" => {
+            let params: EvalPrepareParams = match eval_session_params(request) {
+                Ok(params) => params,
+                Err(resp) => return resp,
+            };
+            let kind = match eval_kind_param(request) {
+                Ok(kind) => kind,
+                Err(resp) => return resp,
+            };
+            let cache_key = match param_str(request, "cache_key") {
+                Ok(key) => key,
+                Err(resp) => return resp,
+            };
+            let json = match param_value(request, "json") {
+                Ok(json) => json,
+                Err(resp) => return resp,
+            };
+            match state.evals.put(&params, kind, &cache_key, json) {
+                Ok(()) => ok_json(
+                    request,
+                    &serde_json::json!({ "stored": true, "entries": state.evals.len() }),
+                ),
+                Err(message) => error_response(request, "invalid_params", message),
+            }
+        }
+        // Reserved for future remote-worker registry — refuse so clients fall back.
+        "worker.register" => error_response(
             request,
             "not_implemented",
-            format!(
-                "method {} reserved for a later wave; daemon is cache/coordination only",
-                request.method
-            ),
+            "method worker.register reserved; daemon is cache/coordination only",
         ),
         other => error_response(request, "unknown_method", format!("unknown method {other}")),
     }
+}
+
+fn eval_session_params(request: &DaemonRequest) -> Result<EvalPrepareParams, DaemonResponse> {
+    let Some(params) = request.params.as_ref() else {
+        return Err(error_response(
+            request,
+            "invalid_params",
+            "missing params object",
+        ));
+    };
+    let session = params.get("session").cloned().unwrap_or_else(|| {
+        serde_json::json!({
+            "nix_identity": params.get("nix_identity").cloned().unwrap_or(Value::Null),
+            "config_fingerprint": params.get("config_fingerprint").cloned(),
+            "flake_root": params.get("flake_root").cloned().unwrap_or(Value::Null),
+            "flake_fingerprint": params.get("flake_fingerprint").cloned().unwrap_or(Value::Null),
+        })
+    });
+    serde_json::from_value(session).map_err(|error| {
+        error_response(
+            request,
+            "invalid_params",
+            format!("eval session params: {error}"),
+        )
+    })
+}
+
+fn eval_kind_param(request: &DaemonRequest) -> Result<EvalKind, DaemonResponse> {
+    let kind = param_str(request, "kind")?;
+    EvalKind::parse(&kind).ok_or_else(|| {
+        error_response(
+            request,
+            "invalid_params",
+            format!("unsupported eval kind `{kind}` (expected metadata|tasks|list)"),
+        )
+    })
 }
 
 fn ok_json<T: Serialize>(request: &DaemonRequest, value: &T) -> DaemonResponse {
@@ -1615,5 +1731,87 @@ mod tests {
         let mut shutdown = try_connect(&socket).expect("shutdown connect");
         let _: Value = shutdown.call("shutdown", None).expect("shutdown");
         let _ = server.join();
+    }
+
+    #[test]
+    fn eval_prepare_get_put_round_trip() {
+        let mut state = DaemonState::new();
+        let socket = PathBuf::from("/tmp/nxr-test.sock");
+        let session = serde_json::json!({
+            "nix_identity": "nix@1",
+            "config_fingerprint": "cfg",
+            "flake_root": "/repo",
+            "flake_fingerprint": "fp1",
+        });
+        let prepare = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id: 1,
+            method: "eval.prepare".to_owned(),
+            params: Some(session.clone()),
+        };
+        let prepare_resp = handle_request(&mut state, &socket, &prepare);
+        assert!(prepare_resp.ok);
+        assert_eq!(prepare_resp.result.unwrap()["prepared"], true);
+
+        let put = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id: 2,
+            method: "eval.put".to_owned(),
+            params: Some(serde_json::json!({
+                "session": session,
+                "kind": "metadata",
+                "cache_key": "meta:fp1",
+                "json": { "schema_version": 1, "inventory": { "apps": ["hello"] } },
+            })),
+        };
+        assert!(handle_request(&mut state, &socket, &put).ok);
+
+        let get = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id: 3,
+            method: "eval.get".to_owned(),
+            params: Some(serde_json::json!({
+                "session": session,
+                "kind": "metadata",
+                "cache_key": "meta:fp1",
+            })),
+        };
+        let get_resp = handle_request(&mut state, &socket, &get);
+        assert!(get_resp.ok);
+        let result = get_resp.result.unwrap();
+        assert_eq!(result["hit"], true);
+        assert_eq!(result["json"]["schema_version"], 1);
+        assert_eq!(state.status(&socket).eval_entries, 1);
+
+        let prepare2 = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id: 4,
+            method: "eval.prepare".to_owned(),
+            params: Some(serde_json::json!({
+                "nix_identity": "nix@1",
+                "config_fingerprint": "cfg",
+                "flake_root": "/repo",
+                "flake_fingerprint": "fp2",
+            })),
+        };
+        let prep2 = handle_request(&mut state, &socket, &prepare2);
+        assert!(prep2.ok);
+        assert_eq!(prep2.result.unwrap()["invalidated"], true);
+        assert_eq!(state.evals.len(), 0);
+    }
+
+    #[test]
+    fn worker_register_still_not_implemented() {
+        let mut state = DaemonState::new();
+        let socket = PathBuf::from("/tmp/nxr-test.sock");
+        let req = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id: 1,
+            method: "worker.register".to_owned(),
+            params: None,
+        };
+        let resp = handle_request(&mut state, &socket, &req);
+        assert!(!resp.ok);
+        assert_eq!(resp.error.unwrap().code, "not_implemented");
     }
 }

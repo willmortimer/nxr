@@ -121,6 +121,7 @@ Rejected   considered and explicitly not chosen
 | ADR-0165 | Determinate discovery/evaluation strategy planner | Accepted | Unreleased |
 | ADR-0166 | Optional `nxrMetadata` single-eval discovery endpoint | Accepted | Unreleased |
 | ADR-0167 | Batched Nix store path queries | Accepted | Unreleased |
+| ADR-0168 | Experimental optional Nix eval worker via `nxrd` | Accepted | Unreleased |
 
 Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0144-auto-schema-v2.md`](0144-auto-schema-v2.md),
@@ -146,7 +147,8 @@ Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0164-process-log-broker.md`](0164-process-log-broker.md),
 [`0165-determinate-eval-strategy.md`](0165-determinate-eval-strategy.md),
 [`0166-nxr-metadata-endpoint.md`](0166-nxr-metadata-endpoint.md),
-[`0167-batched-store-queries.md`](0167-batched-store-queries.md).
+[`0167-batched-store-queries.md`](0167-batched-store-queries.md),
+[`0168-experimental-eval-worker.md`](0168-experimental-eval-worker.md).
 
 Audit absorb (2026-07, post-`a040e50`): remaps active delivery to
 **2.7.1 → 2.8 → 3.0 → 3.1** (process workflows remain in 3.1 MVP; distributed

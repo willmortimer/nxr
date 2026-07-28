@@ -114,8 +114,9 @@ Cold workspace discovery consults `plan_discovery_eval` ([ADR-0165](adr/0165-det
 - **Lazy-trees compatible** separate evals when lazy trees are enabled or assumed.
 - **Compatibility** `flake show` + targeted evals for upstream/Lix or
   `NXR_EVAL_STRATEGY=compatibility`.
-- `nxr cache explain` reports `discovery_eval_strategy`. Eval-worker (8c) hook
-  reserved on the plan.
+- `nxr cache explain` reports `discovery_eval_strategy`. Experimental eval
+  worker (8c) is gated by `eval_worker_eligible` + `NXR_EVAL_WORKER=1`
+  ([ADR-0168](adr/0168-experimental-eval-worker.md)).
 
 ## Batched store path queries (Wave 8b)
 
@@ -128,7 +129,20 @@ is true ([ADR-0167](adr/0167-batched-store-queries.md)):
 - **`store_exe_paths_usable`** combines store registration with the filesystem
   executable probe; falls back to today's `metadata` checks on failure.
 - Kill-switch: `NXR_STORE_QUERIES=fs` (also `off`, `compat`, `compatibility`).
-- Eval worker (8c) not implemented in 8b.
+
+## Experimental eval worker (Wave 8c)
+
+**Experimental / optional / off by default.** When `NXR_EVAL_WORKER=1` and the
+host is `eval_worker_eligible` (Determinate today), cold metadata / tasks eval
+may reuse JSON retained by `nxrd` via `eval.prepare` / `eval.get` / `eval.put`
+([ADR-0168](adr/0168-experimental-eval-worker.md)):
+
+- Narrow kinds only: `metadata` | `tasks` | `list` — not general flake eval.
+- Invalidation: nix identity, config fingerprint, per-root flake fingerprint.
+- Absent daemon, protocol mismatch, non-eligible host, or any doubt →
+  subprocess `nix eval` (default path unchanged when the env opt-in is unset).
+- Not required for correctness; not an execution authority. A durable warm Nix
+  evaluator (libnix / Determinate eval server) remains a follow-up.
 
 ## Optional local cache daemon (`nxrd`)
 
@@ -144,17 +158,19 @@ nxr daemon stop
 - Socket: `$XDG_RUNTIME_DIR/nxr/nxrd.sock` (override `NXR_DAEMON_SOCKET`).
 - Protocol: JSON lines, version **1**, role `cache` only — not execution
   authority; `log.*` broker methods ship in Wave 7c
-  ([ADR-0164](adr/0164-process-log-broker.md)); reserved `eval.prepare` /
-  `worker.register` leave room for later waves; lazy prep (4b) is CLI-local
-  ([ADR-0158](adr/0158-lazy-node-prep.md)).
+  ([ADR-0164](adr/0164-process-log-broker.md)); experimental `eval.prepare` /
+  `eval.get` / `eval.put` ship in Wave 8c when `NXR_EVAL_WORKER=1`
+  ([ADR-0168](adr/0168-experimental-eval-worker.md)); `worker.register` remains
+  reserved; lazy prep (4b) is CLI-local ([ADR-0158](adr/0158-lazy-node-prep.md)).
 - **Retained in RAM while running:** discovery payloads, prepared plans
   (placeholder secret policy), fingerprint strings, Merkle invalidation path
-  sets, recent action-key digests, bounded process-log tails (≤256 KiB/stream).
+  sets, recent action-key digests, bounded process-log tails (≤256 KiB/stream),
+  optional eval JSON (metadata/tasks/list) when the eval worker is opted in.
 - **Not retained / not authoritative:** secret values, Nix eval results as a
   trust boundary, process supervision, remote workers.
 - Kill-switch: `NXR_DAEMON=off` (also `0` / `false` / `no`). Absent socket or
   protocol mismatch → identical standalone CLI behavior. Log-broker follow
-  kill-switch: `NXR_LOG_BROKER=off`.
+  kill-switch: `NXR_LOG_BROKER=off`. Eval worker opt-in: `NXR_EVAL_WORKER=1`.
 - Watch best-effort calls `merkle.invalidate` on restart classification;
   in-process `WatchIncrementalSnapshot` is Wave 5a ([ADR-0160](adr/0160-watch-incremental-snapshot.md)).
 

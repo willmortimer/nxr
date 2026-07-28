@@ -7,7 +7,9 @@ use camino::Utf8PathBuf;
 use nxr_completion::cache::{WorkspaceDiscovery, cached_workspace};
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
-use nxr_nix::{AppNotFoundError, NixError, OptionalNixFlags, TaskDiscoveryError, resolve_app_by_name};
+use nxr_nix::{
+    AppNotFoundError, NixError, OptionalNixFlags, TaskDiscoveryError, resolve_app_by_name,
+};
 use nxr_process::{InterruptFlags, Supervisor, spawn_in};
 use nxr_task::{PlanError, resolve_task_name};
 use nxr_watch::{
@@ -747,10 +749,9 @@ fn run_task_generation(
     )?;
 
     seed_owned_outputs(caches);
-    if let (Some(incremental), Some(task_plan)) = (
-        caches.incremental.as_mut(),
-        caches.task_plan.as_ref(),
-    ) {
+    if let (Some(incremental), Some(task_plan)) =
+        (caches.incremental.as_mut(), caches.task_plan.as_ref())
+    {
         sync_prewarm_nodes(incremental.prewarm_mut(), &task_plan.prepared_nodes);
     }
 
