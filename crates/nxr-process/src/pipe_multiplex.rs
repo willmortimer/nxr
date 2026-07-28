@@ -9,7 +9,7 @@ use std::process::{ChildStderr, ChildStdout};
 use std::time::Duration;
 
 /// Which standard stream produced a [`PipeChunk`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum PipeStream {
     /// Child stdout.
     Stdout,
@@ -666,6 +666,35 @@ mod tests {
 
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    fn rapid_exit_child_tail_is_drained() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "printf trailing; exit 0"])
+            .stdout(Stdio::piped())
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("spawn sh");
+
+        let stdout = child.stdout.take().expect("stdout");
+        let status = child.wait().expect("wait");
+        assert!(status.success());
+
+        let mut mux = PipeMultiplexer::new();
+        let node = mux.intern_node("rapid");
+        mux.register_stdout(node, stdout).expect("register stdout");
+
+        let mut bytes = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while mux.has_pipes(node) && std::time::Instant::now() < deadline {
+            mux.poll(Duration::from_millis(20), |chunk| {
+                bytes.extend_from_slice(&chunk.bytes)
+            })
+            .expect("poll");
+        }
+
+        assert_eq!(bytes, b"trailing");
     }
 
     #[test]

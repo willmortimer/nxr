@@ -7,7 +7,10 @@ use std::time::Duration;
 use nxr_core::diagnostics::exit;
 use nxr_core::{EnvironmentPolicy, PlanSecretRef};
 use nxr_nix::{NixError, OptionalNixFlags, TaskDiscoveryError};
-use nxr_process::{DeadlineQueue, InterruptFlags, PipeMultiplexer, PipeStream, Supervisor};
+use nxr_process::{
+    ChunkCoalescer, CoalesceLimits, DeadlineQueue, InterruptFlags, PipeChunk, PipeMultiplexer,
+    PipeStream, Supervisor,
+};
 use nxr_task::{
     ContextError, Event, EventSink, ExecutionPlan, FailurePolicy, OutputPayload, PlanError,
     PlanSecretEntry, PlanSecretValuePlaceholder, RunEventDecorator, Scheduler, SchedulerError,
@@ -696,6 +699,7 @@ fn run_plan(
     let mut scheduler = Scheduler::new(plan, request.jobs)?;
     let mut supervisor = Supervisor::new();
     let mut pipe_io = PipeMultiplexer::new();
+    let mut chunk_coalescer = ChunkCoalescer::new(CoalesceLimits::default());
     let mut deadlines = DeadlineQueue::new();
     let mut node_compact_ids: BTreeMap<String, u32> = BTreeMap::new();
     let interrupts = InterruptFlags::install().map_err(TaskError::Supervision)?;
@@ -721,6 +725,7 @@ fn run_plan(
                 sink,
                 SHUTDOWN_GRACE,
                 PipeDrainMode::ForcedShutdown,
+                &mut chunk_coalescer,
             )?;
             for (id, code) in codes {
                 sink.emit(Event::NodeExited {
@@ -755,6 +760,7 @@ fn run_plan(
                     sink,
                     SHUTDOWN_GRACE,
                     PipeDrainMode::ForcedShutdown,
+                    &mut chunk_coalescer,
                 )?;
                 for (stopped_id, stopped_code) in shut {
                     sink.emit(Event::NodeExited {
@@ -975,7 +981,13 @@ fn run_plan(
         let poll_timeout = deadlines
             .time_until_next(std::time::Instant::now())
             .map_or(POLL_INTERVAL, |remaining| remaining.min(POLL_INTERVAL));
-        drain_pipe_chunks(&mut pipe_io, sink, poll_timeout, PipeDrainMode::Normal)?;
+        drain_pipe_chunks(
+            &mut pipe_io,
+            sink,
+            poll_timeout,
+            PipeDrainMode::Normal,
+            &mut chunk_coalescer,
+        )?;
         cleanup_closed_pipes(&pipe_io, &mut deadlines, &mut node_compact_ids);
 
         if let Some((id, code)) = supervisor.try_wait_any().map_err(TaskError::Supervision)? {
@@ -1043,12 +1055,25 @@ fn run_plan(
         let idle_timeout = deadlines
             .time_until_next(std::time::Instant::now())
             .map_or(POLL_INTERVAL, |remaining| remaining.min(POLL_INTERVAL));
-        drain_pipe_chunks(&mut pipe_io, sink, idle_timeout, PipeDrainMode::Normal)?;
+        drain_pipe_chunks(
+            &mut pipe_io,
+            sink,
+            idle_timeout,
+            PipeDrainMode::Normal,
+            &mut chunk_coalescer,
+        )?;
         cleanup_closed_pipes(&pipe_io, &mut deadlines, &mut node_compact_ids);
     }
 
     // Flush any trailing pipe chunks after the last exit.
-    drain_pipe_chunks(&mut pipe_io, sink, Duration::ZERO, PipeDrainMode::Normal)?;
+    drain_pipe_chunks(
+        &mut pipe_io,
+        sink,
+        Duration::ZERO,
+        PipeDrainMode::Normal,
+        &mut chunk_coalescer,
+    )?;
+    flush_coalesced_chunks(&pipe_io, sink, &mut chunk_coalescer);
     cleanup_closed_pipes(&pipe_io, &mut deadlines, &mut node_compact_ids);
 
     let outcome = scheduler.outcome();
@@ -1309,6 +1334,7 @@ fn drain_pipe_chunks(
     sink: &mut dyn EventSink,
     timeout: Duration,
     mode: PipeDrainMode,
+    coalescer: &mut ChunkCoalescer,
 ) -> Result<(), TaskError> {
     let mut pending = Vec::new();
     match pipe_io.poll(timeout, |chunk| pending.push(chunk)) {
@@ -1320,15 +1346,43 @@ fn drain_pipe_chunks(
                 && error.kind() == io::ErrorKind::Interrupted => {}
         Err(error) => return Err(TaskError::Supervision(error)),
     }
-    for chunk in pending {
-        let node = pipe_io.node_label(chunk.node).to_owned();
-        let payload = OutputPayload::from_bytes(chunk.bytes);
-        match chunk.stream {
-            PipeStream::Stdout => sink.emit(Event::StdoutChunk { node, payload }),
-            PipeStream::Stderr => sink.emit(Event::StderrChunk { node, payload }),
+    ingest_pipe_chunks(pipe_io, sink, coalescer, pending);
+    Ok(())
+}
+
+fn ingest_pipe_chunks(
+    pipe_io: &PipeMultiplexer,
+    sink: &mut dyn EventSink,
+    coalescer: &mut ChunkCoalescer,
+    chunks: impl IntoIterator<Item = PipeChunk>,
+) {
+    for chunk in chunks {
+        for coalesced in coalescer.push(chunk) {
+            emit_pipe_chunk(pipe_io, sink, coalesced);
         }
     }
-    Ok(())
+    for coalesced in coalescer.flush_expired(std::time::Instant::now()) {
+        emit_pipe_chunk(pipe_io, sink, coalesced);
+    }
+}
+
+fn flush_coalesced_chunks(
+    pipe_io: &PipeMultiplexer,
+    sink: &mut dyn EventSink,
+    coalescer: &mut ChunkCoalescer,
+) {
+    for chunk in coalescer.flush_all() {
+        emit_pipe_chunk(pipe_io, sink, chunk);
+    }
+}
+
+fn emit_pipe_chunk(pipe_io: &PipeMultiplexer, sink: &mut dyn EventSink, chunk: PipeChunk) {
+    let node = pipe_io.node_label(chunk.node).to_owned();
+    let payload = OutputPayload::from_bytes(chunk.bytes);
+    match chunk.stream {
+        PipeStream::Stdout => sink.emit(Event::StdoutChunk { node, payload }),
+        PipeStream::Stderr => sink.emit(Event::StderrChunk { node, payload }),
+    }
 }
 
 /// Compute ready-set waves assuming every node succeeds (for dry-run / verbose).

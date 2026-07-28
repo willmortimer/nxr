@@ -186,6 +186,24 @@ cache (both may hit on one invocation). TTL default 24h
 
 Parallel and multiplexed `nxr task` runs pipe every supervised child's stdout/stderr through a single `mio` poll loop (kqueue on macOS, epoll on Linux) in `nxr-process`. FDs are `O_NONBLOCK`; each readiness event drains until `WouldBlock`/EOF within a per-FD fairness budget (1 MiB). Pipe registrations outlive process exit until EOF so rapid-exit output is not discarded ([ADR-0143](adr/0143-mio-pipe-drain.md)). One reusable 32 KiB read buffer is shared across registered fds; compact `u32` node ids map back to task labels when emitting events. Per-node timeouts use a min-deadline heap with O(log n) nearest-deadline lookup (lazy cancelled-entry prune).
 
+### Child output batching (Wave 7a + 7b)
+
+Adjacent reads for the same `(node, stream)` are coalesced before
+`StdoutChunk` / `StderrChunk` events are emitted ([ADR-0162](adr/0162-child-output-batching.md)).
+Default limits: **64 KiB**, **32 lines**, **8 ms** latency. Live mode batches
+terminal writes (8 KiB buffer, 256 KiB per-node pending cap) and stores grouped
+output as raw bytes until node exit. Wave **7c** (Unix-socket log broker for
+`nxr process logs --follow`) is deferred.
+
+Benchmark scenarios to profile (stable harness thresholds TBD):
+
+| Scenario | Intent |
+|---|---|
+| One task, ~1 GiB stdout | Single-stream coalescing + batched writes |
+| 100 tasks × ~10 MiB each | Parallel fan-out event reduction |
+| 1000 short-lived tasks | Scheduler + coalescer overhead |
+| Rapid-exit trailing output | ADR-0143 drain + coalescer `flush_all` |
+
 Windows builds still use one reader thread per pipe (Unix-first); the supervisor API is unchanged.
 
 ## Nix call budgets

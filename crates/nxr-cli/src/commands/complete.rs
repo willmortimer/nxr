@@ -36,9 +36,7 @@ pub fn run(
     refresh_discovery: bool,
     nix_flags: &OptionalNixFlags,
 ) -> Result<(), CompleteError> {
-    if !refresh_discovery
-        && let Some(lines) = cache_only_completions(target, flake_arg)
-    {
+    if !refresh_discovery && let Some(lines) = cache_only_completions(target, flake_arg) {
         return write_lines(&lines);
     }
 

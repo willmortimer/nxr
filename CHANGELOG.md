@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CAS lookup ‖ SpawnPlan pipelining ([ADR-0159](docs/adr/0159-cas-plan-pipeline.md)). Live lazy runs complete CasInputs (action key + digests) without finalized spawn argv; CAS restore overlaps SpawnPlan and cancels on hit. `NXR_CAS_PLAN_PIPELINE=off` fuses stages. `NXR_PERF_STATS` schema **v7** adds `spawn_plans_prepared` / `spawn_plans_cancelled`.
 - Lean CLI startup + shell-resident fast path (perf Wave 6). `nxr --version`, `nxr completion`, and warm `nxr __complete` avoid Nix probes; completion scripts add flake-root lookup and optional `nxrd` socket forwarding via `_nxr_invoke` / `__nxr_invoke`. See [PERFORMANCE.md](docs/PERFORMANCE.md#lean-cli-startup--shell-fast-path-wave-6).
 - Watch incremental workspace snapshot ([ADR-0160](docs/adr/0160-watch-incremental-snapshot.md)). Source-only generations patch in-process digest / Merkle state and drop only affected prepared task nodes. `NXR_WATCH_SNAPSHOT=off` kill-switch. `NXR_PERF_STATS` schema **v8** adds watch snapshot counters. Semantic coalesce (5b) and prewarm (5c) hooks reserved.
+- Child output event batching + terminal write coalescing (perf Wave 7a + 7b; [ADR-0162](docs/adr/0162-child-output-batching.md)). Adjacent pipe reads coalesce before chunk events; live mode batches terminal writes. Wave 7c log broker deferred.
 
 ## [3.1.4] - 2026-07-28
 

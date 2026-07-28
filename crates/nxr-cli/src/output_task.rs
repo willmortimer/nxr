@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::io::{self, BufReader, Seek, SeekFrom, Write};
 
 use clap::ValueEnum;
-use nxr_task::{Event, EventSink, NullSink, OutputPayload};
+use nxr_task::{ChunkEncoding, Event, EventSink, NullSink, OutputPayload};
 use tempfile::NamedTempFile;
 
 /// Multiplexed stdout/stderr presentation for parallel task runs.
@@ -164,6 +164,12 @@ const BUFFER_SPILL_THRESHOLD: usize = 4 * 1024 * 1024;
 #[cfg(test)]
 const BUFFER_SPILL_THRESHOLD: usize = 64;
 
+/// Live-mode per-node pending line buffer cap before forcing a flush.
+const LIVE_PENDING_CAP: usize = 256 * 1024;
+
+/// Batch terminal writes to reduce lock/write syscall overhead.
+const WRITE_BATCH_CAPACITY: usize = 8 * 1024;
+
 struct TaskOutputRenderer<'a> {
     mode: TaskOutputMode,
     stdout: &'a mut dyn Write,
@@ -188,53 +194,96 @@ struct StreamState {
 
 #[derive(Debug, Default)]
 struct NodeBuffers {
-    stdout_decoder: Utf8StreamDecoder,
-    stderr_decoder: Utf8StreamDecoder,
     stdout: SpillableBuffer,
     stderr: SpillableBuffer,
+}
+
+/// Batches writes to the underlying writer before flushing.
+struct WriteBatch<'a> {
+    writer: &'a mut dyn Write,
+    buf: Vec<u8>,
+}
+
+impl<'a> WriteBatch<'a> {
+    fn new(writer: &'a mut dyn Write) -> Self {
+        Self {
+            writer,
+            buf: Vec::with_capacity(WRITE_BATCH_CAPACITY),
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) -> io::Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        if self.buf.len().saturating_add(bytes.len()) > WRITE_BATCH_CAPACITY {
+            self.flush()?;
+        }
+        self.buf.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn push_str(&mut self, text: &str) -> io::Result<()> {
+        self.push(text.as_bytes())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.buf.is_empty() {
+            return Ok(());
+        }
+        self.writer.write_all(&self.buf)?;
+        self.buf.clear();
+        Ok(())
+    }
+}
+
+impl Drop for WriteBatch<'_> {
+    fn drop(&mut self) {
+        let _ = self.flush();
+    }
 }
 
 /// Buffered stream data held in memory until [`BUFFER_SPILL_THRESHOLD`], then
 /// appended to a temp file so grouped/failures modes stay bounded.
 #[derive(Debug, Default)]
 struct SpillableBuffer {
-    memory: String,
+    memory: Vec<u8>,
     spill: Option<NamedTempFile>,
     ends_with_newline: bool,
 }
 
 impl SpillableBuffer {
-    fn push_str(&mut self, chunk: &str) {
+    fn push_bytes(&mut self, chunk: &[u8]) {
         if chunk.is_empty() {
             return;
         }
 
         if self.spill.is_some() {
             if let Some(file) = self.spill.as_mut() {
-                let _ = file.write_all(chunk.as_bytes());
+                let _ = file.write_all(chunk);
                 let _ = file.flush();
             }
-            self.ends_with_newline = chunk.as_bytes().last() == Some(&b'\n');
+            self.ends_with_newline = chunk.last() == Some(&b'\n');
             return;
         }
 
         if self.memory.len().saturating_add(chunk.len()) > BUFFER_SPILL_THRESHOLD {
             if let Ok(mut file) = NamedTempFile::new() {
-                let _ = file.write_all(self.memory.as_bytes());
-                let _ = file.write_all(chunk.as_bytes());
+                let _ = file.write_all(&self.memory);
+                let _ = file.write_all(chunk);
                 let _ = file.flush();
                 self.memory.clear();
                 self.spill = Some(file);
-                self.ends_with_newline = chunk.as_bytes().last() == Some(&b'\n');
+                self.ends_with_newline = chunk.last() == Some(&b'\n');
             } else {
-                self.memory.push_str(chunk);
-                self.ends_with_newline = self.memory.ends_with('\n');
+                self.memory.extend_from_slice(chunk);
+                self.ends_with_newline = self.memory.last() == Some(&b'\n');
             }
             return;
         }
 
-        self.memory.push_str(chunk);
-        self.ends_with_newline = self.memory.ends_with('\n');
+        self.memory.extend_from_slice(chunk);
+        self.ends_with_newline = self.memory.last() == Some(&b'\n');
     }
 
     fn write_to(&self, writer: &mut dyn Write) -> io::Result<()> {
@@ -244,7 +293,7 @@ impl SpillableBuffer {
             io::copy(&mut reader, writer)?;
         }
         if !self.memory.is_empty() {
-            writer.write_all(self.memory.as_bytes())?;
+            writer.write_all(&self.memory)?;
         }
         Ok(())
     }
@@ -280,38 +329,40 @@ impl<'a> TaskOutputRenderer<'a> {
             &mut self.state.live_stderr
         };
         let state = map.entry(node.to_owned()).or_default();
-        let decoded = state.decoder.push(payload.as_bytes());
         let writer = if is_stdout {
             &mut *self.stdout
         } else {
             &mut *self.stderr
         };
-        write_labeled_lines(writer, node, &decoded, &mut state.pending);
+
+        if payload.encoding() == ChunkEncoding::Utf8
+            && payload
+                .as_bytes()
+                .iter()
+                .all(|byte| is_live_raw_byte(*byte))
+        {
+            let mut batch = WriteBatch::new(writer);
+            write_labeled_bytes(&mut batch, node, payload.as_bytes(), &mut state.pending);
+            return;
+        }
+
+        let decoded = state.decoder.push(payload.as_bytes());
+        let mut batch = WriteBatch::new(writer);
+        let _ = write_labeled_lines(&mut batch, node, &decoded, &mut state.pending);
     }
 
     fn ingest_buffered(&mut self, is_stdout: bool, node: &str, payload: &OutputPayload) {
         let entry = self.state.grouped.entry(node.to_owned()).or_default();
         if is_stdout {
-            let decoded = entry.stdout_decoder.push(payload.as_bytes());
-            entry.stdout.push_str(&decoded);
+            entry.stdout.push_bytes(payload.as_bytes());
         } else {
-            let decoded = entry.stderr_decoder.push(payload.as_bytes());
-            entry.stderr.push_str(&decoded);
+            entry.stderr.push_bytes(payload.as_bytes());
         }
     }
 
     fn flush_live_partial(&mut self, node: &str) {
         flush_stream_on_exit(self.stdout, node, &mut self.state.live_stdout);
         flush_stream_on_exit(self.stderr, node, &mut self.state.live_stderr);
-    }
-
-    fn finish_buffered_decoders(&mut self, node: &str) {
-        if let Some(buffers) = self.state.grouped.get_mut(node) {
-            let rest = buffers.stdout_decoder.finish();
-            buffers.stdout.push_str(&rest);
-            let rest = buffers.stderr_decoder.finish();
-            buffers.stderr.push_str(&rest);
-        }
     }
 }
 
@@ -322,12 +373,15 @@ fn flush_stream_on_exit(
 ) {
     if let Some(mut state) = streams.remove(node) {
         let rest = state.decoder.finish();
+        let mut batch = WriteBatch::new(writer);
         if !rest.is_empty() {
             state.pending.push_str(&rest);
         }
         if !state.pending.is_empty() {
             let prefix = format!("[{node}] ");
-            let _ = writeln!(writer, "{prefix}{}", state.pending);
+            let _ = batch.push_str(&prefix);
+            let _ = batch.push_str(&state.pending);
+            let _ = batch.push(b"\n");
         }
     }
 }
@@ -358,13 +412,6 @@ impl EventSink for TaskOutputRenderer<'_> {
             } => {
                 if matches!(self.mode, TaskOutputMode::Live) {
                     self.flush_live_partial(&node);
-                }
-
-                if matches!(
-                    self.mode,
-                    TaskOutputMode::Grouped | TaskOutputMode::Failures
-                ) {
-                    self.finish_buffered_decoders(&node);
                 }
 
                 let should_flush = match self.mode {
@@ -531,15 +578,44 @@ fn write_buffered_output(
     Ok(())
 }
 
-fn write_labeled_lines(writer: &mut dyn Write, node: &str, text: &str, pending: &mut String) {
+fn write_labeled_lines(
+    batch: &mut WriteBatch<'_>,
+    node: &str,
+    text: &str,
+    pending: &mut String,
+) -> io::Result<()> {
     pending.push_str(text);
-    let prefix = format!("[{node}] ");
+    if pending.len() > LIVE_PENDING_CAP {
+        let prefix = format!("[{node}] ");
+        batch.push_str(&prefix)?;
+        batch.push_str(pending)?;
+        batch.push(b"\n")?;
+        pending.clear();
+        return Ok(());
+    }
 
+    let prefix = format!("[{node}] ");
     while let Some(newline_idx) = pending.find('\n') {
         let line = pending.drain(..=newline_idx).collect::<String>();
         let line = line.strip_suffix('\n').unwrap_or(&line);
-        let _ = writeln!(writer, "{prefix}{line}");
+        batch.push_str(&prefix)?;
+        batch.push_str(line)?;
+        batch.push(b"\n")?;
     }
+    Ok(())
+}
+
+fn write_labeled_bytes(batch: &mut WriteBatch<'_>, node: &str, text: &[u8], pending: &mut String) {
+    if let Ok(chunk) = std::str::from_utf8(text) {
+        let _ = write_labeled_lines(batch, node, chunk, pending);
+        return;
+    }
+    let decoded = String::from_utf8_lossy(text);
+    let _ = write_labeled_lines(batch, node, &decoded, pending);
+}
+
+fn is_live_raw_byte(byte: u8) -> bool {
+    byte == b'\n' || byte == b'\t' || byte == b'\r' || (0x20..0x7f).contains(&byte) || byte >= 0x80
 }
 
 #[cfg(test)]
@@ -583,6 +659,40 @@ mod tests {
             String::from_utf8(stdout).expect("utf-8 stdout"),
             String::from_utf8(stderr).expect("utf-8 stderr"),
         )
+    }
+
+    #[test]
+    fn live_mode_renders_coalesced_chunk_events() {
+        let events = vec![
+            Event::StdoutChunk {
+                node: "api".to_owned(),
+                payload: OutputPayload::utf8("line1\nline2\n"),
+            },
+            Event::StdoutChunk {
+                node: "api".to_owned(),
+                payload: OutputPayload::utf8("line3\n"),
+            },
+            Event::node_exited("api".to_owned(), Some(0)),
+        ];
+        let (stdout, _) = render_output(TaskOutputMode::Live, &events);
+        assert_eq!(stdout, "[api] line1\n[api] line2\n[api] line3\n");
+    }
+
+    #[test]
+    fn grouped_mode_buffers_coalesced_byte_chunks() {
+        let events = vec![
+            Event::StdoutChunk {
+                node: "big".to_owned(),
+                payload: OutputPayload::from_bytes(b"part1".to_vec()),
+            },
+            Event::StdoutChunk {
+                node: "big".to_owned(),
+                payload: OutputPayload::from_bytes(b"part2\n".to_vec()),
+            },
+            Event::node_exited("big".to_owned(), Some(0)),
+        ];
+        let (stdout, _) = render_output(TaskOutputMode::Grouped, &events);
+        assert_eq!(stdout, "part1part2\n");
     }
 
     #[test]
