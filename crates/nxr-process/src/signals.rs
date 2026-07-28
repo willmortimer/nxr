@@ -175,20 +175,7 @@ pub(crate) mod unix {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::exit_code_from_status;
-
-    #[cfg(unix)]
-    fn unix_util(name: &str) -> String {
-        for prefix in ["/usr/bin", "/bin"] {
-            let candidate = format!("{prefix}/{name}");
-            if Path::new(&candidate).exists() {
-                return candidate;
-            }
-        }
-        panic!("missing {name} under /usr/bin or /bin");
-    }
 
     /// Poll until the child exits or the deadline passes, then always reap.
     #[cfg(unix)]
@@ -215,12 +202,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn exit_code_passthrough_for_normal_exit() {
-        let status = std::process::Command::new(unix_util("true"))
+        let status = std::process::Command::new(crate::test_unix::unix_util("true"))
             .status()
             .expect("spawn true");
         assert_eq!(exit_code_from_status(status), 0);
 
-        let status = std::process::Command::new(unix_util("false"))
+        let status = std::process::Command::new(crate::test_unix::unix_util("false"))
             .status()
             .expect("spawn false");
         assert_eq!(exit_code_from_status(status), 1);
@@ -235,7 +222,7 @@ mod tests {
         use nix::sys::signal::{Signal, killpg};
         use nix::unistd::Pid;
 
-        let mut child = Command::new(unix_util("sleep"))
+        let mut child = Command::new(crate::test_unix::unix_util("sleep"))
             .arg("30")
             .process_group(0)
             .spawn()
@@ -259,7 +246,7 @@ mod tests {
         use super::unix::SignalForwarder;
 
         let forwarder = SignalForwarder::install().expect("install forwarder");
-        let mut child = Command::new(unix_util("sleep"))
+        let mut child = Command::new(crate::test_unix::unix_util("sleep"))
             .arg("60")
             .process_group(0)
             .spawn()
@@ -299,7 +286,7 @@ mod tests {
         use super::unix::SignalForwarder;
 
         let forwarder = SignalForwarder::install().expect("install forwarder");
-        let mut child = Command::new(unix_util("sleep"))
+        let mut child = Command::new(crate::test_unix::unix_util("sleep"))
             .arg("60")
             .process_group(0)
             .spawn()

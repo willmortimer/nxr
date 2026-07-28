@@ -7,6 +7,9 @@ pub mod session;
 pub mod signals;
 pub mod supervisor;
 
+#[cfg(all(test, unix))]
+mod test_unix;
+
 pub use deadline::DeadlineQueue;
 pub use foreground::{run, run_in, run_in_with_stderr};
 pub use pipe_multiplex::{PipeChunk, PipeMultiplexer, PipeStream};

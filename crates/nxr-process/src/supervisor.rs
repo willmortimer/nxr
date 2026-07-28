@@ -417,7 +417,6 @@ impl Supervisor {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -425,17 +424,6 @@ mod tests {
 
     use super::Supervisor;
     use crate::signals::InterruptFlags;
-
-    #[cfg(unix)]
-    fn unix_util(name: &str) -> String {
-        for prefix in ["/usr/bin", "/bin"] {
-            let candidate = format!("{prefix}/{name}");
-            if Path::new(&candidate).exists() {
-                return candidate;
-            }
-        }
-        panic!("missing {name} under /usr/bin or /bin");
-    }
 
     #[cfg(unix)]
     fn group_alive(pgid: u32) -> bool {
@@ -467,7 +455,7 @@ mod tests {
     fn shutdown_all_term_to_kill_many_children() {
         let mut supervisor = Supervisor::new();
         let env = EnvironmentPolicy::Inherit;
-        let sleep = unix_util("sleep");
+        let sleep = crate::test_unix::unix_util("sleep");
         let child_count = 8usize;
         let mut pgids = Vec::with_capacity(child_count);
 
@@ -501,7 +489,7 @@ mod tests {
     fn shutdown_all_stops_two_sleeps() {
         let mut supervisor = Supervisor::new();
         let env = EnvironmentPolicy::Inherit;
-        let sleep = unix_util("sleep");
+        let sleep = crate::test_unix::unix_util("sleep");
 
         let pgid_a = supervisor
             .spawn("a", &sleep, &["30"], None, &env, None, None)
@@ -534,7 +522,7 @@ mod tests {
         supervisor
             .spawn(
                 "true",
-                unix_util("true"),
+                crate::test_unix::unix_util("true"),
                 &[] as &[&str],
                 None,
                 &env,
@@ -543,7 +531,15 @@ mod tests {
             )
             .expect("spawn true");
         supervisor
-            .spawn("sleep", unix_util("sleep"), &["30"], None, &env, None, None)
+            .spawn(
+                "sleep",
+                crate::test_unix::unix_util("sleep"),
+                &["30"],
+                None,
+                &env,
+                None,
+                None,
+            )
             .expect("spawn sleep");
 
         let mut finished = None;
@@ -567,7 +563,7 @@ mod tests {
         let escalate = flags.trigger_handle();
         let mut supervisor = Supervisor::new();
         let env = EnvironmentPolicy::Inherit;
-        let bash = unix_util("bash");
+        let bash = crate::test_unix::unix_util("bash");
 
         // Ignore SIGTERM in the shell itself and spin in-process. Nested
         // `sleep` leaves a reparented zombie that can make killpg(0) succeed
@@ -614,7 +610,7 @@ mod tests {
         let flags = InterruptFlags::install().expect("install flags");
         let mut supervisor = Supervisor::new();
         let env = EnvironmentPolicy::Inherit;
-        let sleep = unix_util("sleep");
+        let sleep = crate::test_unix::unix_util("sleep");
 
         let pgid = supervisor
             .spawn("sleep", &sleep, &["30"], None, &env, None, None)
@@ -647,7 +643,7 @@ mod tests {
     fn shutdown_all_escalates_when_child_ignores_sigterm() {
         let mut supervisor = Supervisor::new();
         let env = EnvironmentPolicy::Inherit;
-        let bash = unix_util("bash");
+        let bash = crate::test_unix::unix_util("bash");
         let ignore_term = ["-c", "trap '' TERM; while true; do true; done"];
 
         let pgid = supervisor
@@ -677,7 +673,7 @@ mod tests {
     fn nested_grandchildren_do_not_survive_shutdown() {
         let mut supervisor = Supervisor::new();
         let env = EnvironmentPolicy::Inherit;
-        let bash = unix_util("bash");
+        let bash = crate::test_unix::unix_util("bash");
         let nested = ["-c", "bash -c 'exec sleep 60'"];
         let child_count = 4usize;
         let mut pgids = Vec::with_capacity(child_count);
@@ -705,7 +701,7 @@ mod tests {
     fn kill_all_escalates_immediately() {
         let mut supervisor = Supervisor::new();
         let env = EnvironmentPolicy::Inherit;
-        let bash = unix_util("bash");
+        let bash = crate::test_unix::unix_util("bash");
         let ignore_term = ["-c", "trap '' TERM; while true; do true; done"];
 
         let pgid = supervisor

@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so unprefixed `watch` still prefers tasks over same-named apps.
 - Hermetic process tests resolve `true`/`false`/`printenv` via `PATH` when `/usr/bin`
   and `/bin` are absent in the Nix sandbox.
+- Hermetic `nxr-process` tests avoid `perl` and share PATH-aware `unix_util` helpers
+  so sandboxed nextest no longer fails on missing FHS tools.
 - Watch first-generation config probe budget allows the `show-config` fallback
   (1–2 logged config calls), matching doctor probe accounting.
 

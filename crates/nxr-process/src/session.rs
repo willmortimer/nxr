@@ -320,7 +320,6 @@ mod unix {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use std::thread;
     use std::time::Duration;
 
@@ -353,21 +352,10 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn unix_util(name: &str) -> String {
-        for prefix in ["/usr/bin", "/bin"] {
-            let candidate = format!("{prefix}/{name}");
-            if Path::new(&candidate).exists() {
-                return candidate;
-            }
-        }
-        panic!("missing {name} under /usr/bin or /bin");
-    }
-
-    #[cfg(unix)]
     #[test]
     fn spawn_true_can_try_wait() {
         let mut session = spawn_in(
-            unix_util("true"),
+            crate::test_unix::unix_util("true"),
             &[] as &[&str],
             None,
             &EnvironmentPolicy::Inherit,
@@ -388,7 +376,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn pipe_stdout_stderr_uses_null_stdin() {
-        let bash = unix_util("bash");
+        let bash = crate::test_unix::unix_util("bash");
         // Null stdin: not a TTY, and a blocking read returns EOF immediately.
         let script =
             "if [ -t 0 ]; then exit 10; fi; if IFS= read -r _; then exit 11; else exit 0; fi";
@@ -417,7 +405,7 @@ mod tests {
     #[test]
     fn terminate_stops_sleep() {
         let session = spawn_in(
-            unix_util("sleep"),
+            crate::test_unix::unix_util("sleep"),
             &["30"],
             None,
             &EnvironmentPolicy::Inherit,
@@ -435,7 +423,7 @@ mod tests {
     #[test]
     fn session_pgid_matches_child() {
         let session: ChildSession = spawn_in(
-            unix_util("sleep"),
+            crate::test_unix::unix_util("sleep"),
             &["1"],
             None,
             &EnvironmentPolicy::Inherit,
@@ -448,7 +436,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn terminate_escalates_when_child_ignores_sigterm() {
-        let bash = unix_util("bash");
+        let bash = crate::test_unix::unix_util("bash");
         // Spin in-process so SIGKILL leaves no grandchild zombie that keeps
         // the process group visible to killpg(0) after bash is reaped.
         let ignore_term = ["-c", "trap '' TERM; while true; do true; done"];
@@ -465,7 +453,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn grandchildren_in_process_group_are_terminated() {
-        let bash = unix_util("bash");
+        let bash = crate::test_unix::unix_util("bash");
         // Nested shell keeps the leaf `sleep` in the supervised process group.
         let nested = ["-c", "bash -c 'exec sleep 60'"];
         let session = spawn_in(&bash, &nested, None, &EnvironmentPolicy::Inherit).expect("spawn");

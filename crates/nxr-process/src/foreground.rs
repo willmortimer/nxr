@@ -224,7 +224,6 @@ mod unix {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use std::thread;
     use std::time::Duration;
 
@@ -244,40 +243,16 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn unix_util(name: &str) -> String {
-        for prefix in ["/usr/bin", "/bin"] {
-            let candidate = format!("{prefix}/{name}");
-            if Path::new(&candidate).exists() {
-                return candidate;
-            }
-        }
-        // Hermetic Nix check sandboxes often omit /usr/bin and /bin; coreutils
-        // still appear on PATH via the stdenv.
-        if let Ok(path) = std::env::var("PATH") {
-            for dir in path.split(':') {
-                if dir.is_empty() {
-                    continue;
-                }
-                let candidate = Path::new(dir).join(name);
-                if candidate.is_file() {
-                    return candidate.to_string_lossy().into_owned();
-                }
-            }
-        }
-        panic!("missing {name} under /usr/bin, /bin, or PATH");
-    }
-
-    #[cfg(unix)]
     #[test]
     fn true_exits_zero() {
-        let code = run(unix_util("true"), &[] as &[&str]).expect("run true");
+        let code = run(crate::test_unix::unix_util("true"), &[] as &[&str]).expect("run true");
         assert_eq!(code, 0);
     }
 
     #[cfg(unix)]
     #[test]
     fn false_exits_one() {
-        let code = run(unix_util("false"), &[] as &[&str]).expect("run false");
+        let code = run(crate::test_unix::unix_util("false"), &[] as &[&str]).expect("run false");
         assert_eq!(code, 1);
     }
 
@@ -286,7 +261,7 @@ mod tests {
     fn no_shell_evaluation_of_args() {
         // If args were shell-evaluated, `&& exit 99` would change the status.
         // `true` ignores extra argv and still exits 0.
-        let code = run(unix_util("true"), &["&&", "exit", "99"]).expect("run");
+        let code = run(crate::test_unix::unix_util("true"), &["&&", "exit", "99"]).expect("run");
         assert_eq!(code, 0);
     }
 
@@ -306,8 +281,13 @@ mod tests {
             [("NXR_CLEAN_TEST".to_owned(), "1".to_owned())],
             ["PATH".to_owned()],
         );
-        let code =
-            run_in(unix_util("printenv"), &["NXR_CLEAN_TEST"], None, &policy).expect("printenv");
+        let code = run_in(
+            crate::test_unix::unix_util("printenv"),
+            &["NXR_CLEAN_TEST"],
+            None,
+            &policy,
+        )
+        .expect("printenv");
         // printenv exits 0 when the variable is set
         assert_eq!(code, 0);
     }
@@ -319,7 +299,7 @@ mod tests {
         use nix::sys::signal::{Signal, kill};
         use nix::unistd::Pid;
 
-        let sleep = unix_util("sleep");
+        let sleep = crate::test_unix::unix_util("sleep");
         let handle = thread::spawn(move || run(&sleep, &["60"]));
 
         thread::sleep(Duration::from_millis(150));

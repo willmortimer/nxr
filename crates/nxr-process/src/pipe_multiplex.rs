@@ -600,8 +600,13 @@ mod tests {
     fn drains_more_than_one_buffer_per_poll_wake() {
         const READ_BUFFER_SIZE: usize = 32 * 1024;
         let payload_size = READ_BUFFER_SIZE * 2 + 100;
+        // Prefer coreutils over perl — hermetic Nix sandboxes often lack perl.
+        // `2>/dev/null` keeps this portable (GNU `status=none` is not on BSD dd).
         let mut child = Command::new("/bin/sh")
-            .args(["-c", &format!("perl -e 'print \"x\" x {payload_size}'")])
+            .args([
+                "-c",
+                &format!("dd if=/dev/zero bs={payload_size} count=1 2>/dev/null | tr '\\0' 'x'"),
+            ])
             .stdout(Stdio::piped())
             .stdin(Stdio::null())
             .spawn()
