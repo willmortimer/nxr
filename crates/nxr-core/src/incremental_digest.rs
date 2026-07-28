@@ -178,12 +178,46 @@ impl IncrementalDigestState {
     pub(crate) fn set_merkle_session(&mut self, session: MerkleSession) {
         self.merkle = Some(session);
     }
+
+    /// Drop batched Git status so the next digest reloads dirty/clean sets.
+    pub fn reset_git_snapshot(&mut self) {
+        self.git = None;
+    }
 }
 
 impl Drop for IncrementalDigestState {
     fn drop(&mut self) {
         let _ = self.flush();
     }
+}
+
+/// Drop durable action-digest entries for changed paths (watch / daemon hook).
+///
+/// # Errors
+///
+/// Returns [`io::Error`] when the index cannot be read.
+pub fn invalidate_action_digest_paths(
+    flake_root: &Utf8Path,
+    paths: &[String],
+    state: &mut IncrementalDigestState,
+) -> io::Result<usize> {
+    if paths.is_empty() || !action_digest_index_enabled() {
+        return Ok(0);
+    }
+    let Some(session) = ensure_index_session(flake_root, state)? else {
+        return Ok(0);
+    };
+    let mut removed = 0usize;
+    for path in paths {
+        let normalized = path.replace('\\', "/");
+        if session.index.entries.remove(&normalized).is_some() {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        state.dirty = true;
+    }
+    Ok(removed)
 }
 
 /// Whether Git blob digests are enabled (default on; kill-switch via env).

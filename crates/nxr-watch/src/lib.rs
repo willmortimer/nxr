@@ -3,6 +3,7 @@
 pub mod change;
 pub mod filter;
 pub mod restart;
+pub mod snapshot;
 pub mod watcher;
 
 pub use change::{
@@ -11,4 +12,7 @@ pub use change::{
 };
 pub use filter::{PathFilterError, PathFilters, should_ignore_path};
 pub use restart::{Debouncer, Generation};
+pub use snapshot::{
+    WATCH_SNAPSHOT_ENV, WatchIncrementalSnapshot, WatchSnapshotStats, WatchSourcePatch,
+};
 pub use watcher::{DEFAULT_DEBOUNCE, WatchConfig, WatchError, WatchPoll, WatchSession};

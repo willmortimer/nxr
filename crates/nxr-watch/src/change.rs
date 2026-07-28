@@ -7,8 +7,9 @@
 //! ([ADR-0157]). When a long-lived process retains a
 //! [`nxr_core::MerkleSession`](nxr_core::MerkleSession), also call
 //! [`nxr_core::invalidate_paths`](nxr_core::invalidate_paths) before the next
-//! directory digest so only ancestor digests drop ([ADR-0156]). Full in-process
-//! MerkleSession↔watch wiring remains Wave 5.
+//! directory digest so only ancestor digests drop ([ADR-0156]). Watch mode
+//! retains an in-process [`WatchIncrementalSnapshot`](crate::snapshot::WatchIncrementalSnapshot)
+//! across generations ([ADR-0160]).
 
 use std::path::Path;
 

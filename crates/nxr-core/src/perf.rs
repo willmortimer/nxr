@@ -34,6 +34,9 @@ static GIT_BLOB_DIGESTS: AtomicU64 = AtomicU64::new(0);
 static NODES_PREPARED: AtomicU64 = AtomicU64::new(0);
 static SPAWN_PLANS_PREPARED: AtomicU64 = AtomicU64::new(0);
 static SPAWN_PLANS_CANCELLED: AtomicU64 = AtomicU64::new(0);
+static WATCH_SNAPSHOT_PATCHES: AtomicU64 = AtomicU64::new(0);
+static WATCH_PATHS_INVALIDATED: AtomicU64 = AtomicU64::new(0);
+static WATCH_PREPARED_NODES_DROPPED: AtomicU64 = AtomicU64::new(0);
 
 fn env_enabled() -> bool {
     match std::env::var(PERF_STATS_ENV) {
@@ -202,6 +205,30 @@ pub fn record_spawn_plan_cancelled() {
     }
 }
 
+/// Record one watch incremental snapshot patch (schema v8+; ADR-0160).
+#[inline]
+pub fn record_watch_snapshot_patch() {
+    if enabled() {
+        WATCH_SNAPSHOT_PATCHES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Accumulate repo-relative paths invalidated by watch snapshot patches.
+#[inline]
+pub fn record_watch_paths_invalidated(count: u64) {
+    if enabled() && count > 0 {
+        WATCH_PATHS_INVALIDATED.fetch_add(count, Ordering::Relaxed);
+    }
+}
+
+/// Accumulate prepared task nodes dropped on watch source invalidation.
+#[inline]
+pub fn record_watch_prepared_nodes_dropped(count: u64) {
+    if enabled() && count > 0 {
+        WATCH_PREPARED_NODES_DROPPED.fetch_add(count, Ordering::Relaxed);
+    }
+}
+
 /// RAII timer for plan preparation.
 pub struct PlanPrepareGuard {
     started: Option<Instant>,
@@ -278,11 +305,17 @@ pub struct PerfStats {
     pub spawn_plans_prepared: u64,
     /// Spawn-plan stages cancelled on CAS hit (schema v7+; ADR-0159).
     pub spawn_plans_cancelled: u64,
+    /// Watch incremental snapshot patches (schema v8+; ADR-0160).
+    pub watch_snapshot_patches: u64,
+    /// Repo-relative paths invalidated by watch patches (schema v8+).
+    pub watch_paths_invalidated: u64,
+    /// Prepared task nodes dropped on watch source invalidation (schema v8+).
+    pub watch_prepared_nodes_dropped: u64,
 }
 
 impl PerfStats {
-    /// Schema v7 adds `spawn_plans_prepared` / `spawn_plans_cancelled` (ADR-0159).
-    const SCHEMA_VERSION: u32 = 7;
+    /// Schema v8 adds watch incremental snapshot counters (ADR-0160).
+    const SCHEMA_VERSION: u32 = 8;
 
     /// Collect current counter values.
     #[must_use]
@@ -305,6 +338,9 @@ impl PerfStats {
             nodes_prepared: NODES_PREPARED.load(Ordering::Relaxed),
             spawn_plans_prepared: SPAWN_PLANS_PREPARED.load(Ordering::Relaxed),
             spawn_plans_cancelled: SPAWN_PLANS_CANCELLED.load(Ordering::Relaxed),
+            watch_snapshot_patches: WATCH_SNAPSHOT_PATCHES.load(Ordering::Relaxed),
+            watch_paths_invalidated: WATCH_PATHS_INVALIDATED.load(Ordering::Relaxed),
+            watch_prepared_nodes_dropped: WATCH_PREPARED_NODES_DROPPED.load(Ordering::Relaxed),
         }
     }
 }
@@ -347,6 +383,9 @@ pub(crate) fn test_reset(enabled: bool) {
     NODES_PREPARED.store(0, Ordering::Relaxed);
     SPAWN_PLANS_PREPARED.store(0, Ordering::Relaxed);
     SPAWN_PLANS_CANCELLED.store(0, Ordering::Relaxed);
+    WATCH_SNAPSHOT_PATCHES.store(0, Ordering::Relaxed);
+    WATCH_PATHS_INVALIDATED.store(0, Ordering::Relaxed);
+    WATCH_PREPARED_NODES_DROPPED.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -436,7 +475,7 @@ mod tests {
         assert_eq!(stats.nodes_prepared, 2);
         assert_eq!(stats.spawn_plans_prepared, 1);
         assert_eq!(stats.spawn_plans_cancelled, 2);
-        assert_eq!(stats.schema_version, 7);
+        assert_eq!(stats.schema_version, 8);
     }
 
     #[test]

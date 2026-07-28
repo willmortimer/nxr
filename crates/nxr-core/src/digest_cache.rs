@@ -14,8 +14,11 @@ use std::path::{Path, PathBuf};
 use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::cas::{digest_file, flake_lock_digest};
-use crate::incremental_digest::{IncrementalDigestState, digest_repo_path_incremental};
-use crate::perf::record_digest_cache_hit;
+use crate::incremental_digest::{
+    IncrementalDigestState, digest_repo_path_incremental, invalidate_action_digest_paths,
+};
+use crate::merkle_index::invalidate_paths;
+use crate::perf::{record_digest_cache_hit, record_watch_paths_invalidated};
 
 /// Run-scoped digest memo for workspace action keys.
 ///
@@ -73,6 +76,49 @@ impl RunDigestCache {
     /// Returns [`io::Error`] when the index cannot be written.
     pub fn flush_incremental(&mut self) -> io::Result<()> {
         self.incremental.flush()
+    }
+
+    /// Borrow the incremental digest / Merkle session (watch snapshot reuse).
+    #[must_use]
+    pub fn incremental_state(&self) -> &IncrementalDigestState {
+        &self.incremental
+    }
+
+    /// Mutable incremental digest / Merkle session (watch snapshot reuse).
+    pub fn incremental_state_mut(&mut self) -> &mut IncrementalDigestState {
+        &mut self.incremental
+    }
+
+    /// Drop run-scoped digests and patch durable indexes for watch source events.
+    ///
+    /// Clears memoized path/pattern digests, invalidates Merkle ancestor keys
+    /// ([`invalidate_paths`]), and removes action-digest index entries for
+    /// `paths`. Git snapshot is dropped so the next digest reloads status.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] when durable index updates fail.
+    pub fn invalidate_source_paths(
+        &mut self,
+        flake_root: &Utf8Path,
+        paths: &[String],
+    ) -> io::Result<usize> {
+        if paths.is_empty() {
+            return Ok(0);
+        }
+        for path in paths {
+            let normalized = path.replace('\\', "/");
+            self.path_digests.remove(&normalized);
+        }
+        self.repo_files = None;
+        self.pattern_digests.clear();
+        self.incremental.reset_git_snapshot();
+        if let Some(session) = self.incremental.merkle_session_mut() {
+            invalidate_paths(session, paths);
+        }
+        let removed = invalidate_action_digest_paths(flake_root, paths, &mut self.incremental)?;
+        record_watch_paths_invalidated(paths.len() as u64);
+        Ok(removed)
     }
 
     /// Digest a repo-relative path, reusing prior results within this run.
@@ -249,5 +295,30 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(cache.hits(), 1);
         assert_eq!(cache.misses(), 1);
+    }
+
+    #[test]
+    fn invalidate_source_paths_clears_path_memo() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let flake = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8");
+        std::fs::write(flake.join("input.txt"), b"one").expect("write");
+
+        let mut cache = RunDigestCache::new();
+        let first = cache
+            .digest_repo_path(&flake, "input.txt")
+            .expect("first digest");
+        assert_eq!(cache.hits(), 0);
+        assert_eq!(cache.misses(), 1);
+
+        cache
+            .invalidate_source_paths(&flake, &["input.txt".to_owned()])
+            .expect("invalidate");
+        std::fs::write(flake.join("input.txt"), b"two").expect("edit");
+        let second = cache
+            .digest_repo_path(&flake, "input.txt")
+            .expect("second digest");
+        assert_ne!(first, second);
+        assert_eq!(cache.hits(), 0);
+        assert_eq!(cache.misses(), 2);
     }
 }

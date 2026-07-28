@@ -740,6 +740,7 @@ dependencies = [
  "notify",
  "nxr-affected",
  "nxr-core",
+ "nxr-task",
  "tempfile",
  "thiserror",
 ]

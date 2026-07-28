@@ -16,7 +16,7 @@ Set `NXR_PERF_STATS=1` to accumulate counters for one CLI invocation. On exit,
 nxr prints a single JSON line on stderr:
 
 ```text
-nxr-perf-stats: {"schema_version":7,"nix_spawns":…,…}
+nxr-perf-stats: {"schema_version":8,"nix_spawns":…,…}
 ```
 
 | Counter | Meaning |
@@ -71,6 +71,25 @@ preparation and cancels in-flight SpawnPlan on cache hit
 `NXR_CAS_PLAN_PIPELINE=off` fuses stages (serial prepare-then-CAS). Sealed
 watch maps and eager prepare stay non-pipelined.
 
+## Watch incremental snapshot
+
+Watch mode retains a session-scoped digest / Merkle cache across source-only
+generations ([ADR-0160](adr/0160-watch-incremental-snapshot.md)):
+
+- **Patch on source:** `WatchIncrementalSnapshot` calls
+  `RunDigestCache::invalidate_source_paths` (path memo, Merkle ancestors,
+  action-digest entries) instead of cold rescans.
+- **Affected locality:** prepared task nodes for unaffected ids stay sealed;
+  affected ids are dropped and re-prepared with the shared digest cache before
+  the next generation.
+- **Metadata** restarts still invalidate discovery snapshots and reset the
+  incremental snapshot.
+- Kill-switch: `NXR_WATCH_SNAPSHOT=off`. `NXR_PERF_STATS` schema **v8** adds
+  `watch_snapshot_patches`, `watch_paths_invalidated`,
+  `watch_prepared_nodes_dropped`.
+- Wave **5b** (semantic coalesce) and **5c** (prewarm) extend reserved hooks;
+  not implemented in 5a.
+
 ## Optional local cache daemon (`nxrd`)
 
 Optional per-user daemon for warm multi-invocation sessions
@@ -93,8 +112,8 @@ nxr daemon stop
   trust boundary, process supervision, remote workers.
 - Kill-switch: `NXR_DAEMON=off` (also `0` / `false` / `no`). Absent socket or
   protocol mismatch → identical standalone CLI behavior.
-- Watch best-effort calls `merkle.invalidate` on restart classification; full
-  `MerkleSession` ownership in-daemon is Wave 5.
+- Watch best-effort calls `merkle.invalidate` on restart classification;
+  in-process `WatchIncrementalSnapshot` is Wave 5a ([ADR-0160](adr/0160-watch-incremental-snapshot.md)).
 
 ## Run-scoped digest cache
 

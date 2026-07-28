@@ -49,7 +49,8 @@ digests ([ADR-0147](0147-two-tier-actions.md)).
    nodes whose ownership prefix cannot overlap a change skip per-path glob
    matching. Sibling directories under a shared parent stay independent.
 5. **Watch hooks (comments only):** `nxr-watch` documents calling
-   `invalidate_paths` before the next digest; full snapshot wiring is Wave 5.
+   `invalidate_paths` before the next digest; in-process snapshot wiring is
+   Wave 5a ([ADR-0160](0160-watch-incremental-snapshot.md)).
 6. **`nxr cache clear` / `status`** include the merkle-index directory.
 
 ## Validation

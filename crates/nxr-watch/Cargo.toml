@@ -13,6 +13,7 @@ globset = { workspace = true }
 notify = { workspace = true }
 nxr-affected = { path = "../nxr-affected" }
 nxr-core = { path = "../nxr-core" }
+nxr-task = { path = "../nxr-task" }
 thiserror = { workspace = true }
 
 [dev-dependencies]

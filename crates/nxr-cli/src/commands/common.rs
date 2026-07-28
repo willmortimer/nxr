@@ -976,6 +976,59 @@ impl<'a> TaskNodePreparer<'a> {
         }
     }
 
+    /// Live preparer seeded with existing nodes and a shared digest cache (watch).
+    ///
+    /// Used after source-only invalidation drops affected prepared nodes while
+    /// retaining Merkle / action-digest session state across generations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrepareError`] when the document fails schema validation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_partial_prepared(
+        mut prepared: BTreeMap<String, PreparedTaskNode>,
+        snapshot: &'a WorkspaceSnapshot,
+        document: &'a TaskDocument,
+        root_task_ids: &'a [String],
+        request_args: &'a [String],
+        root: bool,
+        cwd: Option<&'a str>,
+        shell: Option<&'a str>,
+        shell_mode: ShellMode,
+        environment_policy: &'a EnvironmentPolicy,
+        nix_flags: &'a OptionalNixFlags,
+        context_override: Option<&'a str>,
+        digest_cache: RunDigestCache,
+    ) -> Result<Self, PrepareError> {
+        document.validate().map_err(PrepareError::TaskSchema)?;
+        for node in prepared.values_mut() {
+            node.prep_stage = NodePrepStage::SpawnPlan;
+        }
+        let prepare_count = u64::try_from(prepared.len()).unwrap_or(u64::MAX);
+        Ok(Self {
+            mode: PrepMode::Live(Box::new(LivePrep {
+                snapshot,
+                document,
+                root_task_ids,
+                request_args,
+                root,
+                cwd,
+                shell,
+                shell_mode,
+                environment_policy,
+                nix_flags,
+                context_override,
+                upstream_keys: BTreeMap::new(),
+                digest_cache,
+            })),
+            prepared,
+            prepare_count,
+            spawn_plan_count: prepare_count,
+            spawn_plan_cancelled: 0,
+            pipeline: false,
+        })
+    }
+
     /// How many nodes reached at least CasInputs.
     #[must_use]
     pub fn prepare_count(&self) -> u64 {
@@ -1018,6 +1071,17 @@ impl<'a> TaskNodePreparer<'a> {
     #[must_use]
     pub fn into_prepared(self) -> BTreeMap<String, PreparedTaskNode> {
         self.prepared
+    }
+
+    /// Consume into the prepared map and the live digest cache (watch partial prep).
+    #[must_use]
+    pub fn into_prepared_with_digest_cache(
+        self,
+    ) -> (BTreeMap<String, PreparedTaskNode>, RunDigestCache) {
+        match self.mode {
+            PrepMode::Live(live) => (self.prepared, live.digest_cache),
+            PrepMode::Sealed => (self.prepared, RunDigestCache::new()),
+        }
     }
 
     /// Eagerly prepare every id in `serial_order` through SpawnPlan.
