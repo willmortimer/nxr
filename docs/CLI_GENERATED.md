@@ -3,7 +3,7 @@
 This file is generated from Clap help output. Regenerate with:
 
 ```bash
-cargo xtask cli-ref
+cargo run -p xtask -- cli-ref
 ```
 
 <!-- BEGIN GENERATED -->
@@ -31,10 +31,21 @@ Commands:
   watch       Watch and rerun on filesystem changes
   graph       Show task graph
   cache       Manage nxr discovery cache
+  history     Show recent run summaries persisted under XDG state
   affected    Report apps and tasks likely affected by changed paths
   fmt         Format Nix sources via `nix fmt` / the flake formatter
   envrc       Generate direnv `.envrc` content (`use flake` / `use flake .#<shell>`)
+  init        Scaffold a minimal nxr flake from a template
+  migrate     Suggest nxr Nix from Justfile or mise.toml (never executes recipes)
+  context     Named execution contexts (list, inspect, run)
   in          Ergonomic dev-shell prefix: `nxr in <shell> <app|task|…>` (alias of `--shell`)
+  ci          CI planning helpers
+  trust       Manage project trust for secret-bearing and confirmation-gated tasks
+  inventory   List schema-described flake inventory outputs
+  up          Start long-running process nodes
+  status      Show supervised process status
+  logs        Tail logs for a supervised process
+  down        Stop supervised process nodes
 
 Options:
   -f, --flake <FLAKE>
@@ -157,7 +168,7 @@ Usage: nxr task [OPTIONS] [TASKS]... [-- <ARGS>...]
 
 Arguments:
   [TASKS]...
-          Task names (union DAG; shared dependencies run once). Optional with `--affected`
+          Task names (union DAG; shared dependencies run once). Optional with `--affected` / `changed`
 
   [ARGS]...
           Arguments forwarded to each root task's app only (MVP)
@@ -229,7 +240,7 @@ Options:
           Forward `--option KEY VAL` to Nix (repeatable; `KEY=VAL`)
 
       --path <PATH>
-          Explicit repository-relative changed paths (`--affected` only)
+          Explicit repository-relative changed paths (with `--affected` or `changed`)
 
       --junit <PATH>
           Write JUnit XML to PATH after the run

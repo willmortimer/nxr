@@ -91,7 +91,15 @@ nxr --flake ./path/to/flake hello
 | `nxr affected [PATH…]` | Conservative path→app/task analysis (`--json` for CI) |
 | `nxr inspect` / `doctor` | Overview and diagnostics |
 | `nxr doctor determinate` | Determinate Nix distribution / nixd / lazy-tree findings |
-| `nxr cache clear\|status` | Discovery + capability cache management |
+| `nxr cache clear\|status\|explain` | Discovery, capability, and workspace CAS cache |
+| `nxr init <template>` | Scaffold a minimal nxr flake |
+| `nxr migrate justfile\|mise` | Suggest `perSystem.nxr.*` from Just/mise (never runs recipes) |
+| `nxr ci plan [--json]` | Export a provider-neutral CI execution plan |
+| `nxr context list\|inspect\|run` | Named execution contexts |
+| `nxr trust status\|add\|revoke` | Project trust for secret/confirm-gated tasks |
+| `nxr inventory [--role]` | List schema-described flake inventory outputs |
+| `nxr history list\|clear` | Recent run summaries (XDG state) |
+| `nxr up\|status\|logs\|down` | Supervised long-running processes (preview) |
 | `nxr completion zsh` | Shell completion script |
 
 Useful globals: `--flake`, `--cwd` / `--root`, `--shell <name>`,
@@ -188,11 +196,11 @@ Coming from `mise` / `just`? [docs/MIGRATE_FROM_MISE_JUST.md](docs/MIGRATE_FROM_
 | [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) | Commands and flags |
 | [docs/APP_AUTHORING.md](docs/APP_AUTHORING.md) | Writing robust flake apps |
 | [docs/TASKS.md](docs/TASKS.md) | Task graphs, aliases, schema export |
-| [docs/TASK_SCHEMA_V2.md](docs/TASK_SCHEMA_V2.md) | Draft v2 inputs/outputs/cache/resources (not implemented) |
+| [docs/TASK_SCHEMA_V2.md](docs/TASK_SCHEMA_V2.md) | Schema v2 matrix (contexts shipped; workspace cache experimental) |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Nix call budgets, caches, release timing harness |
 | [docs/MONOREPO_VIEWS.md](docs/MONOREPO_VIEWS.md) | Categories, namespaces, projects file |
 | [docs/DEV_ENV_INTEGRATION.md](docs/DEV_ENV_INTEGRATION.md) | Dev shells, direnv, shellIntegration |
-| [docs/EXECUTION_CONTEXT.md](docs/EXECUTION_CONTEXT.md) | Contexts, secrets, Home Manager, processes (planned) |
+| [docs/EXECUTION_CONTEXT.md](docs/EXECUTION_CONTEXT.md) | Contexts, secrets, Home Manager; process MVP (preview) |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Active 2.7 → 3.1 plan |
 | [docs/ADAPTERS.md](docs/ADAPTERS.md) | Read-only ecosystem graph boundary |
 | [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | Platforms and schema freeze |
@@ -206,7 +214,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**3.1.2** — workspace CAS/actions, resource scheduling, process MVP, inventory CLI, history, coalesced discovery; packaging fix for init templates in Nix builds.
+**3.1.2** — workspace CAS/actions (**experimental**), resource scheduling, process MVP (**preview**), inventory CLI, history, coalesced discovery; packaging fix for init templates in Nix builds.
 
 History: [CHANGELOG.md](CHANGELOG.md). Next: [docs/ROADMAP.md](docs/ROADMAP.md)
-(Later: remote CAS, workers).
+(Later: remote CAS, workers; full process supervision).

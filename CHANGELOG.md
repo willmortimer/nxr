@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Regenerated `docs/CLI_GENERATED.md`; README and schema v2 status matrix aligned
+  with 3.1 shipped CLI and experimental workspace cache / process preview.
+- `checks.<system>.cli-ref` fails CI when generated CLI help drifts from Clap.
+
 ### Fixed
 
 - `nxr plan <app>` on app-only flakes no longer fails with `unknown selector or task`
