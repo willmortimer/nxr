@@ -94,6 +94,10 @@
             inherit pkgs;
           };
 
+          flakePartsV2FieldsCheck = import ./nix/checks/flake-parts-v2-fields.nix {
+            inherit pkgs;
+          };
+
           workspaceSrcIncludesCheck = import ./nix/checks/workspace-src-includes.nix {
             inherit pkgs src;
           };
@@ -179,6 +183,7 @@
           checks = {
             inherit nxr;
             flake-schema = flakeSchemaCheck;
+            flake-parts-v2-fields = flakePartsV2FieldsCheck;
             workspace-src-includes = workspaceSrcIncludesCheck;
           } // qualityChecks;
 
