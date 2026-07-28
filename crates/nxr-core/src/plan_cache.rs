@@ -368,7 +368,9 @@ pub fn plan_cache_status() -> io::Result<PlanCacheStatus> {
     })
 }
 
-fn plan_contains_secret_values(plan: &Plan) -> bool {
+/// Whether any plan secret field holds a real value (not the runtime placeholder).
+#[must_use]
+pub fn plan_contains_secret_values(plan: &Plan) -> bool {
     plan.secrets.iter().any(secret_ref_has_value)
 }
 

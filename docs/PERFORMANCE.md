@@ -39,7 +39,33 @@ Counters are **off by default**; no semantic change when unset. See
 [ADR-0151](adr/0151-perf-counters.md), [ADR-0152](adr/0152-prepared-plan-cache.md),
 [ADR-0153](adr/0153-store-exe-cache.md), [ADR-0154](adr/0154-run-digest-cache.md),
 and [ADR-0155](adr/0155-incremental-git-digests.md),
-and [ADR-0156](adr/0156-merkle-affected-index.md).
+and [ADR-0156](adr/0156-merkle-affected-index.md),
+and [ADR-0157](adr/0157-optional-nxrd.md).
+
+## Optional local cache daemon (`nxrd`)
+
+Optional per-user daemon for warm multi-invocation sessions
+([ADR-0157](adr/0157-optional-nxrd.md)):
+
+```bash
+nxr daemon start          # background
+nxr daemon status --json
+nxr daemon stop
+```
+
+- Socket: `$XDG_RUNTIME_DIR/nxr/nxrd.sock` (override `NXR_DAEMON_SOCKET`).
+- Protocol: JSON lines, version **1**, role `cache` only — not execution
+  authority; reserved methods leave room for lazy prep (4b), log broker (7c),
+  and workers without claiming them.
+- **Retained in RAM while running:** discovery payloads, prepared plans
+  (placeholder secret policy), fingerprint strings, Merkle invalidation path
+  sets, recent action-key digests.
+- **Not retained / not authoritative:** secret values, Nix eval results as a
+  trust boundary, process supervision, remote workers.
+- Kill-switch: `NXR_DAEMON=off` (also `0` / `false` / `no`). Absent socket or
+  protocol mismatch → identical standalone CLI behavior.
+- Watch best-effort calls `merkle.invalidate` on restart classification; full
+  `MerkleSession` ownership in-daemon is Wave 5.
 
 ## Run-scoped digest cache
 

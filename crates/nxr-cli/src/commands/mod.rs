@@ -8,6 +8,7 @@ pub mod complete;
 pub mod completion;
 pub mod configurations;
 pub mod context;
+pub mod daemon;
 pub mod doctor;
 pub mod doctor_builders;
 pub mod doctor_cache;

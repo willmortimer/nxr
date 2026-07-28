@@ -14,9 +14,10 @@ use nxr_core::PlanPrepareGuard;
 use nxr_core::diagnostics::exit;
 use nxr_core::{
     App, EnvironmentPolicy, Plan, PlanCacheKeyMaterial, PlanCacheSharedFingerprints, PlanCommand,
-    PlanKind, PlanPrepareKind, PlanSecretRef, digest_environment_policy, digest_nix_flags,
-    flake_lock_digest, lookup_prepared_plan, plan_cache_enabled, plan_cache_key_digest,
-    record_plan_cache_hit, record_plan_cache_miss, store_prepared_plan,
+    PlanKind, PlanPrepareKind, PlanSecretRef, daemon_plan_entry, daemon_plan_to_hit,
+    digest_environment_policy, digest_nix_flags, flake_lock_digest, lookup_prepared_plan,
+    plan_cache_enabled, plan_cache_key_digest, record_plan_cache_hit, record_plan_cache_miss,
+    store_prepared_plan, try_once,
 };
 use nxr_nix::{
     AppNotFoundError, NixAdapter, NixCapabilities, NixError, OptionalNixFlags, OutputTable,
@@ -618,17 +619,25 @@ impl WorkspaceSnapshot {
             discovery_inputs: Vec::new(),
         };
         let flake_ref = flake.nix_ref.clone();
-        let discovery = discover_workspace_with_cache(
-            &context,
-            DiscoveryCacheOptions {
-                refresh: refresh_discovery,
-                require_tasks: load_tasks,
-            },
-            || {
-                let cold = cold_discover_workspace(&nix, &flake_ref, load_tasks, nix_flags)?;
-                Ok::<WorkspaceDiscovery, PrepareError>(cold.discovery)
-            },
-        )?;
+        let discovery = if !refresh_discovery
+            && let Some(warm) = try_daemon_discovery_get(&context, load_tasks)
+        {
+            warm
+        } else {
+            let discovery = discover_workspace_with_cache(
+                &context,
+                DiscoveryCacheOptions {
+                    refresh: refresh_discovery,
+                    require_tasks: load_tasks,
+                },
+                || {
+                    let cold = cold_discover_workspace(&nix, &flake_ref, load_tasks, nix_flags)?;
+                    Ok::<WorkspaceDiscovery, PrepareError>(cold.discovery)
+                },
+            )?;
+            try_daemon_discovery_put(&context, &discovery);
+            discovery
+        };
         let dev_shells: BTreeSet<String> = discovery.dev_shells.iter().cloned().collect();
         let apps = discovery
             .apps
@@ -1203,12 +1212,28 @@ fn try_prepared_plan_cache(
         fingerprints.clone(),
     );
     let key_digest = plan_cache_key_digest(&key);
+    if let Some(hit) = try_daemon_plan_lookup(&key_digest, &fingerprints, prepare_kind) {
+        return Ok(Some(PreparedPlan {
+            plan: hit.plan,
+            nix: Utf8PathBuf::from(hit.nix),
+            execution_directory: Utf8PathBuf::from(hit.execution_directory),
+            local_root: flake.local_root.clone(),
+        }));
+    }
     let Some(hit) = lookup_prepared_plan(&key_digest, &fingerprints) else {
         return Ok(None);
     };
     if hit.prepare_kind != prepare_kind {
         return Ok(None);
     }
+    try_daemon_plan_store(
+        &key_digest,
+        prepare_kind,
+        &hit.plan,
+        &hit.nix,
+        &hit.execution_directory,
+        fingerprints,
+    );
     Ok(Some(PreparedPlan {
         plan: hit.plan,
         nix: Utf8PathBuf::from(hit.nix),
@@ -1244,12 +1269,28 @@ fn try_fast_prepared_plan_cache(
         fingerprints.clone(),
     );
     let key_digest = plan_cache_key_digest(&key);
+    if let Some(hit) = try_daemon_plan_lookup(&key_digest, &fingerprints, PlanPrepareKind::Fast) {
+        return Ok(Some(PreparedPlan {
+            plan: hit.plan,
+            nix: Utf8PathBuf::from(hit.nix),
+            execution_directory: Utf8PathBuf::from(hit.execution_directory),
+            local_root: flake.local_root.clone(),
+        }));
+    }
     let Some(hit) = lookup_prepared_plan(&key_digest, &fingerprints) else {
         return Ok(None);
     };
     if hit.prepare_kind != PlanPrepareKind::Fast {
         return Ok(None);
     }
+    try_daemon_plan_store(
+        &key_digest,
+        PlanPrepareKind::Fast,
+        &hit.plan,
+        &hit.nix,
+        &hit.execution_directory,
+        fingerprints,
+    );
     Ok(Some(PreparedPlan {
         plan: hit.plan,
         nix: Utf8PathBuf::from(hit.nix),
@@ -1297,7 +1338,116 @@ fn store_prepared_plan_cache_with_version(
         &prepared.plan,
         prepared.nix.as_str(),
         prepared.execution_directory.as_str(),
+        fingerprints.clone(),
+    );
+    try_daemon_plan_store(
+        &key_digest,
+        prepare_kind,
+        &prepared.plan,
+        prepared.nix.as_str(),
+        prepared.execution_directory.as_str(),
         fingerprints,
+    );
+}
+
+fn try_daemon_plan_lookup(
+    key_digest: &str,
+    expected: &PlanCacheSharedFingerprints,
+    prepare_kind: PlanPrepareKind,
+) -> Option<nxr_core::PreparedPlanCacheHit> {
+    let result: serde_json::Value = try_once(
+        "plan.get",
+        Some(serde_json::json!({ "key_digest": key_digest })),
+    )?;
+    if result.get("hit").and_then(serde_json::Value::as_bool) != Some(true) {
+        return None;
+    }
+    let entry: nxr_core::DaemonPlanEntry =
+        serde_json::from_value(result.get("entry")?.clone()).ok()?;
+    if entry.prepare_kind != prepare_kind || &entry.fingerprints != expected {
+        return None;
+    }
+    let hit = daemon_plan_to_hit(entry);
+    record_plan_cache_hit();
+    Some(hit)
+}
+
+fn try_daemon_plan_store(
+    key_digest: &str,
+    prepare_kind: PlanPrepareKind,
+    plan: &Plan,
+    nix: &str,
+    execution_directory: &str,
+    fingerprints: PlanCacheSharedFingerprints,
+) {
+    let Some(entry) = daemon_plan_entry(prepare_kind, plan, nix, execution_directory, fingerprints)
+    else {
+        return;
+    };
+    let _: Option<serde_json::Value> = try_once(
+        "plan.put",
+        Some(serde_json::json!({
+            "key_digest": key_digest,
+            "entry": entry,
+        })),
+    );
+}
+
+fn discovery_daemon_key(context: &DiscoveryContext, require_tasks: bool) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|tasks={}",
+        context.flake_ref,
+        context.local_root.as_ref().map_or("", |p| p.as_str()),
+        context.system,
+        context.nix_path,
+        context.nix_version,
+        require_tasks
+    )
+}
+
+fn try_daemon_discovery_get(
+    context: &DiscoveryContext,
+    require_tasks: bool,
+) -> Option<WorkspaceDiscovery> {
+    let key = discovery_daemon_key(context, require_tasks);
+    let result: serde_json::Value =
+        try_once("discovery.get", Some(serde_json::json!({ "key": key })))?;
+    if result.get("hit").and_then(serde_json::Value::as_bool) != Some(true) {
+        return None;
+    }
+    let payload = result.get("payload")?;
+    let apps: Vec<App> = serde_json::from_value(payload.get("apps")?.clone()).ok()?;
+    let tasks = match payload.get("tasks") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => Some(serde_json::from_value(value.clone()).ok()?),
+    };
+    if require_tasks && tasks.is_none() {
+        return None;
+    }
+    let dev_shells: Vec<String> = payload
+        .get("dev_shells")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    Some(WorkspaceDiscovery {
+        apps,
+        tasks,
+        dev_shells,
+    })
+}
+
+fn try_daemon_discovery_put(context: &DiscoveryContext, discovery: &WorkspaceDiscovery) {
+    let key = discovery_daemon_key(context, discovery.tasks.is_some());
+    let payload = serde_json::json!({
+        "apps": discovery.apps,
+        "tasks": discovery.tasks,
+        "dev_shells": discovery.dev_shells,
+    });
+    let _: Option<serde_json::Value> = try_once(
+        "discovery.put",
+        Some(serde_json::json!({
+            "key": key,
+            "payload": payload,
+        })),
     );
 }
 

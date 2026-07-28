@@ -26,6 +26,7 @@ nxr explain <app|task> [args...]
 nxr explain task <name> [args...]
 nxr completion <shell>
 nxr cache clear|status
+nxr daemon start|stop|status
 nxr inspect ...
 nxr task <task> [args...]
 nxr watch <app-or-task>
@@ -546,3 +547,15 @@ nxr up [name…]
 nxr status
 nxr logs <name>
 ```
+
+### Optional cache daemon (perf Wave 4a)
+
+```bash
+nxr daemon start [--foreground] [--socket PATH]
+nxr daemon stop [--socket PATH]
+nxr daemon status [--socket PATH]
+```
+
+Optional; never required for `nxr list` / `plan` / `run`. See
+[ADR-0157](adr/0157-optional-nxrd.md) and [PERFORMANCE.md](PERFORMANCE.md).
+`NXR_DAEMON=off` refuses connect. Not the V3.3 control plane (ADR-0301/0302).

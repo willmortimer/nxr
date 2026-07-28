@@ -110,6 +110,7 @@ Rejected   considered and explicitly not chosen
 | ADR-0154 | Run-scoped digest deduplication for action keys | Accepted | Unreleased |
 | ADR-0155 | Incremental action digests + Git blob identity | Accepted | Unreleased |
 | ADR-0156 | Repository Merkle / affected directory index | Accepted | Unreleased |
+| ADR-0157 | Optional local cache daemon (`nxrd`) | Accepted | Unreleased |
 
 Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0144-auto-schema-v2.md`](0144-auto-schema-v2.md),
@@ -124,7 +125,8 @@ Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0153-store-exe-cache.md`](0153-store-exe-cache.md),
 [`0154-run-digest-cache.md`](0154-run-digest-cache.md),
 [`0155-incremental-git-digests.md`](0155-incremental-git-digests.md),
-[`0156-merkle-affected-index.md`](0156-merkle-affected-index.md).
+[`0156-merkle-affected-index.md`](0156-merkle-affected-index.md),
+[`0157-optional-nxrd.md`](0157-optional-nxrd.md).
 
 Audit absorb (2026-07, post-`a040e50`): remaps active delivery to
 **2.7.1 → 2.8 → 3.0 → 3.1** (process workflows remain in 3.1 MVP; distributed
@@ -173,7 +175,7 @@ Parked with [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md). N
 
 | ADR | Title | Status | Target |
 |---|---|---:|---:|
-| ADR-0301 | Keep the daemon optional for basic foreground execution | Deferred | V3.3 |
+| ADR-0301 | Keep the daemon optional for basic foreground execution | Deferred (spirit accepted in ADR-0157 MVP) | V3.3 |
 | ADR-0302 | Split local workspace daemon and remote worker responsibilities | Deferred | V3.3 |
 | ADR-0303 | Define worker capability advertisement and matching | Deferred | V3.3 |
 | ADR-0304 | Integrate native Nix remote builders before duplicating them | Accepted | V3.3 |

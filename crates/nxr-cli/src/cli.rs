@@ -476,6 +476,11 @@ pub enum Command {
         #[command(subcommand)]
         action: CacheSubcommand,
     },
+    /// Optional local cache/coordination daemon (`nxrd`)
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonSubcommand,
+    },
     /// Show recent run summaries persisted under XDG state
     History {
         #[command(subcommand)]
@@ -690,6 +695,32 @@ pub enum CacheSubcommand {
         /// Treat discovery cache as task-inclusive (require cached tasks document)
         #[arg(long = "tasks")]
         tasks: bool,
+    },
+}
+
+/// `nxr daemon` subcommands.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum DaemonSubcommand {
+    /// Start the local cache daemon (background unless `--foreground`)
+    Start {
+        /// Run in the foreground (used by background spawn and tests)
+        #[arg(long = "foreground")]
+        foreground: bool,
+        /// Override Unix socket path (`NXR_DAEMON_SOCKET`)
+        #[arg(long = "socket", value_name = "PATH")]
+        socket: Option<String>,
+    },
+    /// Stop the local cache daemon
+    Stop {
+        /// Override Unix socket path
+        #[arg(long = "socket", value_name = "PATH")]
+        socket: Option<String>,
+    },
+    /// Show whether the local cache daemon is running
+    Status {
+        /// Override Unix socket path
+        #[arg(long = "socket", value_name = "PATH")]
+        socket: Option<String>,
     },
 }
 

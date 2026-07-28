@@ -3,6 +3,7 @@
 pub mod action;
 pub mod cas;
 pub mod config;
+pub mod daemon;
 pub mod diagnostics;
 pub mod digest_cache;
 pub mod ecosystem;
@@ -33,6 +34,13 @@ pub use cas::{
 pub use config::{
     BindingProvider, ConfigError, NXR_CONFIG_DIR_ENV, SecretBinding, SecretBindings,
     TrustedProject, UserConfig, config_dir, load_secret_bindings, load_user_config,
+};
+pub use daemon::{
+    DAEMON_ENV, DAEMON_PROTOCOL_VERSION, DAEMON_ROLE, DAEMON_SOCKET_ENV, DaemonClientError,
+    DaemonConnection, DaemonHello, DaemonPlanEntry, DaemonRequest, DaemonResponse, DaemonState,
+    DaemonStatus, SharedDaemonState, cleanup_socket_files, daemon_connect_enabled, daemon_pid_path,
+    daemon_plan_entry, daemon_plan_to_hit, daemon_socket_path, ensure_socket_parent,
+    handle_request, read_pid_file, serve, try_connect, try_once, write_pid_file,
 };
 pub use diagnostics::{Diagnostic, DiagnosticLevel};
 pub use digest_cache::RunDigestCache;
@@ -66,7 +74,8 @@ pub use plan_cache::{
     PLAN_SECRET_RUNTIME_PLACEHOLDER, PlanCacheKeyMaterial, PlanCacheSharedFingerprints,
     PlanCacheStatus, PlanPrepareKind, PreparedPlanCacheHit, clear_plan_cache,
     digest_environment_policy, digest_nix_flags, lookup_prepared_plan, plan_cache_dir,
-    plan_cache_enabled, plan_cache_key_digest, plan_cache_status, store_prepared_plan,
+    plan_cache_enabled, plan_cache_key_digest, plan_cache_status, plan_contains_secret_values,
+    store_prepared_plan,
 };
 pub use projects::{
     NXR_CATEGORY_KEY, PROJECTS_FILENAME, PROJECTS_SCHEMA_VERSION, ProjectDefinition,

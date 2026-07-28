@@ -5520,3 +5520,119 @@ fn process_status_lists_declared_processes() {
     );
     assert!(stdout.contains("stopped"));
 }
+
+#[test]
+fn daemon_status_reports_absent_when_socket_missing() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("missing.sock");
+    let assert = cargo_bin_cmd!("nxr")
+        .args([
+            "--json",
+            "daemon",
+            "status",
+            "--socket",
+            socket.to_str().expect("utf8"),
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(value["running"], false);
+    assert_eq!(value["connect_enabled"], true);
+}
+
+#[test]
+fn daemon_kill_switch_disables_connect() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("off.sock");
+    let assert = cargo_bin_cmd!("nxr")
+        .env("NXR_DAEMON", "off")
+        .args([
+            "--json",
+            "daemon",
+            "status",
+            "--socket",
+            socket.to_str().expect("utf8"),
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(value["running"], false);
+    assert_eq!(value["connect_enabled"], false);
+}
+
+#[cfg(unix)]
+#[test]
+fn daemon_start_stop_round_trip_on_temp_socket() {
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use assert_cmd::cargo::CommandCargoExt;
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("nxrd.sock");
+    let socket_str = socket.to_str().expect("utf8").to_owned();
+
+    let mut child = Command::cargo_bin("nxr")
+        .expect("nxr binary")
+        .args(["daemon", "start", "--foreground", "--socket", &socket_str])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn daemon");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut ready = false;
+    while Instant::now() < deadline {
+        if socket.exists() {
+            let output = cargo_bin_cmd!("nxr")
+                .args(["--json", "daemon", "status", "--socket", &socket_str])
+                .output()
+                .expect("status");
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&stdout)
+                    && value["running"] == true
+                {
+                    ready = true;
+                    break;
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(ready, "daemon should become ready");
+
+    cargo_bin_cmd!("nxr")
+        .args(["daemon", "stop", "--socket", &socket_str])
+        .assert()
+        .success();
+
+    let _ = child.wait();
+
+    let assert = cargo_bin_cmd!("nxr")
+        .args(["--json", "daemon", "status", "--socket", &socket_str])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(value["running"], false);
+}
+#[test]
+fn list_works_without_daemon() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("absent.sock");
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .env("NXR_DAEMON_SOCKET", &socket)
+        .env("NXR_DAEMON", "off")
+        .args(["--flake", "fixtures/basic-apps", "list", "--json"])
+        .assert()
+        .success();
+}

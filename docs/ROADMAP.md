@@ -88,6 +88,9 @@ Closes trust holes before heavier CAS/context use:
 
 ### Later
 
+- Optional local cache daemon deepening (lazy prep Wave 4b; watch Merkle session
+  Wave 5; log broker Wave 7c) — MVP in Unreleased via [ADR-0157](adr/0157-optional-nxrd.md);
+  full control plane remains deferred (ADR-0301 / ADR-0302)
 - Remote workspace CAS transport (unblocks honest `shared` / `shared-read`);
   deterministic CI sharding; indexing daemon
 - Native Nix remote builders first; GPU/capability advertisement

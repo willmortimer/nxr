@@ -23,15 +23,15 @@ use nxr_core::{emit_stderr, perf_enabled};
 
 use crate::cli::{
     BuildSubcommand, CacheSubcommand, CiSubcommand, Cli, Command, ContextSubcommand,
-    DoctorSubcommand, ExplainSubcommand, HistorySubcommand, InspectSubcommand, MigrateSubcommand,
-    TrustSubcommand,
+    DaemonSubcommand, DoctorSubcommand, ExplainSubcommand, HistorySubcommand, InspectSubcommand,
+    MigrateSubcommand, TrustSubcommand,
 };
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
-    affected, cache, ci, complete, completion, configurations, context, doctor, doctor_builders,
-    doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt, graph, history, init,
-    inspect, inventory, list, manpage, migrate, nix_op, plan, process_cmd, run, select, selectors,
-    task, trust, watch,
+    affected, cache, ci, complete, completion, configurations, context, daemon, doctor,
+    doctor_builders, doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt, graph,
+    history, init, inspect, inventory, list, manpage, migrate, nix_op, plan, process_cmd, run,
+    select, selectors, task, trust, watch,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -120,6 +120,8 @@ enum RunError {
     #[error(transparent)]
     Cache(#[from] cache::CacheError),
     #[error(transparent)]
+    Daemon(#[from] daemon::DaemonCommandError),
+    #[error(transparent)]
     History(#[from] history::HistoryError),
     #[error(transparent)]
     Affected(#[from] affected::AffectedCommandError),
@@ -164,6 +166,7 @@ impl RunError {
             Self::Inspect(error) => error.exit_code(),
             Self::Watch(error) => error.exit_code(),
             Self::Cache(error) => error.exit_code(),
+            Self::Daemon(error) => error.exit_code(),
             Self::History(error) => error.exit_code(),
             Self::Affected(error) => error.exit_code(),
             Self::Ci(error) => error.exit_code(),
@@ -543,6 +546,24 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 }
                 Ok(exit::SUCCESS)
             }
+        },
+        Some(Command::Daemon { action }) => match action {
+            DaemonSubcommand::Start { foreground, socket } => Ok(daemon::start(
+                socket.as_ref().map(PathBuf::from),
+                *foreground,
+                cli.json,
+                runner,
+            )?),
+            DaemonSubcommand::Stop { socket } => Ok(daemon::stop(
+                socket.as_ref().map(PathBuf::from),
+                cli.json,
+                runner,
+            )?),
+            DaemonSubcommand::Status { socket } => Ok(daemon::status(
+                socket.as_ref().map(PathBuf::from),
+                cli.json,
+                runner,
+            )?),
         },
         Some(Command::History { action }) => match action {
             None | Some(HistorySubcommand::List) => {

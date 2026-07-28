@@ -438,6 +438,23 @@ fn apply_restart_classification(
             .map_err(WatchCommandError::Io)?;
     }
 
+    // Wave 4a: notify optional nxrd so Merkle / warm state can drop ancestors.
+    // Full MerkleSession wiring remains Wave 5.
+    let relative_paths: Vec<String> = labeled
+        .iter()
+        .map(|(path, _)| {
+            path.strip_prefix(watch_root)
+                .map_or_else(|_| path.as_str().to_owned(), |p| p.as_str().to_owned())
+        })
+        .collect();
+    let _: Option<serde_json::Value> = nxr_core::try_once(
+        "merkle.invalidate",
+        Some(serde_json::json!({
+            "root": watch_root.as_str(),
+            "paths": relative_paths,
+        })),
+    );
+
     if invalidate_snapshot {
         workspace.invalidate_snapshots();
         caches.app_plan = None;
