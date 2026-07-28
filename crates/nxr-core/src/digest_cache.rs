@@ -1,9 +1,9 @@
-//! Per-invocation memo for workspace path digests ([ADR-0154]).
+//! Per-invocation memo for workspace path digests ([ADR-0154], [ADR-0155]).
 //!
 //! Action-key construction may hash the same repo-relative paths many times when
-//! task inputs overlap. [`RunDigestCache`] deduplicates file reads and BLAKE3
-//! work within one CLI invocation. It is in-memory only; persistent Merkle
-//! indexing is a separate concern (perf Wave 3 / 2b).
+//! task inputs overlap. [`RunDigestCache`] deduplicates work within one CLI
+//! invocation and, via [`incremental_digest`](crate::incremental_digest), applies
+//! metadata-gated reuse and Git blob identity for clean tracked files.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
@@ -13,22 +13,38 @@ use std::path::{Path, PathBuf};
 
 use camino::{Utf8Path, Utf8PathBuf};
 
-use crate::cas::{digest_file, digest_repo_path, flake_lock_digest};
+use crate::cas::{digest_file, flake_lock_digest};
+use crate::incremental_digest::{IncrementalDigestState, digest_repo_path_incremental};
 use crate::perf::record_digest_cache_hit;
 
 /// Run-scoped digest memo for workspace action keys.
 ///
 /// Create one instance per `nxr task` / affected / action-key planning pass and
 /// pass it through [`build_workspace_cache_plan`](nxr_task::build_workspace_cache_plan)
-/// (or call [`digest_repo_path`](Self::digest_repo_path) directly). Wave 2b may
-/// extend this with Git blob identity without changing call sites.
-#[derive(Clone, Debug, Default)]
+/// (or call [`digest_repo_path`](Self::digest_repo_path) directly).
+#[derive(Debug, Default)]
 pub struct RunDigestCache {
     repo_files: Option<Vec<Utf8PathBuf>>,
     path_digests: HashMap<String, String>,
     pattern_digests: HashMap<String, BTreeMap<String, String>>,
+    incremental: IncrementalDigestState,
     hits: u64,
     misses: u64,
+}
+
+impl Clone for RunDigestCache {
+    fn clone(&self) -> Self {
+        // Incremental/Git session state is not cloned — callers that clone lose
+        // durable-index dirty tracking for the copy (rare; planning uses one cache).
+        Self {
+            repo_files: self.repo_files.clone(),
+            path_digests: self.path_digests.clone(),
+            pattern_digests: self.pattern_digests.clone(),
+            incremental: IncrementalDigestState::new(),
+            hits: self.hits,
+            misses: self.misses,
+        }
+    }
 }
 
 impl RunDigestCache {
@@ -50,7 +66,19 @@ impl RunDigestCache {
         self.misses
     }
 
+    /// Flush durable action-digest index updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] when the index cannot be written.
+    pub fn flush_incremental(&mut self) -> io::Result<()> {
+        self.incremental.flush()
+    }
+
     /// Digest a repo-relative path, reusing prior results within this run.
+    ///
+    /// Uses Git blob identity for clean tracked files and metadata-gated reuse
+    /// across invocations when the durable index is enabled ([ADR-0155]).
     ///
     /// # Errors
     ///
@@ -66,7 +94,7 @@ impl RunDigestCache {
             return Ok(digest.clone());
         }
         self.misses += 1;
-        let digest = digest_repo_path(flake_root, relative)?;
+        let digest = digest_repo_path_incremental(flake_root, relative, &mut self.incremental)?;
         self.path_digests
             .insert(relative.to_owned(), digest.clone());
         Ok(digest)

@@ -16,7 +16,7 @@ Set `NXR_PERF_STATS=1` to accumulate counters for one CLI invocation. On exit,
 nxr prints a single JSON line on stderr:
 
 ```text
-nxr-perf-stats: {"schema_version":4,"nix_spawns":…,…}
+nxr-perf-stats: {"schema_version":5,"nix_spawns":…,…}
 ```
 
 | Counter | Meaning |
@@ -32,17 +32,35 @@ nxr-perf-stats: {"schema_version":4,"nix_spawns":…,…}
 | `store_exe_hits` | Store-exe disk cache hits (direct `/nix/store` spawn) |
 | `store_exe_misses` | Store-exe disk cache misses (realise or `nix run` fallback) |
 | `digest_cache_hits` | Run-scoped path/pattern digest cache hits (action-key planning) |
+| `digest_metadata_hits` | Action-digest reuse when device/inode/size/mtime(/ctime) match |
+| `git_blob_digests` | Action digests derived from Git blob OID (no working-tree read) |
 
 Counters are **off by default**; no semantic change when unset. See
 [ADR-0151](adr/0151-perf-counters.md), [ADR-0152](adr/0152-prepared-plan-cache.md),
-[ADR-0153](adr/0153-store-exe-cache.md), and [ADR-0154](adr/0154-run-digest-cache.md).
+[ADR-0153](adr/0153-store-exe-cache.md), [ADR-0154](adr/0154-run-digest-cache.md),
+and [ADR-0155](adr/0155-incremental-git-digests.md).
 
 ## Run-scoped digest cache
 
 Per-invocation memo for workspace action-key hashing ([ADR-0154](adr/0154-run-digest-cache.md)).
-Overlapping `inputs.paths` / discovery inputs across task nodes share BLAKE3 results
-within one `nxr task` / plan pass. In-memory only — not a persistent Merkle index
-(Wave 3) or Git blob DB (Wave 2b).
+Overlapping `inputs.paths` / discovery inputs across task nodes share digest results
+within one `nxr task` / plan pass.
+
+## Incremental action digests + Git blobs
+
+Warm and large-repo path hashing for action keys ([ADR-0155](adr/0155-incremental-git-digests.md)):
+
+- **Metadata gate:** durable per-root index (`…/nxr/action-digests/`) reuses a prior
+  content digest when device/inode/size/nanosecond mtime (and ctime on Unix) match —
+  same pattern as discovery fingerprint indexes, but a **separate** store.
+- **Git clean tracked:** digest =
+  `BLAKE3("nxr.action-digest.git-blob.v1" ‖ NUL ‖ oid_hex)` from a batched
+  `git ls-files --stage` + `git status --porcelain -z` (no per-file `git`).
+- **Dirty / untracked:** BLAKE3 of working-tree bytes.
+- Kill-switches: `NXR_GIT_DIGESTS=off`, `NXR_ACTION_DIGEST_INDEX=off`.
+- `cas::digest_repo_path` (CAS verify/save) stays pure content hashing.
+- Wave 3 Merkle leaves should reuse these per-file digests; directory digests still
+  walk children today.
 
 ## Prepared-plan disk cache
 

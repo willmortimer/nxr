@@ -29,6 +29,8 @@ static PLAN_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 static STORE_EXE_HITS: AtomicU64 = AtomicU64::new(0);
 static STORE_EXE_MISSES: AtomicU64 = AtomicU64::new(0);
 static DIGEST_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static DIGEST_METADATA_HITS: AtomicU64 = AtomicU64::new(0);
+static GIT_BLOB_DIGESTS: AtomicU64 = AtomicU64::new(0);
 
 fn env_enabled() -> bool {
     match std::env::var(PERF_STATS_ENV) {
@@ -157,6 +159,22 @@ pub fn record_digest_cache_hit() {
     }
 }
 
+/// Record one metadata-gated action-digest reuse (no content re-read).
+#[inline]
+pub fn record_digest_metadata_hit() {
+    if enabled() {
+        DIGEST_METADATA_HITS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Record one action digest derived from a Git blob OID (no working-tree read).
+#[inline]
+pub fn record_git_blob_digest() {
+    if enabled() {
+        GIT_BLOB_DIGESTS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// RAII timer for plan preparation.
 pub struct PlanPrepareGuard {
     started: Option<Instant>,
@@ -223,11 +241,15 @@ pub struct PerfStats {
     pub store_exe_misses: u64,
     /// Run-scoped digest cache hits (schema v4+).
     pub digest_cache_hits: u64,
+    /// Metadata-gated action-digest reuse (schema v5+).
+    pub digest_metadata_hits: u64,
+    /// Digests from Git blob OID without reading working-tree bytes (schema v5+).
+    pub git_blob_digests: u64,
 }
 
 impl PerfStats {
-    /// Schema v4 adds `digest_cache_hits` (ADR-0154).
-    const SCHEMA_VERSION: u32 = 4;
+    /// Schema v5 adds `digest_metadata_hits` / `git_blob_digests` (ADR-0155).
+    const SCHEMA_VERSION: u32 = 5;
 
     /// Collect current counter values.
     #[must_use]
@@ -245,6 +267,8 @@ impl PerfStats {
             store_exe_hits: STORE_EXE_HITS.load(Ordering::Relaxed),
             store_exe_misses: STORE_EXE_MISSES.load(Ordering::Relaxed),
             digest_cache_hits: DIGEST_CACHE_HITS.load(Ordering::Relaxed),
+            digest_metadata_hits: DIGEST_METADATA_HITS.load(Ordering::Relaxed),
+            git_blob_digests: GIT_BLOB_DIGESTS.load(Ordering::Relaxed),
         }
     }
 }
@@ -282,6 +306,8 @@ pub(crate) fn test_reset(enabled: bool) {
     STORE_EXE_HITS.store(0, Ordering::Relaxed);
     STORE_EXE_MISSES.store(0, Ordering::Relaxed);
     DIGEST_CACHE_HITS.store(0, Ordering::Relaxed);
+    DIGEST_METADATA_HITS.store(0, Ordering::Relaxed);
+    GIT_BLOB_DIGESTS.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -302,6 +328,8 @@ mod tests {
         record_store_exe_hit();
         record_store_exe_miss();
         record_digest_cache_hit();
+        record_digest_metadata_hit();
+        record_git_blob_digest();
         let stats = PerfStats::snapshot();
         assert_eq!(stats.nix_spawns, 0);
         assert_eq!(stats.bytes_hashed, 0);
@@ -314,6 +342,8 @@ mod tests {
         assert_eq!(stats.store_exe_hits, 0);
         assert_eq!(stats.store_exe_misses, 0);
         assert_eq!(stats.digest_cache_hits, 0);
+        assert_eq!(stats.digest_metadata_hits, 0);
+        assert_eq!(stats.git_blob_digests, 0);
     }
 
     #[test]
@@ -336,6 +366,9 @@ mod tests {
         record_digest_cache_hit();
         record_digest_cache_hit();
         record_digest_cache_hit();
+        record_digest_metadata_hit();
+        record_digest_metadata_hit();
+        record_git_blob_digest();
         let stats = PerfStats::snapshot();
         assert_eq!(stats.nix_spawns, 2);
         assert_eq!(stats.bytes_hashed, 1_024);
@@ -348,7 +381,9 @@ mod tests {
         assert_eq!(stats.store_exe_hits, 2);
         assert_eq!(stats.store_exe_misses, 1);
         assert_eq!(stats.digest_cache_hits, 3);
-        assert_eq!(stats.schema_version, 4);
+        assert_eq!(stats.digest_metadata_hits, 2);
+        assert_eq!(stats.git_blob_digests, 1);
+        assert_eq!(stats.schema_version, 5);
     }
 
     #[test]

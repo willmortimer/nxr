@@ -7,6 +7,7 @@ pub mod diagnostics;
 pub mod digest_cache;
 pub mod ecosystem;
 pub mod env_policy;
+pub mod incremental_digest;
 pub mod model;
 pub mod perf;
 pub mod plan;
@@ -39,13 +40,19 @@ pub use ecosystem::{
     EdgeConfidence, EdgeKind, GraphEdge, GraphNode, StaticJsonAdapter,
 };
 pub use env_policy::{CLEAN_ENV_ALLOWLIST, EnvironmentPolicy, parse_env_name, parse_set_env};
+pub use incremental_digest::{
+    ACTION_DIGEST_INDEX_ENV, ACTION_DIGEST_INDEX_SCHEMA_VERSION, ActionDigestIndexStatus,
+    GIT_BLOB_DIGEST_DOMAIN, GIT_DIGESTS_ENV, action_digest_index_dir, action_digest_index_enabled,
+    action_digest_index_status, clear_action_digest_index, digest_from_git_blob,
+    git_digests_enabled,
+};
 pub use model::{App, AppList, FlakeOutput, FlakeRef, ListApp, OutputList};
 pub use perf::{
     CasLookupGuard, PERF_STATS_ENV, PerfStats, PlanPrepareGuard, add_bytes_hashed,
     add_cas_lookup_us, add_plan_prepare_us, emit_stderr, enabled as perf_enabled,
-    record_digest_cache_hit, record_fs_metadata, record_nix_spawn, record_plan_cache_hit,
-    record_plan_cache_miss, record_spawn_to_child_output_us, record_store_exe_hit,
-    record_store_exe_miss,
+    record_digest_cache_hit, record_digest_metadata_hit, record_fs_metadata,
+    record_git_blob_digest, record_nix_spawn, record_plan_cache_hit, record_plan_cache_miss,
+    record_spawn_to_child_output_us, record_store_exe_hit, record_store_exe_miss,
 };
 pub use plan::{Plan, PlanCommand, PlanKind, PlanSecretRef};
 pub use plan_cache::{

@@ -18,7 +18,7 @@ pub const WORKSPACE_CAS_ENV: &str = "NXR_WORKSPACE_CAS";
 
 const MISSING_PATH_MARKER: &[u8] = b"missing";
 
-fn missing_path_digest() -> String {
+pub(crate) fn missing_path_digest() -> String {
     digest_bytes(MISSING_PATH_MARKER)
 }
 
@@ -191,7 +191,11 @@ pub fn digest_repo_path(flake_root: &Utf8Path, relative: &str) -> io::Result<Str
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-fn collect_files(workspace_root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
+pub(crate) fn collect_files(
+    workspace_root: &Path,
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+) -> io::Result<()> {
     let meta = fs::symlink_metadata(dir)?;
     if meta.file_type().is_symlink() {
         let resolved = resolve_within_workspace(workspace_root, dir)?;
@@ -232,7 +236,7 @@ fn collect_files(workspace_root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> i
     Ok(())
 }
 
-fn ensure_within_workspace(workspace_root: &Path, path: &Path) -> io::Result<()> {
+pub(crate) fn ensure_within_workspace(workspace_root: &Path, path: &Path) -> io::Result<()> {
     if fs::symlink_metadata(path).is_ok() {
         resolve_within_workspace(workspace_root, path).map(|_| ())
     } else {
