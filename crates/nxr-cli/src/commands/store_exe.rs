@@ -8,10 +8,13 @@ use nxr_core::cas::flake_lock_digest;
 use nxr_core::{
     PLAN_SECRET_RUNTIME_PLACEHOLDER, Plan, PlanCacheSharedFingerprints, PlanSecretRef,
     StoreExeCacheKeyMaterial, digest_nix_flags, lookup_store_exe, record_store_exe_hit,
-    record_store_exe_miss, store_exe_cache_enabled, store_exe_cache_key_digest,
-    store_exe_path_usable, store_store_exe,
+    record_store_exe_miss, store_exe_cache_enabled, store_exe_cache_key_digest, store_exe_path_usable,
+    store_store_exe,
 };
-use nxr_nix::{OptionalNixFlags, detect_system, realise_flake_app_program};
+use nxr_nix::{
+    OptionalNixFlags, batched_store_queries_enabled_for_nix, detect_system,
+    realise_flake_app_program, store_exe_paths_usable,
+};
 use nxr_watch::{PrewarmStoreExe, WatchPrewarm};
 
 /// Program + argv chosen for spawn (nix run plan or direct store exe).
@@ -94,6 +97,7 @@ pub fn resolve_app_spawn_with_prewarm(
         fingerprints: fingerprints.clone(),
     };
     let key_digest = store_exe_cache_key_digest(&key);
+    let batched = batched_store_queries_enabled_for_nix(nix);
 
     if let Some(prewarm) = prewarm.as_mut() {
         if let Some(hit) = prewarm.lookup_store_exe(&key_digest) {
@@ -111,7 +115,13 @@ pub fn resolve_app_spawn_with_prewarm(
 
     if let Some(hit) = lookup_store_exe(&key_digest, &fingerprints) {
         let program = Utf8PathBuf::from(hit.program);
-        if store_exe_path_usable(program.as_std_path()) {
+        if store_exe_paths_usable(
+            nix,
+            program.as_std_path(),
+            Some(hit.store_output.as_str()),
+            batched,
+            cwd,
+        ) {
             record_store_exe_hit();
             let resolved = ResolvedAppSpawn {
                 program: program.clone(),
@@ -154,7 +164,13 @@ pub fn resolve_app_spawn_with_prewarm(
                 realised.store_output.as_str(),
                 fingerprints,
             );
-            if store_exe_path_usable(realised.program.as_std_path()) {
+            if store_exe_paths_usable(
+                nix,
+                realised.program.as_std_path(),
+                Some(realised.store_output.as_str()),
+                batched,
+                cwd,
+            ) {
                 let resolved = ResolvedAppSpawn {
                     program: realised.program.clone(),
                     arguments: plan.forwarded_arguments.clone(),

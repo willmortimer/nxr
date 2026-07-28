@@ -7,7 +7,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use crate::NixError;
 use crate::capabilities::{NixFailureKind, OptionalNixFlags, run_nix};
 use crate::command::{flake_app_program_eval_args, nix_build_no_link_print_out_paths_args};
-use nxr_core::{store_exe_path_usable, store_output_root_for_program};
+use crate::store_query::{batched_store_queries_enabled_for_nix, store_exe_paths_usable};
+use nxr_core::store_output_root_for_program;
 
 /// Realised app program plus its store output root.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,13 +62,26 @@ pub fn realise_flake_app_program(
     };
 
     let program_path = Utf8PathBuf::from(program);
-    if !store_exe_path_usable(program_path.as_std_path()) {
+    let batched = batched_store_queries_enabled_for_nix(nix);
+    if !store_exe_paths_usable(
+        nix,
+        program_path.as_std_path(),
+        Some(&store_output),
+        batched,
+        cwd,
+    ) {
         let build_base = nix_build_no_link_print_out_paths_args(&store_output);
         let build_args = apply_flags(nix, build_base, nix_flags)?;
         let _ = run_nix_in(nix, &build_args, NixFailureKind::Evaluation, cwd)?;
     }
 
-    if !store_exe_path_usable(program_path.as_std_path()) {
+    if !store_exe_paths_usable(
+        nix,
+        program_path.as_std_path(),
+        Some(&store_output),
+        batched,
+        cwd,
+    ) {
         return Err(NixError::CommandFailed {
             nix: nix.to_path_buf(),
             args: eval_args,

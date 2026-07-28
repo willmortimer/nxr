@@ -24,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Watch semantic change coalesce ([ADR-0161](docs/adr/0161-watch-semantic-coalesce.md)). After debounce, drop editor temporaries, collapse formatter bursts, narrow lockfile batches, and ignore fixture-only / task-owned output paths. `NXR_WATCH_COALESCE=off` kill-switch.
 - Watch prewarm for likely reruns ([ADR-0163](docs/adr/0163-watch-prewarm.md)). Retain in-process store-exe, shell/context, ownership index, and CAS metadata across source-only generations. `NXR_WATCH_PREWARM=off` kill-switch. `NXR_PERF_STATS` schema **v9** adds `watch_prewarm_*` counters.
 - Child output event batching + terminal write coalescing (perf Wave 7a + 7b; [ADR-0162](docs/adr/0162-child-output-batching.md)). Adjacent pipe reads coalesce before chunk events; live mode batches terminal writes. Wave 7c log broker deferred.
-- Determinate discovery/evaluation strategy planner ([ADR-0165](docs/adr/0165-determinate-eval-strategy.md)). `plan_discovery_eval` selects coalesced parallel eval, lazy-trees compatible, or compatibility paths from capability probes; `NXR_EVAL_STRATEGY=compatibility` kill-switch. `nxr cache explain` reports `discovery_eval_strategy`. Store-query (8b) and eval-worker (8c) hooks reserved.
+- Determinate discovery/evaluation strategy planner ([ADR-0165](docs/adr/0165-determinate-eval-strategy.md)). `plan_discovery_eval` selects coalesced parallel eval, lazy-trees compatible, or compatibility paths from capability probes; `NXR_EVAL_STRATEGY=compatibility` kill-switch. `nxr cache explain` reports `discovery_eval_strategy`. Eval-worker (8c) hook reserved.
+- Batched Nix store path queries ([ADR-0167](docs/adr/0167-batched-store-queries.md)). `store_query` batches `nix path-info --json` for store-exe validation when lazy trees are not disabled; `NXR_STORE_QUERIES=fs` kill-switch. Falls back to filesystem checks on failure.
 
 ## [3.1.4] - 2026-07-28
 

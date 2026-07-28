@@ -118,6 +118,7 @@ Rejected   considered and explicitly not chosen
 | ADR-0162 | Child output event batching + terminal write coalescing | Accepted | Unreleased |
 | ADR-0163 | Watch prewarm for likely reruns | Accepted | Unreleased |
 | ADR-0165 | Determinate discovery/evaluation strategy planner | Accepted | Unreleased |
+| ADR-0167 | Batched Nix store path queries | Accepted | Unreleased |
 
 Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0144-auto-schema-v2.md`](0144-auto-schema-v2.md),
@@ -140,7 +141,8 @@ Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0161-watch-semantic-coalesce.md`](0161-watch-semantic-coalesce.md),
 [`0162-child-output-batching.md`](0162-child-output-batching.md),
 [`0163-watch-prewarm.md`](0163-watch-prewarm.md),
-[`0165-determinate-eval-strategy.md`](0165-determinate-eval-strategy.md).
+[`0165-determinate-eval-strategy.md`](0165-determinate-eval-strategy.md),
+[`0167-batched-store-queries.md`](0167-batched-store-queries.md).
 
 Audit absorb (2026-07, post-`a040e50`): remaps active delivery to
 **2.7.1 → 2.8 → 3.0 → 3.1** (process workflows remain in 3.1 MVP; distributed

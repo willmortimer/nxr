@@ -114,8 +114,21 @@ Cold workspace discovery consults `plan_discovery_eval` ([ADR-0165](adr/0165-det
 - **Lazy-trees compatible** separate evals when lazy trees are enabled or assumed.
 - **Compatibility** `flake show` + targeted evals for upstream/Lix or
   `NXR_EVAL_STRATEGY=compatibility`.
-- `nxr cache explain` reports `discovery_eval_strategy`. Store-query batching
-  (8b) and eval-worker (8c) hooks are reserved on the plan.
+- `nxr cache explain` reports `discovery_eval_strategy`. Eval-worker (8c) hook
+  reserved on the plan.
+
+## Batched store path queries (Wave 8b)
+
+Store-exe validation and realisation consult `store_query` when
+[`DiscoveryEvalPlan::batched_store_queries`](adr/0165-determinate-eval-strategy.md)
+is true ([ADR-0167](adr/0167-batched-store-queries.md)):
+
+- One `nix path-info --json` for deduplicated `/nix/store/…` roots instead of
+  per-path subprocesses where safe.
+- **`store_exe_paths_usable`** combines store registration with the filesystem
+  executable probe; falls back to today's `metadata` checks on failure.
+- Kill-switch: `NXR_STORE_QUERIES=fs` (also `off`, `compat`, `compatibility`).
+- Eval worker (8c) not implemented in 8b.
 
 ## Optional local cache daemon (`nxrd`)
 

@@ -69,7 +69,11 @@ pub use resolve::{
     AppNotFoundError, OutputNotFoundError, resolve_app_by_name, resolve_output_by_name,
 };
 pub use store_exe::{RealisedAppProgram, realise_flake_app_program};
-pub use store_query::prefer_batched_store_queries;
+pub use store_query::{
+    FORCE_FS_STORE_QUERIES_ENV, StorePathInfo, batched_store_queries_enabled,
+    batched_store_queries_enabled_for_nix, prefer_batched_store_queries, query_store_paths,
+    store_exe_paths_usable, store_path_registered,
+};
 pub use strategy::{
     DiscoveryEvalPlan, DiscoveryEvalStrategy, FORCE_COALESCED_DISCOVERY_ENV,
     FORCE_COMPATIBILITY_STRATEGY_ENV, plan_discovery_eval,
