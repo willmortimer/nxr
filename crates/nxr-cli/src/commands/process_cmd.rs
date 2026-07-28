@@ -633,6 +633,9 @@ fn macos_pid_start_time(pid: u32) -> Option<u64> {
     Some(fnv1a64(stamp.as_bytes()))
 }
 
+// Only referenced from macos_pid_start_time; keep cfg-gated so Linux clippy
+// (-D warnings in CI) does not treat it as dead_code.
+#[cfg(target_os = "macos")]
 fn fnv1a64(bytes: &[u8]) -> u64 {
     const OFFSET: u64 = 0xcbf29ce484222325;
     const PRIME: u64 = 0x00000100000001B3;
