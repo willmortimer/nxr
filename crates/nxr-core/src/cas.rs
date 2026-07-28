@@ -138,6 +138,7 @@ pub fn hash_action_key(key_material: &serde_json::Value) -> String {
 /// Hex-encoded BLAKE3 digest of arbitrary bytes.
 #[must_use]
 pub fn digest_bytes(data: &[u8]) -> String {
+    crate::perf::add_bytes_hashed(data.len() as u64);
     blake3::hash(data).to_hex().to_string()
 }
 
@@ -155,6 +156,7 @@ pub fn digest_file(path: &Path) -> io::Result<String> {
         if read == 0 {
             break;
         }
+        crate::perf::add_bytes_hashed(read as u64);
         hasher.update(&buffer[..read]);
     }
     Ok(hasher.finalize().to_hex().to_string())
@@ -355,6 +357,7 @@ fn read_manifest(action_key: &str) -> io::Result<Option<CasManifest>> {
 ///
 /// Returns [`io::Error`] when the cache cannot be read.
 pub fn lookup_outputs(action_key: &str, outputs: &[CasOutput]) -> io::Result<CasLookup> {
+    let _cas_timer = crate::perf::CasLookupGuard::start();
     if !workspace_cas_enabled() {
         return Ok(CasLookup::Miss {
             reason: "workspace CAS disabled via NXR_WORKSPACE_CAS".to_owned(),

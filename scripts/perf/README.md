@@ -71,3 +71,14 @@ remeasuring; do not treat it as the CI gate (use `ci-thresholds.json` instead).
 
 Runs the `synthetic_monorepo_warm_fingerprint_scales` unit test (500 `.nix`
 files): warm path must re-read zero file bytes and skip index rewrite.
+
+## Extended scenario matrix
+
+```bash
+./scripts/perf/measure-matrix.sh
+./scripts/perf/measure-matrix.sh --stats   # also emit NXR_PERF_STATS JSON per run
+```
+
+Covers task DAG dry-run, affected analysis, and warm app plan paths in addition
+to cold/warm list. See [docs/PERFORMANCE.md](../../docs/PERFORMANCE.md) for the
+full scenario table, north-star targets, and deferred cases.

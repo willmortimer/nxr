@@ -1,0 +1,276 @@
+//! Optional invocation counters for performance measurement (`NXR_PERF_STATS=1`).
+
+use std::io::{self, Write};
+use std::sync::Once;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
+
+use serde::Serialize;
+
+/// Environment variable enabling perf counter collection and stderr emission.
+pub const PERF_STATS_ENV: &str = "NXR_PERF_STATS";
+
+static INIT: Once = Once::new();
+static ENABLED: AtomicBool = AtomicBool::new(false);
+/// Test override: 0 = follow env, 1 = force off, 2 = force on.
+static FORCE: AtomicU64 = AtomicU64::new(0);
+
+const FORCE_OFF: u64 = 1;
+const FORCE_ON: u64 = 2;
+
+static NIX_SPAWNS: AtomicU64 = AtomicU64::new(0);
+static FS_METADATA: AtomicU64 = AtomicU64::new(0);
+static BYTES_HASHED: AtomicU64 = AtomicU64::new(0);
+static PLAN_PREPARE_US: AtomicU64 = AtomicU64::new(0);
+static CAS_LOOKUP_US: AtomicU64 = AtomicU64::new(0);
+static SPAWN_TO_CHILD_OUTPUT_US: AtomicU64 = AtomicU64::new(0);
+
+fn env_enabled() -> bool {
+    match std::env::var(PERF_STATS_ENV) {
+        Ok(value) => {
+            let normalized = value.trim();
+            !normalized.is_empty()
+                && !matches!(
+                    normalized.to_ascii_lowercase().as_str(),
+                    "0" | "false" | "no" | "off"
+                )
+        }
+        Err(_) => false,
+    }
+}
+
+fn ensure_init() {
+    INIT.call_once(|| {
+        if env_enabled() {
+            ENABLED.store(true, Ordering::Relaxed);
+        }
+    });
+}
+
+/// Whether perf counters are active for this process.
+#[must_use]
+pub fn enabled() -> bool {
+    match FORCE.load(Ordering::Relaxed) {
+        FORCE_OFF => return false,
+        FORCE_ON => return true,
+        _ => {}
+    }
+    ensure_init();
+    ENABLED.load(Ordering::Relaxed)
+}
+
+/// Record one Nix subprocess invocation (`run_nix` and similar).
+#[inline]
+pub fn record_nix_spawn() {
+    if enabled() {
+        NIX_SPAWNS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Record one filesystem metadata probe (`stat` / `metadata`).
+#[inline]
+pub fn record_fs_metadata() {
+    if enabled() {
+        FS_METADATA.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Accumulate bytes fed through BLAKE3 hashing on hot paths.
+#[inline]
+pub fn add_bytes_hashed(bytes: u64) {
+    if enabled() && bytes > 0 {
+        BYTES_HASHED.fetch_add(bytes, Ordering::Relaxed);
+    }
+}
+
+/// Accumulate plan-prepare wall time (microseconds).
+#[inline]
+pub fn add_plan_prepare_us(micros: u64) {
+    if enabled() && micros > 0 {
+        PLAN_PREPARE_US.fetch_add(micros, Ordering::Relaxed);
+    }
+}
+
+/// Accumulate workspace CAS lookup wall time (microseconds).
+#[inline]
+pub fn add_cas_lookup_us(micros: u64) {
+    if enabled() && micros > 0 {
+        CAS_LOOKUP_US.fetch_add(micros, Ordering::Relaxed);
+    }
+}
+
+/// Record spawn-to-first-child-output latency (first sample per invocation wins).
+#[inline]
+pub fn record_spawn_to_child_output_us(micros: u64) {
+    if enabled() && micros > 0 {
+        let _ = SPAWN_TO_CHILD_OUTPUT_US.compare_exchange(
+            0,
+            micros,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+}
+
+/// RAII timer for plan preparation.
+pub struct PlanPrepareGuard {
+    started: Option<Instant>,
+}
+
+impl PlanPrepareGuard {
+    /// Start timing when perf stats are enabled.
+    #[must_use]
+    pub fn start() -> Self {
+        Self {
+            started: enabled().then(Instant::now),
+        }
+    }
+}
+
+impl Drop for PlanPrepareGuard {
+    fn drop(&mut self) {
+        if let Some(started) = self.started.take() {
+            add_plan_prepare_us(started.elapsed().as_micros().min(u64::MAX as u128) as u64);
+        }
+    }
+}
+
+/// RAII timer for workspace CAS lookup.
+pub struct CasLookupGuard {
+    started: Option<Instant>,
+}
+
+impl CasLookupGuard {
+    /// Start timing when perf stats are enabled.
+    #[must_use]
+    pub fn start() -> Self {
+        Self {
+            started: enabled().then(Instant::now),
+        }
+    }
+}
+
+impl Drop for CasLookupGuard {
+    fn drop(&mut self) {
+        if let Some(started) = self.started.take() {
+            add_cas_lookup_us(started.elapsed().as_micros().min(u64::MAX as u128) as u64);
+        }
+    }
+}
+
+/// Machine-readable snapshot emitted on process exit when enabled.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct PerfStats {
+    pub schema_version: u32,
+    pub nix_spawns: u64,
+    pub fs_metadata: u64,
+    pub bytes_hashed: u64,
+    pub plan_prepare_us: u64,
+    pub cas_lookup_us: u64,
+    pub spawn_to_child_output_us: u64,
+}
+
+impl PerfStats {
+    const SCHEMA_VERSION: u32 = 1;
+
+    /// Collect current counter values.
+    #[must_use]
+    pub fn snapshot() -> Self {
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            nix_spawns: NIX_SPAWNS.load(Ordering::Relaxed),
+            fs_metadata: FS_METADATA.load(Ordering::Relaxed),
+            bytes_hashed: BYTES_HASHED.load(Ordering::Relaxed),
+            plan_prepare_us: PLAN_PREPARE_US.load(Ordering::Relaxed),
+            cas_lookup_us: CAS_LOOKUP_US.load(Ordering::Relaxed),
+            spawn_to_child_output_us: SPAWN_TO_CHILD_OUTPUT_US.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// Write a single JSON line of perf stats to stderr (diagnostics channel).
+///
+/// # Errors
+///
+/// Returns [`io::Error`] when stderr cannot be written.
+pub fn emit_stderr() -> io::Result<()> {
+    if !enabled() {
+        return Ok(());
+    }
+    let stats = PerfStats::snapshot();
+    let json = serde_json::to_string(&stats).map_err(io::Error::other)?;
+    let mut stderr = io::stderr().lock();
+    writeln!(stderr, "nxr-perf-stats: {json}")?;
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn test_reset(enabled: bool) {
+    FORCE.store(if enabled { FORCE_ON } else { FORCE_OFF }, Ordering::Relaxed);
+    NIX_SPAWNS.store(0, Ordering::Relaxed);
+    FS_METADATA.store(0, Ordering::Relaxed);
+    BYTES_HASHED.store(0, Ordering::Relaxed);
+    PLAN_PREPARE_US.store(0, Ordering::Relaxed);
+    CAS_LOOKUP_US.store(0, Ordering::Relaxed);
+    SPAWN_TO_CHILD_OUTPUT_US.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counters_noop_when_disabled() {
+        test_reset(false);
+        record_nix_spawn();
+        add_bytes_hashed(100);
+        record_fs_metadata();
+        add_plan_prepare_us(50);
+        add_cas_lookup_us(25);
+        record_spawn_to_child_output_us(10);
+        let stats = PerfStats::snapshot();
+        assert_eq!(stats.nix_spawns, 0);
+        assert_eq!(stats.bytes_hashed, 0);
+        assert_eq!(stats.fs_metadata, 0);
+        assert_eq!(stats.plan_prepare_us, 0);
+        assert_eq!(stats.cas_lookup_us, 0);
+        assert_eq!(stats.spawn_to_child_output_us, 0);
+    }
+
+    #[test]
+    fn counters_accumulate_when_enabled() {
+        test_reset(true);
+        record_nix_spawn();
+        record_nix_spawn();
+        add_bytes_hashed(1_024);
+        record_fs_metadata();
+        add_plan_prepare_us(100);
+        add_cas_lookup_us(200);
+        record_spawn_to_child_output_us(30);
+        record_spawn_to_child_output_us(99);
+        let stats = PerfStats::snapshot();
+        assert_eq!(stats.nix_spawns, 2);
+        assert_eq!(stats.bytes_hashed, 1_024);
+        assert_eq!(stats.fs_metadata, 1);
+        assert_eq!(stats.plan_prepare_us, 100);
+        assert_eq!(stats.cas_lookup_us, 200);
+        assert_eq!(stats.spawn_to_child_output_us, 30);
+    }
+
+    #[test]
+    fn plan_prepare_guard_records_elapsed() {
+        test_reset(true);
+        {
+            let _guard = PlanPrepareGuard::start();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(PerfStats::snapshot().plan_prepare_us > 0);
+    }
+
+    #[test]
+    fn emit_stderr_writes_json_line() {
+        test_reset(true);
+        record_nix_spawn();
+        emit_stderr().expect("stderr write");
+    }
+}

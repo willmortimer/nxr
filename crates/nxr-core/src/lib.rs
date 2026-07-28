@@ -7,6 +7,7 @@ pub mod diagnostics;
 pub mod ecosystem;
 pub mod env_policy;
 pub mod model;
+pub mod perf;
 pub mod plan;
 pub mod projects;
 pub mod repo_path;
@@ -35,6 +36,11 @@ pub use ecosystem::{
 };
 pub use env_policy::{CLEAN_ENV_ALLOWLIST, EnvironmentPolicy, parse_env_name, parse_set_env};
 pub use model::{App, AppList, FlakeOutput, FlakeRef, ListApp, OutputList};
+pub use perf::{
+    CasLookupGuard, PERF_STATS_ENV, PerfStats, PlanPrepareGuard, add_bytes_hashed,
+    add_cas_lookup_us, add_plan_prepare_us, emit_stderr, enabled as perf_enabled,
+    record_fs_metadata, record_nix_spawn, record_spawn_to_child_output_us,
+};
 pub use plan::{Plan, PlanCommand, PlanKind, PlanSecretRef};
 pub use projects::{
     NXR_CATEGORY_KEY, PROJECTS_FILENAME, PROJECTS_SCHEMA_VERSION, ProjectDefinition,

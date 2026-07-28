@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Optional performance counters via `NXR_PERF_STATS=1` (JSON line on stderr at exit; [ADR-0151](docs/adr/0151-perf-counters.md)).
+- Extended perf harness [`scripts/perf/measure-matrix.sh`](scripts/perf/measure-matrix.sh) for task DAG, affected, and fingerprint scenarios.
+
 ## [3.1.4] - 2026-07-28
 
 Workspace cache safety before heavier CAS/context use.

@@ -2,6 +2,35 @@
 
 Baselines for the runner. App **execution** time is dominated by `nix run` and the app itself; `nxr` overhead is discovery, planning, and process supervision.
 
+## North star
+
+When discovery and capability caches are warm and no Nix re-evaluation is required,
+**nxr overhead before the child starts** (plan/prepare through `nix` spawn) should
+stay in the **tens of milliseconds** on a local SSD — not hundreds. Use
+`NXR_PERF_STATS=1` and `plan_prepare_us` plus black-box `measure-matrix.sh` warm
+dry-run scenarios to track this; child execution time is excluded.
+
+## Instrumentation (`NXR_PERF_STATS`)
+
+Set `NXR_PERF_STATS=1` to accumulate counters for one CLI invocation. On exit,
+nxr prints a single JSON line on stderr:
+
+```text
+nxr-perf-stats: {"schema_version":1,"nix_spawns":…,…}
+```
+
+| Counter | Meaning |
+|---|---|
+| `nix_spawns` | `run_nix` and supervised `nix` child spawns |
+| `fs_metadata` | Filesystem metadata probes on fingerprint paths |
+| `bytes_hashed` | Bytes hashed (BLAKE3) on hot paths |
+| `plan_prepare_us` | Plan/prepare wall time (µs, accumulated) |
+| `cas_lookup_us` | Workspace CAS lookup wall time (µs) |
+| `spawn_to_child_output_us` | Spawn to first piped child stderr byte (µs) |
+
+Counters are **off by default**; no semantic change when unset. See
+[ADR-0151](adr/0151-perf-counters.md).
+
 ## Process supervision
 
 Parallel and multiplexed `nxr task` runs pipe every supervised child's stdout/stderr through a single `mio` poll loop (kqueue on macOS, epoll on Linux) in `nxr-process`. FDs are `O_NONBLOCK`; each readiness event drains until `WouldBlock`/EOF within a per-FD fairness budget (1 MiB). Pipe registrations outlive process exit until EOF so rapid-exit output is not discarded ([ADR-0143](adr/0143-mio-pipe-drain.md)). One reusable 32 KiB read buffer is shared across registered fds; compact `u32` node ids map back to task labels when emitting events. Per-node timeouts use a min-deadline heap with O(log n) nearest-deadline lookup (lazy cancelled-entry prune).
@@ -103,6 +132,25 @@ cargo build -p nxr-cli --quiet
 ./scripts/perf/measure-release.sh --enforce   # fail if p50 exceeds ci-thresholds.json
 ```
 
+**Extended matrix (Wave 0 scenarios + optional counters):**
+
+```bash
+./scripts/perf/measure-matrix.sh
+NXR_PERF_STATS=1 ./scripts/perf/measure-matrix.sh --stats
+```
+
+| Scenario | Harness | Notes |
+|---|---|---|
+| Cold / warm `nxr list` | `measure-release.sh`, `measure-matrix.sh` | Isolated cache home |
+| Warm app plan path (`--dry-run <app>`) | `measure-matrix.sh` | Plan/prepare only |
+| Task DAG plan (small / ~10 nodes) | `measure-matrix.sh` | `task-dag`, `parallel-group` dry-run |
+| Task DAG plan (100 nodes) | `nxr-task` unit test | `large_dag_schedule_within_ci_budget` (in-process) |
+| Affected analysis | `measure-matrix.sh` | `fixtures/affected-deps` |
+| Action-key / fingerprint warm path | `measure-fingerprint.sh` | Synthetic 500-file monorepo |
+| Workspace CAS all-hit / mixed DAG | deferred | `fixtures/workspace-cache`; Wave 1+ |
+| Watch edit-to-child-start | deferred | Flaky without controlled FS events |
+| High-output / process log latency | deferred | Profile `nxr-process` pipe drain separately |
+
 The script prefers `nix build .#nxr` and falls back to `cargo build -p nxr-cli --release`. It isolates cache homes, times cold/warm `list` and warm `plan` over `NXR_PERF_RUNS` (default 5), and prints per-run wall times plus **p50**. Compare p50 across commits; use p95/max to spot filesystem or Nix daemon outliers.
 
 Suggested release p50 targets on a local SSD (order-of-magnitude; see also nxr-next performance foundations):
@@ -111,6 +159,7 @@ Suggested release p50 targets on a local SSD (order-of-magnitude; see also nxr-n
 |---|---:|
 | Warm `nxr list` (small fixture) | < 25 ms |
 | Warm `nxr plan <app>` | < 75 ms |
+| Warm `nxr` plan/prepare before child spawn (dry-run, cache warm) | < 50 ms (tens of ms north star) |
 
 CI hosted-runner ceilings (see `scripts/perf/ci-thresholds.json`) are intentionally looser so the gate catches order-of-magnitude regressions without flaking on noisy VMs.
 

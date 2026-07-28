@@ -8,6 +8,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use nxr_completion::cache::{
     DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_workspace_with_cache,
 };
+use nxr_core::PlanPrepareGuard;
 use nxr_core::diagnostics::exit;
 use nxr_core::{App, EnvironmentPolicy, Plan, PlanCommand, PlanKind, PlanSecretRef};
 use nxr_nix::{
@@ -358,6 +359,7 @@ pub fn prepare_app_plan_in_state(
     request: &AppRequest<'_>,
     state: &mut WorkspaceState<'_>,
 ) -> Result<PreparedPlan, PrepareError> {
+    let _timer = PlanPrepareGuard::start();
     let snapshot = state.snapshot(false)?;
     snapshot.prepare_discovered_app(request)
 }
@@ -374,6 +376,7 @@ pub fn prepare_app_plan_in_state(
 ///
 /// Returns [`PrepareError`] when directories, flake selection, or Nix location fail.
 pub fn prepare_fast_app_plan(request: &AppRequest<'_>) -> Result<PreparedPlan, PrepareError> {
+    let _timer = PlanPrepareGuard::start();
     let invocation_cwd = current_invocation_directory()?;
     let flake = resolve_flake(request.flake_arg, &invocation_cwd)?;
     let execution_directory =
@@ -653,6 +656,7 @@ impl WorkspaceSnapshot {
         nix_flags: &OptionalNixFlags,
         context_override: Option<&str>,
     ) -> Result<BTreeMap<String, PreparedTaskNode>, PrepareError> {
+        let _timer = PlanPrepareGuard::start();
         document.validate().map_err(PrepareError::TaskSchema)?;
         let apps: Vec<App> = self.apps.values().cloned().collect();
         let mut nodes = BTreeMap::new();

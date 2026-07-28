@@ -19,6 +19,7 @@ use std::process;
 use clap::Parser;
 use nxr_core::diagnostics::exit;
 use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
+use nxr_core::{emit_stderr, perf_enabled};
 
 use crate::cli::{
     BuildSubcommand, CacheSubcommand, CiSubcommand, Cli, Command, ContextSubcommand,
@@ -46,9 +47,17 @@ fn main() {
     let result = dispatch(&cli, runner);
 
     match result {
-        Ok(code) => process::exit(code),
+        Ok(code) => {
+            if perf_enabled() {
+                let _ = emit_stderr();
+            }
+            process::exit(code)
+        }
         Err(error) => {
             let _ = runner.error(format_error_message(&error));
+            if perf_enabled() {
+                let _ = emit_stderr();
+            }
             process::exit(error.exit_code());
         }
     }
