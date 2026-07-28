@@ -48,6 +48,7 @@ pub fn classify_nix_argv(args: &[&str]) -> &'static str {
         Some("flake") if args.get(1) == Some(&"show") => "flake-show",
         Some("run") => "run",
         Some("eval") => "eval",
+        Some("build") => "build",
         Some("develop") => "develop",
         _ => "other",
     }
@@ -94,6 +95,8 @@ REAL_NIX={real}
       echo "run"
     elif [[ "${{1:-}}" == "eval" ]]; then
       echo "eval"
+    elif [[ "${{1:-}}" == "build" ]]; then
+      echo "build"
     elif [[ "${{1:-}}" == "develop" ]]; then
       echo "develop"
     else
@@ -155,6 +158,10 @@ mod tests {
         );
         assert_eq!(classify_nix_argv(&["run", ".#hello"]), "run");
         assert_eq!(classify_nix_argv(&["eval", "--json", ".#x"]), "eval");
+        assert_eq!(
+            classify_nix_argv(&["build", "--no-link", "--print-out-paths", "/nix/store/x"]),
+            "build"
+        );
         assert_eq!(classify_nix_argv(&["develop"]), "develop");
         assert_eq!(classify_nix_argv(&["store", "ping"]), "other");
     }

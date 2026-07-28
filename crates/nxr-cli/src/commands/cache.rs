@@ -8,9 +8,12 @@ use nxr_completion::{
 use nxr_core::cas::CacheExplain;
 use nxr_core::cas::{clear_workspace_cas, workspace_cas_status};
 use nxr_core::diagnostics::exit;
+use nxr_core::{
+    action_digest_index_status, clear_action_digest_index, clear_merkle_index, clear_plan_cache,
+    clear_store_exe_cache, merkle_index_status, plan_cache_status, store_exe_cache_status,
+};
 use nxr_nix::{
-    OptionalNixFlags, capability_cache_status, clear_capability_cache,
-    coalesced_discovery_available,
+    OptionalNixFlags, capability_cache_status, clear_capability_cache, plan_discovery_eval,
 };
 use nxr_task::{PlanError, build_execution_plan_roots, resolve_task_name};
 use serde::Serialize;
@@ -57,6 +60,10 @@ struct CacheClearJson {
     discovery_removed: usize,
     capabilities_removed: usize,
     workspace_removed: usize,
+    plans_removed: usize,
+    store_exe_removed: usize,
+    action_digests_removed: usize,
+    merkle_removed: usize,
 }
 
 #[derive(Serialize)]
@@ -71,6 +78,10 @@ struct CacheStatusJson {
     discovery: CacheStatusSection,
     capabilities: CacheStatusSection,
     workspace: CacheStatusSection,
+    plans: CacheStatusSection,
+    store_exe: CacheStatusSection,
+    action_digests: CacheStatusSection,
+    merkle: CacheStatusSection,
 }
 
 /// Remove all discovery cache entries.
@@ -82,21 +93,33 @@ pub fn clear(json: bool, runner: RunnerOutput) -> Result<(), CacheError> {
     let discovery_removed = clear_discovery_cache()?;
     let capabilities_removed = clear_capability_cache()?;
     let workspace_removed = clear_workspace_cas()?;
+    let plans_removed = clear_plan_cache()?;
+    let store_exe_removed = clear_store_exe_cache()?;
+    let action_digests_removed = clear_action_digest_index()?;
+    let merkle_removed = clear_merkle_index()?;
     if json {
         let payload = CacheClearJson {
             discovery_removed,
             capabilities_removed,
             workspace_removed,
+            plans_removed,
+            store_exe_removed,
+            action_digests_removed,
+            merkle_removed,
         };
         let rendered = serde_json::to_string_pretty(&payload)?;
         writeln!(io::stdout().lock(), "{rendered}")?;
     } else {
         runner
             .info(format!(
-                "removed {discovery_removed} discovery cache entr{}, {capabilities_removed} capability cache entr{}, and {workspace_removed} workspace CAS entr{}",
+                "removed {discovery_removed} discovery cache entr{}, {capabilities_removed} capability cache entr{}, {workspace_removed} workspace CAS entr{}, {plans_removed} prepared-plan cache entr{}, {store_exe_removed} store-exe cache entr{}, {action_digests_removed} action-digest index entr{}, and {merkle_removed} merkle index entr{}",
                 if discovery_removed == 1 { "y" } else { "ies" },
                 if capabilities_removed == 1 { "y" } else { "ies" },
                 if workspace_removed == 1 { "y" } else { "ies" },
+                if plans_removed == 1 { "y" } else { "ies" },
+                if store_exe_removed == 1 { "y" } else { "ies" },
+                if action_digests_removed == 1 { "y" } else { "ies" },
+                if merkle_removed == 1 { "y" } else { "ies" },
             ))
             .map_err(CacheError::Io)?;
     }
@@ -112,6 +135,10 @@ pub fn status(json: bool, mut runner: RunnerOutput) -> Result<(), CacheError> {
     let discovery = discovery_cache_status()?;
     let capabilities = capability_cache_status()?;
     let workspace = workspace_cas_status()?;
+    let plans = plan_cache_status()?;
+    let store_exe = store_exe_cache_status()?;
+    let action_digests = action_digest_index_status()?;
+    let merkle = merkle_index_status()?;
     if json {
         let payload = CacheStatusJson {
             discovery: CacheStatusSection {
@@ -128,6 +155,26 @@ pub fn status(json: bool, mut runner: RunnerOutput) -> Result<(), CacheError> {
                 path: workspace.path,
                 entries: workspace.entries,
                 total_bytes: workspace.total_bytes,
+            },
+            plans: CacheStatusSection {
+                path: plans.path,
+                entries: plans.entries,
+                total_bytes: plans.total_bytes,
+            },
+            store_exe: CacheStatusSection {
+                path: store_exe.path,
+                entries: store_exe.entries,
+                total_bytes: store_exe.total_bytes,
+            },
+            action_digests: CacheStatusSection {
+                path: action_digests.path.display().to_string(),
+                entries: action_digests.entries,
+                total_bytes: action_digests.total_bytes,
+            },
+            merkle: CacheStatusSection {
+                path: merkle.path.display().to_string(),
+                entries: merkle.entries,
+                total_bytes: merkle.total_bytes,
             },
         };
         let rendered = serde_json::to_string_pretty(&payload)?;
@@ -153,6 +200,34 @@ pub fn status(json: bool, mut runner: RunnerOutput) -> Result<(), CacheError> {
             &workspace.path,
             workspace.entries,
             workspace.total_bytes,
+        )?;
+        render_status_section(
+            &mut runner,
+            "prepared-plan",
+            &plans.path,
+            plans.entries,
+            plans.total_bytes,
+        )?;
+        render_status_section(
+            &mut runner,
+            "store-exe",
+            &store_exe.path,
+            store_exe.entries,
+            store_exe.total_bytes,
+        )?;
+        render_status_section(
+            &mut runner,
+            "action-digests",
+            &action_digests.path.display().to_string(),
+            action_digests.entries,
+            action_digests.total_bytes,
+        )?;
+        render_status_section(
+            &mut runner,
+            "merkle-index",
+            &merkle.path.display().to_string(),
+            merkle.entries,
+            merkle.total_bytes,
         )?;
     }
     Ok(())
@@ -269,14 +344,19 @@ pub fn explain(
     let mut state = WorkspaceState::new(flake_arg, nix_override, nix_flags);
     let context = state.discovery_context().map_err(CacheError::Prepare)?;
     let adapter = state.adapter().map_err(CacheError::Nix)?;
-    let coalesced = coalesced_discovery_available(&adapter.version_banner);
+    let eval_plan = plan_discovery_eval(
+        &adapter.version_banner,
+        adapter.config_json.as_deref(),
+        require_tasks,
+    );
     let report = explain_discovery_cache(
         &context,
         DiscoveryCacheOptions {
             refresh: false,
             require_tasks,
         },
-        coalesced,
+        eval_plan.use_coalesced_discovery,
+        eval_plan.strategy,
     )?;
 
     if json {
@@ -310,6 +390,12 @@ pub fn explain(
             .info(format!("cached_invalidation_key: {key}"))
             .map_err(CacheError::Io)?;
     }
+    runner
+        .info(format!(
+            "discovery_eval_strategy: {}",
+            serde_json::to_string(&report.discovery_eval_strategy).map_err(CacheError::Json)?
+        ))
+        .map_err(CacheError::Io)?;
     runner
         .info(format!(
             "coalesced_discovery_available: {}",

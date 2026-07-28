@@ -31,6 +31,7 @@ Commands:
   watch       Watch and rerun on filesystem changes
   graph       Show task graph
   cache       Manage nxr discovery cache
+  daemon      Optional local cache/coordination daemon (`nxrd`)
   history     Show recent run summaries persisted under XDG state
   affected    Report apps and tasks likely affected by changed paths
   fmt         Format Nix sources via `nix fmt` / the flake formatter

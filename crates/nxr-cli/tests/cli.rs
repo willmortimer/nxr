@@ -24,6 +24,71 @@ fn version_flag_succeeds() {
 }
 
 #[test]
+fn version_flag_does_not_invoke_nix() {
+    let counter = NixCallCounter::install();
+    cargo_bin_cmd!("nxr")
+        .env("NXR_NIX", &counter.wrapper)
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("nxr"));
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(counter.count("version"), 0, "log={log}");
+    assert_eq!(counter.count("config"), 0, "log={log}");
+    assert_eq!(counter.count("flake-show"), 0, "log={log}");
+}
+
+#[test]
+fn completion_does_not_invoke_nix() {
+    let counter = NixCallCounter::install();
+    cargo_bin_cmd!("nxr")
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["completion", "bash"])
+        .assert()
+        .success();
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(counter.count("version"), 0, "log={log}");
+}
+
+#[test]
+fn complete_apps_cache_hit_avoids_nix() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let home = tempfile::TempDir::new().expect("cache home");
+    let repo_root = repo_root();
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "list"])
+        .assert()
+        .success();
+
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "__complete", "apps"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello"));
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(counter.count("version"), 0, "log={log}");
+    assert_eq!(counter.count("flake-show"), 0, "log={log}");
+}
+
+#[test]
 fn select_without_tty_is_usage_error() {
     cargo_bin_cmd!("nxr")
         .arg("select")
@@ -926,6 +991,8 @@ fn completion_bash_emits_script() {
         .stdout(predicate::str::contains("nxr"))
         .stdout(predicate::str::contains("_nxr_complete_apps"))
         .stdout(predicate::str::contains("_nxr_complete_target"))
+        .stdout(predicate::str::contains("_nxr_invoke"))
+        .stdout(predicate::str::contains("_nxr_daemon_socket"))
         .stdout(predicate::str::contains("__complete \"$1\""))
         .stdout(predicate::str::contains("tasks"))
         .stdout(predicate::str::contains("packages"))
@@ -942,6 +1009,7 @@ fn completion_zsh_emits_script() {
         .stdout(predicate::str::contains("#compdef nxr"))
         .stdout(predicate::str::contains("_nxr_complete_apps"))
         .stdout(predicate::str::contains("_nxr_complete_target"))
+        .stdout(predicate::str::contains("_nxr_invoke"))
         .stdout(predicate::str::contains("__complete \"$target\""))
         .stdout(predicate::str::contains("categories"));
 }
@@ -954,6 +1022,8 @@ fn completion_fish_emits_script() {
         .assert()
         .success()
         .stdout(predicate::str::contains("complete -c nxr"))
+        .stdout(predicate::str::contains("__nxr_invoke"))
+        .stdout(predicate::str::contains("__nxr_daemon_socket"))
         .stdout(predicate::str::contains("__nxr_complete_apps"))
         .stdout(predicate::str::contains("__nxr_complete_tasks"))
         .stdout(predicate::str::contains("__nxr_complete_packages"))
@@ -2963,6 +3033,7 @@ fn bare_app_fast_path_skips_flake_show() {
     cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
         .env("NXR_NIX", &counter.wrapper)
+        .env("NXR_STORE_EXE_CACHE", "off")
         .args(["--flake", "fixtures/basic-apps", "hello"])
         .assert()
         .success()
@@ -2994,6 +3065,7 @@ fn bare_app_failing_existing_app_is_one_nix_process() {
     cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
         .env("NXR_NIX", &counter.wrapper)
+        .env("NXR_STORE_EXE_CACHE", "off")
         .args(["--flake", "fixtures/basic-apps", "fail"])
         .assert()
         .failure()
@@ -3004,6 +3076,68 @@ fn bare_app_failing_existing_app_is_one_nix_process() {
     assert_eq!(counter.count("flake-show"), 0, "log={log}");
     assert_eq!(counter.count("eval"), 0, "log={log}");
     assert_eq!(counter.count("other"), 0, "log={log}");
+}
+
+#[test]
+fn warm_store_exe_skips_nix_run() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let home = tempfile::TempDir::new().expect("cache home");
+    let repo_root = repo_root();
+    let cache = home.path().join("cache");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", &cache)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello from basic-apps"));
+
+    let cold_log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(
+        counter.count("run"),
+        0,
+        "cold store-exe path should realise+exec without nix run; log={cold_log}"
+    );
+    assert!(
+        counter.count("eval") >= 1,
+        "cold store-exe should eval app.program (and possibly currentSystem); log={cold_log}"
+    );
+
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", &cache)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello from basic-apps"));
+
+    let warm_log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(
+        counter.count("run"),
+        0,
+        "warm store-exe must not call nix run; log={warm_log}"
+    );
+    assert_eq!(
+        counter.count("eval"),
+        0,
+        "warm store-exe must not re-eval; log={warm_log}"
+    );
+    assert_eq!(
+        counter.count("build"),
+        0,
+        "warm store-exe must not rebuild; log={warm_log}"
+    );
 }
 
 #[test]
@@ -3030,6 +3164,7 @@ fn task_ci_uses_o1_discovery_not_per_node_flake_show() {
     cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
         .env("NXR_NIX", &counter.wrapper)
+        .env("NXR_STORE_EXE_CACHE", "off")
         .args(["--flake", "fixtures/task-dag", "task", "ci"])
         .assert()
         .success()
@@ -3063,6 +3198,7 @@ fn coalesced_cold_task_discovery_uses_single_eval_when_forced() {
         .env("HOME", home.path())
         .env("XDG_CACHE_HOME", home.path().join("cache"))
         .env("NXR_FORCE_COALESCED_DISCOVERY", "1")
+        .env("NXR_NXR_METADATA", "off")
         .env("NXR_NIX", &counter.wrapper)
         .args(["--flake", "fixtures/task-dag", "list"])
         .assert()
@@ -3076,6 +3212,7 @@ fn coalesced_cold_task_discovery_uses_single_eval_when_forced() {
         .env("HOME", home.path())
         .env("XDG_CACHE_HOME", home.path().join("cache"))
         .env("NXR_FORCE_COALESCED_DISCOVERY", "1")
+        .env("NXR_NXR_METADATA", "off")
         .env("NXR_NIX", &counter.wrapper)
         .args([
             "--flake",
@@ -3098,6 +3235,56 @@ fn coalesced_cold_task_discovery_uses_single_eval_when_forced() {
         counter.count("eval"),
         1,
         "coalesced discovery should use one eval; log={log}"
+    );
+}
+
+#[test]
+fn nxr_metadata_cold_task_discovery_uses_single_eval() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let home = tempfile::TempDir::new().expect("cache home");
+    let repo_root = repo_root();
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/nxr-metadata", "list"])
+        .assert()
+        .success();
+
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_NIX", &counter.wrapper)
+        .args([
+            "--flake",
+            "fixtures/nxr-metadata",
+            "--refresh-discovery",
+            "task",
+            "ci",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(
+        counter.count("flake-show"),
+        0,
+        "nxrMetadata discovery must not call flake show; log={log}"
+    );
+    assert_eq!(
+        counter.count("eval"),
+        1,
+        "nxrMetadata discovery should use one eval; log={log}"
     );
 }
 
@@ -3244,6 +3431,7 @@ fn watch_app_does_not_double_workspace_init_on_first_generation() {
         .expect("nxr binary")
         .current_dir(&repo_root)
         .env("NXR_NIX", &counter.wrapper)
+        .env("NXR_STORE_EXE_CACHE", "off")
         .args(["--flake", "fixtures/basic-apps", "watch", "hello"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -5453,4 +5641,274 @@ fn process_status_lists_declared_processes() {
         "expected worker process in status output:\n{stdout}"
     );
     assert!(stdout.contains("stopped"));
+}
+
+#[test]
+fn daemon_status_reports_absent_when_socket_missing() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("missing.sock");
+    let assert = cargo_bin_cmd!("nxr")
+        .args([
+            "--json",
+            "daemon",
+            "status",
+            "--socket",
+            socket.to_str().expect("utf8"),
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(value["running"], false);
+    assert_eq!(value["connect_enabled"], true);
+}
+
+#[test]
+fn daemon_kill_switch_disables_connect() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("off.sock");
+    let assert = cargo_bin_cmd!("nxr")
+        .env("NXR_DAEMON", "off")
+        .args([
+            "--json",
+            "daemon",
+            "status",
+            "--socket",
+            socket.to_str().expect("utf8"),
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(value["running"], false);
+    assert_eq!(value["connect_enabled"], false);
+}
+
+#[cfg(unix)]
+#[test]
+fn daemon_start_stop_round_trip_on_temp_socket() {
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use assert_cmd::cargo::CommandCargoExt;
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("nxrd.sock");
+    let socket_str = socket.to_str().expect("utf8").to_owned();
+
+    let mut child = Command::cargo_bin("nxr")
+        .expect("nxr binary")
+        .args(["daemon", "start", "--foreground", "--socket", &socket_str])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn daemon");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut ready = false;
+    while Instant::now() < deadline {
+        if socket.exists() {
+            let output = cargo_bin_cmd!("nxr")
+                .args(["--json", "daemon", "status", "--socket", &socket_str])
+                .output()
+                .expect("status");
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&stdout)
+                    && value["running"] == true
+                {
+                    ready = true;
+                    break;
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(ready, "daemon should become ready");
+
+    cargo_bin_cmd!("nxr")
+        .args(["daemon", "stop", "--socket", &socket_str])
+        .assert()
+        .success();
+
+    let _ = child.wait();
+
+    let assert = cargo_bin_cmd!("nxr")
+        .args(["--json", "daemon", "status", "--socket", &socket_str])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(value["running"], false);
+}
+#[test]
+fn list_works_without_daemon() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("absent.sock");
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .env("NXR_DAEMON_SOCKET", &socket)
+        .env("NXR_DAEMON", "off")
+        .args(["--flake", "fixtures/basic-apps", "list", "--json"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn process_logs_follow_absent_daemon_still_resolves_process() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("missing-broker.sock");
+    // No supervised process → NotRunning; proves logs --follow path works
+    // with an absent daemon (file-poll fallback would apply if running).
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .env("NXR_DAEMON_SOCKET", &socket)
+        .env("NXR_LOG_BROKER", "on")
+        .args([
+            "--flake",
+            "fixtures/processes",
+            "logs",
+            "worker",
+            "--follow",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not running"));
+}
+
+#[test]
+fn process_logs_follow_broker_kill_switch_still_resolves_process() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .env("NXR_LOG_BROKER", "off")
+        .args([
+            "--flake",
+            "fixtures/processes",
+            "logs",
+            "worker",
+            "--follow",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not running"));
+}
+
+#[cfg(unix)]
+#[test]
+fn daemon_log_broker_append_subscribe_round_trip() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use assert_cmd::cargo::CommandCargoExt;
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("nxrd.sock");
+    let socket_str = socket.to_str().expect("utf8").to_owned();
+
+    let mut child = Command::cargo_bin("nxr")
+        .expect("nxr binary")
+        .args(["daemon", "start", "--foreground", "--socket", &socket_str])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn daemon");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if socket.exists() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(socket.exists(), "daemon socket missing");
+
+    // base64("broker-cli\n")
+    const PAYLOAD_B64: &str = "YnJva2VyLWNsaQo=";
+
+    let socket_for_producer = socket.clone();
+    let producer = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(150));
+        let mut stream = UnixStream::connect(&socket_for_producer).expect("connect");
+        let hello = r#"{"v":1,"id":1,"method":"hello"}"#;
+        writeln!(stream, "{hello}").unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let append = format!(
+            r#"{{"v":1,"id":2,"method":"log.append","params":{{"stream":"cli/test","data_b64":"{PAYLOAD_B64}"}}}}"#
+        );
+        writeln!(stream, "{append}").unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.contains("\"ok\":true"), "append resp {line}");
+        let close = r#"{"v":1,"id":3,"method":"log.close","params":{"stream":"cli/test"}}"#;
+        writeln!(stream, "{close}").unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+    });
+
+    let mut stream = UnixStream::connect(&socket).expect("subscribe connect");
+    {
+        let hello = r#"{"v":1,"id":1,"method":"hello"}"#;
+        writeln!(stream, "{hello}").unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+    }
+    let subscribe = r#"{"v":1,"id":2,"method":"log.subscribe","params":{"stream":"cli/test","from_start":true}}"#;
+    writeln!(stream, "{subscribe}").unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut got = String::new();
+    let mut body = String::new();
+    let read_deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < read_deadline {
+        got.clear();
+        match reader.read_line(&mut got) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                continue;
+            }
+            Err(error) => panic!("subscribe read failed: {error}"),
+        }
+        if got.contains(PAYLOAD_B64) {
+            body.push_str(&got);
+            break;
+        }
+        if got.contains("\"type\":\"eof\"") {
+            break;
+        }
+    }
+    producer.join().expect("producer");
+    assert!(
+        body.contains(PAYLOAD_B64),
+        "expected chunk in subscribe stream, last={got}"
+    );
+
+    let _ = Command::cargo_bin("nxr")
+        .expect("nxr")
+        .args(["daemon", "stop", "--socket", &socket_str])
+        .status();
+    let _ = child.wait();
 }

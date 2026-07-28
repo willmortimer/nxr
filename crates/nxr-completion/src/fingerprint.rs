@@ -207,6 +207,7 @@ fn compute_workspace_fingerprint(
     for relative in nix_paths {
         let absolute = root.join(&relative);
         let metadata = fs::metadata(&absolute)?;
+        nxr_core::record_fs_metadata();
         let prior_entry = prior.and_then(|index| index.entries.get(&relative));
         let entry = fingerprint_entry_for_file(&absolute, &metadata, prior_entry)?;
         entries.insert(relative, entry);
@@ -215,6 +216,7 @@ fn compute_workspace_fingerprint(
     let lock_path = root.join("flake.lock");
     let lock_file = match fs::metadata(&lock_path) {
         Ok(metadata) if metadata.is_file() => {
+            nxr_core::record_fs_metadata();
             let prior_lock = prior.and_then(|index| index.lock_file.as_ref());
             Some(fingerprint_lock_entry(&lock_path, &metadata, prior_lock)?)
         }
@@ -443,6 +445,7 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 }
 
 fn hash_bytes(bytes: &[u8]) -> Hash {
+    nxr_core::add_bytes_hashed(bytes.len() as u64);
     blake3::hash(bytes)
 }
 
@@ -663,6 +666,7 @@ fn fingerprint_discovery_input(
         ));
     }
     let metadata = fs::metadata(&canonical)?;
+    nxr_core::record_fs_metadata();
     fingerprint_entry_for_file(&canonical, &metadata, prior)
 }
 

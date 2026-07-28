@@ -7,15 +7,22 @@ use std::time::Duration;
 use nxr_core::diagnostics::exit;
 use nxr_core::{EnvironmentPolicy, PlanSecretRef};
 use nxr_nix::{NixError, OptionalNixFlags, TaskDiscoveryError};
-use nxr_process::{DeadlineQueue, InterruptFlags, PipeMultiplexer, PipeStream, Supervisor};
+use nxr_process::{
+    ChunkCoalescer, CoalesceLimits, DeadlineQueue, InterruptFlags, PipeChunk, PipeMultiplexer,
+    PipeStream, Supervisor,
+};
 use nxr_task::{
     ContextError, Event, EventSink, ExecutionPlan, FailurePolicy, OutputPayload, PlanError,
     PlanSecretEntry, PlanSecretValuePlaceholder, RunEventDecorator, Scheduler, SchedulerError,
     SecretDelivery, SecretProvider, build_execution_plan_roots, enforce_context_confirm,
     merge_spawn_env_overrides, resolve_task_name,
 };
+use nxr_watch::WatchPrewarm;
 
-use crate::commands::common::{PrepareError, PreparedTaskNode, WorkspaceSnapshot, WorkspaceState};
+use crate::commands::common::{
+    NodePrepStage, PrepareError, PreparedTaskNode, TaskNodePreparer, WorkspaceSnapshot,
+    WorkspaceState, lazy_prep_enabled,
+};
 use crate::commands::history;
 use crate::commands::plan::{PlanRenderError, write_plan};
 use crate::commands::run::RunError;
@@ -195,6 +202,7 @@ pub fn execute(
         None,
         false,
         None,
+        None,
     )?;
     if !dry_run {
         let mut state = WorkspaceState::with_refresh(
@@ -233,8 +241,12 @@ pub enum RunControl {
 pub struct PreparedTaskGeneration {
     pub document: nxr_task::TaskDocument,
     pub plan: ExecutionPlan,
+    /// Fully populated for dry-run, watch reuse, and `NXR_LAZY_PREP=off`.
+    /// Empty when [`Self::snapshot`] is set for lazy preparation.
     pub prepared_nodes: BTreeMap<String, PreparedTaskNode>,
     pub canonical_roots: Vec<String>,
+    /// Workspace snapshot retained for lazy node prepare (ADR-0158).
+    pub snapshot: Option<WorkspaceSnapshot>,
 }
 
 /// Like [`execute`], but polls `control` during the scheduler loop.
@@ -255,6 +267,7 @@ pub fn execute_with_control(
     workspace: Option<&mut WorkspaceState<'_>>,
     reuse_from_cache: bool,
     cache: Option<&mut Option<PreparedTaskGeneration>>,
+    watch_prewarm: Option<&mut WatchPrewarm>,
 ) -> Result<i32, TaskError> {
     if request.jobs == 0 {
         return Err(TaskError::InvalidJobs(0));
@@ -318,33 +331,56 @@ pub fn execute_with_control(
         snapshot
             .validate_task_apps(&document)
             .map_err(PrepareError::NotFound)?;
-        let prepared_nodes = snapshot.prepare_task_nodes(
-            &document,
-            &canonical_roots,
-            &plan.serial_order,
-            request.args,
-            request.root,
-            request.cwd,
-            request.shell,
-            request.shell_mode,
-            &request.environment_policy,
-            request.nix_flags,
-            request.context_override.as_deref(),
-        )?;
 
-        if !dry_run && requires_project_trust(&prepared_nodes) {
-            trust::enforce_for_execution(
-                &snapshot.flake.display,
-                snapshot.flake.local_root.as_deref(),
-                &snapshot.flake.nix_ref,
+        // Watch caches and dry-run need every node prepared up front. Live runs
+        // default to lazy prep (`NXR_LAZY_PREP=off` restores eager).
+        let use_lazy = lazy_prep_enabled() && !dry_run && cache.is_none();
+
+        let (prepared_nodes, retained_snapshot) = if use_lazy {
+            if WorkspaceSnapshot::plan_requires_project_trust(
+                &document,
+                &plan,
+                &request.environment_policy,
+                request.context_override.as_deref(),
+            )? {
+                trust::enforce_for_execution(
+                    &snapshot.flake.display,
+                    snapshot.flake.local_root.as_deref(),
+                    &snapshot.flake.nix_ref,
+                )?;
+            }
+            (BTreeMap::new(), Some(snapshot.clone()))
+        } else {
+            let prepared_nodes = snapshot.prepare_task_nodes(
+                &document,
+                &canonical_roots,
+                &plan.serial_order,
+                request.args,
+                request.root,
+                request.cwd,
+                request.shell,
+                request.shell_mode,
+                &request.environment_policy,
+                request.nix_flags,
+                request.context_override.as_deref(),
             )?;
-        }
+
+            if !dry_run && requires_project_trust(&prepared_nodes) {
+                trust::enforce_for_execution(
+                    &snapshot.flake.display,
+                    snapshot.flake.local_root.as_deref(),
+                    &snapshot.flake.nix_ref,
+                )?;
+            }
+            (prepared_nodes, None)
+        };
 
         let bundle = PreparedTaskGeneration {
             document,
             plan,
             prepared_nodes,
             canonical_roots,
+            snapshot: retained_snapshot,
         };
         if let Some(cache) = cache {
             *cache = Some(bundle.clone());
@@ -353,10 +389,11 @@ pub fn execute_with_control(
     };
 
     let PreparedTaskGeneration {
-        document: _document,
+        document,
         plan,
         prepared_nodes,
         canonical_roots,
+        snapshot: lazy_snapshot,
     } = prepared_bundle;
 
     let failure_policy = if request.keep_going {
@@ -391,6 +428,24 @@ pub fn execute_with_control(
         return dry_run_execute(&prepared_nodes, &plan, &waves, request, json, runner);
     }
 
+    let mut preparer = if let Some(ref snapshot) = lazy_snapshot {
+        TaskNodePreparer::new(
+            snapshot,
+            &document,
+            &canonical_roots,
+            request.args,
+            request.root,
+            request.cwd,
+            request.shell,
+            request.shell_mode,
+            &request.environment_policy,
+            request.nix_flags,
+            request.context_override.as_deref(),
+        )?
+    } else {
+        TaskNodePreparer::from_prepared(prepared_nodes)
+    };
+
     if pipe_stdio {
         let mut stdout = io::stdout().lock();
         let mut stderr = io::stderr().lock();
@@ -410,14 +465,30 @@ pub fn execute_with_control(
             },
             plan.nodes.len(),
         ));
-        let result = run_plan(request, &plan, &prepared_nodes, &mut sink, runner, control);
+        let result = run_plan(
+            request,
+            &plan,
+            &mut preparer,
+            &mut sink,
+            runner,
+            control,
+            watch_prewarm,
+        );
         report_sink_error(&sink)?;
         result
     } else {
         // Inherit stdio for interactivity / --output raw: do not hold stdout/stderr locks.
         let inner = nxr_task::NullSink;
         let mut sink = wrap_report_sink(inner, &request.reports);
-        let result = run_plan(request, &plan, &prepared_nodes, &mut sink, runner, control);
+        let result = run_plan(
+            request,
+            &plan,
+            &mut preparer,
+            &mut sink,
+            runner,
+            control,
+            watch_prewarm,
+        );
         report_sink_error(&sink)?;
         result
     }
@@ -639,14 +710,16 @@ fn dry_run_execute(
 fn run_plan(
     request: &TaskRequest<'_>,
     plan: &ExecutionPlan,
-    prepared_nodes: &BTreeMap<String, PreparedTaskNode>,
+    preparer: &mut TaskNodePreparer<'_>,
     sink: &mut dyn EventSink,
     runner: RunnerOutput,
     control: &mut dyn FnMut() -> io::Result<RunControl>,
+    mut watch_prewarm: Option<&mut WatchPrewarm>,
 ) -> Result<i32, TaskError> {
     let mut scheduler = Scheduler::new(plan, request.jobs)?;
     let mut supervisor = Supervisor::new();
     let mut pipe_io = PipeMultiplexer::new();
+    let mut chunk_coalescer = ChunkCoalescer::new(CoalesceLimits::default());
     let mut deadlines = DeadlineQueue::new();
     let mut node_compact_ids: BTreeMap<String, u32> = BTreeMap::new();
     let interrupts = InterruptFlags::install().map_err(TaskError::Supervision)?;
@@ -657,11 +730,7 @@ fn run_plan(
     let mut started_at: BTreeMap<String, std::time::Instant> = BTreeMap::new();
 
     let (user_config, secret_bindings) = load_runtime_secret_config()?;
-    let project_id = prepared_nodes
-        .values()
-        .next()
-        .map(|node| project_identity(std::path::Path::new(node.cwd.as_str())))
-        .unwrap_or_else(|| "local".to_owned());
+    let project_id = project_identity(std::path::Path::new(preparer.flake_root().as_str()));
     let mut node_secret_guards: BTreeMap<String, SpawnSecrets> = BTreeMap::new();
 
     let mut to_start = scheduler.schedule_ready();
@@ -676,6 +745,7 @@ fn run_plan(
                 sink,
                 SHUTDOWN_GRACE,
                 PipeDrainMode::ForcedShutdown,
+                &mut chunk_coalescer,
             )?;
             for (id, code) in codes {
                 sink.emit(Event::NodeExited {
@@ -710,6 +780,7 @@ fn run_plan(
                     sink,
                     SHUTDOWN_GRACE,
                     PipeDrainMode::ForcedShutdown,
+                    &mut chunk_coalescer,
                 )?;
                 for (stopped_id, stopped_code) in shut {
                     sink.emit(Event::NodeExited {
@@ -751,7 +822,8 @@ fn run_plan(
             if !started_at.contains_key(&id) {
                 continue;
             }
-            let grace = prepared_nodes
+            let grace = preparer
+                .prepared()
                 .get(&id)
                 .and_then(|node| node.termination_grace)
                 .unwrap_or(SHUTDOWN_GRACE);
@@ -799,16 +871,56 @@ fn run_plan(
             }
         }
 
+        // Phase 3: prepare CAS inputs for resource-ready nodes about to start.
+        // SpawnPlan is deferred until after (or overlapped with) CAS lookup when
+        // pipelining is enabled (ADR-0159).
+        if preparer.pipeline_enabled() {
+            preparer
+                .ensure_cas_inputs_many(&to_start)
+                .map_err(TaskError::Prepare)?;
+        } else {
+            preparer
+                .ensure_prepared_many(&to_start)
+                .map_err(TaskError::Prepare)?;
+        }
+        // Phase 4 (optional): speculate successors only under keep-going so
+        // fail-fast / upstream failure still avoid never-run prepares.
+        if request.keep_going {
+            preparer
+                .speculate_successors(plan, &to_start, request.jobs)
+                .map_err(TaskError::Prepare)?;
+        }
+
         let ready: Vec<String> = std::mem::take(&mut to_start);
         let mut spawn_queue = Vec::new();
+        let mut inflight_spawn_plans = Vec::new();
         for node_id in ready {
-            let prepared = prepared_nodes
+            preparer
+                .ensure_stage(&node_id, NodePrepStage::CasInputs)
+                .map_err(TaskError::Prepare)?;
+
+            // Overlap SpawnPlan with CAS lookup when pipelining; cancel on hit.
+            let ticket = if preparer.pipeline_enabled() {
+                Some(
+                    preparer
+                        .start_spawn_plan(&node_id)
+                        .map_err(TaskError::Prepare)?,
+                )
+            } else {
+                None
+            };
+
+            let prepared = preparer
+                .prepared()
                 .get(&node_id)
-                .expect("scheduler only starts ids prepared before run");
+                .expect("ensure_stage just prepared this node");
             if try_workspace_cache_restore(prepared, &prepared.flake_root)
                 .map_err(TaskError::Supervision)?
                 .is_some()
             {
+                if let Some(ticket) = ticket {
+                    preparer.cancel_spawn_plan(ticket);
+                }
                 runner
                     .verbose(format!("cache hit for task {node_id}; skipping spawn"))
                     .map_err(TaskError::Io)?;
@@ -826,8 +938,35 @@ fn run_plan(
                 to_start.extend(scheduler.complete(&node_id, exit::SUCCESS)?);
                 continue;
             }
+
+            if let Some(ticket) = ticket {
+                inflight_spawn_plans.push(ticket);
+            } else {
+                preparer
+                    .ensure_stage(&node_id, NodePrepStage::SpawnPlan)
+                    .map_err(TaskError::Prepare)?;
+            }
             spawn_queue.push(node_id);
         }
+
+        // Join overlapped SpawnPlan work before spawning (miss path).
+        for ticket in inflight_spawn_plans {
+            let node_id = ticket.task_id().to_owned();
+            preparer
+                .join_spawn_plan(ticket)
+                .map_err(TaskError::Prepare)?;
+            // join may have cancelled; ensure SpawnPlan for miss-path nodes.
+            if preparer
+                .prepared()
+                .get(&node_id)
+                .is_some_and(|n| n.prep_stage < NodePrepStage::SpawnPlan)
+            {
+                preparer
+                    .ensure_stage(&node_id, NodePrepStage::SpawnPlan)
+                    .map_err(TaskError::Prepare)?;
+            }
+        }
+
         for node_id in spawn_queue {
             let pipe_stdio = node_uses_piped_stdio(
                 node_is_interactive(plan, &node_id),
@@ -836,7 +975,7 @@ fn run_plan(
                 request.events_format,
             );
             let compact = spawn_node(
-                prepared_nodes,
+                preparer,
                 &node_id,
                 pipe_stdio,
                 &mut supervisor,
@@ -847,10 +986,15 @@ fn run_plan(
                 &secret_bindings,
                 &project_id,
                 &mut node_secret_guards,
+                watch_prewarm.as_deref_mut(),
             )?;
             started_at.insert(node_id.clone(), std::time::Instant::now());
             node_compact_ids.insert(node_id.clone(), compact);
-            if let Some(timeout) = prepared_nodes.get(&node_id).and_then(|node| node.timeout) {
+            if let Some(timeout) = preparer
+                .prepared()
+                .get(&node_id)
+                .and_then(|node| node.timeout)
+            {
                 deadlines.insert(compact, started_at[&node_id] + timeout);
             }
         }
@@ -858,7 +1002,13 @@ fn run_plan(
         let poll_timeout = deadlines
             .time_until_next(std::time::Instant::now())
             .map_or(POLL_INTERVAL, |remaining| remaining.min(POLL_INTERVAL));
-        drain_pipe_chunks(&mut pipe_io, sink, poll_timeout, PipeDrainMode::Normal)?;
+        drain_pipe_chunks(
+            &mut pipe_io,
+            sink,
+            poll_timeout,
+            PipeDrainMode::Normal,
+            &mut chunk_coalescer,
+        )?;
         cleanup_closed_pipes(&pipe_io, &mut deadlines, &mut node_compact_ids);
 
         if let Some((id, code)) = supervisor.try_wait_any().map_err(TaskError::Supervision)? {
@@ -883,7 +1033,7 @@ fn run_plan(
             node_secret_guards.remove(&id);
 
             if code == exit::SUCCESS
-                && let Some(prepared) = prepared_nodes.get(&id)
+                && let Some(prepared) = preparer.prepared().get(&id)
             {
                 save_workspace_cache(prepared, &prepared.flake_root)
                     .map_err(TaskError::Supervision)?;
@@ -926,12 +1076,25 @@ fn run_plan(
         let idle_timeout = deadlines
             .time_until_next(std::time::Instant::now())
             .map_or(POLL_INTERVAL, |remaining| remaining.min(POLL_INTERVAL));
-        drain_pipe_chunks(&mut pipe_io, sink, idle_timeout, PipeDrainMode::Normal)?;
+        drain_pipe_chunks(
+            &mut pipe_io,
+            sink,
+            idle_timeout,
+            PipeDrainMode::Normal,
+            &mut chunk_coalescer,
+        )?;
         cleanup_closed_pipes(&pipe_io, &mut deadlines, &mut node_compact_ids);
     }
 
     // Flush any trailing pipe chunks after the last exit.
-    drain_pipe_chunks(&mut pipe_io, sink, Duration::ZERO, PipeDrainMode::Normal)?;
+    drain_pipe_chunks(
+        &mut pipe_io,
+        sink,
+        Duration::ZERO,
+        PipeDrainMode::Normal,
+        &mut chunk_coalescer,
+    )?;
+    flush_coalesced_chunks(&pipe_io, sink, &mut chunk_coalescer);
     cleanup_closed_pipes(&pipe_io, &mut deadlines, &mut node_compact_ids);
 
     let outcome = scheduler.outcome();
@@ -979,6 +1142,13 @@ fn run_plan(
         finished_at: None,
     });
 
+    runner
+        .verbose(format!(
+            "prepared {} task node(s) this run",
+            preparer.prepare_count()
+        ))
+        .map_err(TaskError::Io)?;
+
     if interrupted {
         return Ok(exit::INTERRUPTED);
     }
@@ -1003,7 +1173,7 @@ fn requires_project_trust(prepared_nodes: &BTreeMap<String, PreparedTaskNode>) -
 }
 
 fn spawn_node(
-    prepared_nodes: &BTreeMap<String, PreparedTaskNode>,
+    preparer: &TaskNodePreparer<'_>,
     node_id: &str,
     pipe_stdio: bool,
     supervisor: &mut Supervisor,
@@ -1014,10 +1184,16 @@ fn spawn_node(
     secret_bindings: &nxr_core::config::SecretBindings,
     project_id: &str,
     node_secret_guards: &mut BTreeMap<String, SpawnSecrets>,
+    watch_prewarm: Option<&mut WatchPrewarm>,
 ) -> Result<u32, TaskError> {
-    let prepared = prepared_nodes
+    let prepared = preparer
+        .prepared()
         .get(node_id)
         .expect("scheduler only starts ids prepared before run");
+    debug_assert!(
+        prepared.prep_stage >= NodePrepStage::SpawnPlan,
+        "spawn requires SpawnPlan stage"
+    );
     if prepared.confirm {
         let context_name = prepared.context_name.as_deref().unwrap_or("unknown");
         enforce_context_confirm(context_name, node_id, true).map_err(TaskError::Context)?;
@@ -1031,8 +1207,17 @@ fn spawn_node(
 
     sink.emit(Event::node_started(node_id.to_owned()));
 
-    let program = prepared.program.as_std_path();
-    let args = &prepared.arguments;
+    let spawn = crate::commands::store_exe::resolve_app_spawn_with_prewarm(
+        &prepared.plan,
+        &prepared.program,
+        Some(prepared.flake_root.as_path()),
+        &OptionalNixFlags::default(),
+        "",
+        Some(prepared.cwd.as_std_path()),
+        watch_prewarm,
+    );
+    let program = spawn.program.as_std_path();
+    let args = &spawn.arguments;
     let cwd = Some(prepared.cwd.as_std_path());
     let env = &prepared.environment;
     let (env_overrides, stdin_payload, spawn_secrets) =
@@ -1172,6 +1357,7 @@ fn drain_pipe_chunks(
     sink: &mut dyn EventSink,
     timeout: Duration,
     mode: PipeDrainMode,
+    coalescer: &mut ChunkCoalescer,
 ) -> Result<(), TaskError> {
     let mut pending = Vec::new();
     match pipe_io.poll(timeout, |chunk| pending.push(chunk)) {
@@ -1183,15 +1369,43 @@ fn drain_pipe_chunks(
                 && error.kind() == io::ErrorKind::Interrupted => {}
         Err(error) => return Err(TaskError::Supervision(error)),
     }
-    for chunk in pending {
-        let node = pipe_io.node_label(chunk.node).to_owned();
-        let payload = OutputPayload::from_bytes(chunk.bytes);
-        match chunk.stream {
-            PipeStream::Stdout => sink.emit(Event::StdoutChunk { node, payload }),
-            PipeStream::Stderr => sink.emit(Event::StderrChunk { node, payload }),
+    ingest_pipe_chunks(pipe_io, sink, coalescer, pending);
+    Ok(())
+}
+
+fn ingest_pipe_chunks(
+    pipe_io: &PipeMultiplexer,
+    sink: &mut dyn EventSink,
+    coalescer: &mut ChunkCoalescer,
+    chunks: impl IntoIterator<Item = PipeChunk>,
+) {
+    for chunk in chunks {
+        for coalesced in coalescer.push(chunk) {
+            emit_pipe_chunk(pipe_io, sink, coalesced);
         }
     }
-    Ok(())
+    for coalesced in coalescer.flush_expired(std::time::Instant::now()) {
+        emit_pipe_chunk(pipe_io, sink, coalesced);
+    }
+}
+
+fn flush_coalesced_chunks(
+    pipe_io: &PipeMultiplexer,
+    sink: &mut dyn EventSink,
+    coalescer: &mut ChunkCoalescer,
+) {
+    for chunk in coalescer.flush_all() {
+        emit_pipe_chunk(pipe_io, sink, chunk);
+    }
+}
+
+fn emit_pipe_chunk(pipe_io: &PipeMultiplexer, sink: &mut dyn EventSink, chunk: PipeChunk) {
+    let node = pipe_io.node_label(chunk.node).to_owned();
+    let payload = OutputPayload::from_bytes(chunk.bytes);
+    match chunk.stream {
+        PipeStream::Stdout => sink.emit(Event::StdoutChunk { node, payload }),
+        PipeStream::Stderr => sink.emit(Event::StderrChunk { node, payload }),
+    }
 }
 
 /// Compute ready-set waves assuming every node succeeds (for dry-run / verbose).

@@ -4,21 +4,18 @@
 //! never appear in the material; unresolved upstream bindings disable caching.
 
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
-use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use globset::Glob;
 use nxr_core::cas::{
-    CAS_PROTOCOL_VERSION, CasOutput, CasRestoreMode, digest_bytes, digest_file, digest_repo_path,
-    flake_lock_digest, hash_action_key,
+    CAS_PROTOCOL_VERSION, CasOutput, CasRestoreMode, digest_bytes, digest_repo_path,
+    hash_action_key,
 };
 use nxr_core::{
-    ActionTier, EnvironmentPolicy, cache_mode_shared_unimplemented, classify_action_tier,
-    workspace_cache_enabled,
+    ActionTier, EnvironmentPolicy, RunDigestCache, cache_mode_shared_unimplemented,
+    classify_action_tier, workspace_cache_enabled,
 };
 use nxr_core::{normalize_repo_relative_path, validate_repo_relative_path};
 use serde::Serialize;
@@ -76,6 +73,7 @@ pub fn build_workspace_cache_plan(
     execution_cwd: &str,
     upstream_keys: &BTreeMap<String, String>,
     options: &WorkspaceCachePlanOptions,
+    mut digest_cache: Option<&mut RunDigestCache>,
 ) -> io::Result<WorkspaceCachePlan> {
     let cache_mode = definition
         .cache
@@ -161,15 +159,24 @@ pub fn build_workspace_cache_plan(
     }
     key_components.insert("system".to_owned(), system.to_owned());
 
-    if let Some(digest) = flake_lock_digest(flake_root)? {
-        key_components.insert("flake_lock_digest".to_owned(), digest);
-    }
-    if let Some(digest) = flake_nix_digest(flake_root)? {
-        key_components.insert("flake_nix_digest".to_owned(), digest);
+    if let Some(cache) = digest_cache.as_deref_mut() {
+        if let Some(digest) = cache.flake_lock_digest(flake_root)? {
+            key_components.insert("flake_lock_digest".to_owned(), digest);
+        }
+        if let Some(digest) = cache.flake_nix_digest(flake_root)? {
+            key_components.insert("flake_nix_digest".to_owned(), digest);
+        }
+    } else {
+        if let Some(digest) = nxr_core::flake_lock_digest(flake_root)? {
+            key_components.insert("flake_lock_digest".to_owned(), digest);
+        }
+        if let Some(digest) = flake_nix_digest_uncached(flake_root)? {
+            key_components.insert("flake_nix_digest".to_owned(), digest);
+        }
     }
 
     for (index, input) in document.discovery_inputs.iter().enumerate() {
-        let digest = digest_repo_path(flake_root, input)?;
+        let digest = digest_repo_path_cached(&mut digest_cache, flake_root, input)?;
         key_components.insert(format!("discovery_input[{index}]"), digest);
     }
 
@@ -246,7 +253,7 @@ pub fn build_workspace_cache_plan(
 
     if let Some(inputs) = &definition.inputs {
         include_git_state = inputs.include_git_state;
-        path_digests = expand_path_input_digests(flake_root, &inputs.paths)?;
+        path_digests = expand_path_input_digests(flake_root, &inputs.paths, &mut digest_cache)?;
         for env_input in &inputs.env {
             let (name, required, secret) = env_input_metadata(env_input);
             if secret {
@@ -427,12 +434,85 @@ fn canonical_task_definition_digest(definition: &TaskDefinition) -> io::Result<S
     Ok(digest_bytes(json.as_bytes()))
 }
 
-fn flake_nix_digest(flake_root: &Utf8Path) -> io::Result<Option<String>> {
+fn flake_nix_digest_uncached(flake_root: &Utf8Path) -> io::Result<Option<String>> {
     let flake_nix = flake_root.join("flake.nix");
     if !flake_nix.is_file() {
         return Ok(None);
     }
-    Ok(Some(digest_file(flake_nix.as_std_path())?))
+    Ok(Some(nxr_core::digest_file(flake_nix.as_std_path())?))
+}
+
+fn digest_repo_path_cached(
+    cache: &mut Option<&mut RunDigestCache>,
+    flake_root: &Utf8Path,
+    relative: &str,
+) -> io::Result<String> {
+    if let Some(cache) = cache.as_deref_mut() {
+        cache.digest_repo_path(flake_root, relative)
+    } else {
+        digest_repo_path(flake_root, relative)
+    }
+}
+
+fn expand_path_input_digests(
+    flake_root: &Utf8Path,
+    patterns: &[String],
+    digest_cache: &mut Option<&mut RunDigestCache>,
+) -> io::Result<BTreeMap<String, String>> {
+    let mut digests = BTreeMap::new();
+    for pattern in patterns {
+        let normalized = normalize_repo_relative_path(pattern);
+        validate_repo_relative_path("inputs.paths", normalized)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+        if let Some(cache) = digest_cache.as_deref_mut()
+            && let Some(cached) = cache.pattern_digests(normalized)
+        {
+            digests.extend(cached);
+            continue;
+        }
+        let pattern_digests = if looks_like_glob(normalized) {
+            let glob = Glob::new(normalized).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid inputs.paths glob `{normalized}`: {error}"),
+                )
+            })?;
+            let matcher = glob.compile_matcher();
+            let mut matched = false;
+            let mut pattern_map = BTreeMap::new();
+            let repo_files = if let Some(cache) = digest_cache.as_deref_mut() {
+                cache.repo_files(flake_root)?
+            } else {
+                walk_repo_files_uncached(flake_root)?
+            };
+            for relative in repo_files {
+                if matcher.is_match(relative.as_str()) {
+                    matched = true;
+                    let digest =
+                        digest_repo_path_cached(digest_cache, flake_root, relative.as_str())?;
+                    pattern_map.insert(relative.to_string(), digest);
+                }
+            }
+            if !matched {
+                let digest = digest_repo_path_cached(digest_cache, flake_root, normalized)?;
+                pattern_map.insert(normalized.to_owned(), digest);
+            }
+            pattern_map
+        } else {
+            let digest = digest_repo_path_cached(digest_cache, flake_root, normalized)?;
+            BTreeMap::from([(normalized.to_owned(), digest)])
+        };
+        if let Some(cache) = digest_cache.as_deref_mut() {
+            cache.store_pattern_digests(normalized.to_owned(), pattern_digests.clone());
+        }
+        digests.extend(pattern_digests);
+    }
+    Ok(digests)
+}
+
+fn walk_repo_files_uncached(flake_root: &Utf8Path) -> io::Result<Vec<Utf8PathBuf>> {
+    let mut cache = RunDigestCache::new();
+    cache.repo_files(flake_root)
 }
 
 fn relative_cwd_for_key(flake_root: &Utf8Path, execution_cwd: &str) -> io::Result<String> {
@@ -471,79 +551,6 @@ fn normalize_relative_cwd(relative: &str) -> String {
 
 fn looks_like_glob(pattern: &str) -> bool {
     pattern.contains(['*', '?', '[', '{'])
-}
-
-fn expand_path_input_digests(
-    flake_root: &Utf8Path,
-    patterns: &[String],
-) -> io::Result<BTreeMap<String, String>> {
-    let mut digests = BTreeMap::new();
-    for pattern in patterns {
-        let normalized = normalize_repo_relative_path(pattern);
-        validate_repo_relative_path("inputs.paths", normalized)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
-        if looks_like_glob(normalized) {
-            let glob = Glob::new(normalized).map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("invalid inputs.paths glob `{normalized}`: {error}"),
-                )
-            })?;
-            let matcher = glob.compile_matcher();
-            let mut matched = false;
-            for relative in walk_repo_files(flake_root)? {
-                if matcher.is_match(relative.as_str()) {
-                    matched = true;
-                    let digest = digest_repo_path(flake_root, relative.as_str())?;
-                    digests.insert(relative.to_string(), digest);
-                }
-            }
-            if !matched {
-                digests.insert(
-                    normalized.to_owned(),
-                    digest_repo_path(flake_root, normalized)?,
-                );
-            }
-        } else {
-            let digest = digest_repo_path(flake_root, normalized)?;
-            digests.insert(normalized.to_owned(), digest);
-        }
-    }
-    Ok(digests)
-}
-
-fn walk_repo_files(flake_root: &Utf8Path) -> io::Result<Vec<Utf8PathBuf>> {
-    let mut files = Vec::new();
-    collect_repo_files(flake_root.as_std_path(), &mut files)?;
-    files.sort();
-    Ok(files
-        .into_iter()
-        .filter_map(|path| {
-            path.strip_prefix(flake_root.as_std_path())
-                .ok()
-                .and_then(|relative| Utf8PathBuf::from_path_buf(relative.to_path_buf()).ok())
-        })
-        .collect())
-}
-
-fn collect_repo_files(current: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
-    if current.is_file() {
-        out.push(current.to_path_buf());
-        return Ok(());
-    }
-    if !current.is_dir() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(current)? {
-        let entry = entry?;
-        let path = entry.path();
-        let file_name = entry.file_name();
-        if file_name == OsStr::new(".git") {
-            continue;
-        }
-        collect_repo_files(&path, out)?;
-    }
-    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -779,6 +786,7 @@ mod tests {
             "/tmp",
             &BTreeMap::new(),
             &WorkspaceCachePlanOptions::default(),
+            None,
         )
         .expect("plan");
         assert_eq!(plan.tier, ActionTier::DerivationBacked);
@@ -801,6 +809,7 @@ mod tests {
             tmp.path().join("proj").to_str().expect("utf8"),
             &BTreeMap::new(),
             &plan_options(),
+            None,
         )
         .expect("plan");
         assert_eq!(plan.tier, ActionTier::WorkspaceAction);
@@ -827,6 +836,7 @@ mod tests {
             cwd.as_os_str().to_str().expect("utf8"),
             &BTreeMap::new(),
             &options_a,
+            None,
         )
         .expect("plan a");
 
@@ -846,6 +856,7 @@ mod tests {
             cwd.as_os_str().to_str().expect("utf8"),
             &BTreeMap::new(),
             &options_a,
+            None,
         )
         .expect("plan b");
 
@@ -872,6 +883,7 @@ mod tests {
             cwd.as_os_str().to_str().expect("utf8"),
             &BTreeMap::new(),
             &plan_options(),
+            None,
         )
         .expect("plan a");
         let plan_b = build_workspace_cache_plan(
@@ -883,6 +895,7 @@ mod tests {
             cwd.as_os_str().to_str().expect("utf8"),
             &BTreeMap::new(),
             &plan_options(),
+            None,
         )
         .expect("plan b");
 
@@ -912,6 +925,7 @@ mod tests {
             checkout_a.join("proj").as_os_str().to_str().expect("utf8"),
             &BTreeMap::new(),
             &options,
+            None,
         )
         .expect("plan a");
         let plan_b = build_workspace_cache_plan(
@@ -923,6 +937,7 @@ mod tests {
             checkout_b.join("proj").as_os_str().to_str().expect("utf8"),
             &BTreeMap::new(),
             &options,
+            None,
         )
         .expect("plan b");
 
@@ -957,6 +972,7 @@ mod tests {
             tmp.path().as_os_str().to_str().expect("utf8"),
             &BTreeMap::new(),
             &plan_options(),
+            None,
         )
         .expect("plan");
         assert!(!plan.cache_enabled);
@@ -995,6 +1011,7 @@ mod tests {
             tmp.path().as_os_str().to_str().expect("utf8"),
             &BTreeMap::new(),
             &plan_options(),
+            None,
         )
         .expect("plan a");
         let plan_b = build_workspace_cache_plan(
@@ -1006,6 +1023,7 @@ mod tests {
             tmp.path().as_os_str().to_str().expect("utf8"),
             &BTreeMap::new(),
             &plan_options(),
+            None,
         )
         .expect("plan b");
 
@@ -1047,6 +1065,7 @@ mod tests {
             tmp.path().as_os_str().to_str().expect("utf8"),
             &BTreeMap::new(),
             &options,
+            None,
         )
         .expect("plan");
 
@@ -1074,6 +1093,7 @@ mod tests {
             tmp.path().as_os_str().to_str().expect("utf8"),
             &BTreeMap::new(),
             &plan_options(),
+            None,
         )
         .expect_err("shared must fail closed");
         assert!(err.to_string().contains("not implemented"));
@@ -1115,6 +1135,7 @@ mod tests {
             tmp.path().as_os_str().to_str().expect("utf8"),
             &BTreeMap::new(),
             &plan_options(),
+            None,
         )
         .expect("plan");
 
@@ -1150,6 +1171,7 @@ mod tests {
             tmp.path().as_os_str().to_str().expect("utf8"),
             &BTreeMap::new(),
             &plan_options(),
+            None,
         )
         .expect("plan");
 
@@ -1159,5 +1181,68 @@ mod tests {
             plan.key_components.get("cache_disabled"),
             Some(&"required environment input missing".to_owned())
         );
+    }
+
+    #[test]
+    fn overlapping_path_inputs_hash_content_once_per_run() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let flake = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8");
+        std::fs::write(flake.join("Cargo.toml"), b"[package]\nname = \"demo\"\n").expect("write");
+        std::fs::write(flake.join("Cargo.lock"), b"# lock v1\n").expect("write");
+        std::fs::create_dir_all(flake.join("crates/a")).expect("mkdir");
+        std::fs::write(flake.join("crates/a/lib.rs"), b"pub fn hi() {}\n").expect("write");
+
+        let doc = empty_doc();
+        let cwd = tmp.path().as_os_str().to_str().expect("utf8");
+        let options = plan_options();
+
+        let mut def_a = workspace_task();
+        def_a.inputs = Some(TaskInputs {
+            paths: vec![
+                "Cargo.toml".to_owned(),
+                "Cargo.lock".to_owned(),
+                "crates/**".to_owned(),
+            ],
+            ..TaskInputs::default()
+        });
+        let mut def_b = workspace_task();
+        def_b.inputs = Some(TaskInputs {
+            paths: vec!["Cargo.toml".to_owned(), "crates/**".to_owned()],
+            ..TaskInputs::default()
+        });
+
+        let mut cache = RunDigestCache::new();
+        let plan_a = build_workspace_cache_plan(
+            &doc,
+            "codegen-a",
+            &def_a,
+            "aarch64-darwin",
+            &flake,
+            cwd,
+            &BTreeMap::new(),
+            &options,
+            Some(&mut cache),
+        )
+        .expect("plan a");
+        let hits_after_first = cache.hits();
+        let misses_after_first = cache.misses();
+
+        let plan_b = build_workspace_cache_plan(
+            &doc,
+            "codegen-b",
+            &def_b,
+            "aarch64-darwin",
+            &flake,
+            cwd,
+            &BTreeMap::new(),
+            &options,
+            Some(&mut cache),
+        )
+        .expect("plan b");
+
+        assert!(plan_a.cache_enabled);
+        assert!(plan_b.cache_enabled);
+        assert!(cache.hits() > hits_after_first);
+        assert_eq!(cache.misses(), misses_after_first);
     }
 }

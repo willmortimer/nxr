@@ -8,9 +8,14 @@ pub mod command;
 pub mod configurations;
 pub mod determinate;
 pub mod discovery;
+pub mod eval_worker;
 pub mod inventory;
 pub mod inventory_list;
+pub mod metadata;
 pub mod resolve;
+pub mod store_exe;
+pub mod store_query;
+pub mod strategy;
 pub mod suggest;
 pub mod tasks;
 
@@ -31,15 +36,15 @@ pub use capability_cache::{
     detect_nix_environment,
 };
 pub use coalesce::{
-    CoalescedDiscovery, CoalescedDiscoveryError, CoalescedWorkspace, FORCE_COALESCED_DISCOVERY_ENV,
-    coalesced_discovery_args, coalesced_discovery_available, coalesced_discovery_expr,
-    discover_coalesced,
+    CoalescedDiscovery, CoalescedDiscoveryError, CoalescedWorkspace, coalesced_discovery_args,
+    coalesced_discovery_available, coalesced_discovery_expr, discover_coalesced,
 };
 pub use command::{
     NIX_EXECUTABLE_ENV, attr_installable, check_installable, current_system_args,
-    flake_eval_json_args, flake_show_args, nix_build_args, nix_develop_args,
-    nix_develop_wrap_run_args, nix_flake_check_args, nix_fmt_args, nix_run_args,
-    package_installable, token_is_explicit_installable,
+    flake_app_program_eval_args, flake_eval_json_args, flake_show_args, nix_build_args,
+    nix_build_no_link_print_out_paths_args, nix_develop_args, nix_develop_wrap_run_args,
+    nix_flake_check_args, nix_fmt_args, nix_run_args, package_installable,
+    token_is_explicit_installable,
 };
 pub use configurations::{
     ConfigurationEntry, ConfigurationKind, configuration_installable, find_configuration,
@@ -55,6 +60,11 @@ pub use discovery::{
     OutputTable, discover_apps, discover_outputs_with_args, flake_show_has_nxr_for_system,
     parse_apps_from_flake_show, parse_outputs_from_flake_show,
 };
+pub use eval_worker::{
+    EvalWorkerContext, eval_cache_key, eval_json_with_worker, eval_worker_context_for,
+    fingerprint_bytes, flake_inputs_fingerprint, local_root_from_flake_ref, nix_identity,
+    try_worker_get,
+};
 pub use inventory::{
     FlakeInventory, InventoryNode, StandardOutputEntry, StandardOutputKind, list_standard_outputs,
     parse_flake_inventory,
@@ -62,11 +72,31 @@ pub use inventory::{
 pub use inventory_list::{
     InventoryEntry, InventoryRole, list_inventory_entries, list_inventory_roles,
 };
+pub use metadata::{
+    FORCE_NXR_METADATA_ENV, MetadataDiscoveryError, MetadataInventory, MetadataWorkspace,
+    NXR_METADATA_ENV, NXR_METADATA_SCHEMA_VERSION, NxrMetadataDocument, discover_nxr_metadata,
+    discover_nxr_metadata_with_worker, nxr_metadata_attr_path, nxr_metadata_eval_args,
+    nxr_metadata_preferred, parse_nxr_metadata,
+};
+pub use nxr_core::{EVAL_WORKER_ENV, eval_worker_enabled};
 pub use resolve::{
     AppNotFoundError, OutputNotFoundError, resolve_app_by_name, resolve_output_by_name,
 };
+pub use store_exe::{RealisedAppProgram, realise_flake_app_program};
+pub use store_query::{
+    FORCE_FS_STORE_QUERIES_ENV, StorePathInfo, batched_store_queries_enabled,
+    batched_store_queries_enabled_for_nix, prefer_batched_store_queries, query_store_paths,
+    store_exe_paths_usable, store_path_registered,
+};
+pub use strategy::{
+    DiscoveryEvalPlan, DiscoveryEvalStrategy, FORCE_COALESCED_DISCOVERY_ENV,
+    FORCE_COMPATIBILITY_STRATEGY_ENV, plan_discovery_eval,
+};
 pub use suggest::{DEFAULT_SUGGESTION_LIMIT, rank_app_suggestions, rank_name_suggestions};
-pub use tasks::{TaskDiscoveryError, discover_tasks, parse_task_document, tasks_attr_path};
+pub use tasks::{
+    TaskDiscoveryError, discover_tasks, discover_tasks_with_args, discover_tasks_with_worker,
+    parse_task_document, tasks_attr_path,
+};
 
 /// Errors from the Nix adapter boundary.
 #[derive(Debug)]

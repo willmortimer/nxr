@@ -133,6 +133,53 @@ pub fn cached_workspace(context: &DiscoveryContext) -> Option<WorkspaceDiscovery
         .flatten()
 }
 
+/// Best-effort cached workspace lookup without Nix identity or system context.
+///
+/// Scans discovery cache entries for `local_root` with a matching Nix-tree
+/// fingerprint and TTL. Used by lean completion paths and shell fast-path
+/// helpers when capability probes would be too expensive.
+#[must_use]
+pub fn cached_workspace_best_effort(local_root: &Utf8Path) -> Option<WorkspaceDiscovery> {
+    let root = cache_root()?;
+    let canonical_root = canonical_flake_root(local_root);
+    let current_fingerprint = nix_tree_fingerprint(&canonical_root).ok()?;
+    let entries = fs::read_dir(root).ok()?;
+    let now = unix_now_secs();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let contents = fs::read_to_string(&path).ok()?;
+        let cached: CachedDiscovery = serde_json::from_str(&contents).ok()?;
+        if cached.schema_version != CACHE_SCHEMA_VERSION
+            || cached.discovery_schema_version != DISCOVERY_SCHEMA_VERSION
+            || cached.flake_root != canonical_root.as_str()
+            || cached.nix_fingerprint != current_fingerprint
+        {
+            continue;
+        }
+        if let Some(ttl) = cache_ttl_secs()
+            && now.saturating_sub(cached.cached_at) > ttl
+        {
+            continue;
+        }
+        let inputs_fingerprint =
+            discovery_inputs_fingerprint(&canonical_root, &cached.discovery_inputs).ok()?;
+        if cached.discovery_inputs_fingerprint != inputs_fingerprint {
+            continue;
+        }
+        return Some(WorkspaceDiscovery {
+            apps: cached.apps,
+            tasks: cached.tasks,
+            dev_shells: cached.dev_shells,
+        });
+    }
+
+    None
+}
+
 /// Return cached workspace data when valid, otherwise run `discover` and update the cache.
 ///
 /// Remote flakes (no `local_root`) always call `discover` directly. Cache read and
@@ -311,6 +358,7 @@ pub enum DiscoveryCacheMissReason {
 pub struct DiscoveryCacheExplain {
     pub entry: DiscoveryCacheEntry,
     pub coalesced_discovery_available: bool,
+    pub discovery_eval_strategy: nxr_nix::DiscoveryEvalStrategy,
 }
 
 /// Remove all discovery cache entries.
@@ -406,11 +454,13 @@ pub fn explain_discovery_cache(
     context: &DiscoveryContext,
     options: DiscoveryCacheOptions,
     coalesced_discovery_available: bool,
+    discovery_eval_strategy: nxr_nix::DiscoveryEvalStrategy,
 ) -> io::Result<DiscoveryCacheExplain> {
     let entry = discovery_cache_entry_with_options(context, options)?;
     Ok(DiscoveryCacheExplain {
         entry,
         coalesced_discovery_available,
+        discovery_eval_strategy,
     })
 }
 
@@ -918,8 +968,8 @@ mod tests {
 
     use super::{
         DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, cache_file_path,
-        discover_with_cache, discover_workspace_with_cache, load_cached_workspace,
-        store_cached_workspace,
+        cached_workspace, cached_workspace_best_effort, discover_with_cache,
+        discover_workspace_with_cache, load_cached_workspace, store_cached_workspace,
     };
 
     fn test_context(root: &camino::Utf8Path, system: &str) -> DiscoveryContext {
@@ -1265,6 +1315,38 @@ mod tests {
                     .expect("read cache")
                     .is_none()
             );
+        });
+    }
+
+    #[test]
+    fn cached_workspace_best_effort_matches_flake_root_without_nix_identity() {
+        let temp = TempDir::new().expect("tempdir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        write_flake(&root);
+        let context = test_context(&root, "aarch64-darwin");
+        let apps = sample_apps(root.as_str(), "aarch64-darwin");
+
+        with_cache_dir(&temp, || {
+            store_cached_workspace(
+                &root,
+                &context,
+                &WorkspaceDiscovery {
+                    apps: apps.clone(),
+                    tasks: None,
+                    ..Default::default()
+                },
+                None,
+            )
+            .expect("seed cache");
+
+            let mismatched =
+                DiscoveryContext::new(root.as_str(), Some(root.clone()), "other-system")
+                    .with_nix_identity("/other/nix", "99.0.0");
+            assert!(cached_workspace(&mismatched).is_none());
+
+            let best_effort = cached_workspace_best_effort(&root).expect("best effort hit");
+            assert_eq!(best_effort.apps, apps);
         });
     }
 

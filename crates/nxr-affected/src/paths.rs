@@ -1,8 +1,10 @@
 //! Path normalization and conservative overlap checks.
 
+use std::collections::BTreeSet;
 use std::path::{Component, Path};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use nxr_core::touched_directories;
 use thiserror::Error;
 
 /// Errors while compiling declared path-root globs.
@@ -49,6 +51,57 @@ pub fn is_global_invalidation_path(path: &str) -> bool {
 #[must_use]
 pub fn looks_like_glob(root: &str) -> bool {
     root.contains(['*', '?', '[', '{'])
+}
+
+/// Literal path prefix of a glob before the first metacharacter (Merkle locality).
+///
+/// Empty when the pattern can match anywhere (e.g. `**/*.rs`).
+#[must_use]
+pub fn literal_path_prefix(root: &str) -> String {
+    let root = normalize_relative_path(root);
+    if !looks_like_glob(&root) {
+        return root.trim_end_matches('/').to_owned();
+    }
+    let mut end = root.len();
+    for (idx, ch) in root.char_indices() {
+        if matches!(ch, '*' | '?' | '[' | '{') {
+            end = idx;
+            break;
+        }
+    }
+    root[..end].trim_end_matches('/').to_owned()
+}
+
+/// Whether any declared root could overlap the given changed paths.
+///
+/// Used to skip per-path glob matching when a change cannot fall under a node's
+/// ownership ([ADR-0156] locality). Conservative: empty prefixes (open globs)
+/// always return true. Uses path prefixes of changes (not the full Merkle
+/// ancestor set), so a touch under `apps/foo` does not imply `apps/bar`.
+#[must_use]
+pub fn roots_may_overlap_changes(roots: &[String], changed_paths: &[String]) -> bool {
+    if roots.is_empty() || changed_paths.is_empty() {
+        return false;
+    }
+    for root in roots {
+        let prefix = literal_path_prefix(root);
+        if prefix.is_empty() {
+            return true;
+        }
+        for changed in changed_paths {
+            let changed = normalize_relative_path(changed);
+            if prefix_overlap(&changed, &prefix) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Merkle ancestor directories for `changed_paths` (watch / index invalidation).
+#[must_use]
+pub fn touched_dirs_for_changes(changed_paths: &[String]) -> BTreeSet<String> {
+    touched_directories(changed_paths)
 }
 
 /// Validate that every root is repository-relative and that glob-looking roots compile.
@@ -149,7 +202,8 @@ fn compile_globset(roots: &[String]) -> Result<GlobSet, PathRootError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_global_invalidation_path, normalize_relative_path, path_matches_roots,
+        is_global_invalidation_path, literal_path_prefix, normalize_relative_path,
+        path_matches_roots, roots_may_overlap_changes, touched_dirs_for_changes,
         validate_path_roots,
     };
 
@@ -192,5 +246,53 @@ mod tests {
         assert!(validate_path_roots(&["/abs".to_owned()]).is_err());
         assert!(validate_path_roots(&["../escape".to_owned()]).is_err());
         assert!(validate_path_roots(&[String::new()]).is_err());
+    }
+
+    #[test]
+    fn merkle_locality_skips_unrelated_roots() {
+        let changes = vec!["apps/foo/a.txt".to_owned()];
+        assert!(roots_may_overlap_changes(
+            &["apps/foo".to_owned()],
+            &changes
+        ));
+        assert!(!roots_may_overlap_changes(
+            &["apps/bar".to_owned()],
+            &changes
+        ));
+        assert!(roots_may_overlap_changes(
+            &["apps/foo/**".to_owned()],
+            &changes
+        ));
+        // Open glob — cannot prove disjoint.
+        assert!(roots_may_overlap_changes(&["**/*.rs".to_owned()], &changes));
+        // Parent-dir change still overlaps child roots.
+        assert!(roots_may_overlap_changes(
+            &["apps/foo".to_owned()],
+            &["apps".to_owned()]
+        ));
+    }
+
+    #[test]
+    fn literal_prefix_strips_glob_tail() {
+        assert_eq!(literal_path_prefix("apps/foo/**"), "apps/foo");
+        assert_eq!(literal_path_prefix("crates/api"), "crates/api");
+        assert_eq!(literal_path_prefix("**/*.rs"), "");
+    }
+
+    #[test]
+    fn empty_changes_never_overlap() {
+        let changes: Vec<String> = Vec::new();
+        assert!(!roots_may_overlap_changes(
+            &["apps/foo".to_owned()],
+            &changes
+        ));
+    }
+
+    #[test]
+    fn touched_dirs_include_ancestors() {
+        let touched = touched_dirs_for_changes(&["apps/foo/a.txt".to_owned()]);
+        assert!(touched.contains(""));
+        assert!(touched.contains("apps"));
+        assert!(touched.contains("apps/foo"));
     }
 }

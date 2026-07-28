@@ -7,18 +7,22 @@ use camino::Utf8PathBuf;
 use nxr_completion::cache::{WorkspaceDiscovery, cached_workspace};
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
-use nxr_nix::{AppNotFoundError, NixError, TaskDiscoveryError, resolve_app_by_name};
+use nxr_nix::{
+    AppNotFoundError, NixError, OptionalNixFlags, TaskDiscoveryError, resolve_app_by_name,
+};
 use nxr_process::{InterruptFlags, Supervisor, spawn_in};
 use nxr_task::{PlanError, resolve_task_name};
 use nxr_watch::{
-    ChangeClass, Generation, MetadataInputRegistry, PathFilterError, PathFilters, WatchConfig,
-    WatchError, WatchPoll, WatchSession, classify_pending_changes,
+    ChangeClass, Generation, MetadataInputRegistry, PathFilterError, PathFilters, PrewarmCasHandle,
+    PrewarmContext, WatchConfig, WatchError, WatchIncrementalSnapshot, WatchPoll,
+    WatchSemanticCoalescer, WatchSession, classify_pending_changes,
 };
 
 use crate::commands::common::{
-    AppRequest, PrepareError, PreparedPlan, WorkspaceSnapshot, WorkspaceState,
+    AppRequest, PrepareError, PreparedPlan, TaskNodePreparer, WorkspaceSnapshot, WorkspaceState,
     current_invocation_directory, prepare_app_plan_in_state,
 };
+use crate::commands::store_exe::resolve_app_spawn_with_prewarm;
 use crate::commands::task::{self, PreparedTaskGeneration, TaskError, TaskRequest, plan_exit_code};
 use crate::flake::{FlakeResolveError, resolve_flake};
 use crate::output_task::{EventsFormat, TaskOutputMode};
@@ -165,6 +169,8 @@ enum GenerationOutcome {
 struct WatchCaches {
     app_plan: Option<PreparedPlan>,
     task_plan: Option<PreparedTaskGeneration>,
+    incremental: Option<WatchIncrementalSnapshot>,
+    coalesce: WatchSemanticCoalescer,
 }
 
 /// Resolve `name` as a task (preferred) or app, then watch the flake root.
@@ -202,7 +208,11 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
     let interrupts = InterruptFlags::install().map_err(WatchCommandError::Supervision)?;
     let mut generation = Generation::new();
     let mut metadata_registry = MetadataInputRegistry::new();
-    let mut caches = WatchCaches::default();
+    let mut caches = WatchCaches {
+        incremental: WatchIncrementalSnapshot::enabled()
+            .then(|| WatchIncrementalSnapshot::new(watch_root.clone())),
+        ..WatchCaches::default()
+    };
 
     runner
         .info(format!(
@@ -219,6 +229,23 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
         }
 
         let pending_changes = session.take_pending_changes();
+        let pending_changes = coalesce_pending_paths(&watch_root, &mut caches, pending_changes);
+        if generation_id > 1 && pending_changes.is_empty() {
+            runner
+                .verbose("watch coalesce: spurious restart suppressed")
+                .map_err(WatchCommandError::Io)?;
+            loop {
+                if interrupts.take_pending() {
+                    return Ok(exit::INTERRUPTED);
+                }
+                match session.poll_restart(Duration::from_millis(100))? {
+                    WatchPoll::Restart => break,
+                    WatchPoll::Timeout => {}
+                }
+            }
+            continue;
+        }
+
         let invalidate_snapshot = apply_restart_classification(
             &watch_root,
             &filters,
@@ -230,6 +257,7 @@ pub fn run(request: &WatchRequest<'_>, runner: RunnerOutput) -> Result<i32, Watc
         )?;
         if invalidate_snapshot || generation_id == 1 {
             refresh_metadata_registry(&target, &mut workspace, &mut metadata_registry)?;
+            seed_incremental_graph(&target, &mut workspace, &mut caches)?;
         }
 
         runner
@@ -403,6 +431,61 @@ fn refresh_metadata_registry(
     Ok(())
 }
 
+fn seed_incremental_graph(
+    target: &WatchTarget,
+    workspace: &mut WorkspaceState<'_>,
+    caches: &mut WatchCaches,
+) -> Result<(), WatchCommandError> {
+    let Some(incremental) = caches.incremental.as_mut() else {
+        return Ok(());
+    };
+    if !matches!(target, WatchTarget::Task { .. }) {
+        return Ok(());
+    }
+    let snapshot = workspace.snapshot(true)?;
+    let Some(document) = snapshot.tasks.as_ref() else {
+        return Ok(());
+    };
+    let apps: Vec<_> = snapshot.apps.values().cloned().collect();
+    incremental.set_affected_graph_from_discovery(
+        &apps,
+        document,
+        &snapshot.flake.nix_ref,
+        &snapshot.nix.system,
+    );
+    Ok(())
+}
+
+fn seed_owned_outputs(caches: &mut WatchCaches) {
+    let Some(task_plan) = caches.task_plan.as_ref() else {
+        return;
+    };
+    let outputs: Vec<String> = task_plan
+        .plan
+        .serial_order
+        .iter()
+        .filter_map(|id| task_plan.document.tasks.get(id))
+        .flat_map(|task| task.outputs.iter().map(|output| output.path.clone()))
+        .collect();
+    if let Some(incremental) = caches.incremental.as_mut() {
+        incremental.set_owned_outputs(outputs);
+    } else {
+        caches.coalesce.set_owned_outputs(outputs);
+    }
+}
+
+fn coalesce_pending_paths(
+    watch_root: &camino::Utf8Path,
+    caches: &mut WatchCaches,
+    paths: Vec<Utf8PathBuf>,
+) -> Vec<Utf8PathBuf> {
+    if let Some(incremental) = caches.incremental.as_mut() {
+        incremental.coalesce_pending_paths(paths)
+    } else {
+        caches.coalesce.coalesce_paths(watch_root, paths)
+    }
+}
+
 fn apply_restart_classification(
     watch_root: &camino::Utf8Path,
     filters: &PathFilters,
@@ -426,6 +509,47 @@ fn apply_restart_classification(
     };
     let plan_label = snapshot_label;
 
+    let relative_paths: Vec<String> = labeled
+        .iter()
+        .map(|(path, _)| {
+            path.strip_prefix(watch_root)
+                .map_or_else(|_| path.as_str().to_owned(), |p| p.as_str().to_owned())
+        })
+        .collect();
+
+    if merged == ChangeClass::Source
+        && let Some(incremental) = caches.incremental.as_mut()
+    {
+        let plan_ids = caches
+            .task_plan
+            .as_ref()
+            .map(|plan| plan.plan.serial_order.as_slice());
+        let flake = workspace
+            .snapshot(true)
+            .map(|s| s.flake.nix_ref.clone())
+            .unwrap_or_else(|_| watch_root.as_str().to_owned());
+        let system = workspace
+            .snapshot(false)
+            .map(|s| s.nix.system.clone())
+            .unwrap_or_default();
+        let patch = incremental
+            .apply_source_changes(&relative_paths, plan_ids, &flake, &system)
+            .map_err(WatchCommandError::Io)?;
+        if let Some(task_plan) = caches.task_plan.as_mut() {
+            for id in &patch.affected_plan_nodes {
+                task_plan.prepared_nodes.remove(id);
+            }
+        }
+        runner
+            .verbose(format!(
+                "watch snapshot: patched {} path(s); dropped {} prepared node(s); action-digest entries removed: {}",
+                patch.paths.len(),
+                patch.affected_plan_nodes.len(),
+                patch.action_digest_entries_removed
+            ))
+            .map_err(WatchCommandError::Io)?;
+    }
+
     for (path, class) in &labeled {
         let relative = path
             .strip_prefix(watch_root)
@@ -438,10 +562,23 @@ fn apply_restart_classification(
             .map_err(WatchCommandError::Io)?;
     }
 
+    // Wave 4a: notify optional nxrd so Merkle / warm state can drop ancestors.
+    let _: Option<serde_json::Value> = nxr_core::try_once(
+        "merkle.invalidate",
+        Some(serde_json::json!({
+            "root": watch_root.as_str(),
+            "paths": relative_paths,
+        })),
+    );
+
     if invalidate_snapshot {
         workspace.invalidate_snapshots();
         caches.app_plan = None;
         caches.task_plan = None;
+        caches.coalesce.clear_owned_outputs();
+        if let Some(incremental) = caches.incremental.as_mut() {
+            *incremental = WatchIncrementalSnapshot::new(watch_root.to_path_buf());
+        }
     }
 
     Ok(invalidate_snapshot)
@@ -496,7 +633,11 @@ fn run_generation(
                 caches.app_plan = Some(plan.clone());
                 plan
             };
-            let supervisor = spawn_prepared(&prepared)?;
+            let prewarm = caches
+                .incremental
+                .as_mut()
+                .map(WatchIncrementalSnapshot::prewarm_mut);
+            let supervisor = spawn_prepared(&prepared, prewarm)?;
             wait_supervisor(supervisor, session, interrupts)
         }
         WatchTarget::Task { name } => run_task_generation(
@@ -567,7 +708,17 @@ fn run_task_generation(
     };
 
     let reuse_from_cache = !invalidate_snapshot && caches.task_plan.is_some();
+    if caches.task_plan.is_some() {
+        seed_owned_outputs(caches);
+    }
+    if reuse_from_cache {
+        reprepare_missing_task_nodes(request, &task_request, workspace, caches, runner)?;
+    }
     let mut restart_requested = false;
+    let prewarm = caches
+        .incremental
+        .as_mut()
+        .map(WatchIncrementalSnapshot::prewarm_mut);
     let code = task::execute_with_control(
         &task_request,
         false,
@@ -594,7 +745,15 @@ fn run_task_generation(
         },
         reuse_from_cache,
         Some(&mut caches.task_plan),
+        prewarm,
     )?;
+
+    seed_owned_outputs(caches);
+    if let (Some(incremental), Some(task_plan)) =
+        (caches.incremental.as_mut(), caches.task_plan.as_ref())
+    {
+        sync_prewarm_nodes(incremental.prewarm_mut(), &task_plan.prepared_nodes);
+    }
 
     if restart_requested {
         return Ok(GenerationOutcome::Restart);
@@ -607,10 +766,126 @@ fn run_task_generation(
     Ok(GenerationOutcome::Idle)
 }
 
-fn spawn_prepared(prepared: &PreparedPlan) -> Result<Supervisor, WatchCommandError> {
+fn reprepare_missing_task_nodes(
+    _request: &WatchRequest<'_>,
+    task_request: &TaskRequest<'_>,
+    workspace: &mut WorkspaceState<'_>,
+    caches: &mut WatchCaches,
+    runner: RunnerOutput,
+) -> Result<(), WatchCommandError> {
+    let missing: Vec<String> = caches
+        .task_plan
+        .as_ref()
+        .map(|task_cache| {
+            task_cache
+                .plan
+                .serial_order
+                .iter()
+                .filter(|id| !task_cache.prepared_nodes.contains_key(*id))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let snapshot = workspace.snapshot(true)?;
+    let digest_cache = caches
+        .incremental
+        .as_mut()
+        .map(WatchIncrementalSnapshot::take_digest_cache)
+        .unwrap_or_default();
+    let context_hints = caches
+        .incremental
+        .as_ref()
+        .map(|snapshot| {
+            missing
+                .iter()
+                .filter_map(|id| {
+                    snapshot
+                        .prewarm()
+                        .lookup_context(id)
+                        .map(|ctx| (id.clone(), ctx.clone()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let (prepared_nodes, digest_cache, hits, misses) = {
+        let task_cache = caches
+            .task_plan
+            .as_mut()
+            .expect("reprepare requires task plan cache");
+        let existing = std::mem::take(&mut task_cache.prepared_nodes);
+        let mut preparer = TaskNodePreparer::from_partial_prepared(
+            existing,
+            snapshot,
+            &task_cache.document,
+            &task_cache.canonical_roots,
+            task_request.args,
+            task_request.root,
+            task_request.cwd,
+            task_request.shell,
+            task_request.shell_mode,
+            &task_request.environment_policy,
+            task_request.nix_flags,
+            task_request.context_override.as_deref(),
+            digest_cache,
+            context_hints,
+        )
+        .map_err(WatchCommandError::Prepare)?;
+        preparer
+            .prepare_all(&missing)
+            .map_err(WatchCommandError::Prepare)?;
+        let (hits, misses) = preparer.take_prewarm_context_stats();
+        let (prepared, digest_cache) = preparer.into_prepared_with_digest_cache();
+        task_cache.prepared_nodes = prepared;
+        (
+            task_cache.prepared_nodes.clone(),
+            digest_cache,
+            hits,
+            misses,
+        )
+    };
+
+    if let Some(incremental) = caches.incremental.as_mut() {
+        let prewarm = incremental.prewarm_mut();
+        for _ in 0..hits {
+            prewarm.record_context_hit();
+        }
+        for _ in 0..misses {
+            prewarm.record_context_miss();
+        }
+        sync_prewarm_nodes(prewarm, &prepared_nodes);
+        incremental.set_digest_cache(digest_cache);
+    }
+    runner
+        .verbose(format!(
+            "watch snapshot: reprepared {} affected node(s): {}",
+            missing.len(),
+            missing.join(", ")
+        ))
+        .map_err(WatchCommandError::Io)?;
+    Ok(())
+}
+
+fn spawn_prepared(
+    prepared: &PreparedPlan,
+    prewarm: Option<&mut nxr_watch::WatchPrewarm>,
+) -> Result<Supervisor, WatchCommandError> {
+    let spawn = resolve_app_spawn_with_prewarm(
+        &prepared.plan,
+        &prepared.nix,
+        prepared.local_root.as_deref(),
+        &OptionalNixFlags::default(),
+        "",
+        Some(prepared.execution_directory.as_std_path()),
+        prewarm,
+    );
     let child = spawn_in(
-        prepared.nix.as_std_path(),
-        &prepared.plan.command.arguments,
+        spawn.program.as_std_path(),
+        &spawn.arguments,
         Some(prepared.execution_directory.as_std_path()),
         &prepared.plan.environment_policy,
     )
@@ -650,6 +925,33 @@ fn wait_supervisor(
             .map_err(WatchCommandError::Supervision)?
         {
             return Ok(GenerationOutcome::Idle);
+        }
+    }
+}
+
+fn sync_prewarm_nodes(
+    prewarm: &mut nxr_watch::WatchPrewarm,
+    nodes: &std::collections::BTreeMap<String, crate::commands::common::PreparedTaskNode>,
+) {
+    for (id, node) in nodes {
+        prewarm.store_context(
+            id.clone(),
+            PrewarmContext {
+                context_name: node.context_name.clone(),
+                confirm: node.confirm,
+                environment_policy: node.environment.clone(),
+                effective_shell: node.plan.shell.clone(),
+                applied_context: None,
+            },
+        );
+        if let Some(cache) = node.workspace_cache.as_ref() {
+            prewarm.store_cas_handle(
+                id.clone(),
+                PrewarmCasHandle {
+                    action_key_digest: cache.action_key.clone(),
+                    workspace_cache: Some(cache.clone()),
+                },
+            );
         }
     }
 }

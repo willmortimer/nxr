@@ -1,5 +1,6 @@
 //! Foreground execution, signals, and (later) supervision.
 
+pub mod chunk_coalesce;
 pub mod deadline;
 pub mod foreground;
 pub mod pipe_multiplex;
@@ -10,6 +11,7 @@ pub mod supervisor;
 #[cfg(all(test, unix))]
 mod test_unix;
 
+pub use chunk_coalesce::{ChunkCoalescer, CoalesceLimits};
 pub use deadline::DeadlineQueue;
 pub use foreground::{run, run_in, run_in_with_stderr};
 pub use pipe_multiplex::{PipeChunk, PipeMultiplexer, PipeStream};

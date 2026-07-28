@@ -6,7 +6,6 @@ use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
 use crate::capabilities::{NixFailureKind, run_nix};
-use crate::determinate::distribution_from_version_banner;
 use crate::discovery::{
     OutputTable, flake_show_has_nxr_for_system, parse_apps_from_flake_show,
     parse_outputs_from_flake_show,
@@ -14,8 +13,7 @@ use crate::discovery::{
 use crate::tasks::{self, TaskDiscoveryError};
 use crate::{NixError, ParseAppsError};
 
-/// Environment variable forcing coalesced discovery (integration tests).
-pub const FORCE_COALESCED_DISCOVERY_ENV: &str = "NXR_FORCE_COALESCED_DISCOVERY";
+pub use crate::strategy::FORCE_COALESCED_DISCOVERY_ENV;
 
 /// Result of a coalesced discovery eval.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -27,10 +25,7 @@ pub struct CoalescedDiscovery {
 /// Whether coalesced discovery may be used for this Nix distribution.
 #[must_use]
 pub fn coalesced_discovery_available(version_banner: &str) -> bool {
-    if std::env::var_os(FORCE_COALESCED_DISCOVERY_ENV).is_some() {
-        return true;
-    }
-    distribution_from_version_banner(version_banner).is_determinate()
+    crate::strategy::plan_discovery_eval(version_banner, None, true).use_coalesced_discovery
 }
 
 /// Build argv for the coalesced discovery `nix eval --json --expr …` invocation.

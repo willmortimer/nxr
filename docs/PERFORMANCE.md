@@ -2,21 +2,296 @@
 
 Baselines for the runner. App **execution** time is dominated by `nix run` and the app itself; `nxr` overhead is discovery, planning, and process supervision.
 
+## North star
+
+When discovery and capability caches are warm and no Nix re-evaluation is required,
+**nxr overhead before the child starts** (plan/prepare through `nix` spawn) should
+stay in the **tens of milliseconds** on a local SSD — not hundreds. Use
+`NXR_PERF_STATS=1` and `plan_prepare_us` plus black-box `measure-matrix.sh` warm
+dry-run scenarios to track this; child execution time is excluded.
+
+## Instrumentation (`NXR_PERF_STATS`)
+
+Set `NXR_PERF_STATS=1` to accumulate counters for one CLI invocation. On exit,
+nxr prints a single JSON line on stderr:
+
+```text
+nxr-perf-stats: {"schema_version":9,"nix_spawns":…,…}
+```
+
+| Counter | Meaning |
+|---|---|
+| `nix_spawns` | `run_nix` and supervised `nix` child spawns |
+| `fs_metadata` | Filesystem metadata probes on fingerprint paths |
+| `bytes_hashed` | Bytes hashed (BLAKE3) on hot paths |
+| `plan_prepare_us` | Plan/prepare wall time (µs, accumulated) |
+| `cas_lookup_us` | Workspace CAS lookup wall time (µs) |
+| `spawn_to_child_output_us` | Spawn to first piped child stderr byte (µs) |
+| `plan_cache_hits` | Prepared-plan disk cache hits |
+| `plan_cache_misses` | Prepared-plan disk cache misses |
+| `store_exe_hits` | Store-exe disk cache hits (direct `/nix/store` spawn) |
+| `store_exe_misses` | Store-exe disk cache misses (realise or `nix run` fallback) |
+| `digest_cache_hits` | Run-scoped path/pattern digest cache hits (action-key planning) |
+| `digest_metadata_hits` | Action-digest reuse when device/inode/size/mtime(/ctime) match |
+| `git_blob_digests` | Action digests derived from Git blob OID (no working-tree read) |
+| `nodes_prepared` | Task-graph nodes prepared this invocation (lazy or eager) |
+| `spawn_plans_prepared` | SpawnPlan stages completed (ADR-0159) |
+| `spawn_plans_cancelled` | SpawnPlan stages cancelled on CAS hit (ADR-0159) |
+| `watch_snapshot_patches` | Watch incremental snapshot source patches (ADR-0160) |
+| `watch_paths_invalidated` | Repo-relative paths invalidated by watch patches |
+| `watch_prepared_nodes_dropped` | Prepared nodes dropped on watch source invalidation |
+| `watch_prewarm_store_exe_hits` | In-process watch prewarm store-exe hits (ADR-0163) |
+| `watch_prewarm_store_exe_misses` | Watch prewarm store-exe misses (disk / realise path) |
+| `watch_prewarm_context_hits` | Watch prewarm context construction hits |
+| `watch_prewarm_context_misses` | Watch prewarm context construction misses |
+| `watch_prewarm_cas_hits` | Watch prewarm CAS metadata handle hits |
+| `watch_prewarm_cas_misses` | Watch prewarm CAS metadata handle misses |
+| `watch_prewarm_ownership_shortcuts` | Plan nodes skipped by ownership locality |
+
+Counters are **off by default**; no semantic change when unset. See
+[ADR-0151](adr/0151-perf-counters.md), [ADR-0152](adr/0152-prepared-plan-cache.md),
+[ADR-0153](adr/0153-store-exe-cache.md), [ADR-0154](adr/0154-run-digest-cache.md),
+and [ADR-0155](adr/0155-incremental-git-digests.md),
+and [ADR-0156](adr/0156-merkle-affected-index.md),
+and [ADR-0157](adr/0157-optional-nxrd.md),
+and [ADR-0158](adr/0158-lazy-node-prep.md),
+and [ADR-0159](adr/0159-cas-plan-pipeline.md).
+
+## Staged / lazy task-node preparation
+
+Live `nxr task` runs prepare spawn plans as nodes approach execution
+([ADR-0158](adr/0158-lazy-node-prep.md)):
+
+1. Resolve DAG / affected roots (structure only).
+2. Scheduler selects resource-ready nodes.
+3. Prepare only the ready set about to start.
+4. Optionally speculate successors under `--keep-going` (budget = `--jobs`).
+
+Never-run nodes (fail-fast cancel, upstream failure, excluded by affected
+selection) are not prepared. Kill-switch: `NXR_LAZY_PREP=off` (also `0` /
+`false` / `no`) restores eager prepare-all for bisection. Dry-run, explain,
+and watch generation caches stay eager.
+
+## CAS ‖ SpawnPlan pipelining
+
+On live lazy runs, CasInputs (action key + digests) complete without a
+finalized SpawnPlan; the scheduler overlaps CAS restore with SpawnPlan
+preparation and cancels in-flight SpawnPlan on cache hit
+([ADR-0159](adr/0159-cas-plan-pipeline.md)). Kill-switch:
+`NXR_CAS_PLAN_PIPELINE=off` fuses stages (serial prepare-then-CAS). Sealed
+watch maps and eager prepare stay non-pipelined.
+
+## Watch incremental snapshot
+
+Watch mode retains a session-scoped digest / Merkle cache across source-only
+generations ([ADR-0160](adr/0160-watch-incremental-snapshot.md)):
+
+- **Patch on source:** `WatchIncrementalSnapshot` calls
+  `RunDigestCache::invalidate_source_paths` (path memo, Merkle ancestors,
+  action-digest entries) instead of cold rescans.
+- **Affected locality:** prepared task nodes for unaffected ids stay sealed;
+  affected ids are dropped and re-prepared with the shared digest cache before
+  the next generation.
+- **Metadata** restarts still invalidate discovery snapshots and reset the
+  incremental snapshot.
+- Kill-switch: `NXR_WATCH_SNAPSHOT=off`. `NXR_PERF_STATS` schema **v8** adds
+  `watch_snapshot_patches`, `watch_paths_invalidated`,
+  `watch_prepared_nodes_dropped`.
+- **Semantic coalesce** ([ADR-0161](adr/0161-watch-semantic-coalesce.md)):
+  after debounce, drop editor temporaries, collapse formatter bursts, narrow
+  lockfile batches, ignore fixture-only and task-owned output paths.
+  `NXR_WATCH_COALESCE=off` kill-switch.
+- **Prewarm** ([ADR-0163](adr/0163-watch-prewarm.md)): session-scoped store-exe,
+  shell/context, ownership index, and CAS metadata handles across source-only
+  generations. `NXR_WATCH_PREWARM=off` kill-switch. `NXR_PERF_STATS` schema **v9**
+  adds `watch_prewarm_*` counters.
+
+## Determinate discovery strategy
+
+Cold workspace discovery consults `plan_discovery_eval` ([ADR-0165](adr/0165-determinate-eval-strategy.md)):
+
+- **Coalesced parallel eval** on Determinate (single `nix eval` when safe).
+- **Lazy-trees compatible** separate evals when lazy trees are enabled or assumed.
+- **Compatibility** `flake show` + targeted evals for upstream/Lix or
+  `NXR_EVAL_STRATEGY=compatibility`.
+- `nxr cache explain` reports `discovery_eval_strategy`. Experimental eval
+  worker (8c) is gated by `eval_worker_eligible` + `NXR_EVAL_WORKER=1`
+  ([ADR-0168](adr/0168-experimental-eval-worker.md)).
+
+## Batched store path queries (Wave 8b)
+
+Store-exe validation and realisation consult `store_query` when
+[`DiscoveryEvalPlan::batched_store_queries`](adr/0165-determinate-eval-strategy.md)
+is true ([ADR-0167](adr/0167-batched-store-queries.md)):
+
+- One `nix path-info --json` for deduplicated `/nix/store/…` roots instead of
+  per-path subprocesses where safe.
+- **`store_exe_paths_usable`** combines store registration with the filesystem
+  executable probe; falls back to today's `metadata` checks on failure.
+- Kill-switch: `NXR_STORE_QUERIES=fs` (also `off`, `compat`, `compatibility`).
+
+## Experimental eval worker (Wave 8c)
+
+**Experimental / optional / off by default.** When `NXR_EVAL_WORKER=1` and the
+host is `eval_worker_eligible` (Determinate today), cold metadata / tasks eval
+may reuse JSON retained by `nxrd` via `eval.prepare` / `eval.get` / `eval.put`
+([ADR-0168](adr/0168-experimental-eval-worker.md)):
+
+- Narrow kinds only: `metadata` | `tasks` | `list` — not general flake eval.
+- Invalidation: nix identity, config fingerprint, per-root flake fingerprint.
+- Absent daemon, protocol mismatch, non-eligible host, or any doubt →
+  subprocess `nix eval` (default path unchanged when the env opt-in is unset).
+- Not required for correctness; not an execution authority. A durable warm Nix
+  evaluator (libnix / Determinate eval server) remains a follow-up.
+
+## Optional local cache daemon (`nxrd`)
+
+Optional per-user daemon for warm multi-invocation sessions
+([ADR-0157](adr/0157-optional-nxrd.md)):
+
+```bash
+nxr daemon start          # background
+nxr daemon status --json
+nxr daemon stop
+```
+
+- Socket: `$XDG_RUNTIME_DIR/nxr/nxrd.sock` (override `NXR_DAEMON_SOCKET`).
+- Protocol: JSON lines, version **1**, role `cache` only — not execution
+  authority; `log.*` broker methods ship in Wave 7c
+  ([ADR-0164](adr/0164-process-log-broker.md)); experimental `eval.prepare` /
+  `eval.get` / `eval.put` ship in Wave 8c when `NXR_EVAL_WORKER=1`
+  ([ADR-0168](adr/0168-experimental-eval-worker.md)); `worker.register` remains
+  reserved; lazy prep (4b) is CLI-local ([ADR-0158](adr/0158-lazy-node-prep.md)).
+- **Retained in RAM while running:** discovery payloads, prepared plans
+  (placeholder secret policy), fingerprint strings, Merkle invalidation path
+  sets, recent action-key digests, bounded process-log tails (≤256 KiB/stream),
+  optional eval JSON (metadata/tasks/list) when the eval worker is opted in.
+- **Not retained / not authoritative:** secret values, Nix eval results as a
+  trust boundary, process supervision, remote workers.
+- Kill-switch: `NXR_DAEMON=off` (also `0` / `false` / `no`). Absent socket or
+  protocol mismatch → identical standalone CLI behavior. Log-broker follow
+  kill-switch: `NXR_LOG_BROKER=off`. Eval worker opt-in: `NXR_EVAL_WORKER=1`.
+- Watch best-effort calls `merkle.invalidate` on restart classification;
+  in-process `WatchIncrementalSnapshot` is Wave 5a ([ADR-0160](adr/0160-watch-incremental-snapshot.md)).
+
+## Run-scoped digest cache
+
+Per-invocation memo for workspace action-key hashing ([ADR-0154](adr/0154-run-digest-cache.md)).
+Overlapping `inputs.paths` / discovery inputs across task nodes share digest results
+within one `nxr task` / plan pass.
+
+## Incremental action digests + Git blobs
+
+Warm and large-repo path hashing for action keys ([ADR-0155](adr/0155-incremental-git-digests.md)):
+
+- **Metadata gate:** durable per-root index (`…/nxr/action-digests/`) reuses a prior
+  content digest when device/inode/size/nanosecond mtime (and ctime on Unix) match —
+  same pattern as discovery fingerprint indexes, but a **separate** store.
+- **Git clean tracked:** digest =
+  `BLAKE3("nxr.action-digest.git-blob.v1" ‖ NUL ‖ oid_hex)` from a batched
+  `git ls-files --stage` + `git status --porcelain -z` (no per-file `git`).
+- **Dirty / untracked:** BLAKE3 of working-tree bytes.
+- Kill-switches: `NXR_GIT_DIGESTS=off`, `NXR_ACTION_DIGEST_INDEX=off`.
+- `cas::digest_repo_path` (CAS verify/save) stays pure content hashing.
+- Wave 3 Merkle leaves should reuse these per-file digests; directory digests still
+  walk children today.
+
+## Repository Merkle / directory index
+
+Directory digests for action keys ([ADR-0156](adr/0156-merkle-affected-index.md)):
+
+- Immediate-child aggregation (`nxr.merkle.dir.v1`) over Wave 2b leaf digests so a
+  directory digest changes only when a descendant changes.
+- Durable index `…/nxr/merkle-index/` (schema **v1**), separate from discovery and
+  action-digest indexes. Kill-switch: `NXR_MERKLE_INDEX=off` (flat walk; matches
+  pre-Wave-3 directory digests).
+- **One-time action-key churn** when Merkle is on: directory-shaped `inputs.paths`
+  digests differ from the flat formula; file-only inputs are unaffected by this
+  change. `nxr cache clear` / `status` cover the merkle index.
+- Affected analysis skips ownership checks for nodes whose path-root prefix cannot
+  overlap a change (sibling locality).
+- After `invalidate_paths` in a long-lived session, unrelated directory digests
+  stay memoized (edit locality). Cold CLI rebuilds from the filesystem.
+
+Bounded large-tree locality is covered by
+`cargo test -p nxr-core --lib merkle_index::tests::large_tree_dir_digest_is_stable_and_local`
+(~200 files). Wire into `measure-matrix.sh` later if black-box wall time is needed.
+
+## Prepared-plan disk cache
+
+Optional cache of prepared app command plans (argv / plan envelope) keyed by flake
+identity, system, app, Nix identity + flags, shell/cwd/env **policy** digests, and
+discovery/lock fingerprints. Schema **v1**. Miss → today’s prepare path; hit →
+reuse the stored plan. Live environment and secret values are still resolved at
+spawn — never stored. Set `NXR_PLAN_CACHE=off` to disable. TTL default 24h
+(`NXR_PLAN_CACHE_TTL_SECS`; `0` disables). `nxr cache clear` / `status` cover this
+cache alongside discovery, capabilities, workspace CAS, and store-exe. See
+[ADR-0152](adr/0152-prepared-plan-cache.md).
+
+## Store-exe disk cache
+
+Optional cache of realised flake-app store executables. Schema **v1**. Miss/cold →
+`nix eval` of `apps.<system>.<app>.program` plus `nix build --no-link
+--print-out-paths` when needed, then direct exec (build-then-exec equivalence to
+`nix run`). Hit → spawn the cached `/nix/store/…` program with forwarded args
+(0× `nix run`) when fingerprints match and the path is still valid. Falls back to
+`nix run` for shell wraps, doubt, or `NXR_STORE_EXE_CACHE=off`. Reuses
+`PlanCacheSharedFingerprints` from ADR-0152. Independent of the prepared-plan
+cache (both may hit on one invocation). TTL default 24h
+(`NXR_STORE_EXE_CACHE_TTL_SECS`; `0` disables). See
+[ADR-0153](adr/0153-store-exe-cache.md).
+
 ## Process supervision
 
 Parallel and multiplexed `nxr task` runs pipe every supervised child's stdout/stderr through a single `mio` poll loop (kqueue on macOS, epoll on Linux) in `nxr-process`. FDs are `O_NONBLOCK`; each readiness event drains until `WouldBlock`/EOF within a per-FD fairness budget (1 MiB). Pipe registrations outlive process exit until EOF so rapid-exit output is not discarded ([ADR-0143](adr/0143-mio-pipe-drain.md)). One reusable 32 KiB read buffer is shared across registered fds; compact `u32` node ids map back to task labels when emitting events. Per-node timeouts use a min-deadline heap with O(log n) nearest-deadline lookup (lazy cancelled-entry prune).
 
+### Child output batching (Wave 7a + 7b)
+
+Adjacent reads for the same `(node, stream)` are coalesced before
+`StdoutChunk` / `StderrChunk` events are emitted ([ADR-0162](adr/0162-child-output-batching.md)).
+Default limits: **64 KiB**, **32 lines**, **8 ms** latency. Live mode batches
+terminal writes (8 KiB buffer, 256 KiB per-node pending cap) and stores grouped
+output as raw bytes until node exit. Wave **7c** optional Unix-socket log
+broker for `nxr process logs --follow` ([ADR-0164](adr/0164-process-log-broker.md)):
+when `nxrd` is up, follow streams via `log.subscribe` with an open log FD
+(20 ms poll inside the daemon); absent daemon / `NXR_LOG_BROKER=off` keeps the
+200 ms file poll.
+
+Benchmark scenarios to profile (stable harness thresholds TBD):
+
+| Scenario | Intent |
+|---|---|
+| One task, ~1 GiB stdout | Single-stream coalescing + batched writes |
+| 100 tasks × ~10 MiB each | Parallel fan-out event reduction |
+| 1000 short-lived tasks | Scheduler + coalescer overhead |
+| Rapid-exit trailing output | ADR-0143 drain + coalescer `flush_all` |
+
 Windows builds still use one reader thread per pipe (Unix-first); the supervisor API is unchanged.
+
+## Optional `nxrMetadata` cold discovery
+
+Flake-parts consumers emit optional `nxrMetadata.<system>` — a compact JSON
+document with apps/tasks/processes/contexts/inventory/namespaces
+([ADR-0166](adr/0166-nxr-metadata-endpoint.md)). When present, cold discovery
+uses **one** `nix eval --json <flake>#nxrMetadata.<system>` instead of
+`flake show` + task eval (or the Determinate coalesced `--expr`).
+
+- Kill-switch: `NXR_NXR_METADATA=off` (also `0` / `false` / `no`)
+- Missing attribute → silent fallback to coalesce / show+eval
+- Standard outputs and `nxr.<system>` remain authoritative; the endpoint is
+  never required
+- Envelope schema: [`schemas/nxr-metadata-v1.schema.json`](../schemas/nxr-metadata-v1.schema.json)
 
 ## Nix call budgets
 
 | Path | Expected Nix invocations | Notes |
 |---|---|---|
-| Bare `nxr <app>` / `nxr run <app>` (success or ordinary app failure) | **exactly 1×** `nix` (`nix run`); **0×** probes / `flake show` | Locate-only prepare; no `currentSystem` / capability probes unless `--offline` / `--accept-flake-config`; TTY stderr is inherited (no capture) |
-| Bare app missing installable (non-TTY stderr) | **1×** `nix run` + optional diagnostic discovery | Bounded stderr tail (~128 KiB); suggestion discovery only when stderr indicates installable-resolution failure |
-| Bare app on a TTY | **1×** `nix run`; inherit stderr | Prefer transparent rendering over typo suggestions |
+| Bare `nxr <app>` / `nxr run <app>` with `NXR_STORE_EXE_CACHE=off` | **exactly 1×** `nix` (`nix run`); **0×** probes / `flake show` | Classic budget; locate-only prepare |
+| Bare app warm with store-exe cache hit | **0×** `nix run` | Direct `/nix/store` spawn; cold may `eval`/`build` then exec |
+| Bare app missing installable (non-TTY stderr, store-exe off) | **1×** `nix run` + optional diagnostic discovery | Bounded stderr tail (~128 KiB); suggestion discovery only when stderr indicates installable-resolution failure |
+| Bare app on a TTY (store-exe off) | **1×** `nix run`; inherit stderr | Prefer transparent rendering over typo suggestions |
 | Adapter init (list/task/doctor) | **1×** `nix eval` (`currentSystem`) + capability probes (`--version`, config/help) | Shared via `WorkspaceSnapshot` / `NixAdapter`; warm capability cache skips all probes when the environment digest matches |
-| `nxr task` with **N** nodes | **N×** `nix run` + **O(1)** discovery | One `flake show` (apps) + one task `eval` (or warm combined cache); **not** N× `flake show` |
+| `nxr task` with **N** nodes (store-exe off) | **N×** `nix run` + **O(1)** discovery | Prefer `nxrMetadata` (1 eval) when present; else coalesce or one `flake show` + one task `eval` (warm combined cache); **not** N× `flake show` |
 | `nxr list --refresh-discovery` | Dominated by `nix flake show` | Catalog commands still discover |
 | Named `nxr build` / `check` / `shell` | Direct installable argv (no whole-output discovery up front) | Adapter init still probes once for system / flags |
 | Named build/check/shell missing attribute | **1×** installable + optional diagnostic discovery | Suggestion discovery only when stderr indicates missing attribute |
@@ -28,6 +303,7 @@ Instrumented integration tests wrap `NXR_NIX` with a counting shim to assert the
 | Path | Budget | Notes |
 |---|---|---|
 | Interactive completion (`nxr __complete apps`) | ≤ **500 ms** cold discovery wait | [`DISCOVERY_TIMEOUT`](../crates/nxr-completion/src/dynamic.rs); empty candidates on timeout |
+| Lean startup (`nxr --version`, `nxr completion`, warm `__complete`) | **0×** Nix | Early-exit in `nxr-cli` `lean` module; cache-only `__complete` scans discovery JSON |
 | Warm `nxr list` (cache hit) | Interactive (tens of ms) | Combined apps+tasks discovery cache |
 | Cold `nxr list --refresh-discovery` | Dominated by `nix flake show` + one task eval | Nix eval/store caches still apply |
 
@@ -103,6 +379,26 @@ cargo build -p nxr-cli --quiet
 ./scripts/perf/measure-release.sh --enforce   # fail if p50 exceeds ci-thresholds.json
 ```
 
+**Extended matrix (Wave 0 scenarios + optional counters):**
+
+```bash
+./scripts/perf/measure-matrix.sh
+NXR_PERF_STATS=1 ./scripts/perf/measure-matrix.sh --stats
+```
+
+| Scenario | Harness | Notes |
+|---|---|---|
+| Cold / warm `nxr list` | `measure-release.sh`, `measure-matrix.sh` | Isolated cache home |
+| Warm app plan path (`--dry-run <app>`) | `measure-matrix.sh` | Plan/prepare only |
+| Task DAG plan (small / ~10 nodes) | `measure-matrix.sh` | `task-dag`, `parallel-group` dry-run |
+| Task DAG plan (100 nodes) | `nxr-task` unit test | `large_dag_schedule_within_ci_budget` (in-process) |
+| Affected analysis | `measure-matrix.sh` | `fixtures/affected-deps` |
+| Action-key / fingerprint warm path | `measure-fingerprint.sh` | Synthetic 500-file monorepo |
+| Merkle dir digest locality (~200 files) | `nxr-core` unit test | `merkle_index::tests::large_tree_dir_digest_is_stable_and_local` |
+| Workspace CAS all-hit / mixed DAG | deferred | `fixtures/workspace-cache`; Wave 1+ |
+| Watch edit-to-child-start | deferred | Flaky without controlled FS events |
+| High-output / process log latency | deferred | Profile `nxr-process` pipe drain separately |
+
 The script prefers `nix build .#nxr` and falls back to `cargo build -p nxr-cli --release`. It isolates cache homes, times cold/warm `list` and warm `plan` over `NXR_PERF_RUNS` (default 5), and prints per-run wall times plus **p50**. Compare p50 across commits; use p95/max to spot filesystem or Nix daemon outliers.
 
 Suggested release p50 targets on a local SSD (order-of-magnitude; see also nxr-next performance foundations):
@@ -111,12 +407,30 @@ Suggested release p50 targets on a local SSD (order-of-magnitude; see also nxr-n
 |---|---:|
 | Warm `nxr list` (small fixture) | < 25 ms |
 | Warm `nxr plan <app>` | < 75 ms |
+| Warm `nxr` plan/prepare before child spawn (dry-run, cache warm) | < 50 ms (tens of ms north star) |
 
 CI hosted-runner ceilings (see `scripts/perf/ci-thresholds.json`) are intentionally looser so the gate catches order-of-magnitude regressions without flaking on noisy VMs.
 
 High-file-count fingerprint warm paths (index reuse, no rewrite) are asserted by
 `cargo test -p nxr-completion --lib fingerprint::tests::synthetic_monorepo_warm_fingerprint_scales`
 or `./scripts/perf/measure-fingerprint.sh`.
+
+## Lean CLI startup + shell fast path (Wave 6)
+
+Cheap invocations avoid full Clap dispatch, Nix capability probes, and discovery:
+
+- `nxr --version` / `-V` — argv scan + `CARGO_PKG_VERSION` print (no Nix).
+- `nxr completion <shell>` — static script generation only.
+- `nxr __manpage` — man renderer only.
+- `nxr __complete <target>` — on-disk discovery cache scan when valid (`cached_workspace_best_effort`); falls back to adapter discovery and still fails soft to empty candidates.
+
+Generated completion scripts under `shell/` add shell-resident helpers:
+
+- `_nxr_flake_root` / `__nxr_flake_root` — upward `flake.nix` walk (no subprocess).
+- `_nxr_daemon_socket` / `__nxr_daemon_socket` — resolve `NXR_DAEMON_SOCKET`, `$XDG_RUNTIME_DIR/nxr/nxrd.sock`, or temp fallback when connect is enabled.
+- `_nxr_invoke` / `__nxr_invoke` — forward to `nxr` with daemon socket set; execution still goes through the binary.
+
+**Follow-ons (Wave 7 / 21):** shell-side cache file parsing to skip `__complete` subprocess entirely; extend lean paths to `nxr cache status` when output is cache-metadata-only; optional wrapper in `integrate.*` for interactive `nxr()` execution routing.
 
 ## Interpretation
 

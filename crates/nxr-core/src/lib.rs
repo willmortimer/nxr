@@ -3,15 +3,24 @@
 pub mod action;
 pub mod cas;
 pub mod config;
+pub mod daemon;
 pub mod diagnostics;
+pub mod digest_cache;
 pub mod ecosystem;
 pub mod env_policy;
+pub mod eval_worker;
+pub mod incremental_digest;
+pub mod log_broker;
+pub mod merkle_index;
 pub mod model;
+pub mod perf;
 pub mod plan;
+pub mod plan_cache;
 pub mod projects;
 pub mod repo_path;
 pub mod run_history;
 pub mod sanitize;
+pub mod store_exe_cache;
 pub mod trust;
 
 pub use action::{
@@ -28,14 +37,62 @@ pub use config::{
     BindingProvider, ConfigError, NXR_CONFIG_DIR_ENV, SecretBinding, SecretBindings,
     TrustedProject, UserConfig, config_dir, load_secret_bindings, load_user_config,
 };
+pub use daemon::{
+    DAEMON_ENV, DAEMON_PROTOCOL_VERSION, DAEMON_ROLE, DAEMON_SOCKET_ENV, DaemonClientError,
+    DaemonConnection, DaemonHello, DaemonPlanEntry, DaemonRequest, DaemonResponse, DaemonState,
+    DaemonStatus, SharedDaemonState, cleanup_socket_files, daemon_connect_enabled, daemon_pid_path,
+    daemon_plan_entry, daemon_plan_to_hit, daemon_socket_path, ensure_socket_parent,
+    handle_request, read_pid_file, serve, try_connect, try_once, write_pid_file,
+};
 pub use diagnostics::{Diagnostic, DiagnosticLevel};
+pub use digest_cache::RunDigestCache;
 pub use ecosystem::{
     AdapterError, ECOSYSTEM_GRAPH_SCHEMA_VERSION, EcosystemGraph, EcosystemGraphAdapter,
     EdgeConfidence, EdgeKind, GraphEdge, GraphNode, StaticJsonAdapter,
 };
 pub use env_policy::{CLEAN_ENV_ALLOWLIST, EnvironmentPolicy, parse_env_name, parse_set_env};
+pub use eval_worker::{
+    EVAL_WORKER_ENV, EvalKind, EvalPrepareParams, EvalWorkerCache, MAX_EVAL_ENTRIES,
+    MAX_EVAL_JSON_BYTES, eval_worker_enabled,
+};
+pub use incremental_digest::{
+    ACTION_DIGEST_INDEX_ENV, ACTION_DIGEST_INDEX_SCHEMA_VERSION, ActionDigestIndexStatus,
+    GIT_BLOB_DIGEST_DOMAIN, GIT_DIGESTS_ENV, action_digest_index_dir, action_digest_index_enabled,
+    action_digest_index_status, clear_action_digest_index, digest_from_git_blob,
+    git_digests_enabled, invalidate_action_digest_paths,
+};
+pub use log_broker::{
+    FILE_POLL_MS, LOG_BROKER_ENV, LogBroker, LogEvent, MAX_APPEND_BYTES, MAX_STREAMS,
+    MAX_TAIL_BYTES, decode_log_bytes, encode_log_bytes, log_broker_enabled,
+};
+pub use merkle_index::{
+    MERKLE_DIR_DOMAIN, MERKLE_INDEX_ENV, MERKLE_INDEX_SCHEMA_VERSION, MERKLE_LEAF_KIND,
+    MerkleIndexStatus, MerkleSession, clear_merkle_index, invalidate_paths, merkle_index_dir,
+    merkle_index_enabled, merkle_index_status, touched_directories,
+};
 pub use model::{App, AppList, FlakeOutput, FlakeRef, ListApp, OutputList};
+pub use perf::{
+    CasLookupGuard, PERF_STATS_ENV, PerfStats, PlanPrepareGuard, add_bytes_hashed,
+    add_cas_lookup_us, add_plan_prepare_us, emit_stderr, enabled as perf_enabled,
+    record_digest_cache_hit, record_digest_metadata_hit, record_fs_metadata,
+    record_git_blob_digest, record_nix_spawn, record_node_prepared, record_plan_cache_hit,
+    record_plan_cache_miss, record_spawn_plan_cancelled, record_spawn_plan_prepared,
+    record_spawn_to_child_output_us, record_store_exe_hit, record_store_exe_miss,
+    record_watch_paths_invalidated, record_watch_prepared_nodes_dropped,
+    record_watch_prewarm_cas_hit, record_watch_prewarm_cas_miss, record_watch_prewarm_context_hit,
+    record_watch_prewarm_context_miss, record_watch_prewarm_ownership_shortcut,
+    record_watch_prewarm_store_exe_hit, record_watch_prewarm_store_exe_miss,
+    record_watch_snapshot_patch,
+};
 pub use plan::{Plan, PlanCommand, PlanKind, PlanSecretRef};
+pub use plan_cache::{
+    DEFAULT_PLAN_CACHE_TTL_SECS, PLAN_CACHE_ENV, PLAN_CACHE_SCHEMA_VERSION, PLAN_CACHE_TTL_ENV,
+    PLAN_SECRET_RUNTIME_PLACEHOLDER, PlanCacheKeyMaterial, PlanCacheSharedFingerprints,
+    PlanCacheStatus, PlanPrepareKind, PreparedPlanCacheHit, clear_plan_cache,
+    digest_environment_policy, digest_nix_flags, lookup_prepared_plan, plan_cache_dir,
+    plan_cache_enabled, plan_cache_key_digest, plan_cache_status, plan_contains_secret_values,
+    store_prepared_plan,
+};
 pub use projects::{
     NXR_CATEGORY_KEY, PROJECTS_FILENAME, PROJECTS_SCHEMA_VERSION, ProjectDefinition,
     ProjectMemberKind, ProjectsDocument, ProjectsError, UnknownProjectMember, app_category,
@@ -47,6 +104,13 @@ pub use run_history::{
     RunSummaryInput, RunTargetKind, clear_runs, list_runs, record_run, record_run_result,
 };
 pub use sanitize::sanitize_terminal_text;
+pub use store_exe_cache::{
+    DEFAULT_STORE_EXE_CACHE_TTL_SECS, STORE_EXE_CACHE_ENV, STORE_EXE_CACHE_SCHEMA_VERSION,
+    STORE_EXE_CACHE_TTL_ENV, StoreExeCacheHit, StoreExeCacheKeyMaterial, StoreExeCacheStatus,
+    clear_store_exe_cache, lookup_store_exe, store_exe_cache_dir, store_exe_cache_enabled,
+    store_exe_cache_key_digest, store_exe_cache_status, store_exe_path_usable,
+    store_output_root_for_program, store_store_exe,
+};
 pub use trust::{
     NXR_TRUST_PROJECT_ENV, TrustDatabase, TrustError, canonical_project_key, enforce_project_trust,
     project_trust_key, trust_project_env_enabled,

@@ -18,7 +18,7 @@ pub const WORKSPACE_CAS_ENV: &str = "NXR_WORKSPACE_CAS";
 
 const MISSING_PATH_MARKER: &[u8] = b"missing";
 
-fn missing_path_digest() -> String {
+pub(crate) fn missing_path_digest() -> String {
     digest_bytes(MISSING_PATH_MARKER)
 }
 
@@ -138,6 +138,7 @@ pub fn hash_action_key(key_material: &serde_json::Value) -> String {
 /// Hex-encoded BLAKE3 digest of arbitrary bytes.
 #[must_use]
 pub fn digest_bytes(data: &[u8]) -> String {
+    crate::perf::add_bytes_hashed(data.len() as u64);
     blake3::hash(data).to_hex().to_string()
 }
 
@@ -155,6 +156,7 @@ pub fn digest_file(path: &Path) -> io::Result<String> {
         if read == 0 {
             break;
         }
+        crate::perf::add_bytes_hashed(read as u64);
         hasher.update(&buffer[..read]);
     }
     Ok(hasher.finalize().to_hex().to_string())
@@ -189,7 +191,11 @@ pub fn digest_repo_path(flake_root: &Utf8Path, relative: &str) -> io::Result<Str
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-fn collect_files(workspace_root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
+pub(crate) fn collect_files(
+    workspace_root: &Path,
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+) -> io::Result<()> {
     let meta = fs::symlink_metadata(dir)?;
     if meta.file_type().is_symlink() {
         let resolved = resolve_within_workspace(workspace_root, dir)?;
@@ -230,7 +236,7 @@ fn collect_files(workspace_root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> i
     Ok(())
 }
 
-fn ensure_within_workspace(workspace_root: &Path, path: &Path) -> io::Result<()> {
+pub(crate) fn ensure_within_workspace(workspace_root: &Path, path: &Path) -> io::Result<()> {
     if fs::symlink_metadata(path).is_ok() {
         resolve_within_workspace(workspace_root, path).map(|_| ())
     } else {
@@ -355,6 +361,7 @@ fn read_manifest(action_key: &str) -> io::Result<Option<CasManifest>> {
 ///
 /// Returns [`io::Error`] when the cache cannot be read.
 pub fn lookup_outputs(action_key: &str, outputs: &[CasOutput]) -> io::Result<CasLookup> {
+    let _cas_timer = crate::perf::CasLookupGuard::start();
     if !workspace_cas_enabled() {
         return Ok(CasLookup::Miss {
             reason: "workspace CAS disabled via NXR_WORKSPACE_CAS".to_owned(),

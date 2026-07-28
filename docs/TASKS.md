@@ -106,6 +106,21 @@ Optional `discoveryInputs` (from `perSystem.nxr.discoveryInputs`) lists
 flake-root-relative paths hashed into the discovery cache key. See
 [PERFORMANCE.md](PERFORMANCE.md).
 
+### Optional `nxrMetadata.<system>` (accelerator)
+
+The flake-parts module also emits a compact discovery document at
+`nxrMetadata.<system>` ([ADR-0166](adr/0166-nxr-metadata-endpoint.md),
+[`schemas/nxr-metadata-v1.schema.json`](../schemas/nxr-metadata-v1.schema.json)).
+Cold discovery prefers this when present so apps/tasks/inventory load in **one**
+`nix eval --json`. Disable emission with `nxr.metadata.enable = false`. The CLI
+never requires the output (`NXR_NXR_METADATA=off` skips the preference).
+
+Smoke check:
+
+```bash
+nix eval --json ./fixtures/nxr-metadata#nxrMetadata.aarch64-darwin
+```
+
 Smoke check against the fixture flake:
 
 ```bash

@@ -81,6 +81,29 @@ pub fn nix_develop_wrap_run_args(
     args
 }
 
+/// Arguments for `nix build --no-link --print-out-paths <installable>`.
+///
+/// Used to realise a store output without creating a `./result` link.
+#[must_use]
+pub fn nix_build_no_link_print_out_paths_args(installable: &str) -> Vec<String> {
+    vec![
+        "build".to_owned(),
+        "--no-link".to_owned(),
+        "--print-out-paths".to_owned(),
+        installable.to_owned(),
+    ]
+}
+
+/// Arguments for `nix eval --raw <flake_ref>#apps.<system>.<app>.program`.
+#[must_use]
+pub fn flake_app_program_eval_args(flake_ref: &str, system: &str, app_name: &str) -> Vec<String> {
+    vec![
+        "eval".to_owned(),
+        "--raw".to_owned(),
+        format!("{flake_ref}#apps.{system}.{app_name}.program"),
+    ]
+}
+
 /// Arguments for `nix build <installable>`.
 ///
 /// `installable` is a full flake installable such as `.#packages.x86_64-linux.nxr`
@@ -147,8 +170,9 @@ pub fn token_is_explicit_installable(token: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        attr_installable, check_installable, current_system_args, flake_eval_json_args,
-        flake_show_args, nix_build_args, nix_develop_args, nix_develop_wrap_run_args,
+        attr_installable, check_installable, current_system_args, flake_app_program_eval_args,
+        flake_eval_json_args, flake_show_args, nix_build_args,
+        nix_build_no_link_print_out_paths_args, nix_develop_args, nix_develop_wrap_run_args,
         nix_flake_check_args, nix_fmt_args, nix_run_args, package_installable,
         token_is_explicit_installable,
     };
@@ -313,6 +337,31 @@ mod tests {
         assert!(token_is_explicit_installable(".#packages.x86_64-linux.nxr"));
         assert!(token_is_explicit_installable("github:foo/bar#default"));
         assert!(!token_is_explicit_installable("marker"));
+    }
+
+    #[test]
+    fn nix_build_no_link_print_out_paths_argv() {
+        assert_eq!(
+            nix_build_no_link_print_out_paths_args("/nix/store/abc-hello"),
+            vec![
+                "build".to_owned(),
+                "--no-link".to_owned(),
+                "--print-out-paths".to_owned(),
+                "/nix/store/abc-hello".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn flake_app_program_eval_argv() {
+        assert_eq!(
+            flake_app_program_eval_args(".", "aarch64-darwin", "hello"),
+            vec![
+                "eval".to_owned(),
+                "--raw".to_owned(),
+                ".#apps.aarch64-darwin.hello.program".to_owned(),
+            ]
+        );
     }
 
     #[test]

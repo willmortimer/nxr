@@ -610,6 +610,7 @@ pub fn run_nix(
     args: &[String],
     failure_kind: NixFailureKind,
 ) -> Result<Vec<u8>, NixError> {
+    nxr_core::record_nix_spawn();
     let output = Command::new(nix.as_std_path())
         .args(args)
         .output()

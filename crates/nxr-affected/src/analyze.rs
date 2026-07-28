@@ -6,7 +6,8 @@ use serde::Serialize;
 
 use crate::graph::{AffectedGraph, NodeKind};
 use crate::paths::{
-    PathRootError, is_global_invalidation_path, path_matches_roots, validate_path_roots,
+    PathRootError, is_global_invalidation_path, path_matches_roots, roots_may_overlap_changes,
+    validate_path_roots,
 };
 
 /// Classification of a graph node relative to the changed paths.
@@ -173,6 +174,9 @@ fn classify_path_hits(
     status: &mut BTreeMap<String, NodeStatus>,
     reasons: &mut BTreeMap<String, Vec<AffectedReason>>,
 ) {
+    // Merkle locality: skip nodes whose ownership cannot overlap any change
+    // ([ADR-0156]). Uses path prefixes — sibling dirs under a shared parent stay
+    // independent.
     for (node_key, node) in &graph.nodes {
         if let Err(error) = validate_path_roots(&node.path_roots) {
             let pattern = match error {
@@ -187,6 +191,11 @@ fn classify_path_hits(
         // Empty roots stay unclassified until after affected propagation so a
         // dependency hit can mark them affected without an EmptyRoots reason.
         if node.path_roots.is_empty() {
+            continue;
+        }
+
+        if !roots_may_overlap_changes(&node.path_roots, changed_paths) {
+            status.insert(node_key.clone(), NodeStatus::Unaffected);
             continue;
         }
 

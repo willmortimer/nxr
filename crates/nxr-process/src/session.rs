@@ -285,6 +285,10 @@ mod unix {
         environment.apply_with_overrides(&mut command, env_overrides);
 
         let mut child = command.spawn()?;
+        let program_str = program.to_string_lossy();
+        if program_str == "nix" || program_str.ends_with("/nix") {
+            nxr_core::record_nix_spawn();
+        }
         if let Some(bytes) = stdin_input
             && let Some(mut stdin) = child.stdin.take()
         {

@@ -15,6 +15,7 @@ pub use analyze::{AffectedAnalysis, AffectedNode, AffectedReason, NodeStatus, an
 pub use git::{GitDiffError, git_all_changes, git_diff_name_only, git_working_tree_changes};
 pub use graph::{AffectedGraph, build_graph};
 pub use paths::{
-    PathRootError, is_global_invalidation_path, looks_like_glob, normalize_relative_path,
-    path_matches_roots, validate_path_roots,
+    PathRootError, is_global_invalidation_path, literal_path_prefix, looks_like_glob,
+    normalize_relative_path, path_matches_roots, roots_may_overlap_changes,
+    touched_dirs_for_changes, validate_path_roots,
 };

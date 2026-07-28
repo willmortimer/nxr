@@ -4,10 +4,56 @@
 # is slow or fails, `nxr __complete <target>` returns no candidates and reserved
 # command completion from clap still works.
 
+_nxr_flake_root() {
+    local dir="$PWD"
+    while [[ -n "$dir" && "$dir" != "/" ]]; do
+        if [[ -f "$dir/flake.nix" ]]; then
+            if (( $+commands[realpath] )); then
+                realpath "$dir"
+            else
+                print -r -- "$dir"
+            fi
+            return 0
+        fi
+        dir="${dir:h}"
+    done
+    return 1
+}
+
+_nxr_daemon_socket() {
+    if [[ -n ${NXR_DAEMON_SOCKET:-} ]]; then
+        print -r -- "$NXR_DAEMON_SOCKET"
+        return 0
+    fi
+    case ${NXR_DAEMON:-} in
+        off|0|false|no|OFF|FALSE|NO) return 1 ;;
+    esac
+    if [[ -n ${XDG_RUNTIME_DIR:-} && -S ${XDG_RUNTIME_DIR}/nxr/nxrd.sock ]]; then
+        print -r -- "${XDG_RUNTIME_DIR}/nxr/nxrd.sock"
+        return 0
+    fi
+    local tmp="${TMPDIR:-/tmp}"
+    local user="${USER:-${UID:-user}}"
+    if [[ -S ${tmp}/nxr-${user}/nxrd.sock ]]; then
+        print -r -- "${tmp}/nxr-${user}/nxrd.sock"
+        return 0
+    fi
+    return 1
+}
+
+_nxr_invoke() {
+    local socket
+    if socket="$(_nxr_daemon_socket)"; then
+        NXR_DAEMON_SOCKET="$socket" command nxr "$@"
+    else
+        command nxr "$@"
+    fi
+}
+
 _nxr_complete_target() {
     local target="$1"
     local -a lines values descriptions
-    lines=("${(@f)$(command nxr __complete "$target" 2>/dev/null)}")
+    lines=("${(@f)$(_nxr_invoke __complete "$target" 2>/dev/null)}")
     for line in "${lines[@]}"; do
         if [[ "$line" == *$'\t'* ]]; then
             values+=("${line%%$'\t'*}")

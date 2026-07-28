@@ -104,6 +104,24 @@ Rejected   considered and explicitly not chosen
 | ADR-0148 | Automation ergonomics CLI surface (init/migrate/ci/selectors) | Proposed | 2.8 |
 | ADR-0149 | Context shell and confirmation must not be silently ignored | Accepted | 2.7.1 / 3.0 |
 | ADR-0150 | Generic inventory and coalesced discovery | Proposed | 3.1 |
+| ADR-0151 | Optional perf counters via `NXR_PERF_STATS` | Accepted | Unreleased |
+| ADR-0152 | Optional prepared app-plan disk cache | Accepted | Unreleased |
+| ADR-0153 | Optional realised store-executable reuse | Accepted | Unreleased |
+| ADR-0154 | Run-scoped digest deduplication for action keys | Accepted | Unreleased |
+| ADR-0155 | Incremental action digests + Git blob identity | Accepted | Unreleased |
+| ADR-0156 | Repository Merkle / affected directory index | Accepted | Unreleased |
+| ADR-0157 | Optional local cache daemon (`nxrd`) | Accepted | Unreleased |
+| ADR-0158 | Staged / lazy task-graph node preparation | Accepted | Unreleased |
+| ADR-0159 | CAS lookup ‖ SpawnPlan pipelining | Accepted | Unreleased |
+| ADR-0160 | Watch incremental workspace snapshot | Accepted | Unreleased |
+| ADR-0161 | Watch semantic change coalesce | Accepted | Unreleased |
+| ADR-0162 | Child output event batching + terminal write coalescing | Accepted | Unreleased |
+| ADR-0163 | Watch prewarm for likely reruns | Accepted | Unreleased |
+| ADR-0164 | Optional process log broker via `nxrd` | Accepted | Unreleased |
+| ADR-0165 | Determinate discovery/evaluation strategy planner | Accepted | Unreleased |
+| ADR-0166 | Optional `nxrMetadata` single-eval discovery endpoint | Accepted | Unreleased |
+| ADR-0167 | Batched Nix store path queries | Accepted | Unreleased |
+| ADR-0168 | Experimental optional Nix eval worker via `nxrd` | Accepted | Unreleased |
 
 Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0144-auto-schema-v2.md`](0144-auto-schema-v2.md),
@@ -112,7 +130,25 @@ Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0147-two-tier-actions.md`](0147-two-tier-actions.md),
 [`0148-automation-ergonomics.md`](0148-automation-ergonomics.md),
 [`0149-context-shell-confirm.md`](0149-context-shell-confirm.md),
-[`0150-inventory-coalesce.md`](0150-inventory-coalesce.md).
+[`0150-inventory-coalesce.md`](0150-inventory-coalesce.md),
+[`0151-perf-counters.md`](0151-perf-counters.md),
+[`0152-prepared-plan-cache.md`](0152-prepared-plan-cache.md),
+[`0153-store-exe-cache.md`](0153-store-exe-cache.md),
+[`0154-run-digest-cache.md`](0154-run-digest-cache.md),
+[`0155-incremental-git-digests.md`](0155-incremental-git-digests.md),
+[`0156-merkle-affected-index.md`](0156-merkle-affected-index.md),
+[`0157-optional-nxrd.md`](0157-optional-nxrd.md),
+[`0158-lazy-node-prep.md`](0158-lazy-node-prep.md),
+[`0159-cas-plan-pipeline.md`](0159-cas-plan-pipeline.md),
+[`0160-watch-incremental-snapshot.md`](0160-watch-incremental-snapshot.md),
+[`0161-watch-semantic-coalesce.md`](0161-watch-semantic-coalesce.md),
+[`0162-child-output-batching.md`](0162-child-output-batching.md),
+[`0163-watch-prewarm.md`](0163-watch-prewarm.md),
+[`0164-process-log-broker.md`](0164-process-log-broker.md),
+[`0165-determinate-eval-strategy.md`](0165-determinate-eval-strategy.md),
+[`0166-nxr-metadata-endpoint.md`](0166-nxr-metadata-endpoint.md),
+[`0167-batched-store-queries.md`](0167-batched-store-queries.md),
+[`0168-experimental-eval-worker.md`](0168-experimental-eval-worker.md).
 
 Audit absorb (2026-07, post-`a040e50`): remaps active delivery to
 **2.7.1 → 2.8 → 3.0 → 3.1** (process workflows remain in 3.1 MVP; distributed
@@ -161,7 +197,7 @@ Parked with [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md). N
 
 | ADR | Title | Status | Target |
 |---|---|---:|---:|
-| ADR-0301 | Keep the daemon optional for basic foreground execution | Deferred | V3.3 |
+| ADR-0301 | Keep the daemon optional for basic foreground execution | Deferred (spirit accepted in ADR-0157 MVP) | V3.3 |
 | ADR-0302 | Split local workspace daemon and remote worker responsibilities | Deferred | V3.3 |
 | ADR-0303 | Define worker capability advertisement and matching | Deferred | V3.3 |
 | ADR-0304 | Integrate native Nix remote builders before duplicating them | Accepted | V3.3 |

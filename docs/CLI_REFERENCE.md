@@ -81,8 +81,8 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr explain app <name> [-- args…]` | Explain a single app |
 | `nxr explain task <name> [-- args…]` | Explain a task DAG node plans and dependency path |
 | `nxr completion <shell>` | Emit Bash, Zsh, or Fish completion |
-| `nxr cache clear` | Remove discovery and capability cache entries |
-| `nxr cache status` | Show discovery and capability cache paths/sizes (`--json`: nested `{discovery,capabilities}`) |
+| `nxr cache clear` | Remove discovery, capability, workspace CAS, prepared-plan, store-exe, action-digest, and merkle index entries |
+| `nxr cache status` | Show cache paths/sizes (`--json`: nested `{discovery,capabilities,workspace,plans}`) |
 | `nxr affected [--base <ref>] [--working-tree] [--all-changes <ref>] [--strict\|--no-strict] [PATH…]` | Report apps/tasks by changed paths (`--json` for CI; schema `affected-v2`; strict includes `unknown`) |
 | `nxr inspect` | Overview of apps (+ tasks when present) |
 | `nxr inspect --category <name>` | Overview with apps/tasks filtered by category |

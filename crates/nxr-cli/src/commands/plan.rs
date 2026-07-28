@@ -6,6 +6,7 @@
 use std::io::{self, Write};
 
 use nxr_core::Plan;
+use nxr_core::RunDigestCache;
 use nxr_core::diagnostics::exit;
 use nxr_nix::TaskDiscoveryError;
 use nxr_task::{
@@ -98,6 +99,7 @@ fn plan_task(request: &AppRequest<'_>, json: bool, runner: RunnerOutput) -> Resu
         .local_root
         .as_deref()
         .unwrap_or(invocation_cwd.as_path());
+    let mut digest_cache = RunDigestCache::new();
     for node_id in &plan.serial_order {
         let Some(definition) = document.tasks.get(node_id) else {
             continue;
@@ -111,6 +113,7 @@ fn plan_task(request: &AppRequest<'_>, json: bool, runner: RunnerOutput) -> Resu
             invocation_cwd.as_str(),
             &std::collections::BTreeMap::new(),
             &WorkspaceCachePlanOptions::default(),
+            Some(&mut digest_cache),
         )
         .map_err(PrepareError::WorkspaceCache)?;
     }

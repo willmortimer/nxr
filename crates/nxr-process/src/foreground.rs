@@ -180,7 +180,12 @@ mod unix {
         environment.apply(&mut command);
 
         let mut child = command.spawn()?;
+        let program_str = program.to_string_lossy();
+        if program_str == "nix" || program_str.ends_with("/nix") {
+            nxr_core::record_nix_spawn();
+        }
         let pgid = child.id();
+        let spawn_started = nxr_core::perf_enabled().then(std::time::Instant::now);
 
         let tee = if capture_stderr {
             let mut stderr_pipe = child.stderr.take().expect("piped stderr");
@@ -188,10 +193,19 @@ mod unix {
                 let mut captured = Vec::new();
                 let mut buf = [0_u8; 8192];
                 let mut real_stderr = io::stderr();
+                let mut first_output_recorded = false;
                 loop {
                     match stderr_pipe.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
+                            if !first_output_recorded {
+                                if let Some(started) = spawn_started {
+                                    nxr_core::record_spawn_to_child_output_us(
+                                        started.elapsed().as_micros().min(u64::MAX as u128) as u64,
+                                    );
+                                }
+                                first_output_recorded = true;
+                            }
                             let chunk = &buf[..n];
                             append_rolling_tail(&mut captured, chunk, STDERR_TAIL_CAPACITY);
                             let _ = real_stderr.write_all(chunk);
