@@ -4,8 +4,57 @@
 # is slow or fails, `nxr __complete <target>` returns no candidates and reserved
 # command completion from clap still works.
 
+# Resolve the nearest flake root without spawning nxr.
+_nxr_flake_root() {
+    local dir="$PWD"
+    while [[ -n "$dir" && "$dir" != "/" ]]; do
+        if [[ -f "$dir/flake.nix" ]]; then
+            if command -v realpath >/dev/null 2>&1; then
+                realpath "$dir"
+            else
+                printf '%s\n' "$dir"
+            fi
+            return 0
+        fi
+        dir="${dir%/*}"
+    done
+    return 1
+}
+
+# Resolve a running nxrd socket when daemon connect is enabled.
+_nxr_daemon_socket() {
+    if [[ -n "${NXR_DAEMON_SOCKET:-}" ]]; then
+        printf '%s\n' "$NXR_DAEMON_SOCKET"
+        return 0
+    fi
+    case "${NXR_DAEMON:-}" in
+        off|0|false|no|OFF|FALSE|NO) return 1 ;;
+    esac
+    if [[ -n "${XDG_RUNTIME_DIR:-}" && -S "${XDG_RUNTIME_DIR}/nxr/nxrd.sock" ]]; then
+        printf '%s\n' "${XDG_RUNTIME_DIR}/nxr/nxrd.sock"
+        return 0
+    fi
+    local tmp="${TMPDIR:-/tmp}"
+    local user="${USER:-${UID:-user}}"
+    if [[ -S "${tmp}/nxr-${user}/nxrd.sock" ]]; then
+        printf '%s\n' "${tmp}/nxr-${user}/nxrd.sock"
+        return 0
+    fi
+    return 1
+}
+
+# Invoke nxr with optional daemon socket forwarding (execution still via nxr).
+_nxr_invoke() {
+    local socket
+    if socket="$(_nxr_daemon_socket)"; then
+        NXR_DAEMON_SOCKET="$socket" command nxr "$@"
+    else
+        command nxr "$@"
+    fi
+}
+
 _nxr_complete_target() {
-    command nxr __complete "$1" 2>/dev/null
+    _nxr_invoke __complete "$1" 2>/dev/null
 }
 
 _nxr_complete_apps() {

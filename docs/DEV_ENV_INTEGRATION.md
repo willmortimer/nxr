@@ -261,6 +261,8 @@ Cache policy:
 - safe fallback to reserved commands on timeout;
 - no diagnostics printed into shell completion protocol.
 
+Generated completion scripts (`shell/nxr.{bash,zsh,fish}`) also include shell-resident helpers: upward `flake.nix` lookup (`_nxr_flake_root` / `__nxr_flake_root`), optional `nxrd` socket discovery (`_nxr_daemon_socket`), and `_nxr_invoke` / `__nxr_invoke` to forward to `nxr` with `NXR_DAEMON_SOCKET` set when a daemon is running. Warm `nxr __complete` reads the on-disk discovery cache without Nix probes when possible ([PERFORMANCE.md](PERFORMANCE.md#lean-cli-startup--shell-fast-path-wave-6)).
+
 ## 6. DevPod
 
 DevPod decides where the workspace runs.

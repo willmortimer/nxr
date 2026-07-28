@@ -3,7 +3,8 @@
 use std::io::{self, Write};
 
 use nxr_completion::cache::{
-    DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_workspace_with_cache,
+    DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, cached_workspace_best_effort,
+    discover_workspace_with_cache,
 };
 use nxr_completion::{CompleteTarget, discover_app_candidates, write_app_candidates};
 use nxr_core::projects::{ProjectsDocument, load_projects_document};
@@ -35,6 +36,12 @@ pub fn run(
     refresh_discovery: bool,
     nix_flags: &OptionalNixFlags,
 ) -> Result<(), CompleteError> {
+    if !refresh_discovery
+        && let Some(lines) = cache_only_completions(target, flake_arg)
+    {
+        return write_lines(&lines);
+    }
+
     match target {
         CompleteTarget::Apps => {
             write_app_completions(flake_arg, nix_override, refresh_discovery, nix_flags)
@@ -71,6 +78,66 @@ pub fn run(
             nix_flags,
         )),
     }
+}
+
+fn cache_only_completions(target: CompleteTarget, flake_arg: Option<&str>) -> Option<Vec<String>> {
+    let invocation_cwd = current_invocation_directory().ok()?;
+    let flake = resolve_flake(flake_arg, &invocation_cwd).ok()?;
+    let local_root = flake.local_root?;
+    let workspace = cached_workspace_best_effort(&local_root)?;
+
+    match target {
+        CompleteTarget::Apps => Some(app_lines(&workspace.apps)),
+        CompleteTarget::Tasks => workspace.tasks.as_ref().map(task_lines),
+        CompleteTarget::Shells => {
+            let mut names = workspace.dev_shells.clone();
+            names.sort();
+            Some(names)
+        }
+        CompleteTarget::Namespaces => Some(namespace_completions(flake_arg)),
+        CompleteTarget::Categories => Some(category_lines(&workspace)),
+        CompleteTarget::Packages | CompleteTarget::Checks => None,
+    }
+}
+
+fn app_lines(apps: &[nxr_core::App]) -> Vec<String> {
+    let mut lines = Vec::with_capacity(apps.len());
+    let mut stdout = Vec::new();
+    if write_app_candidates(apps, &mut stdout).is_ok() {
+        let text = String::from_utf8(stdout).unwrap_or_default();
+        lines.extend(text.lines().map(str::to_owned));
+    }
+    lines
+}
+
+fn task_lines(doc: &nxr_task::TaskDocument) -> Vec<String> {
+    let mut names = Vec::new();
+    for (name, definition) in listable_tasks(doc, None) {
+        names.push(name.clone());
+        for alias in &definition.aliases {
+            names.push(alias.clone());
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn category_lines(workspace: &WorkspaceDiscovery) -> Vec<String> {
+    let mut categories = std::collections::BTreeSet::new();
+    if let Some(doc) = &workspace.tasks {
+        for definition in doc.tasks.values() {
+            if let Some(category) = &definition.category {
+                categories.insert(category.clone());
+            }
+        }
+        for meta in doc.apps.values() {
+            if let Some(category) = &meta.category {
+                categories.insert(category.clone());
+            }
+        }
+    }
+    categories.into_iter().collect()
 }
 
 fn write_app_completions(

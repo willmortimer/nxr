@@ -24,6 +24,71 @@ fn version_flag_succeeds() {
 }
 
 #[test]
+fn version_flag_does_not_invoke_nix() {
+    let counter = NixCallCounter::install();
+    cargo_bin_cmd!("nxr")
+        .env("NXR_NIX", &counter.wrapper)
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("nxr"));
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(counter.count("version"), 0, "log={log}");
+    assert_eq!(counter.count("config"), 0, "log={log}");
+    assert_eq!(counter.count("flake-show"), 0, "log={log}");
+}
+
+#[test]
+fn completion_does_not_invoke_nix() {
+    let counter = NixCallCounter::install();
+    cargo_bin_cmd!("nxr")
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["completion", "bash"])
+        .assert()
+        .success();
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(counter.count("version"), 0, "log={log}");
+}
+
+#[test]
+fn complete_apps_cache_hit_avoids_nix() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let home = tempfile::TempDir::new().expect("cache home");
+    let repo_root = repo_root();
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "list"])
+        .assert()
+        .success();
+
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/basic-apps", "__complete", "apps"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello"));
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(counter.count("version"), 0, "log={log}");
+    assert_eq!(counter.count("flake-show"), 0, "log={log}");
+}
+
+#[test]
 fn select_without_tty_is_usage_error() {
     cargo_bin_cmd!("nxr")
         .arg("select")
@@ -926,6 +991,8 @@ fn completion_bash_emits_script() {
         .stdout(predicate::str::contains("nxr"))
         .stdout(predicate::str::contains("_nxr_complete_apps"))
         .stdout(predicate::str::contains("_nxr_complete_target"))
+        .stdout(predicate::str::contains("_nxr_invoke"))
+        .stdout(predicate::str::contains("_nxr_daemon_socket"))
         .stdout(predicate::str::contains("__complete \"$1\""))
         .stdout(predicate::str::contains("tasks"))
         .stdout(predicate::str::contains("packages"))
@@ -942,6 +1009,7 @@ fn completion_zsh_emits_script() {
         .stdout(predicate::str::contains("#compdef nxr"))
         .stdout(predicate::str::contains("_nxr_complete_apps"))
         .stdout(predicate::str::contains("_nxr_complete_target"))
+        .stdout(predicate::str::contains("_nxr_invoke"))
         .stdout(predicate::str::contains("__complete \"$target\""))
         .stdout(predicate::str::contains("categories"));
 }
@@ -954,6 +1022,8 @@ fn completion_fish_emits_script() {
         .assert()
         .success()
         .stdout(predicate::str::contains("complete -c nxr"))
+        .stdout(predicate::str::contains("__nxr_invoke"))
+        .stdout(predicate::str::contains("__nxr_daemon_socket"))
         .stdout(predicate::str::contains("__nxr_complete_apps"))
         .stdout(predicate::str::contains("__nxr_complete_tasks"))
         .stdout(predicate::str::contains("__nxr_complete_packages"))

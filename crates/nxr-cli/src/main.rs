@@ -4,6 +4,7 @@ mod cli;
 mod commands;
 mod error_format;
 mod flake;
+mod lean;
 mod nix_flags;
 mod output;
 mod output_options;
@@ -41,6 +42,16 @@ use crate::reports::{ReportKind, ReportPaths, parse_report_spec};
 use crate::runner_output::RunnerOutput;
 
 fn main() {
+    if let Some(result) = lean::try_run() {
+        match result {
+            Ok(code) => process::exit(code),
+            Err(message) => {
+                eprintln!("error: {message}");
+                process::exit(nxr_core::diagnostics::exit::USAGE);
+            }
+        }
+    }
+
     let cli = Cli::parse();
     let output = output_options_from_cli(&cli);
     let runner = RunnerOutput::new(output);

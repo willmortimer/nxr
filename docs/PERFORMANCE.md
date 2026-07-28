@@ -190,6 +190,7 @@ Instrumented integration tests wrap `NXR_NIX` with a counting shim to assert the
 | Path | Budget | Notes |
 |---|---|---|
 | Interactive completion (`nxr __complete apps`) | ≤ **500 ms** cold discovery wait | [`DISCOVERY_TIMEOUT`](../crates/nxr-completion/src/dynamic.rs); empty candidates on timeout |
+| Lean startup (`nxr --version`, `nxr completion`, warm `__complete`) | **0×** Nix | Early-exit in `nxr-cli` `lean` module; cache-only `__complete` scans discovery JSON |
 | Warm `nxr list` (cache hit) | Interactive (tens of ms) | Combined apps+tasks discovery cache |
 | Cold `nxr list --refresh-discovery` | Dominated by `nix flake show` + one task eval | Nix eval/store caches still apply |
 
@@ -300,6 +301,23 @@ CI hosted-runner ceilings (see `scripts/perf/ci-thresholds.json`) are intentiona
 High-file-count fingerprint warm paths (index reuse, no rewrite) are asserted by
 `cargo test -p nxr-completion --lib fingerprint::tests::synthetic_monorepo_warm_fingerprint_scales`
 or `./scripts/perf/measure-fingerprint.sh`.
+
+## Lean CLI startup + shell fast path (Wave 6)
+
+Cheap invocations avoid full Clap dispatch, Nix capability probes, and discovery:
+
+- `nxr --version` / `-V` — argv scan + `CARGO_PKG_VERSION` print (no Nix).
+- `nxr completion <shell>` — static script generation only.
+- `nxr __manpage` — man renderer only.
+- `nxr __complete <target>` — on-disk discovery cache scan when valid (`cached_workspace_best_effort`); falls back to adapter discovery and still fails soft to empty candidates.
+
+Generated completion scripts under `shell/` add shell-resident helpers:
+
+- `_nxr_flake_root` / `__nxr_flake_root` — upward `flake.nix` walk (no subprocess).
+- `_nxr_daemon_socket` / `__nxr_daemon_socket` — resolve `NXR_DAEMON_SOCKET`, `$XDG_RUNTIME_DIR/nxr/nxrd.sock`, or temp fallback when connect is enabled.
+- `_nxr_invoke` / `__nxr_invoke` — forward to `nxr` with daemon socket set; execution still goes through the binary.
+
+**Follow-ons (Wave 7 / 21):** shell-side cache file parsing to skip `__complete` subprocess entirely; extend lean paths to `nxr cache status` when output is cache-metadata-only; optional wrapper in `integrate.*` for interactive `nxr()` execution routing.
 
 ## Interpretation
 

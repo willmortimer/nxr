@@ -4,32 +4,79 @@
 # is slow or fails, `nxr __complete <target>` returns no candidates and reserved
 # command completion from clap still works.
 
+function __nxr_flake_root
+    set -l dir $PWD
+    while test -n "$dir" -a "$dir" != "/"
+        if test -f "$dir/flake.nix"
+            if type -q realpath
+                realpath "$dir"
+            else
+                printf '%s\n' "$dir"
+            end
+            return 0
+        end
+        set dir (dirname "$dir")
+    end
+    return 1
+end
+
+function __nxr_daemon_socket
+    if test -n "$NXR_DAEMON_SOCKET"
+        printf '%s\n' "$NXR_DAEMON_SOCKET"
+        return 0
+    end
+    switch "$NXR_DAEMON"
+        case off 0 false no OFF FALSE NO
+            return 1
+    end
+    if test -n "$XDG_RUNTIME_DIR"; and test -S "$XDG_RUNTIME_DIR/nxr/nxrd.sock"
+        printf '%s\n' "$XDG_RUNTIME_DIR/nxr/nxrd.sock"
+        return 0
+    end
+    set -l tmp (test -n "$TMPDIR"; and echo "$TMPDIR"; or echo "/tmp")
+    set -l user (test -n "$USER"; and echo "$USER"; or echo "user")
+    if test -S "$tmp/nxr-$user/nxrd.sock"
+        printf '%s\n' "$tmp/nxr-$user/nxrd.sock"
+        return 0
+    end
+    return 1
+end
+
+function __nxr_invoke
+    set -l socket (__nxr_daemon_socket 2>/dev/null)
+    if test -n "$socket"
+        env NXR_DAEMON_SOCKET="$socket" command nxr $argv
+    else
+        command nxr $argv
+    end
+end
+
 function __nxr_complete_apps
-    command nxr __complete apps 2>/dev/null
+    __nxr_invoke __complete apps 2>/dev/null
 end
 
 function __nxr_complete_tasks
-    command nxr __complete tasks 2>/dev/null
+    __nxr_invoke __complete tasks 2>/dev/null
 end
 
 function __nxr_complete_packages
-    command nxr __complete packages 2>/dev/null
+    __nxr_invoke __complete packages 2>/dev/null
 end
 
 function __nxr_complete_checks
-    command nxr __complete checks 2>/dev/null
+    __nxr_invoke __complete checks 2>/dev/null
 end
 
 function __nxr_complete_shells
-    command nxr __complete shells 2>/dev/null
+    __nxr_invoke __complete shells 2>/dev/null
 end
 
 function __nxr_complete_namespaces
-    command nxr __complete namespaces 2>/dev/null
+    __nxr_invoke __complete namespaces 2>/dev/null
 end
 
 function __nxr_complete_categories
-    command nxr __complete categories 2>/dev/null
+    __nxr_invoke __complete categories 2>/dev/null
 end
 
 function __nxr_should_complete_apps
