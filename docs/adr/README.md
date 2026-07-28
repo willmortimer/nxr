@@ -116,6 +116,7 @@ Rejected   considered and explicitly not chosen
 | ADR-0160 | Watch incremental workspace snapshot | Accepted | Unreleased |
 | ADR-0161 | Watch semantic change coalesce | Accepted | Unreleased |
 | ADR-0162 | Child output event batching + terminal write coalescing | Accepted | Unreleased |
+| ADR-0163 | Watch prewarm for likely reruns | Accepted | Unreleased |
 | ADR-0165 | Determinate discovery/evaluation strategy planner | Accepted | Unreleased |
 
 Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
@@ -138,6 +139,7 @@ Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0160-watch-incremental-snapshot.md`](0160-watch-incremental-snapshot.md),
 [`0161-watch-semantic-coalesce.md`](0161-watch-semantic-coalesce.md),
 [`0162-child-output-batching.md`](0162-child-output-batching.md),
+[`0163-watch-prewarm.md`](0163-watch-prewarm.md),
 [`0165-determinate-eval-strategy.md`](0165-determinate-eval-strategy.md).
 
 Audit absorb (2026-07, post-`a040e50`): remaps active delivery to

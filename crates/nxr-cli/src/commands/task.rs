@@ -17,6 +17,7 @@ use nxr_task::{
     SecretDelivery, SecretProvider, build_execution_plan_roots, enforce_context_confirm,
     merge_spawn_env_overrides, resolve_task_name,
 };
+use nxr_watch::WatchPrewarm;
 
 use crate::commands::common::{
     NodePrepStage, PrepareError, PreparedTaskNode, TaskNodePreparer, WorkspaceSnapshot,
@@ -201,6 +202,7 @@ pub fn execute(
         None,
         false,
         None,
+        None,
     )?;
     if !dry_run {
         let mut state = WorkspaceState::with_refresh(
@@ -265,6 +267,7 @@ pub fn execute_with_control(
     workspace: Option<&mut WorkspaceState<'_>>,
     reuse_from_cache: bool,
     cache: Option<&mut Option<PreparedTaskGeneration>>,
+    watch_prewarm: Option<&mut WatchPrewarm>,
 ) -> Result<i32, TaskError> {
     if request.jobs == 0 {
         return Err(TaskError::InvalidJobs(0));
@@ -462,14 +465,30 @@ pub fn execute_with_control(
             },
             plan.nodes.len(),
         ));
-        let result = run_plan(request, &plan, &mut preparer, &mut sink, runner, control);
+        let result = run_plan(
+            request,
+            &plan,
+            &mut preparer,
+            &mut sink,
+            runner,
+            control,
+            watch_prewarm,
+        );
         report_sink_error(&sink)?;
         result
     } else {
         // Inherit stdio for interactivity / --output raw: do not hold stdout/stderr locks.
         let inner = nxr_task::NullSink;
         let mut sink = wrap_report_sink(inner, &request.reports);
-        let result = run_plan(request, &plan, &mut preparer, &mut sink, runner, control);
+        let result = run_plan(
+            request,
+            &plan,
+            &mut preparer,
+            &mut sink,
+            runner,
+            control,
+            watch_prewarm,
+        );
         report_sink_error(&sink)?;
         result
     }
@@ -695,6 +714,7 @@ fn run_plan(
     sink: &mut dyn EventSink,
     runner: RunnerOutput,
     control: &mut dyn FnMut() -> io::Result<RunControl>,
+    mut watch_prewarm: Option<&mut WatchPrewarm>,
 ) -> Result<i32, TaskError> {
     let mut scheduler = Scheduler::new(plan, request.jobs)?;
     let mut supervisor = Supervisor::new();
@@ -966,6 +986,7 @@ fn run_plan(
                 &secret_bindings,
                 &project_id,
                 &mut node_secret_guards,
+                watch_prewarm.as_deref_mut(),
             )?;
             started_at.insert(node_id.clone(), std::time::Instant::now());
             node_compact_ids.insert(node_id.clone(), compact);
@@ -1163,6 +1184,7 @@ fn spawn_node(
     secret_bindings: &nxr_core::config::SecretBindings,
     project_id: &str,
     node_secret_guards: &mut BTreeMap<String, SpawnSecrets>,
+    watch_prewarm: Option<&mut WatchPrewarm>,
 ) -> Result<u32, TaskError> {
     let prepared = preparer
         .prepared()
@@ -1185,13 +1207,14 @@ fn spawn_node(
 
     sink.emit(Event::node_started(node_id.to_owned()));
 
-    let spawn = crate::commands::store_exe::resolve_app_spawn(
+    let spawn = crate::commands::store_exe::resolve_app_spawn_with_prewarm(
         &prepared.plan,
         &prepared.program,
         Some(prepared.flake_root.as_path()),
         &OptionalNixFlags::default(),
         "",
         Some(prepared.cwd.as_std_path()),
+        watch_prewarm,
     );
     let program = spawn.program.as_std_path();
     let args = &spawn.arguments;

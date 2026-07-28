@@ -16,7 +16,7 @@ Set `NXR_PERF_STATS=1` to accumulate counters for one CLI invocation. On exit,
 nxr prints a single JSON line on stderr:
 
 ```text
-nxr-perf-stats: {"schema_version":8,"nix_spawns":…,…}
+nxr-perf-stats: {"schema_version":9,"nix_spawns":…,…}
 ```
 
 | Counter | Meaning |
@@ -37,6 +37,16 @@ nxr-perf-stats: {"schema_version":8,"nix_spawns":…,…}
 | `nodes_prepared` | Task-graph nodes prepared this invocation (lazy or eager) |
 | `spawn_plans_prepared` | SpawnPlan stages completed (ADR-0159) |
 | `spawn_plans_cancelled` | SpawnPlan stages cancelled on CAS hit (ADR-0159) |
+| `watch_snapshot_patches` | Watch incremental snapshot source patches (ADR-0160) |
+| `watch_paths_invalidated` | Repo-relative paths invalidated by watch patches |
+| `watch_prepared_nodes_dropped` | Prepared nodes dropped on watch source invalidation |
+| `watch_prewarm_store_exe_hits` | In-process watch prewarm store-exe hits (ADR-0163) |
+| `watch_prewarm_store_exe_misses` | Watch prewarm store-exe misses (disk / realise path) |
+| `watch_prewarm_context_hits` | Watch prewarm context construction hits |
+| `watch_prewarm_context_misses` | Watch prewarm context construction misses |
+| `watch_prewarm_cas_hits` | Watch prewarm CAS metadata handle hits |
+| `watch_prewarm_cas_misses` | Watch prewarm CAS metadata handle misses |
+| `watch_prewarm_ownership_shortcuts` | Plan nodes skipped by ownership locality |
 
 Counters are **off by default**; no semantic change when unset. See
 [ADR-0151](adr/0151-perf-counters.md), [ADR-0152](adr/0152-prepared-plan-cache.md),
@@ -90,7 +100,11 @@ generations ([ADR-0160](adr/0160-watch-incremental-snapshot.md)):
 - **Semantic coalesce** ([ADR-0161](adr/0161-watch-semantic-coalesce.md)):
   after debounce, drop editor temporaries, collapse formatter bursts, narrow
   lockfile batches, ignore fixture-only and task-owned output paths.
-  `NXR_WATCH_COALESCE=off` kill-switch. Wave **5c** (prewarm) hook reserved.
+  `NXR_WATCH_COALESCE=off` kill-switch.
+- **Prewarm** ([ADR-0163](adr/0163-watch-prewarm.md)): session-scoped store-exe,
+  shell/context, ownership index, and CAS metadata handles across source-only
+  generations. `NXR_WATCH_PREWARM=off` kill-switch. `NXR_PERF_STATS` schema **v9**
+  adds `watch_prewarm_*` counters.
 
 ## Determinate discovery strategy
 

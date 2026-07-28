@@ -12,6 +12,7 @@ use nxr_core::{
     store_exe_path_usable, store_store_exe,
 };
 use nxr_nix::{OptionalNixFlags, detect_system, realise_flake_app_program};
+use nxr_watch::{PrewarmStoreExe, WatchPrewarm};
 
 /// Program + argv chosen for spawn (nix run plan or direct store exe).
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -34,6 +35,28 @@ pub fn resolve_app_spawn(
     nix_flags: &OptionalNixFlags,
     nix_version: &str,
     cwd: Option<&Path>,
+) -> ResolvedAppSpawn {
+    resolve_app_spawn_with_prewarm(
+        plan,
+        nix,
+        local_root,
+        nix_flags,
+        nix_version,
+        cwd,
+        None,
+    )
+}
+
+/// Like [`resolve_app_spawn`], consulting an optional watch-session prewarm cache.
+#[must_use]
+pub fn resolve_app_spawn_with_prewarm(
+    plan: &Plan,
+    nix: &Utf8Path,
+    local_root: Option<&Utf8Path>,
+    nix_flags: &OptionalNixFlags,
+    nix_version: &str,
+    cwd: Option<&Path>,
+    mut prewarm: Option<&mut WatchPrewarm>,
 ) -> ResolvedAppSpawn {
     let fallback = ResolvedAppSpawn {
         program: Utf8PathBuf::from(plan.command.program.clone()),
@@ -72,18 +95,43 @@ pub fn resolve_app_spawn(
     };
     let key_digest = store_exe_cache_key_digest(&key);
 
+    if let Some(prewarm) = prewarm.as_mut() {
+        if let Some(hit) = prewarm.lookup_store_exe(&key_digest) {
+            if store_exe_path_usable(hit.program.as_std_path()) {
+                let resolved = ResolvedAppSpawn {
+                    program: hit.program.clone(),
+                    arguments: hit.arguments.clone(),
+                    used_store_exe: true,
+                };
+                prewarm.record_store_exe_hit();
+                return resolved;
+            }
+        }
+    }
+
     if let Some(hit) = lookup_store_exe(&key_digest, &fingerprints) {
         let program = Utf8PathBuf::from(hit.program);
         if store_exe_path_usable(program.as_std_path()) {
             record_store_exe_hit();
-            return ResolvedAppSpawn {
-                program,
+            let resolved = ResolvedAppSpawn {
+                program: program.clone(),
                 arguments: plan.forwarded_arguments.clone(),
                 used_store_exe: true,
             };
+            if let Some(prewarm) = prewarm {
+                prewarm.store_store_exe(PrewarmStoreExe {
+                    key_digest,
+                    program,
+                    arguments: resolved.arguments.clone(),
+                });
+            }
+            return resolved;
         }
     }
 
+    if let Some(prewarm) = prewarm.as_mut() {
+        prewarm.record_store_exe_miss();
+    }
     record_store_exe_miss();
 
     let realise_system = match resolve_realise_system(plan, nix) {
@@ -107,11 +155,19 @@ pub fn resolve_app_spawn(
                 fingerprints,
             );
             if store_exe_path_usable(realised.program.as_std_path()) {
-                return ResolvedAppSpawn {
-                    program: realised.program,
+                let resolved = ResolvedAppSpawn {
+                    program: realised.program.clone(),
                     arguments: plan.forwarded_arguments.clone(),
                     used_store_exe: true,
                 };
+                if let Some(prewarm) = prewarm {
+                    prewarm.store_store_exe(PrewarmStoreExe {
+                        key_digest,
+                        program: realised.program,
+                        arguments: resolved.arguments.clone(),
+                    });
+                }
+                return resolved;
             }
             fallback
         }

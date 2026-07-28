@@ -37,6 +37,13 @@ static SPAWN_PLANS_CANCELLED: AtomicU64 = AtomicU64::new(0);
 static WATCH_SNAPSHOT_PATCHES: AtomicU64 = AtomicU64::new(0);
 static WATCH_PATHS_INVALIDATED: AtomicU64 = AtomicU64::new(0);
 static WATCH_PREPARED_NODES_DROPPED: AtomicU64 = AtomicU64::new(0);
+static WATCH_PREWARM_STORE_EXE_HITS: AtomicU64 = AtomicU64::new(0);
+static WATCH_PREWARM_STORE_EXE_MISSES: AtomicU64 = AtomicU64::new(0);
+static WATCH_PREWARM_CONTEXT_HITS: AtomicU64 = AtomicU64::new(0);
+static WATCH_PREWARM_CONTEXT_MISSES: AtomicU64 = AtomicU64::new(0);
+static WATCH_PREWARM_CAS_HITS: AtomicU64 = AtomicU64::new(0);
+static WATCH_PREWARM_CAS_MISSES: AtomicU64 = AtomicU64::new(0);
+static WATCH_PREWARM_OWNERSHIP_SHORTCUTS: AtomicU64 = AtomicU64::new(0);
 
 fn env_enabled() -> bool {
     match std::env::var(PERF_STATS_ENV) {
@@ -229,6 +236,62 @@ pub fn record_watch_prepared_nodes_dropped(count: u64) {
     }
 }
 
+/// Record one in-process watch prewarm store-exe hit (schema v9+; ADR-0163).
+#[inline]
+pub fn record_watch_prewarm_store_exe_hit() {
+    if enabled() {
+        WATCH_PREWARM_STORE_EXE_HITS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Record one watch prewarm store-exe miss (schema v9+).
+#[inline]
+pub fn record_watch_prewarm_store_exe_miss() {
+    if enabled() {
+        WATCH_PREWARM_STORE_EXE_MISSES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Record one watch prewarm context construction hit (schema v9+).
+#[inline]
+pub fn record_watch_prewarm_context_hit() {
+    if enabled() {
+        WATCH_PREWARM_CONTEXT_HITS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Record one watch prewarm context construction miss (schema v9+).
+#[inline]
+pub fn record_watch_prewarm_context_miss() {
+    if enabled() {
+        WATCH_PREWARM_CONTEXT_MISSES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Record one watch prewarm CAS metadata handle hit (schema v9+).
+#[inline]
+pub fn record_watch_prewarm_cas_hit() {
+    if enabled() {
+        WATCH_PREWARM_CAS_HITS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Record one watch prewarm CAS metadata handle miss (schema v9+).
+#[inline]
+pub fn record_watch_prewarm_cas_miss() {
+    if enabled() {
+        WATCH_PREWARM_CAS_MISSES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Accumulate plan nodes skipped by watch ownership locality (schema v9+).
+#[inline]
+pub fn record_watch_prewarm_ownership_shortcut(count: u64) {
+    if enabled() && count > 0 {
+        WATCH_PREWARM_OWNERSHIP_SHORTCUTS.fetch_add(count, Ordering::Relaxed);
+    }
+}
+
 /// RAII timer for plan preparation.
 pub struct PlanPrepareGuard {
     started: Option<Instant>,
@@ -311,11 +374,25 @@ pub struct PerfStats {
     pub watch_paths_invalidated: u64,
     /// Prepared task nodes dropped on watch source invalidation (schema v8+).
     pub watch_prepared_nodes_dropped: u64,
+    /// In-process watch prewarm store-exe hits (schema v9+; ADR-0163).
+    pub watch_prewarm_store_exe_hits: u64,
+    /// In-process watch prewarm store-exe misses (schema v9+).
+    pub watch_prewarm_store_exe_misses: u64,
+    /// Watch prewarm context construction hits (schema v9+).
+    pub watch_prewarm_context_hits: u64,
+    /// Watch prewarm context construction misses (schema v9+).
+    pub watch_prewarm_context_misses: u64,
+    /// Watch prewarm CAS metadata handle hits (schema v9+).
+    pub watch_prewarm_cas_hits: u64,
+    /// Watch prewarm CAS metadata handle misses (schema v9+).
+    pub watch_prewarm_cas_misses: u64,
+    /// Plan nodes skipped by watch ownership locality (schema v9+).
+    pub watch_prewarm_ownership_shortcuts: u64,
 }
 
 impl PerfStats {
-    /// Schema v8 adds watch incremental snapshot counters (ADR-0160).
-    const SCHEMA_VERSION: u32 = 8;
+    /// Schema v9 adds watch prewarm counters (ADR-0163).
+    const SCHEMA_VERSION: u32 = 9;
 
     /// Collect current counter values.
     #[must_use]
@@ -341,6 +418,14 @@ impl PerfStats {
             watch_snapshot_patches: WATCH_SNAPSHOT_PATCHES.load(Ordering::Relaxed),
             watch_paths_invalidated: WATCH_PATHS_INVALIDATED.load(Ordering::Relaxed),
             watch_prepared_nodes_dropped: WATCH_PREPARED_NODES_DROPPED.load(Ordering::Relaxed),
+            watch_prewarm_store_exe_hits: WATCH_PREWARM_STORE_EXE_HITS.load(Ordering::Relaxed),
+            watch_prewarm_store_exe_misses: WATCH_PREWARM_STORE_EXE_MISSES.load(Ordering::Relaxed),
+            watch_prewarm_context_hits: WATCH_PREWARM_CONTEXT_HITS.load(Ordering::Relaxed),
+            watch_prewarm_context_misses: WATCH_PREWARM_CONTEXT_MISSES.load(Ordering::Relaxed),
+            watch_prewarm_cas_hits: WATCH_PREWARM_CAS_HITS.load(Ordering::Relaxed),
+            watch_prewarm_cas_misses: WATCH_PREWARM_CAS_MISSES.load(Ordering::Relaxed),
+            watch_prewarm_ownership_shortcuts: WATCH_PREWARM_OWNERSHIP_SHORTCUTS
+                .load(Ordering::Relaxed),
         }
     }
 }
@@ -386,6 +471,13 @@ pub(crate) fn test_reset(enabled: bool) {
     WATCH_SNAPSHOT_PATCHES.store(0, Ordering::Relaxed);
     WATCH_PATHS_INVALIDATED.store(0, Ordering::Relaxed);
     WATCH_PREPARED_NODES_DROPPED.store(0, Ordering::Relaxed);
+    WATCH_PREWARM_STORE_EXE_HITS.store(0, Ordering::Relaxed);
+    WATCH_PREWARM_STORE_EXE_MISSES.store(0, Ordering::Relaxed);
+    WATCH_PREWARM_CONTEXT_HITS.store(0, Ordering::Relaxed);
+    WATCH_PREWARM_CONTEXT_MISSES.store(0, Ordering::Relaxed);
+    WATCH_PREWARM_CAS_HITS.store(0, Ordering::Relaxed);
+    WATCH_PREWARM_CAS_MISSES.store(0, Ordering::Relaxed);
+    WATCH_PREWARM_OWNERSHIP_SHORTCUTS.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -475,7 +567,7 @@ mod tests {
         assert_eq!(stats.nodes_prepared, 2);
         assert_eq!(stats.spawn_plans_prepared, 1);
         assert_eq!(stats.spawn_plans_cancelled, 2);
-        assert_eq!(stats.schema_version, 8);
+        assert_eq!(stats.schema_version, 9);
     }
 
     #[test]

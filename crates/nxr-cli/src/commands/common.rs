@@ -34,6 +34,7 @@ use nxr_task::{
     WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, WorkspaceCachePlan,
     WorkspaceCachePlanOptions, apply_task_context, build_workspace_cache_plan,
 };
+use nxr_watch::PrewarmContext;
 
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
 use crate::shell_mode::{
@@ -881,6 +882,9 @@ struct LivePrep<'a> {
     context_override: Option<&'a str>,
     upstream_keys: BTreeMap<String, String>,
     digest_cache: RunDigestCache,
+    context_hints: BTreeMap<String, PrewarmContext>,
+    context_hits: u64,
+    context_misses: u64,
 }
 
 /// In-flight SpawnPlan work that can be cancelled on CAS hit.
@@ -945,6 +949,9 @@ impl<'a> TaskNodePreparer<'a> {
                 context_override,
                 upstream_keys: BTreeMap::new(),
                 digest_cache: RunDigestCache::new(),
+                context_hints: BTreeMap::new(),
+                context_hits: 0,
+                context_misses: 0,
             })),
             prepared: BTreeMap::new(),
             prepare_count: 0,
@@ -1000,6 +1007,7 @@ impl<'a> TaskNodePreparer<'a> {
         nix_flags: &'a OptionalNixFlags,
         context_override: Option<&'a str>,
         digest_cache: RunDigestCache,
+        context_hints: BTreeMap<String, PrewarmContext>,
     ) -> Result<Self, PrepareError> {
         document.validate().map_err(PrepareError::TaskSchema)?;
         for node in prepared.values_mut() {
@@ -1021,6 +1029,9 @@ impl<'a> TaskNodePreparer<'a> {
                 context_override,
                 upstream_keys: BTreeMap::new(),
                 digest_cache,
+                context_hints,
+                context_hits: 0,
+                context_misses: 0,
             })),
             prepared,
             prepare_count,
@@ -1048,6 +1059,19 @@ impl<'a> TaskNodePreparer<'a> {
     #[allow(dead_code)] // exercised in unit tests; useful for diagnostics
     pub fn spawn_plan_cancelled(&self) -> u64 {
         self.spawn_plan_cancelled
+    }
+
+    /// Drain watch prewarm context hit/miss counts from a partial reprepare pass.
+    #[must_use]
+    pub fn take_prewarm_context_stats(&mut self) -> (u64, u64) {
+        let PrepMode::Live(live) = &mut self.mode else {
+            return (0, 0);
+        };
+        let hits = live.context_hits;
+        let misses = live.context_misses;
+        live.context_hits = 0;
+        live.context_misses = 0;
+        (hits, misses)
     }
 
     /// Whether this preparer splits CasInputs from SpawnPlan.
@@ -1463,6 +1487,9 @@ impl<'a> TaskNodePreparer<'a> {
             context_override,
             upstream_keys,
             digest_cache,
+            context_hints,
+            context_hits,
+            context_misses,
         } = live.as_mut();
 
         let definition = document
@@ -1486,23 +1513,38 @@ impl<'a> TaskNodePreparer<'a> {
         let mut context_name = None;
         let mut confirm = false;
         let effective_context = context_override.or(definition.context.as_deref());
-        let applied_context = effective_context
-            .map(|name| apply_task_context(document, task_id, name, environment_policy))
-            .transpose()?;
-        let context_shell = applied_context
-            .as_ref()
-            .and_then(|applied| applied.shell.clone());
-        if let Some(applied) = &applied_context {
+        let (applied_context, node_environment, effective_shell) =
+            if let Some(cached) = context_hints.get(task_id) {
+                *context_hits = context_hits.saturating_add(1);
+                (
+                    cached.applied_context.clone(),
+                    cached.environment_policy.clone(),
+                    cached.effective_shell.clone(),
+                )
+            } else {
+                *context_misses = context_misses.saturating_add(1);
+                let applied_context = effective_context
+                    .map(|name| apply_task_context(document, task_id, name, environment_policy))
+                    .transpose()?;
+                let context_shell = applied_context
+                    .as_ref()
+                    .and_then(|applied| applied.shell.clone());
+                let node_environment = if let Some(applied) = &applied_context {
+                    applied.environment_policy.clone()
+                } else {
+                    (*environment_policy).clone()
+                };
+                let effective_shell =
+                    resolve_effective_shell(*shell, context_shell, definition.shell.clone());
+                (applied_context, node_environment, effective_shell)
+            };
+        if let Some(cached) = context_hints.get(task_id) {
+            context_name = cached.context_name.clone();
+            confirm = cached.confirm;
+        } else if let Some(applied) = &applied_context {
             context_name = Some(applied.context_name.clone());
             confirm = applied.confirm;
         }
-        let node_environment = if let Some(applied) = &applied_context {
-            applied.environment_policy.clone()
-        } else {
-            (*environment_policy).clone()
-        };
-        let effective_shell =
-            resolve_effective_shell(*shell, context_shell, definition.shell.clone());
         if let Some(shell_name) = effective_shell_wrap(effective_shell.as_deref(), *shell_mode)
             && !snapshot.dev_shells.contains(shell_name)
         {

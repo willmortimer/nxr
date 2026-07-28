@@ -2,7 +2,7 @@
 //!
 //! Retains run-scoped digest / Merkle state across watch generations so source
 //! events patch file metadata and directory digests instead of cold rescans.
-//! Wave 5b semantic coalesce and Wave 5c prewarm extend via reserved hooks.
+//! Wave 5b semantic coalesce and Wave 5c prewarm extend the snapshot.
 
 use std::collections::BTreeSet;
 use std::io;
@@ -16,6 +16,7 @@ use nxr_core::{
 use nxr_task::TaskDocument;
 
 use crate::coalesce::{WatchCoalesceStats, WatchSemanticCoalescer};
+use crate::prewarm::WatchPrewarm;
 
 /// Kill-switch for watch incremental snapshot (`off` / `0` / `false` / `no`).
 pub const WATCH_SNAPSHOT_ENV: &str = "NXR_WATCH_SNAPSHOT";
@@ -47,9 +48,7 @@ pub struct WatchIncrementalSnapshot {
     graph: Option<AffectedGraph>,
     stats: WatchSnapshotStats,
     coalesce: WatchSemanticCoalescer,
-    /// Reserved for Wave 5c prewarm (resolved exe / CAS handles).
-    #[allow(dead_code)]
-    prewarm_hook: (),
+    prewarm: WatchPrewarm,
 }
 
 impl WatchIncrementalSnapshot {
@@ -62,8 +61,19 @@ impl WatchIncrementalSnapshot {
             graph: None,
             stats: WatchSnapshotStats::default(),
             coalesce: WatchSemanticCoalescer::default(),
-            prewarm_hook: (),
+            prewarm: WatchPrewarm::default(),
         }
+    }
+
+    /// Session prewarm cache for resolved exe / context / CAS handles.
+    #[must_use]
+    pub fn prewarm(&self) -> &WatchPrewarm {
+        &self.prewarm
+    }
+
+    /// Mutable prewarm cache.
+    pub fn prewarm_mut(&mut self) -> &mut WatchPrewarm {
+        &mut self.prewarm
     }
 
     /// Semantic coalesce statistics for the watch session.
@@ -149,7 +159,9 @@ impl WatchIncrementalSnapshot {
         system: &str,
     ) {
         let _ = (flake, system);
-        self.graph = Some(build_graph(apps, document));
+        let graph = build_graph(apps, document);
+        self.prewarm.set_ownership_from_graph(&graph);
+        self.graph = Some(graph);
     }
 
     /// Patch indexes for source-only filesystem changes.
@@ -185,7 +197,21 @@ impl WatchIncrementalSnapshot {
             .invalidate_source_paths(&self.root, &paths)?;
 
         let affected_plan_nodes = plan_node_ids
-            .map(|ids| affected_plan_node_ids(self.graph.as_ref(), &paths, ids, flake, system))
+            .map(|ids| {
+                if self.prewarm.can_skip_affected_analysis(ids, &paths) {
+                    let skipped = u64::try_from(ids.len()).unwrap_or(u64::MAX);
+                    self.prewarm.record_ownership_shortcut(skipped);
+                    return Vec::new();
+                }
+                affected_plan_node_ids(
+                    self.graph.as_ref(),
+                    self.prewarm.ownership(),
+                    &paths,
+                    ids,
+                    flake,
+                    system,
+                )
+            })
             .unwrap_or_default();
 
         self.stats.source_patches = self.stats.source_patches.saturating_add(1);
@@ -212,11 +238,13 @@ impl WatchIncrementalSnapshot {
 
 fn affected_plan_node_ids(
     graph: Option<&AffectedGraph>,
+    ownership: Option<&crate::prewarm::WatchOwnershipIndex>,
     changed_paths: &[String],
     plan_node_ids: &[String],
     flake: &str,
     system: &str,
 ) -> Vec<String> {
+    let _ = ownership;
     let Some(graph) = graph else {
         return plan_node_ids.to_vec();
     };

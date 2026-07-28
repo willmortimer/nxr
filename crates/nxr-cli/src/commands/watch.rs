@@ -7,19 +7,20 @@ use camino::Utf8PathBuf;
 use nxr_completion::cache::{WorkspaceDiscovery, cached_workspace};
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
-use nxr_nix::{AppNotFoundError, NixError, TaskDiscoveryError, resolve_app_by_name};
+use nxr_nix::{AppNotFoundError, NixError, OptionalNixFlags, TaskDiscoveryError, resolve_app_by_name};
 use nxr_process::{InterruptFlags, Supervisor, spawn_in};
 use nxr_task::{PlanError, resolve_task_name};
 use nxr_watch::{
-    ChangeClass, Generation, MetadataInputRegistry, PathFilterError, PathFilters, WatchConfig,
-    WatchError, WatchIncrementalSnapshot, WatchPoll, WatchSemanticCoalescer, WatchSession,
-    classify_pending_changes,
+    ChangeClass, Generation, MetadataInputRegistry, PathFilterError, PathFilters, PrewarmCasHandle,
+    PrewarmContext, WatchConfig, WatchError, WatchIncrementalSnapshot, WatchPoll,
+    WatchSemanticCoalescer, WatchSession, classify_pending_changes,
 };
 
 use crate::commands::common::{
     AppRequest, PrepareError, PreparedPlan, TaskNodePreparer, WorkspaceSnapshot, WorkspaceState,
     current_invocation_directory, prepare_app_plan_in_state,
 };
+use crate::commands::store_exe::resolve_app_spawn_with_prewarm;
 use crate::commands::task::{self, PreparedTaskGeneration, TaskError, TaskRequest, plan_exit_code};
 use crate::flake::{FlakeResolveError, resolve_flake};
 use crate::output_task::{EventsFormat, TaskOutputMode};
@@ -630,7 +631,11 @@ fn run_generation(
                 caches.app_plan = Some(plan.clone());
                 plan
             };
-            let supervisor = spawn_prepared(&prepared)?;
+            let prewarm = caches
+                .incremental
+                .as_mut()
+                .map(WatchIncrementalSnapshot::prewarm_mut);
+            let supervisor = spawn_prepared(&prepared, prewarm)?;
             wait_supervisor(supervisor, session, interrupts)
         }
         WatchTarget::Task { name } => run_task_generation(
@@ -708,6 +713,10 @@ fn run_task_generation(
         reprepare_missing_task_nodes(request, &task_request, workspace, caches, runner)?;
     }
     let mut restart_requested = false;
+    let prewarm = caches
+        .incremental
+        .as_mut()
+        .map(WatchIncrementalSnapshot::prewarm_mut);
     let code = task::execute_with_control(
         &task_request,
         false,
@@ -734,9 +743,16 @@ fn run_task_generation(
         },
         reuse_from_cache,
         Some(&mut caches.task_plan),
+        prewarm,
     )?;
 
     seed_owned_outputs(caches);
+    if let (Some(incremental), Some(task_plan)) = (
+        caches.incremental.as_mut(),
+        caches.task_plan.as_ref(),
+    ) {
+        sync_prewarm_nodes(incremental.prewarm_mut(), &task_plan.prepared_nodes);
+    }
 
     if restart_requested {
         return Ok(GenerationOutcome::Restart);
@@ -756,16 +772,19 @@ fn reprepare_missing_task_nodes(
     caches: &mut WatchCaches,
     runner: RunnerOutput,
 ) -> Result<(), WatchCommandError> {
-    let Some(task_cache) = caches.task_plan.as_mut() else {
-        return Ok(());
-    };
-    let missing: Vec<String> = task_cache
-        .plan
-        .serial_order
-        .iter()
-        .filter(|id| !task_cache.prepared_nodes.contains_key(*id))
-        .cloned()
-        .collect();
+    let missing: Vec<String> = caches
+        .task_plan
+        .as_ref()
+        .map(|task_cache| {
+            task_cache
+                .plan
+                .serial_order
+                .iter()
+                .filter(|id| !task_cache.prepared_nodes.contains_key(*id))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
     if missing.is_empty() {
         return Ok(());
     }
@@ -776,29 +795,68 @@ fn reprepare_missing_task_nodes(
         .as_mut()
         .map(WatchIncrementalSnapshot::take_digest_cache)
         .unwrap_or_default();
-    let existing = std::mem::take(&mut task_cache.prepared_nodes);
-    let mut preparer = TaskNodePreparer::from_partial_prepared(
-        existing,
-        snapshot,
-        &task_cache.document,
-        &task_cache.canonical_roots,
-        task_request.args,
-        task_request.root,
-        task_request.cwd,
-        task_request.shell,
-        task_request.shell_mode,
-        &task_request.environment_policy,
-        task_request.nix_flags,
-        task_request.context_override.as_deref(),
-        digest_cache,
-    )
-    .map_err(WatchCommandError::Prepare)?;
-    preparer
-        .prepare_all(&missing)
+    let context_hints = caches
+        .incremental
+        .as_ref()
+        .map(|snapshot| {
+            missing
+                .iter()
+                .filter_map(|id| {
+                    snapshot
+                        .prewarm()
+                        .lookup_context(id)
+                        .map(|ctx| (id.clone(), ctx.clone()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let (prepared_nodes, digest_cache, hits, misses) = {
+        let task_cache = caches
+            .task_plan
+            .as_mut()
+            .expect("reprepare requires task plan cache");
+        let existing = std::mem::take(&mut task_cache.prepared_nodes);
+        let mut preparer = TaskNodePreparer::from_partial_prepared(
+            existing,
+            snapshot,
+            &task_cache.document,
+            &task_cache.canonical_roots,
+            task_request.args,
+            task_request.root,
+            task_request.cwd,
+            task_request.shell,
+            task_request.shell_mode,
+            &task_request.environment_policy,
+            task_request.nix_flags,
+            task_request.context_override.as_deref(),
+            digest_cache,
+            context_hints,
+        )
         .map_err(WatchCommandError::Prepare)?;
-    let (prepared, digest_cache) = preparer.into_prepared_with_digest_cache();
-    task_cache.prepared_nodes = prepared;
+        preparer
+            .prepare_all(&missing)
+            .map_err(WatchCommandError::Prepare)?;
+        let (hits, misses) = preparer.take_prewarm_context_stats();
+        let (prepared, digest_cache) = preparer.into_prepared_with_digest_cache();
+        task_cache.prepared_nodes = prepared;
+        (
+            task_cache.prepared_nodes.clone(),
+            digest_cache,
+            hits,
+            misses,
+        )
+    };
+
     if let Some(incremental) = caches.incremental.as_mut() {
+        let prewarm = incremental.prewarm_mut();
+        for _ in 0..hits {
+            prewarm.record_context_hit();
+        }
+        for _ in 0..misses {
+            prewarm.record_context_miss();
+        }
+        sync_prewarm_nodes(prewarm, &prepared_nodes);
         incremental.set_digest_cache(digest_cache);
     }
     runner
@@ -811,10 +869,22 @@ fn reprepare_missing_task_nodes(
     Ok(())
 }
 
-fn spawn_prepared(prepared: &PreparedPlan) -> Result<Supervisor, WatchCommandError> {
+fn spawn_prepared(
+    prepared: &PreparedPlan,
+    prewarm: Option<&mut nxr_watch::WatchPrewarm>,
+) -> Result<Supervisor, WatchCommandError> {
+    let spawn = resolve_app_spawn_with_prewarm(
+        &prepared.plan,
+        &prepared.nix,
+        prepared.local_root.as_deref(),
+        &OptionalNixFlags::default(),
+        "",
+        Some(prepared.execution_directory.as_std_path()),
+        prewarm,
+    );
     let child = spawn_in(
-        prepared.nix.as_std_path(),
-        &prepared.plan.command.arguments,
+        spawn.program.as_std_path(),
+        &spawn.arguments,
         Some(prepared.execution_directory.as_std_path()),
         &prepared.plan.environment_policy,
     )
@@ -854,6 +924,33 @@ fn wait_supervisor(
             .map_err(WatchCommandError::Supervision)?
         {
             return Ok(GenerationOutcome::Idle);
+        }
+    }
+}
+
+fn sync_prewarm_nodes(
+    prewarm: &mut nxr_watch::WatchPrewarm,
+    nodes: &std::collections::BTreeMap<String, crate::commands::common::PreparedTaskNode>,
+) {
+    for (id, node) in nodes {
+        prewarm.store_context(
+            id.clone(),
+            PrewarmContext {
+                context_name: node.context_name.clone(),
+                confirm: node.confirm,
+                environment_policy: node.environment.clone(),
+                effective_shell: node.plan.shell.clone(),
+                applied_context: None,
+            },
+        );
+        if let Some(cache) = node.workspace_cache.as_ref() {
+            prewarm.store_cas_handle(
+                id.clone(),
+                PrewarmCasHandle {
+                    action_key_digest: cache.action_key.clone(),
+                    workspace_cache: Some(cache.clone()),
+                },
+            );
         }
     }
 }

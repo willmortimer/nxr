@@ -69,7 +69,10 @@ pub use perf::{
     record_plan_cache_miss, record_spawn_plan_cancelled, record_spawn_plan_prepared,
     record_spawn_to_child_output_us, record_store_exe_hit, record_store_exe_miss,
     record_watch_paths_invalidated, record_watch_prepared_nodes_dropped,
-    record_watch_snapshot_patch,
+    record_watch_prewarm_cas_hit, record_watch_prewarm_cas_miss,
+    record_watch_prewarm_context_hit, record_watch_prewarm_context_miss,
+    record_watch_prewarm_ownership_shortcut, record_watch_prewarm_store_exe_hit,
+    record_watch_prewarm_store_exe_miss, record_watch_snapshot_patch,
 };
 pub use plan::{Plan, PlanCommand, PlanKind, PlanSecretRef};
 pub use plan_cache::{
