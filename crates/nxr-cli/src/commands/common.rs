@@ -19,7 +19,7 @@ use nxr_nix::{
 use nxr_task::{
     ContextError, PlanSecretEntry, SchemaError, SecretDelivery, TaskDocument,
     WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, WorkspaceCachePlan,
-    apply_task_context, build_workspace_cache_plan,
+    WorkspaceCachePlanOptions, apply_task_context, build_workspace_cache_plan,
 };
 
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
@@ -729,8 +729,8 @@ impl WorkspaceSnapshot {
                 &execution_directory,
                 &strip_one_separator(forwarded),
             )?;
-            if let Some(applied) = applied_context {
-                plan.context = Some(applied.context_name);
+            if let Some(applied) = applied_context.as_ref() {
+                plan.context = Some(applied.context_name.clone());
                 plan.secrets = plan_secrets_for_core(&applied.plan_secrets);
                 plan.context_env_set = applied.spawn_env_set.clone();
                 plan.environment_policy = applied.environment_policy.clone();
@@ -764,8 +764,23 @@ impl WorkspaceSnapshot {
                 &self.nix.system,
                 flake_root,
                 execution_directory.as_str(),
-                context_name.as_deref(),
                 &upstream_keys,
+                &WorkspaceCachePlanOptions {
+                    forwarded_args: forwarded.to_vec(),
+                    command_program: Some(self.nix.nix.to_string()),
+                    command_argv: plan.command.arguments.clone(),
+                    effective_shell: effective_shell.clone(),
+                    environment_policy: Some(node_environment.clone()),
+                    context_name: context_name.clone(),
+                    context_secrets: applied_context
+                        .as_ref()
+                        .map(|applied| applied.plan_secrets.clone())
+                        .unwrap_or_default(),
+                    context_spawn_env_set: applied_context
+                        .as_ref()
+                        .map(|applied| applied.spawn_env_set.clone())
+                        .unwrap_or_default(),
+                },
             )
             .map_err(PrepareError::WorkspaceCache)?;
             if let Some(key) = workspace_cache.action_key.as_ref() {

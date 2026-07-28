@@ -722,6 +722,7 @@ version = "3.1.2"
 dependencies = [
  "base64",
  "camino",
+ "globset",
  "nxr-core",
  "serde",
  "serde_json",
