@@ -16,7 +16,7 @@ Set `NXR_PERF_STATS=1` to accumulate counters for one CLI invocation. On exit,
 nxr prints a single JSON line on stderr:
 
 ```text
-nxr-perf-stats: {"schema_version":3,"nix_spawns":…,…}
+nxr-perf-stats: {"schema_version":4,"nix_spawns":…,…}
 ```
 
 | Counter | Meaning |
@@ -31,10 +31,18 @@ nxr-perf-stats: {"schema_version":3,"nix_spawns":…,…}
 | `plan_cache_misses` | Prepared-plan disk cache misses |
 | `store_exe_hits` | Store-exe disk cache hits (direct `/nix/store` spawn) |
 | `store_exe_misses` | Store-exe disk cache misses (realise or `nix run` fallback) |
+| `digest_cache_hits` | Run-scoped path/pattern digest cache hits (action-key planning) |
 
 Counters are **off by default**; no semantic change when unset. See
 [ADR-0151](adr/0151-perf-counters.md), [ADR-0152](adr/0152-prepared-plan-cache.md),
-and [ADR-0153](adr/0153-store-exe-cache.md).
+[ADR-0153](adr/0153-store-exe-cache.md), and [ADR-0154](adr/0154-run-digest-cache.md).
+
+## Run-scoped digest cache
+
+Per-invocation memo for workspace action-key hashing ([ADR-0154](adr/0154-run-digest-cache.md)).
+Overlapping `inputs.paths` / discovery inputs across task nodes share BLAKE3 results
+within one `nxr task` / plan pass. In-memory only — not a persistent Merkle index
+(Wave 3) or Git blob DB (Wave 2b).
 
 ## Prepared-plan disk cache
 

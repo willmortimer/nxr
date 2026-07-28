@@ -4,6 +4,7 @@ pub mod action;
 pub mod cas;
 pub mod config;
 pub mod diagnostics;
+pub mod digest_cache;
 pub mod ecosystem;
 pub mod env_policy;
 pub mod model;
@@ -32,6 +33,7 @@ pub use config::{
     TrustedProject, UserConfig, config_dir, load_secret_bindings, load_user_config,
 };
 pub use diagnostics::{Diagnostic, DiagnosticLevel};
+pub use digest_cache::RunDigestCache;
 pub use ecosystem::{
     AdapterError, ECOSYSTEM_GRAPH_SCHEMA_VERSION, EcosystemGraph, EcosystemGraphAdapter,
     EdgeConfidence, EdgeKind, GraphEdge, GraphNode, StaticJsonAdapter,
@@ -41,8 +43,9 @@ pub use model::{App, AppList, FlakeOutput, FlakeRef, ListApp, OutputList};
 pub use perf::{
     CasLookupGuard, PERF_STATS_ENV, PerfStats, PlanPrepareGuard, add_bytes_hashed,
     add_cas_lookup_us, add_plan_prepare_us, emit_stderr, enabled as perf_enabled,
-    record_fs_metadata, record_nix_spawn, record_plan_cache_hit, record_plan_cache_miss,
-    record_spawn_to_child_output_us, record_store_exe_hit, record_store_exe_miss,
+    record_digest_cache_hit, record_fs_metadata, record_nix_spawn, record_plan_cache_hit,
+    record_plan_cache_miss, record_spawn_to_child_output_us, record_store_exe_hit,
+    record_store_exe_miss,
 };
 pub use plan::{Plan, PlanCommand, PlanKind, PlanSecretRef};
 pub use plan_cache::{

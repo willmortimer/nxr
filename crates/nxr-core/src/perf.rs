@@ -28,6 +28,7 @@ static PLAN_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 static PLAN_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 static STORE_EXE_HITS: AtomicU64 = AtomicU64::new(0);
 static STORE_EXE_MISSES: AtomicU64 = AtomicU64::new(0);
+static DIGEST_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 
 fn env_enabled() -> bool {
     match std::env::var(PERF_STATS_ENV) {
@@ -148,6 +149,14 @@ pub fn record_store_exe_miss() {
     }
 }
 
+/// Record one run-scoped digest cache hit (path, walk, or pattern reuse).
+#[inline]
+pub fn record_digest_cache_hit() {
+    if enabled() {
+        DIGEST_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// RAII timer for plan preparation.
 pub struct PlanPrepareGuard {
     started: Option<Instant>,
@@ -212,11 +221,13 @@ pub struct PerfStats {
     pub store_exe_hits: u64,
     /// Store-exe disk cache misses (schema v3+).
     pub store_exe_misses: u64,
+    /// Run-scoped digest cache hits (schema v4+).
+    pub digest_cache_hits: u64,
 }
 
 impl PerfStats {
-    /// Schema v3 adds `store_exe_hits` / `store_exe_misses` (ADR-0153).
-    const SCHEMA_VERSION: u32 = 3;
+    /// Schema v4 adds `digest_cache_hits` (ADR-0154).
+    const SCHEMA_VERSION: u32 = 4;
 
     /// Collect current counter values.
     #[must_use]
@@ -233,6 +244,7 @@ impl PerfStats {
             plan_cache_misses: PLAN_CACHE_MISSES.load(Ordering::Relaxed),
             store_exe_hits: STORE_EXE_HITS.load(Ordering::Relaxed),
             store_exe_misses: STORE_EXE_MISSES.load(Ordering::Relaxed),
+            digest_cache_hits: DIGEST_CACHE_HITS.load(Ordering::Relaxed),
         }
     }
 }
@@ -269,6 +281,7 @@ pub(crate) fn test_reset(enabled: bool) {
     PLAN_CACHE_MISSES.store(0, Ordering::Relaxed);
     STORE_EXE_HITS.store(0, Ordering::Relaxed);
     STORE_EXE_MISSES.store(0, Ordering::Relaxed);
+    DIGEST_CACHE_HITS.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -288,6 +301,7 @@ mod tests {
         record_plan_cache_miss();
         record_store_exe_hit();
         record_store_exe_miss();
+        record_digest_cache_hit();
         let stats = PerfStats::snapshot();
         assert_eq!(stats.nix_spawns, 0);
         assert_eq!(stats.bytes_hashed, 0);
@@ -299,6 +313,7 @@ mod tests {
         assert_eq!(stats.plan_cache_misses, 0);
         assert_eq!(stats.store_exe_hits, 0);
         assert_eq!(stats.store_exe_misses, 0);
+        assert_eq!(stats.digest_cache_hits, 0);
     }
 
     #[test]
@@ -318,6 +333,9 @@ mod tests {
         record_store_exe_hit();
         record_store_exe_hit();
         record_store_exe_miss();
+        record_digest_cache_hit();
+        record_digest_cache_hit();
+        record_digest_cache_hit();
         let stats = PerfStats::snapshot();
         assert_eq!(stats.nix_spawns, 2);
         assert_eq!(stats.bytes_hashed, 1_024);
@@ -329,7 +347,8 @@ mod tests {
         assert_eq!(stats.plan_cache_misses, 2);
         assert_eq!(stats.store_exe_hits, 2);
         assert_eq!(stats.store_exe_misses, 1);
-        assert_eq!(stats.schema_version, 3);
+        assert_eq!(stats.digest_cache_hits, 3);
+        assert_eq!(stats.schema_version, 4);
     }
 
     #[test]

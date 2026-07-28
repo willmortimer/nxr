@@ -725,6 +725,7 @@ impl WorkspaceSnapshot {
             .local_root
             .as_deref()
             .unwrap_or(self.invocation_directory.as_path());
+        let mut digest_cache = nxr_core::RunDigestCache::new();
         for task_id in serial_order {
             let definition = document
                 .tasks
@@ -844,6 +845,7 @@ impl WorkspaceSnapshot {
                         .map(|applied| applied.spawn_env_set.clone())
                         .unwrap_or_default(),
                 },
+                Some(&mut digest_cache),
             )
             .map_err(PrepareError::WorkspaceCache)?;
             if let Some(key) = workspace_cache.action_key.as_ref() {

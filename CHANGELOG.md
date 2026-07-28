@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Extended perf harness [`scripts/perf/measure-matrix.sh`](scripts/perf/measure-matrix.sh) for task DAG, affected, and fingerprint scenarios.
 - Optional prepared app-plan disk cache (schema v1; `NXR_PLAN_CACHE=off` kill-switch; [ADR-0152](docs/adr/0152-prepared-plan-cache.md)). Warm `nxr plan` / prepare reuses argv when fingerprints match; secrets are never stored. `nxr cache clear`/`status` include the plans cache. `NXR_PERF_STATS` schema **v2** adds `plan_cache_hits` / `plan_cache_misses`.
 - Optional realised store-executable cache (schema v1; `NXR_STORE_EXE_CACHE=off` kill-switch; [ADR-0153](docs/adr/0153-store-exe-cache.md)). Warm app/task/process leaves can spawn the cached `/nix/store` program with 0× `nix run` when fingerprints match; miss falls back to `nix run`. `nxr cache clear`/`status` include store-exe. `NXR_PERF_STATS` schema **v3** adds `store_exe_hits` / `store_exe_misses`.
+- Run-scoped digest deduplication for workspace action keys ([ADR-0154](docs/adr/0154-run-digest-cache.md)). Overlapping task `inputs.paths` share BLAKE3 results within one invocation. `NXR_PERF_STATS` schema **v4** adds `digest_cache_hits`.
 
 ## [3.1.4] - 2026-07-28
 
