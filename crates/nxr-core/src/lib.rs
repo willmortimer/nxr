@@ -8,6 +8,7 @@ pub mod digest_cache;
 pub mod ecosystem;
 pub mod env_policy;
 pub mod incremental_digest;
+pub mod merkle_index;
 pub mod model;
 pub mod perf;
 pub mod plan;
@@ -45,6 +46,11 @@ pub use incremental_digest::{
     GIT_BLOB_DIGEST_DOMAIN, GIT_DIGESTS_ENV, action_digest_index_dir, action_digest_index_enabled,
     action_digest_index_status, clear_action_digest_index, digest_from_git_blob,
     git_digests_enabled,
+};
+pub use merkle_index::{
+    MERKLE_DIR_DOMAIN, MERKLE_INDEX_ENV, MERKLE_INDEX_SCHEMA_VERSION, MERKLE_LEAF_KIND,
+    MerkleIndexStatus, MerkleSession, clear_merkle_index, invalidate_paths, merkle_index_dir,
+    merkle_index_enabled, merkle_index_status, touched_directories,
 };
 pub use model::{App, AppList, FlakeOutput, FlakeRef, ListApp, OutputList};
 pub use perf::{

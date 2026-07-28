@@ -72,6 +72,15 @@ remeasuring; do not treat it as the CI gate (use `ci-thresholds.json` instead).
 Runs the `synthetic_monorepo_warm_fingerprint_scales` unit test (500 `.nix`
 files): warm path must re-read zero file bytes and skip index rewrite.
 
+## Merkle directory locality
+
+```bash
+cargo test -p nxr-core --lib merkle_index::tests::large_tree_dir_digest_is_stable_and_local
+```
+
+Bounded ~200-file tree: edit under one package must not change an unrelated
+package directory digest after `invalidate_paths` ([ADR-0156](../../docs/adr/0156-merkle-affected-index.md)).
+
 ## Extended scenario matrix
 
 ```bash

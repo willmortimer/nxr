@@ -1,4 +1,13 @@
 //! Filesystem change classification for watch restarts.
+//!
+//! # Merkle index hooks (Wave 5)
+//!
+//! When a long-lived watch / `nxrd` retains a
+//! [`nxr_core::MerkleSession`](nxr_core::MerkleSession), call
+//! [`nxr_core::invalidate_paths`](nxr_core::invalidate_paths) with the
+//! flake-root-relative paths from [`classify_pending_changes`] before the next
+//! directory digest. That drops only ancestor digests so unrelated subtrees
+//! stay memoized ([ADR-0156]). Full watch↔Merkle wiring is deferred to Wave 5.
 
 use std::path::Path;
 

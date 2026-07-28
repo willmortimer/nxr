@@ -38,7 +38,8 @@ nxr-perf-stats: {"schema_version":5,"nix_spawns":…,…}
 Counters are **off by default**; no semantic change when unset. See
 [ADR-0151](adr/0151-perf-counters.md), [ADR-0152](adr/0152-prepared-plan-cache.md),
 [ADR-0153](adr/0153-store-exe-cache.md), [ADR-0154](adr/0154-run-digest-cache.md),
-and [ADR-0155](adr/0155-incremental-git-digests.md).
+and [ADR-0155](adr/0155-incremental-git-digests.md),
+and [ADR-0156](adr/0156-merkle-affected-index.md).
 
 ## Run-scoped digest cache
 
@@ -61,6 +62,27 @@ Warm and large-repo path hashing for action keys ([ADR-0155](adr/0155-incrementa
 - `cas::digest_repo_path` (CAS verify/save) stays pure content hashing.
 - Wave 3 Merkle leaves should reuse these per-file digests; directory digests still
   walk children today.
+
+## Repository Merkle / directory index
+
+Directory digests for action keys ([ADR-0156](adr/0156-merkle-affected-index.md)):
+
+- Immediate-child aggregation (`nxr.merkle.dir.v1`) over Wave 2b leaf digests so a
+  directory digest changes only when a descendant changes.
+- Durable index `…/nxr/merkle-index/` (schema **v1**), separate from discovery and
+  action-digest indexes. Kill-switch: `NXR_MERKLE_INDEX=off` (flat walk; matches
+  pre-Wave-3 directory digests).
+- **One-time action-key churn** when Merkle is on: directory-shaped `inputs.paths`
+  digests differ from the flat formula; file-only inputs are unaffected by this
+  change. `nxr cache clear` / `status` cover the merkle index.
+- Affected analysis skips ownership checks for nodes whose path-root prefix cannot
+  overlap a change (sibling locality).
+- After `invalidate_paths` in a long-lived session, unrelated directory digests
+  stay memoized (edit locality). Cold CLI rebuilds from the filesystem.
+
+Bounded large-tree locality is covered by
+`cargo test -p nxr-core --lib merkle_index::tests::large_tree_dir_digest_is_stable_and_local`
+(~200 files). Wire into `measure-matrix.sh` later if black-box wall time is needed.
 
 ## Prepared-plan disk cache
 
@@ -203,6 +225,7 @@ NXR_PERF_STATS=1 ./scripts/perf/measure-matrix.sh --stats
 | Task DAG plan (100 nodes) | `nxr-task` unit test | `large_dag_schedule_within_ci_budget` (in-process) |
 | Affected analysis | `measure-matrix.sh` | `fixtures/affected-deps` |
 | Action-key / fingerprint warm path | `measure-fingerprint.sh` | Synthetic 500-file monorepo |
+| Merkle dir digest locality (~200 files) | `nxr-core` unit test | `merkle_index::tests::large_tree_dir_digest_is_stable_and_local` |
 | Workspace CAS all-hit / mixed DAG | deferred | `fixtures/workspace-cache`; Wave 1+ |
 | Watch edit-to-child-start | deferred | Flaky without controlled FS events |
 | High-output / process log latency | deferred | Profile `nxr-process` pipe drain separately |

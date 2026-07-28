@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
 use crate::cas::{collect_files, digest_file, ensure_within_workspace, missing_path_digest};
+use crate::merkle_index::{MerkleSession, digest_dir_merkle, merkle_index_enabled};
 use crate::perf::{
     add_bytes_hashed, record_digest_metadata_hit, record_fs_metadata, record_git_blob_digest,
 };
@@ -124,6 +125,7 @@ impl GitDigestSnapshot {
 pub struct IncrementalDigestState {
     git: Option<Option<GitDigestSnapshot>>,
     index: Option<IndexSession>,
+    merkle: Option<MerkleSession>,
     /// Paths digested this session that updated the durable index.
     dirty: bool,
 }
@@ -148,16 +150,33 @@ impl IncrementalDigestState {
     ///
     /// Returns [`io::Error`] when the index cannot be written.
     pub fn flush(&mut self) -> io::Result<()> {
-        let Some(session) = self.index.as_mut() else {
-            return Ok(());
-        };
-        if !self.dirty || session.index == session.loaded {
-            return Ok(());
+        if let Some(session) = self.index.as_mut()
+            && self.dirty
+            && session.index != session.loaded
+        {
+            store_action_digest_index(&session.path, &session.index)?;
+            session.loaded = session.index.clone();
+            self.dirty = false;
         }
-        store_action_digest_index(&session.path, &session.index)?;
-        session.loaded = session.index.clone();
-        self.dirty = false;
+        if let Some(merkle) = self.merkle.as_mut() {
+            merkle.flush()?;
+        }
         Ok(())
+    }
+
+    /// Borrow the Merkle session when present (Wave 4 / watch hooks).
+    #[must_use]
+    pub fn merkle_session(&self) -> Option<&MerkleSession> {
+        self.merkle.as_ref()
+    }
+
+    /// Mutable Merkle session when present.
+    pub fn merkle_session_mut(&mut self) -> Option<&mut MerkleSession> {
+        self.merkle.as_mut()
+    }
+
+    pub(crate) fn set_merkle_session(&mut self, session: MerkleSession) {
+        self.merkle = Some(session);
     }
 }
 
@@ -244,6 +263,10 @@ pub fn digest_repo_path_incremental(
     if path.is_file() {
         return digest_file_incremental(flake_root, relative, &path, state);
     }
+    if merkle_index_enabled() {
+        return digest_dir_merkle(flake_root, relative, state);
+    }
+    // Flat walk (pre-Merkle / kill-switch): hash every descendant file.
     let mut hasher = Hasher::new();
     let mut files: Vec<PathBuf> = Vec::new();
     collect_files(root, &path, &mut files)?;
@@ -259,6 +282,20 @@ pub fn digest_repo_path_incremental(
         hasher.update(digest_file_incremental(flake_root, &repo_rel, &file, state)?.as_bytes());
     }
     Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// Leaf digest for Merkle directory aggregation ([ADR-0156]).
+///
+/// # Errors
+///
+/// Returns [`io::Error`] when reading or Git batching fails.
+pub fn digest_file_for_merkle(
+    flake_root: &Utf8Path,
+    relative: &str,
+    absolute: &Path,
+    state: &mut IncrementalDigestState,
+) -> io::Result<String> {
+    digest_file_incremental(flake_root, relative, absolute, state)
 }
 
 fn digest_file_incremental(

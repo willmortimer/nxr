@@ -52,6 +52,7 @@ content hashing via `cas::digest_repo_path`.
 7. **Wave 3 note:** a repo Merkle tree should consume these per-file digests
    (blob- or content-backed) as leaf values; directory aggregation today still
    walks children. Do not merge discovery fingerprint and action-digest indexes.
+   Shipped as [ADR-0156](0156-merkle-affected-index.md).
 
 ## Validation
 

@@ -9,8 +9,8 @@ use nxr_core::cas::CacheExplain;
 use nxr_core::cas::{clear_workspace_cas, workspace_cas_status};
 use nxr_core::diagnostics::exit;
 use nxr_core::{
-    action_digest_index_status, clear_action_digest_index, clear_plan_cache, clear_store_exe_cache,
-    plan_cache_status, store_exe_cache_status,
+    action_digest_index_status, clear_action_digest_index, clear_merkle_index, clear_plan_cache,
+    clear_store_exe_cache, merkle_index_status, plan_cache_status, store_exe_cache_status,
 };
 use nxr_nix::{
     OptionalNixFlags, capability_cache_status, clear_capability_cache,
@@ -64,6 +64,7 @@ struct CacheClearJson {
     plans_removed: usize,
     store_exe_removed: usize,
     action_digests_removed: usize,
+    merkle_removed: usize,
 }
 
 #[derive(Serialize)]
@@ -81,6 +82,7 @@ struct CacheStatusJson {
     plans: CacheStatusSection,
     store_exe: CacheStatusSection,
     action_digests: CacheStatusSection,
+    merkle: CacheStatusSection,
 }
 
 /// Remove all discovery cache entries.
@@ -95,6 +97,7 @@ pub fn clear(json: bool, runner: RunnerOutput) -> Result<(), CacheError> {
     let plans_removed = clear_plan_cache()?;
     let store_exe_removed = clear_store_exe_cache()?;
     let action_digests_removed = clear_action_digest_index()?;
+    let merkle_removed = clear_merkle_index()?;
     if json {
         let payload = CacheClearJson {
             discovery_removed,
@@ -103,19 +106,21 @@ pub fn clear(json: bool, runner: RunnerOutput) -> Result<(), CacheError> {
             plans_removed,
             store_exe_removed,
             action_digests_removed,
+            merkle_removed,
         };
         let rendered = serde_json::to_string_pretty(&payload)?;
         writeln!(io::stdout().lock(), "{rendered}")?;
     } else {
         runner
             .info(format!(
-                "removed {discovery_removed} discovery cache entr{}, {capabilities_removed} capability cache entr{}, {workspace_removed} workspace CAS entr{}, {plans_removed} prepared-plan cache entr{}, {store_exe_removed} store-exe cache entr{}, and {action_digests_removed} action-digest index entr{}",
+                "removed {discovery_removed} discovery cache entr{}, {capabilities_removed} capability cache entr{}, {workspace_removed} workspace CAS entr{}, {plans_removed} prepared-plan cache entr{}, {store_exe_removed} store-exe cache entr{}, {action_digests_removed} action-digest index entr{}, and {merkle_removed} merkle index entr{}",
                 if discovery_removed == 1 { "y" } else { "ies" },
                 if capabilities_removed == 1 { "y" } else { "ies" },
                 if workspace_removed == 1 { "y" } else { "ies" },
                 if plans_removed == 1 { "y" } else { "ies" },
                 if store_exe_removed == 1 { "y" } else { "ies" },
                 if action_digests_removed == 1 { "y" } else { "ies" },
+                if merkle_removed == 1 { "y" } else { "ies" },
             ))
             .map_err(CacheError::Io)?;
     }
@@ -134,6 +139,7 @@ pub fn status(json: bool, mut runner: RunnerOutput) -> Result<(), CacheError> {
     let plans = plan_cache_status()?;
     let store_exe = store_exe_cache_status()?;
     let action_digests = action_digest_index_status()?;
+    let merkle = merkle_index_status()?;
     if json {
         let payload = CacheStatusJson {
             discovery: CacheStatusSection {
@@ -165,6 +171,11 @@ pub fn status(json: bool, mut runner: RunnerOutput) -> Result<(), CacheError> {
                 path: action_digests.path.display().to_string(),
                 entries: action_digests.entries,
                 total_bytes: action_digests.total_bytes,
+            },
+            merkle: CacheStatusSection {
+                path: merkle.path.display().to_string(),
+                entries: merkle.entries,
+                total_bytes: merkle.total_bytes,
             },
         };
         let rendered = serde_json::to_string_pretty(&payload)?;
@@ -211,6 +222,13 @@ pub fn status(json: bool, mut runner: RunnerOutput) -> Result<(), CacheError> {
             &action_digests.path.display().to_string(),
             action_digests.entries,
             action_digests.total_bytes,
+        )?;
+        render_status_section(
+            &mut runner,
+            "merkle-index",
+            &merkle.path.display().to_string(),
+            merkle.entries,
+            merkle.total_bytes,
         )?;
     }
     Ok(())

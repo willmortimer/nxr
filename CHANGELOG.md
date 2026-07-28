@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional realised store-executable cache (schema v1; `NXR_STORE_EXE_CACHE=off` kill-switch; [ADR-0153](docs/adr/0153-store-exe-cache.md)). Warm app/task/process leaves can spawn the cached `/nix/store` program with 0× `nix run` when fingerprints match; miss falls back to `nix run`. `nxr cache clear`/`status` include store-exe. `NXR_PERF_STATS` schema **v3** adds `store_exe_hits` / `store_exe_misses`.
 - Run-scoped digest deduplication for workspace action keys ([ADR-0154](docs/adr/0154-run-digest-cache.md)). Overlapping task `inputs.paths` share BLAKE3 results within one invocation. `NXR_PERF_STATS` schema **v4** adds `digest_cache_hits`.
 - Incremental action digests with Git blob identity for clean tracked inputs ([ADR-0155](docs/adr/0155-incremental-git-digests.md)). Metadata-gated durable index (`NXR_ACTION_DIGEST_INDEX=off` kill-switch); `NXR_GIT_DIGESTS=off` forces content hashing. `NXR_PERF_STATS` schema **v5** adds `digest_metadata_hits` / `git_blob_digests`. `nxr cache clear`/`status` include the action-digest index.
+- Repository Merkle / directory digest index ([ADR-0156](docs/adr/0156-merkle-affected-index.md)). Directory `inputs.paths` aggregate child digests (`NXR_MERKLE_INDEX=off` restores the flat walk). One-time action-key churn for directory-shaped inputs when Merkle is on. Affected analysis uses path-prefix locality; `nxr cache clear`/`status` include the merkle index.
 
 ## [3.1.4] - 2026-07-28
 

@@ -109,6 +109,7 @@ Rejected   considered and explicitly not chosen
 | ADR-0153 | Optional realised store-executable reuse | Accepted | Unreleased |
 | ADR-0154 | Run-scoped digest deduplication for action keys | Accepted | Unreleased |
 | ADR-0155 | Incremental action digests + Git blob identity | Accepted | Unreleased |
+| ADR-0156 | Repository Merkle / affected directory index | Accepted | Unreleased |
 
 Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0144-auto-schema-v2.md`](0144-auto-schema-v2.md),
@@ -122,7 +123,8 @@ Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0152-prepared-plan-cache.md`](0152-prepared-plan-cache.md),
 [`0153-store-exe-cache.md`](0153-store-exe-cache.md),
 [`0154-run-digest-cache.md`](0154-run-digest-cache.md),
-[`0155-incremental-git-digests.md`](0155-incremental-git-digests.md).
+[`0155-incremental-git-digests.md`](0155-incremental-git-digests.md),
+[`0156-merkle-affected-index.md`](0156-merkle-affected-index.md).
 
 Audit absorb (2026-07, post-`a040e50`): remaps active delivery to
 **2.7.1 → 2.8 → 3.0 → 3.1** (process workflows remain in 3.1 MVP; distributed
