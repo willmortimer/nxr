@@ -182,10 +182,7 @@ pub fn digest_repo_path(flake_root: &Utf8Path, relative: &str) -> io::Result<Str
     collect_files(root, &path, &mut files)?;
     files.sort();
     for file in files {
-        let rel = file
-            .strip_prefix(&path)
-            .unwrap_or(&file)
-            .to_string_lossy();
+        let rel = file.strip_prefix(&path).unwrap_or(&file).to_string_lossy();
         hasher.update(rel.as_bytes());
         hasher.update(digest_file(&file)?.as_bytes());
     }
@@ -303,9 +300,7 @@ fn resolve_within_workspace(workspace_root: &Path, path: &Path) -> io::Result<Pa
         if target.is_absolute() {
             target
         } else {
-            path.parent()
-                .unwrap_or(workspace_root)
-                .join(target)
+            path.parent().unwrap_or(workspace_root).join(target)
         }
     } else {
         path.to_path_buf()
@@ -809,8 +804,7 @@ mod tests {
         set_test_cas_root(tmp.path().join("cas"));
         let flake = Utf8PathBuf::from_path_buf(tmp.path().join("flake")).expect("utf8");
         fs::create_dir_all(&flake).expect("flake root");
-        let lookup =
-            restore_outputs(&flake, "missing", &[cas_output("out.txt")]).expect("restore");
+        let lookup = restore_outputs(&flake, "missing", &[cas_output("out.txt")]).expect("restore");
         assert!(matches!(lookup, CasLookup::Miss { .. }));
     }
 
@@ -853,11 +847,8 @@ mod tests {
         )
         .expect("save");
 
-        let lookup = lookup_outputs(
-            key,
-            &[cas_output("out.txt"), optional_output("extra.txt")],
-        )
-        .expect("lookup");
+        let lookup = lookup_outputs(key, &[cas_output("out.txt"), optional_output("extra.txt")])
+            .expect("lookup");
         assert_eq!(lookup, CasLookup::Hit);
     }
 

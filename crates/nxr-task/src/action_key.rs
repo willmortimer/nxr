@@ -13,15 +13,17 @@ use std::process::Command;
 use camino::{Utf8Path, Utf8PathBuf};
 use globset::Glob;
 use nxr_core::cas::{
-    CasOutput, CasRestoreMode, digest_bytes, digest_file, digest_repo_path, flake_lock_digest,
-    hash_action_key, CAS_PROTOCOL_VERSION,
+    CAS_PROTOCOL_VERSION, CasOutput, CasRestoreMode, digest_bytes, digest_file, digest_repo_path,
+    flake_lock_digest, hash_action_key,
 };
 use nxr_core::{ActionTier, EnvironmentPolicy, classify_action_tier, workspace_cache_enabled};
 use nxr_core::{normalize_repo_relative_path, validate_repo_relative_path};
 use serde::Serialize;
 
 use crate::context::PlanSecretEntry;
-use crate::schema::{EnvInput, TaskCacheMode, TaskDefinition, TaskDocument, TaskOutput, TaskOutputMode};
+use crate::schema::{
+    EnvInput, TaskCacheMode, TaskDefinition, TaskDocument, TaskOutput, TaskOutputMode,
+};
 
 /// Resolved cache plan for one task node.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -150,7 +152,10 @@ pub fn build_workspace_cache_plan(
 
     if let Some(policy) = &options.environment_policy {
         let policy_json = serde_json::to_string(policy).unwrap_or_default();
-        key_components.insert("environment_policy".to_owned(), digest_bytes(policy_json.as_bytes()));
+        key_components.insert(
+            "environment_policy".to_owned(),
+            digest_bytes(policy_json.as_bytes()),
+        );
     }
 
     for secret in &options.context_secrets {
@@ -177,7 +182,10 @@ pub fn build_workspace_cache_plan(
     }
     if !options.command_argv.is_empty() {
         let argv_json = serde_json::to_string(&options.command_argv).unwrap_or_default();
-        key_components.insert("command.argv".to_owned(), digest_bytes(argv_json.as_bytes()));
+        key_components.insert(
+            "command.argv".to_owned(),
+            digest_bytes(argv_json.as_bytes()),
+        );
     }
     if !options.forwarded_args.is_empty() {
         let args_json = serde_json::to_string(&options.forwarded_args).unwrap_or_default();
@@ -211,10 +219,7 @@ pub fn build_workspace_cache_plan(
             let state = env_input_state(&name)?;
             if matches!(state, EnvInputState::Unset) && required {
                 required_env_missing = true;
-                key_components.insert(
-                    format!("input.env:{name}"),
-                    "required-missing".to_owned(),
-                );
+                key_components.insert(format!("input.env:{name}"), "required-missing".to_owned());
             } else {
                 let label = env_state_label(&state);
                 key_components.insert(format!("input.env:{name}"), label.clone());
@@ -229,10 +234,8 @@ pub fn build_workspace_cache_plan(
                 }
                 None => {
                     unresolved_upstream = true;
-                    key_components.insert(
-                        format!("input.binding:{binding}"),
-                        "unresolved".to_owned(),
-                    );
+                    key_components
+                        .insert(format!("input.binding:{binding}"), "unresolved".to_owned());
                 }
             }
         }
@@ -317,9 +320,8 @@ pub fn build_workspace_cache_plan(
         outputs: outputs_material,
     };
 
-    let action_key = hash_action_key(
-        &serde_json::to_value(&material).unwrap_or(serde_json::Value::Null),
-    );
+    let action_key =
+        hash_action_key(&serde_json::to_value(&material).unwrap_or(serde_json::Value::Null));
 
     Ok(WorkspaceCachePlan {
         tier,
@@ -440,9 +442,8 @@ fn expand_path_input_digests(
     let mut digests = BTreeMap::new();
     for pattern in patterns {
         let normalized = normalize_repo_relative_path(pattern);
-        validate_repo_relative_path("inputs.paths", normalized).map_err(|error| {
-            io::Error::new(io::ErrorKind::InvalidInput, error.to_string())
-        })?;
+        validate_repo_relative_path("inputs.paths", normalized)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
         if looks_like_glob(normalized) {
             let glob = Glob::new(normalized).map_err(|error| {
                 io::Error::new(
@@ -869,11 +870,7 @@ mod tests {
             &def,
             "aarch64-darwin",
             &flake_a,
-            checkout_a
-                .join("proj")
-                .as_os_str()
-                .to_str()
-                .expect("utf8"),
+            checkout_a.join("proj").as_os_str().to_str().expect("utf8"),
             &BTreeMap::new(),
             &options,
         )
@@ -884,11 +881,7 @@ mod tests {
             &def,
             "aarch64-darwin",
             &flake_b,
-            checkout_b
-                .join("proj")
-                .as_os_str()
-                .to_str()
-                .expect("utf8"),
+            checkout_b.join("proj").as_os_str().to_str().expect("utf8"),
             &BTreeMap::new(),
             &options,
         )
@@ -941,10 +934,8 @@ mod tests {
 
     #[test]
     fn env_input_state_uses_digest_not_raw_value() {
-        let state = env_input_state_with("NXR_TEST_PUBLIC_ENV", |_| {
-            Ok("visible-value".to_owned())
-        })
-        .expect("state");
+        let state = env_input_state_with("NXR_TEST_PUBLIC_ENV", |_| Ok("visible-value".to_owned()))
+            .expect("state");
         assert!(matches!(state, EnvInputState::ValueDigest(_)));
         let label = env_state_label(&state);
         assert!(!label.contains("visible-value"));

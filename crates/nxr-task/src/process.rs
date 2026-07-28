@@ -162,10 +162,7 @@ mod tests {
     #[test]
     fn validate_node_id_rejects_unsafe_names() {
         assert!(validate_node_id("api").is_ok());
-        assert_eq!(
-            validate_node_id(""),
-            Err(ProcessNameError::Empty)
-        );
+        assert_eq!(validate_node_id(""), Err(ProcessNameError::Empty));
         assert_eq!(
             validate_node_id("../escape"),
             Err(ProcessNameError::ParentTraversal {

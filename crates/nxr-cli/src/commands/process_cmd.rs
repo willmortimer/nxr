@@ -11,7 +11,7 @@ use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
 use nxr_nix::{OptionalNixFlags, resolve_app_by_name};
 use nxr_task::{
-    ProcessDefinition, ProcessReadiness, ProcessNameError, sanitize_process_log_name,
+    ProcessDefinition, ProcessNameError, ProcessReadiness, sanitize_process_log_name,
     validate_node_id,
 };
 use serde::{Deserialize, Serialize};
@@ -772,10 +772,7 @@ mod tests {
     use crate::shell_mode::ShellMode;
     use nxr_task::{ProcessDefinition, ProcessNameError, TaskDocument, validate_node_id};
 
-    fn sample_context<'a>(
-        nix_ref: &'a str,
-        nix_flags: &'a OptionalNixFlags,
-    ) -> ProcessContext<'a> {
+    fn sample_context<'a>(nix_ref: &'a str, nix_flags: &'a OptionalNixFlags) -> ProcessContext<'a> {
         ProcessContext {
             flake: FlakeSelection {
                 display: nix_ref.to_owned(),

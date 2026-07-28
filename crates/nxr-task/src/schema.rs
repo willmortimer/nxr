@@ -227,7 +227,9 @@ impl TaskDocument {
 fn process_name_error_message(error: &ProcessNameError) -> String {
     match error {
         ProcessNameError::Empty => "name must not be empty".to_owned(),
-        ProcessNameError::PathSeparator { .. } => "name must not contain path separators".to_owned(),
+        ProcessNameError::PathSeparator { .. } => {
+            "name must not contain path separators".to_owned()
+        }
         ProcessNameError::ParentTraversal { .. } => "name must not contain `..`".to_owned(),
     }
 }

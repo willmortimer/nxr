@@ -1248,8 +1248,7 @@ mod tests {
     use nxr_core::EnvironmentPolicy;
     use nxr_core::diagnostics::exit;
     use nxr_task::{
-        FailurePolicy, PlanError, TaskDefinition, build_execution_plan,
-        build_execution_plan_roots,
+        FailurePolicy, PlanError, TaskDefinition, build_execution_plan, build_execution_plan_roots,
     };
     use std::collections::BTreeMap;
 
