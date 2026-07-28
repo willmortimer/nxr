@@ -144,10 +144,9 @@ pub fn flake_show_has_nxr_for_system(show: &JsonValue, system: &str) -> bool {
             // an `nxr` output exists and tasks may be present — do not treat it
             // as apps-only (which would make unprefixed watch prefer apps).
             nxr.get("type").and_then(|value| value.as_str()) == Some("unknown")
-                || nxr.as_object().is_some_and(|obj| {
-                    obj.keys()
-                        .any(|key| key != "type" && key != "description")
-                })
+                || nxr
+                    .as_object()
+                    .is_some_and(|obj| obj.keys().any(|key| key != "type" && key != "description"))
         }
     }
 }
