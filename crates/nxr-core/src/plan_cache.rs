@@ -15,7 +15,10 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::plan::{Plan, PlanSecretRef};
-use crate::{add_bytes_hashed, record_fs_metadata};
+use crate::{
+    add_bytes_hashed, prune_timed_json_cache, record_fs_metadata, remove_timed_json_entry,
+    summarize_timed_json_cache,
+};
 
 /// Environment variable disabling the prepared-plan cache (`off`, `0`, `false`, `no`).
 pub const PLAN_CACHE_ENV: &str = "NXR_PLAN_CACHE";
@@ -91,8 +94,12 @@ pub struct PlanCacheKeyMaterial {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct PlanCacheStatus {
     pub path: String,
+    pub enabled: bool,
+    pub ttl_secs: Option<u64>,
     pub entries: usize,
     pub total_bytes: u64,
+    pub oldest_age_secs: Option<u64>,
+    pub newest_age_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -314,11 +321,26 @@ pub struct PreparedPlanCacheHit {
 ///
 /// Returns [`io::Error`] when the cache directory cannot be read or entries cannot be removed.
 pub fn clear_plan_cache() -> io::Result<usize> {
+    invalidate_plan_cache(None)
+}
+
+/// Remove one or all prepared-plan cache entries on disk.
+///
+/// When `key_digest` is `None`, every JSON/tmp entry under the cache root is removed.
+///
+/// # Errors
+///
+/// Returns [`io::Error`] when the cache directory cannot be read or entries cannot be removed.
+pub fn invalidate_plan_cache(key_digest: Option<&str>) -> io::Result<usize> {
     let Some(root) = cache_root() else {
         return Ok(0);
     };
     if !root.is_dir() {
         return Ok(0);
+    }
+
+    if let Some(key_digest) = key_digest {
+        return remove_timed_json_entry(&root, key_digest).map(usize::from);
     }
 
     let mut removed = 0usize;
@@ -337,44 +359,64 @@ pub fn clear_plan_cache() -> io::Result<usize> {
     Ok(removed)
 }
 
+/// Prune TTL-expired prepared-plan cache entries.
+///
+/// # Errors
+///
+/// Returns [`io::Error`] when the cache directory cannot be read or entries cannot be removed.
+pub fn gc_plan_cache() -> io::Result<usize> {
+    let Some(root) = cache_root() else {
+        return Ok(0);
+    };
+    prune_timed_json_cache(
+        &root,
+        unix_now_secs(),
+        cache_ttl_secs(),
+        extract_recorded_at,
+    )
+}
+
 /// Summarize the prepared-plan cache directory.
 ///
 /// # Errors
 ///
 /// Returns [`io::Error`] when the cache directory cannot be read.
 pub fn plan_cache_status() -> io::Result<PlanCacheStatus> {
+    let enabled = plan_cache_enabled();
+    let ttl_secs = cache_ttl_secs();
     let Some(root) = cache_root() else {
         return Ok(PlanCacheStatus {
             path: String::new(),
+            enabled,
+            ttl_secs,
             entries: 0,
             total_bytes: 0,
+            oldest_age_secs: None,
+            newest_age_secs: None,
         });
     };
 
     if !root.is_dir() {
         return Ok(PlanCacheStatus {
             path: root.display().to_string(),
+            enabled,
+            ttl_secs,
             entries: 0,
             total_bytes: 0,
+            oldest_age_secs: None,
+            newest_age_secs: None,
         });
     }
 
-    let mut entries = 0usize;
-    let mut total_bytes = 0u64;
-    for entry in fs::read_dir(&root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() && path.extension().is_some_and(|ext| ext == "json") {
-            entries += 1;
-            record_fs_metadata();
-            total_bytes += entry.metadata()?.len();
-        }
-    }
-
+    let summary = summarize_timed_json_cache(&root, unix_now_secs(), extract_recorded_at)?;
     Ok(PlanCacheStatus {
         path: root.display().to_string(),
-        entries,
-        total_bytes,
+        enabled,
+        ttl_secs,
+        entries: summary.entries,
+        total_bytes: summary.total_bytes,
+        oldest_age_secs: summary.oldest_age_secs,
+        newest_age_secs: summary.newest_age_secs,
     })
 }
 
@@ -387,6 +429,12 @@ pub fn plan_contains_secret_values(plan: &Plan) -> bool {
 fn secret_ref_has_value(secret: &PlanSecretRef) -> bool {
     let trimmed = secret.value.trim();
     !trimmed.is_empty() && trimmed != PLAN_SECRET_RUNTIME_PLACEHOLDER
+}
+
+fn extract_recorded_at(contents: &str) -> Option<u64> {
+    serde_json::from_str::<CachedPreparedPlan>(contents)
+        .ok()
+        .map(|cached| cached.recorded_at)
 }
 
 fn load_cached_plan(
@@ -694,6 +742,44 @@ mod tests {
             assert_eq!(status.entries, 1);
             assert!(status.total_bytes > 0);
             assert!(!status.path.is_empty());
+            assert!(status.enabled);
+            assert_eq!(status.oldest_age_secs, Some(0));
+            assert_eq!(status.newest_age_secs, Some(0));
+        });
+    }
+
+    #[test]
+    fn gc_prunes_expired_entries() {
+        let temp = TempDir::new().expect("tempdir");
+        let cache_home = temp.path().join("plans");
+        fs::create_dir_all(&cache_home).expect("mkdir");
+        test_with_cache_dir(cache_home.clone(), || {
+            TEST_CACHE_TTL_SECS.with(|cell| {
+                *cell.borrow_mut() = Some(Some(100));
+            });
+            let fingerprints = sample_fingerprints();
+            let key = plan_cache_key_digest(&sample_key(fingerprints.clone(), Vec::new()));
+            store_prepared_plan(
+                &key,
+                PlanPrepareKind::Fast,
+                &sample_plan(),
+                "/nix/bin/nix",
+                "/proj",
+                fingerprints.clone(),
+            )
+            .expect("store");
+            let path = cache_home.join(format!("{key}.json"));
+            let mut contents = fs::read_to_string(&path).expect("read");
+            contents = contents.replace(
+                &format!("\"recorded_at\": {}", super::unix_now_secs()),
+                "\"recorded_at\": 1",
+            );
+            fs::write(&path, contents).expect("rewrite stale");
+            assert_eq!(gc_plan_cache().expect("gc"), 1);
+            assert!(lookup_prepared_plan(&key, &fingerprints).is_none());
+            TEST_CACHE_TTL_SECS.with(|cell| {
+                *cell.borrow_mut() = None;
+            });
         });
     }
 

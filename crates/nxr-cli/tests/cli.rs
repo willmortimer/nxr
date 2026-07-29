@@ -1561,8 +1561,44 @@ fn cache_status_json_emits_path_and_entries() {
         .success()
         .stdout(predicate::str::contains("\"discovery\""))
         .stdout(predicate::str::contains("\"capabilities\""))
+        .stdout(predicate::str::contains("\"dev_env\""))
+        .stdout(predicate::str::contains("\"plans\""))
         .stdout(predicate::str::contains("\"entries\""))
-        .stdout(predicate::str::contains("\"path\""));
+        .stdout(predicate::str::contains("\"path\""))
+        .stdout(predicate::str::contains("\"daemon\""));
+}
+
+#[test]
+fn cache_gc_succeeds_without_daemon() {
+    let (_home, mut command) = isolated_cache_command();
+    command
+        .env("NXR_DAEMON", "off")
+        .args(["cache", "gc", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"discovery_pruned\""));
+}
+
+#[test]
+fn cache_invalidate_plan_succeeds_without_daemon() {
+    let (_home, mut command) = isolated_cache_command();
+    command
+        .env("NXR_DAEMON", "off")
+        .args(["cache", "invalidate", "plan", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"disk_removed\""));
+}
+
+#[test]
+fn cache_invalidate_dev_env_succeeds_without_daemon() {
+    let (_home, mut command) = isolated_cache_command();
+    command
+        .env("NXR_DAEMON", "off")
+        .args(["cache", "invalidate", "dev-env", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"disk_removed\""));
 }
 
 #[test]

@@ -48,7 +48,9 @@ pub const DAEMON_SOCKET_ENV: &str = "NXR_DAEMON_SOCKET";
 pub const DAEMON_ROLE: &str = "cache";
 
 /// Maximum entries retained per in-memory map.
-const MAX_ENTRIES_PER_MAP: usize = 256;
+pub const DAEMON_MAX_CACHE_ENTRIES_PER_MAP: usize = 256;
+
+const MAX_ENTRIES_PER_MAP: usize = DAEMON_MAX_CACHE_ENTRIES_PER_MAP;
 
 /// Whether the CLI may attempt to connect to a local daemon.
 ///
@@ -304,6 +306,27 @@ pub fn handle_request(
             DaemonState::insert_capped_value(&mut state.discovery, key, payload);
             ok_json(request, &serde_json::json!({ "stored": true }))
         }
+        "discovery.invalidate" => {
+            let key = match optional_param_str(request, "key") {
+                Ok(key) => key,
+                Err(resp) => return resp,
+            };
+            let invalidated = match key {
+                Some(key) => {
+                    if state.discovery.remove(&key).is_some() {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                None => {
+                    let count = state.discovery.len();
+                    state.discovery.clear();
+                    count
+                }
+            };
+            ok_json(request, &serde_json::json!({ "invalidated": invalidated }))
+        }
         "plan.get" => {
             let key = match param_str(request, "key_digest") {
                 Ok(key) => key,
@@ -350,6 +373,27 @@ pub fn handle_request(
             }
             state.plans.insert(key, entry);
             ok_json(request, &serde_json::json!({ "stored": true }))
+        }
+        "plan.invalidate" => {
+            let key = match optional_param_str(request, "key_digest") {
+                Ok(key) => key,
+                Err(resp) => return resp,
+            };
+            let invalidated = match key {
+                Some(key) => {
+                    if state.plans.remove(&key).is_some() {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                None => {
+                    let count = state.plans.len();
+                    state.plans.clear();
+                    count
+                }
+            };
+            ok_json(request, &serde_json::json!({ "invalidated": invalidated }))
         }
         "dev_env.get" => {
             let key = match param_str(request, "key_digest") {
@@ -1179,6 +1223,48 @@ pub fn try_once<T: for<'de> Deserialize<'de>>(method: &str, params: Option<Value
     conn.call(method, params).ok()
 }
 
+/// Best-effort daemon discovery invalidation (`None` when absent or disabled).
+#[must_use]
+pub fn try_daemon_invalidate_discovery(key: Option<&str>) -> Option<usize> {
+    let params = key.map(|key| serde_json::json!({ "key": key }));
+    let result: serde_json::Value = try_once("discovery.invalidate", params)?;
+    usize::try_from(
+        result
+            .get("invalidated")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+    )
+    .ok()
+}
+
+/// Best-effort daemon prepared-plan invalidation (`None` when absent or disabled).
+#[must_use]
+pub fn try_daemon_invalidate_plan(key_digest: Option<&str>) -> Option<usize> {
+    let params = key_digest.map(|key_digest| serde_json::json!({ "key_digest": key_digest }));
+    let result: serde_json::Value = try_once("plan.invalidate", params)?;
+    usize::try_from(
+        result
+            .get("invalidated")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+    )
+    .ok()
+}
+
+/// Best-effort daemon dev-environment invalidation (`None` when absent or disabled).
+#[must_use]
+pub fn try_daemon_invalidate_dev_env(key_digest: Option<&str>) -> Option<usize> {
+    let params = key_digest.map(|key_digest| serde_json::json!({ "key_digest": key_digest }));
+    let result: serde_json::Value = try_once("dev_env.invalidate", params)?;
+    usize::try_from(
+        result
+            .get("invalidated")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+    )
+    .ok()
+}
+
 /// Shared state handle for the serve loop.
 pub type SharedDaemonState = Arc<Mutex<DaemonState>>;
 
@@ -1720,6 +1806,58 @@ mod tests {
             )
             .is_none()
         );
+
+        let invalidate = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id: 3,
+            method: "plan.invalidate".to_owned(),
+            params: Some(serde_json::json!({ "key_digest": "abc" })),
+        };
+        let invalidate_resp = handle_request(&mut state, &socket, &invalidate);
+        assert!(invalidate_resp.ok);
+        assert_eq!(invalidate_resp.result.unwrap()["invalidated"], 1);
+        let miss = handle_request(&mut state, &socket, &get);
+        assert!(!miss.result.unwrap()["hit"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn handle_request_discovery_invalidate_selective_and_all() {
+        let mut state = DaemonState::new();
+        let socket = PathBuf::from("/tmp/nxr-test.sock");
+        for (id, key) in [(1, "k1"), (2, "k2")] {
+            let put = DaemonRequest {
+                v: DAEMON_PROTOCOL_VERSION,
+                id,
+                method: "discovery.put".to_owned(),
+                params: Some(serde_json::json!({
+                    "key": key,
+                    "payload": { "apps": [] },
+                })),
+            };
+            assert!(handle_request(&mut state, &socket, &put).ok);
+        }
+
+        let invalidate_one = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id: 3,
+            method: "discovery.invalidate".to_owned(),
+            params: Some(serde_json::json!({ "key": "k1" })),
+        };
+        let one_resp = handle_request(&mut state, &socket, &invalidate_one);
+        assert!(one_resp.ok);
+        assert_eq!(one_resp.result.unwrap()["invalidated"], 1);
+        assert_eq!(state.discovery.len(), 1);
+
+        let invalidate_all = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id: 4,
+            method: "discovery.invalidate".to_owned(),
+            params: None,
+        };
+        let all_resp = handle_request(&mut state, &socket, &invalidate_all);
+        assert!(all_resp.ok);
+        assert_eq!(all_resp.result.unwrap()["invalidated"], 1);
+        assert!(state.discovery.is_empty());
     }
 
     #[test]

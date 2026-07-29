@@ -4,13 +4,18 @@ use std::io::{self, Write};
 
 use nxr_completion::{
     DiscoveryCacheOptions, clear_discovery_cache, discovery_cache_status, explain_discovery_cache,
+    gc_discovery_cache, invalidate_discovery_cache,
 };
 use nxr_core::cas::CacheExplain;
 use nxr_core::cas::{clear_workspace_cas, workspace_cas_status};
 use nxr_core::diagnostics::exit;
 use nxr_core::{
-    action_digest_index_status, clear_action_digest_index, clear_merkle_index, clear_plan_cache,
-    clear_store_exe_cache, merkle_index_status, plan_cache_status, store_exe_cache_status,
+    DAEMON_MAX_CACHE_ENTRIES_PER_MAP, DaemonStatus, action_digest_index_status,
+    clear_action_digest_index, clear_dev_env_cache, clear_merkle_index, clear_plan_cache,
+    clear_store_exe_cache, daemon_socket_path, dev_env_cache_status, gc_dev_env_cache,
+    gc_plan_cache, invalidate_dev_env_cache, invalidate_plan_cache, merkle_index_status,
+    plan_cache_status, store_exe_cache_status, try_connect, try_daemon_invalidate_dev_env,
+    try_daemon_invalidate_discovery, try_daemon_invalidate_plan,
 };
 use nxr_nix::{
     OptionalNixFlags, capability_cache_status, clear_capability_cache, plan_discovery_eval,
@@ -61,9 +66,33 @@ struct CacheClearJson {
     capabilities_removed: usize,
     workspace_removed: usize,
     plans_removed: usize,
+    dev_env_removed: usize,
     store_exe_removed: usize,
     action_digests_removed: usize,
     merkle_removed: usize,
+}
+
+#[derive(Clone, Serialize)]
+struct DaemonCacheLayer {
+    available: bool,
+    entries: usize,
+    max_entries: usize,
+}
+
+#[derive(Serialize)]
+struct WarmCacheStatusSection {
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ttl_secs: Option<u64>,
+    entries: usize,
+    total_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oldest_age_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    newest_age_secs: Option<u64>,
+    daemon: DaemonCacheLayer,
 }
 
 #[derive(Serialize)]
@@ -75,13 +104,28 @@ struct CacheStatusSection {
 
 #[derive(Serialize)]
 struct CacheStatusJson {
-    discovery: CacheStatusSection,
+    discovery: WarmCacheStatusSection,
     capabilities: CacheStatusSection,
     workspace: CacheStatusSection,
-    plans: CacheStatusSection,
+    plans: WarmCacheStatusSection,
+    dev_env: WarmCacheStatusSection,
     store_exe: CacheStatusSection,
     action_digests: CacheStatusSection,
     merkle: CacheStatusSection,
+}
+
+#[derive(Serialize)]
+struct CacheGcJson {
+    discovery_pruned: usize,
+    plans_pruned: usize,
+    dev_env_pruned: usize,
+}
+
+#[derive(Serialize)]
+struct CacheInvalidateJson {
+    disk_removed: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    daemon_invalidated: Option<usize>,
 }
 
 /// Remove all discovery cache entries.
@@ -91,9 +135,13 @@ struct CacheStatusJson {
 /// Returns [`CacheError`] when cache files cannot be removed or output fails.
 pub fn clear(json: bool, runner: RunnerOutput) -> Result<(), CacheError> {
     let discovery_removed = clear_discovery_cache()?;
+    let _ = try_daemon_invalidate_discovery(None);
     let capabilities_removed = clear_capability_cache()?;
     let workspace_removed = clear_workspace_cas()?;
     let plans_removed = clear_plan_cache()?;
+    let _ = try_daemon_invalidate_plan(None);
+    let dev_env_removed = clear_dev_env_cache()?;
+    let _ = try_daemon_invalidate_dev_env(None);
     let store_exe_removed = clear_store_exe_cache()?;
     let action_digests_removed = clear_action_digest_index()?;
     let merkle_removed = clear_merkle_index()?;
@@ -103,6 +151,7 @@ pub fn clear(json: bool, runner: RunnerOutput) -> Result<(), CacheError> {
             capabilities_removed,
             workspace_removed,
             plans_removed,
+            dev_env_removed,
             store_exe_removed,
             action_digests_removed,
             merkle_removed,
@@ -112,11 +161,12 @@ pub fn clear(json: bool, runner: RunnerOutput) -> Result<(), CacheError> {
     } else {
         runner
             .info(format!(
-                "removed {discovery_removed} discovery cache entr{}, {capabilities_removed} capability cache entr{}, {workspace_removed} workspace CAS entr{}, {plans_removed} prepared-plan cache entr{}, {store_exe_removed} store-exe cache entr{}, {action_digests_removed} action-digest index entr{}, and {merkle_removed} merkle index entr{}",
+                "removed {discovery_removed} discovery cache entr{}, {capabilities_removed} capability cache entr{}, {workspace_removed} workspace CAS entr{}, {plans_removed} prepared-plan cache entr{}, {dev_env_removed} dev-environment cache entr{}, {store_exe_removed} store-exe cache entr{}, {action_digests_removed} action-digest index entr{}, and {merkle_removed} merkle index entr{}",
                 if discovery_removed == 1 { "y" } else { "ies" },
                 if capabilities_removed == 1 { "y" } else { "ies" },
                 if workspace_removed == 1 { "y" } else { "ies" },
                 if plans_removed == 1 { "y" } else { "ies" },
+                if dev_env_removed == 1 { "y" } else { "ies" },
                 if store_exe_removed == 1 { "y" } else { "ies" },
                 if action_digests_removed == 1 { "y" } else { "ies" },
                 if merkle_removed == 1 { "y" } else { "ies" },
@@ -126,26 +176,155 @@ pub fn clear(json: bool, runner: RunnerOutput) -> Result<(), CacheError> {
     Ok(())
 }
 
+/// Prune TTL-expired discovery, prepared-plan, and dev-environment disk cache entries.
+///
+/// # Errors
+///
+/// Returns [`CacheError`] when cache files cannot be removed or output fails.
+pub fn gc(json: bool, runner: RunnerOutput) -> Result<(), CacheError> {
+    let discovery_pruned = gc_discovery_cache()?;
+    let plans_pruned = gc_plan_cache()?;
+    let dev_env_pruned = gc_dev_env_cache()?;
+    if json {
+        let payload = CacheGcJson {
+            discovery_pruned,
+            plans_pruned,
+            dev_env_pruned,
+        };
+        let rendered = serde_json::to_string_pretty(&payload)?;
+        writeln!(io::stdout().lock(), "{rendered}")?;
+    } else {
+        runner
+            .info(format!(
+                "pruned {discovery_pruned} discovery, {plans_pruned} prepared-plan, and {dev_env_pruned} dev-environment cache entr{} past TTL",
+                if discovery_pruned + plans_pruned + dev_env_pruned == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
+            ))
+            .map_err(CacheError::Io)?;
+    }
+    Ok(())
+}
+
+/// Invalidate discovery, prepared-plan, or dev-environment caches (disk + best-effort daemon).
+///
+/// # Errors
+///
+/// Returns [`CacheError`] when cache files cannot be removed or output fails.
+pub fn invalidate_discovery(
+    file_stem: Option<&str>,
+    daemon_key: Option<&str>,
+    json: bool,
+    runner: RunnerOutput,
+) -> Result<(), CacheError> {
+    let disk_removed = invalidate_discovery_cache(file_stem)?;
+    let daemon_invalidated = try_daemon_invalidate_discovery(daemon_key);
+    emit_invalidate_result("discovery", disk_removed, daemon_invalidated, json, runner)
+}
+
+/// Invalidate prepared-plan caches (disk + best-effort daemon).
+///
+/// # Errors
+///
+/// Returns [`CacheError`] when cache files cannot be removed or output fails.
+pub fn invalidate_plan(
+    key_digest: Option<&str>,
+    json: bool,
+    runner: RunnerOutput,
+) -> Result<(), CacheError> {
+    let disk_removed = invalidate_plan_cache(key_digest)?;
+    let daemon_invalidated = try_daemon_invalidate_plan(key_digest);
+    emit_invalidate_result(
+        "prepared-plan",
+        disk_removed,
+        daemon_invalidated,
+        json,
+        runner,
+    )
+}
+
+/// Invalidate dev-environment caches (disk + best-effort daemon).
+///
+/// # Errors
+///
+/// Returns [`CacheError`] when cache files cannot be removed or output fails.
+pub fn invalidate_dev_env(
+    key_digest: Option<&str>,
+    json: bool,
+    runner: RunnerOutput,
+) -> Result<(), CacheError> {
+    let disk_removed = invalidate_dev_env_cache(key_digest)?;
+    let daemon_invalidated = try_daemon_invalidate_dev_env(key_digest);
+    emit_invalidate_result(
+        "dev-environment",
+        disk_removed,
+        daemon_invalidated,
+        json,
+        runner,
+    )
+}
+
+fn emit_invalidate_result(
+    label: &str,
+    disk_removed: usize,
+    daemon_invalidated: Option<usize>,
+    json: bool,
+    runner: RunnerOutput,
+) -> Result<(), CacheError> {
+    if json {
+        let payload = CacheInvalidateJson {
+            disk_removed,
+            daemon_invalidated,
+        };
+        let rendered = serde_json::to_string_pretty(&payload)?;
+        writeln!(io::stdout().lock(), "{rendered}")?;
+        return Ok(());
+    }
+
+    let daemon_suffix = match daemon_invalidated {
+        Some(count) => format!(
+            ", {count} nxrd entr{} invalidated",
+            if count == 1 { "y" } else { "ies" }
+        ),
+        None => String::new(),
+    };
+    runner
+        .info(format!(
+            "invalidated {label} cache: {disk_removed} disk entr{}{daemon_suffix}",
+            if disk_removed == 1 { "y" } else { "ies" },
+        ))
+        .map_err(CacheError::Io)
+}
+
 /// Print discovery cache location and size.
 ///
 /// # Errors
 ///
 /// Returns [`CacheError`] when the cache directory cannot be read or output fails.
 pub fn status(json: bool, mut runner: RunnerOutput) -> Result<(), CacheError> {
+    let daemon = daemon_warm_layers();
     let discovery = discovery_cache_status()?;
     let capabilities = capability_cache_status()?;
     let workspace = workspace_cas_status()?;
     let plans = plan_cache_status()?;
+    let dev_env = dev_env_cache_status()?;
     let store_exe = store_exe_cache_status()?;
     let action_digests = action_digest_index_status()?;
     let merkle = merkle_index_status()?;
     if json {
         let payload = CacheStatusJson {
-            discovery: CacheStatusSection {
-                path: discovery.path,
-                entries: discovery.entries,
-                total_bytes: discovery.total_bytes,
-            },
+            discovery: warm_section(
+                &discovery.path,
+                None,
+                discovery.ttl_secs,
+                discovery.entries,
+                discovery.total_bytes,
+                discovery.oldest_age_secs,
+                discovery.newest_age_secs,
+                daemon.discovery,
+            ),
             capabilities: CacheStatusSection {
                 path: capabilities.path,
                 entries: capabilities.entries,
@@ -156,11 +335,26 @@ pub fn status(json: bool, mut runner: RunnerOutput) -> Result<(), CacheError> {
                 entries: workspace.entries,
                 total_bytes: workspace.total_bytes,
             },
-            plans: CacheStatusSection {
-                path: plans.path,
-                entries: plans.entries,
-                total_bytes: plans.total_bytes,
-            },
+            plans: warm_section(
+                &plans.path,
+                Some(plans.enabled),
+                plans.ttl_secs,
+                plans.entries,
+                plans.total_bytes,
+                plans.oldest_age_secs,
+                plans.newest_age_secs,
+                daemon.plans,
+            ),
+            dev_env: warm_section(
+                &dev_env.path,
+                Some(dev_env.enabled),
+                dev_env.ttl_secs,
+                dev_env.entries,
+                dev_env.total_bytes,
+                dev_env.oldest_age_secs,
+                dev_env.newest_age_secs,
+                daemon.dev_env,
+            ),
             store_exe: CacheStatusSection {
                 path: store_exe.path,
                 entries: store_exe.entries,
@@ -180,12 +374,17 @@ pub fn status(json: bool, mut runner: RunnerOutput) -> Result<(), CacheError> {
         let rendered = serde_json::to_string_pretty(&payload)?;
         writeln!(io::stdout().lock(), "{rendered}")?;
     } else {
-        render_status_section(
+        render_warm_status_section(
             &mut runner,
             "discovery",
             &discovery.path,
+            None,
+            discovery.ttl_secs,
             discovery.entries,
             discovery.total_bytes,
+            discovery.oldest_age_secs,
+            discovery.newest_age_secs,
+            daemon.discovery,
         )?;
         render_status_section(
             &mut runner,
@@ -201,12 +400,29 @@ pub fn status(json: bool, mut runner: RunnerOutput) -> Result<(), CacheError> {
             workspace.entries,
             workspace.total_bytes,
         )?;
-        render_status_section(
+        render_warm_status_section(
             &mut runner,
             "prepared-plan",
             &plans.path,
+            Some(plans.enabled),
+            plans.ttl_secs,
             plans.entries,
             plans.total_bytes,
+            plans.oldest_age_secs,
+            plans.newest_age_secs,
+            daemon.plans,
+        )?;
+        render_warm_status_section(
+            &mut runner,
+            "dev-environment",
+            &dev_env.path,
+            Some(dev_env.enabled),
+            dev_env.ttl_secs,
+            dev_env.entries,
+            dev_env.total_bytes,
+            dev_env.oldest_age_secs,
+            dev_env.newest_age_secs,
+            daemon.dev_env,
         )?;
         render_status_section(
             &mut runner,
@@ -231,6 +447,69 @@ pub fn status(json: bool, mut runner: RunnerOutput) -> Result<(), CacheError> {
         )?;
     }
     Ok(())
+}
+
+struct DaemonWarmLayers {
+    discovery: DaemonCacheLayer,
+    plans: DaemonCacheLayer,
+    dev_env: DaemonCacheLayer,
+}
+
+fn daemon_warm_layers() -> DaemonWarmLayers {
+    let unavailable = DaemonCacheLayer {
+        available: false,
+        entries: 0,
+        max_entries: DAEMON_MAX_CACHE_ENTRIES_PER_MAP,
+    };
+    let Ok(mut conn) = try_connect(&daemon_socket_path()) else {
+        return DaemonWarmLayers {
+            discovery: unavailable.clone(),
+            plans: unavailable.clone(),
+            dev_env: unavailable,
+        };
+    };
+    let Ok(status) = conn.call::<DaemonStatus>("status", None) else {
+        return DaemonWarmLayers {
+            discovery: unavailable.clone(),
+            plans: unavailable.clone(),
+            dev_env: unavailable,
+        };
+    };
+    DaemonWarmLayers {
+        discovery: daemon_layer(true, status.discovery_entries),
+        plans: daemon_layer(true, status.plan_entries),
+        dev_env: daemon_layer(true, status.dev_env_entries),
+    }
+}
+
+fn daemon_layer(available: bool, entries: usize) -> DaemonCacheLayer {
+    DaemonCacheLayer {
+        available,
+        entries,
+        max_entries: DAEMON_MAX_CACHE_ENTRIES_PER_MAP,
+    }
+}
+
+fn warm_section(
+    path: &str,
+    enabled: Option<bool>,
+    ttl_secs: Option<u64>,
+    entries: usize,
+    total_bytes: u64,
+    oldest_age_secs: Option<u64>,
+    newest_age_secs: Option<u64>,
+    daemon: DaemonCacheLayer,
+) -> WarmCacheStatusSection {
+    WarmCacheStatusSection {
+        path: path.to_owned(),
+        enabled,
+        ttl_secs,
+        entries,
+        total_bytes,
+        oldest_age_secs,
+        newest_age_secs,
+        daemon,
+    }
 }
 
 /// Explain workspace CAS key material and hit/miss for a task.
@@ -409,6 +688,50 @@ pub fn explain(
             .map_err(CacheError::Io)?;
     }
     Ok(())
+}
+
+fn render_warm_status_section(
+    runner: &mut RunnerOutput,
+    label: &str,
+    path: &str,
+    enabled: Option<bool>,
+    ttl_secs: Option<u64>,
+    entries: usize,
+    total_bytes: u64,
+    oldest_age_secs: Option<u64>,
+    newest_age_secs: Option<u64>,
+    daemon: DaemonCacheLayer,
+) -> Result<(), CacheError> {
+    if path.is_empty() {
+        runner
+            .info(format!("{label} cache unavailable on this host"))
+            .map_err(CacheError::Io)?;
+        return Ok(());
+    }
+
+    let enabled_suffix = enabled
+        .map(|enabled| format!(", enabled={enabled}"))
+        .unwrap_or_default();
+    let ttl_suffix = ttl_secs
+        .map(|ttl| format!(", ttl_secs={ttl}"))
+        .unwrap_or_else(|| ", ttl_secs=off".to_owned());
+    let age_suffix = match (oldest_age_secs, newest_age_secs) {
+        (Some(oldest), Some(newest)) => {
+            format!(", oldest_age_secs={oldest}, newest_age_secs={newest}")
+        }
+        _ => String::new(),
+    };
+    let daemon_suffix = if daemon.available {
+        format!(", nxrd={} (max {})", daemon.entries, daemon.max_entries)
+    } else {
+        ", nxrd=absent".to_owned()
+    };
+    runner
+        .info(format!(
+            "{label} cache: {path} ({entries} entr{}, {total_bytes} bytes{enabled_suffix}{ttl_suffix}{age_suffix}{daemon_suffix})",
+            if entries == 1 { "y" } else { "ies" },
+        ))
+        .map_err(CacheError::Io)
 }
 
 fn render_status_section(

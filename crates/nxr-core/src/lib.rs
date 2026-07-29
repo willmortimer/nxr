@@ -7,6 +7,7 @@ pub mod daemon;
 pub mod dev_env_cache;
 pub mod diagnostics;
 pub mod digest_cache;
+pub mod disk_cache_status;
 pub mod ecosystem;
 pub mod env_policy;
 pub mod eval_worker;
@@ -40,12 +41,14 @@ pub use config::{
     TrustedProject, UserConfig, config_dir, load_secret_bindings, load_user_config,
 };
 pub use daemon::{
-    DAEMON_ENV, DAEMON_PROTOCOL_VERSION, DAEMON_ROLE, DAEMON_SOCKET_ENV, DaemonClientError,
-    DaemonConnection, DaemonDevEnvEntry, DaemonHello, DaemonPlanEntry, DaemonRequest,
-    DaemonResponse, DaemonState, DaemonStatus, SharedDaemonState, cleanup_socket_files,
-    daemon_connect_enabled, daemon_dev_env_entry, daemon_dev_env_to_hit, daemon_pid_path,
-    daemon_plan_entry, daemon_plan_to_hit, daemon_socket_path, ensure_socket_parent,
-    handle_request, read_pid_file, serve, try_connect, try_once, write_pid_file,
+    DAEMON_ENV, DAEMON_MAX_CACHE_ENTRIES_PER_MAP, DAEMON_PROTOCOL_VERSION, DAEMON_ROLE,
+    DAEMON_SOCKET_ENV, DaemonClientError, DaemonConnection, DaemonDevEnvEntry, DaemonHello,
+    DaemonPlanEntry, DaemonRequest, DaemonResponse, DaemonState, DaemonStatus, SharedDaemonState,
+    cleanup_socket_files, daemon_connect_enabled, daemon_dev_env_entry, daemon_dev_env_to_hit,
+    daemon_pid_path, daemon_plan_entry, daemon_plan_to_hit, daemon_socket_path,
+    ensure_socket_parent, handle_request, read_pid_file, serve, try_connect,
+    try_daemon_invalidate_dev_env, try_daemon_invalidate_discovery, try_daemon_invalidate_plan,
+    try_once, write_pid_file,
 };
 pub use dev_env_cache::{
     DEFAULT_DEV_ENV_CACHE_TTL_SECS, DEV_ENV_CACHE_ENV, DEV_ENV_CACHE_SCHEMA_VERSION,
@@ -53,11 +56,16 @@ pub use dev_env_cache::{
     DevEnvSecretVariable, DevEnvironmentCacheHit, DevEnvironmentCacheKeyMaterial,
     DevEnvironmentCacheStatus, DevEnvironmentNixIdentity, DevEnvironmentSnapshot,
     clear_dev_env_cache, dev_env_cache_dir, dev_env_cache_enabled, dev_env_cache_key_digest,
-    dev_env_cache_status, lookup_dev_environment_snapshot, snapshot_contains_secret_values,
+    dev_env_cache_status, gc_dev_env_cache, invalidate_dev_env_cache,
+    lookup_dev_environment_snapshot, snapshot_contains_secret_values,
     store_dev_environment_snapshot,
 };
 pub use diagnostics::{Diagnostic, DiagnosticLevel};
 pub use digest_cache::RunDigestCache;
+pub use disk_cache_status::{
+    TimedDiskCacheSummary, prune_timed_json_cache, remove_timed_json_entry,
+    summarize_timed_json_cache,
+};
 pub use ecosystem::{
     AdapterError, ECOSYSTEM_GRAPH_SCHEMA_VERSION, EcosystemGraph, EcosystemGraphAdapter,
     EdgeConfidence, EdgeKind, GraphEdge, GraphNode, StaticJsonAdapter,
@@ -102,9 +110,9 @@ pub use plan_cache::{
     DEFAULT_PLAN_CACHE_TTL_SECS, PLAN_CACHE_ENV, PLAN_CACHE_SCHEMA_VERSION, PLAN_CACHE_TTL_ENV,
     PLAN_SECRET_RUNTIME_PLACEHOLDER, PlanCacheKeyMaterial, PlanCacheSharedFingerprints,
     PlanCacheStatus, PlanPrepareKind, PreparedPlanCacheHit, clear_plan_cache,
-    digest_environment_policy, digest_nix_flags, lookup_prepared_plan, plan_cache_dir,
-    plan_cache_enabled, plan_cache_key_digest, plan_cache_status, plan_contains_secret_values,
-    store_prepared_plan,
+    digest_environment_policy, digest_nix_flags, gc_plan_cache, invalidate_plan_cache,
+    lookup_prepared_plan, plan_cache_dir, plan_cache_enabled, plan_cache_key_digest,
+    plan_cache_status, plan_contains_secret_values, store_prepared_plan,
 };
 pub use projects::{
     NXR_CATEGORY_KEY, PROJECTS_FILENAME, PROJECTS_SCHEMA_VERSION, ProjectDefinition,

@@ -23,9 +23,9 @@ use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
 use nxr_core::{emit_stderr, perf_enabled};
 
 use crate::cli::{
-    BuildSubcommand, CacheSubcommand, CiSubcommand, Cli, Command, ContextSubcommand,
-    DaemonSubcommand, DoctorSubcommand, ExplainSubcommand, HistorySubcommand, InspectSubcommand,
-    MigrateSubcommand, TrustSubcommand,
+    BuildSubcommand, CacheInvalidateTarget, CacheSubcommand, CiSubcommand, Cli, Command,
+    ContextSubcommand, DaemonSubcommand, DoctorSubcommand, ExplainSubcommand, HistorySubcommand,
+    InspectSubcommand, MigrateSubcommand, TrustSubcommand,
 };
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
@@ -558,6 +558,29 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 cache::status(cli.json, runner)?;
                 Ok(exit::SUCCESS)
             }
+            CacheSubcommand::Gc => {
+                cache::gc(cli.json, runner)?;
+                Ok(exit::SUCCESS)
+            }
+            CacheSubcommand::Invalidate { target } => match target {
+                CacheInvalidateTarget::Discovery { file_stem, key } => {
+                    cache::invalidate_discovery(
+                        file_stem.as_deref(),
+                        key.as_deref(),
+                        cli.json,
+                        runner,
+                    )?;
+                    Ok(exit::SUCCESS)
+                }
+                CacheInvalidateTarget::Plan { key_digest } => {
+                    cache::invalidate_plan(key_digest.as_deref(), cli.json, runner)?;
+                    Ok(exit::SUCCESS)
+                }
+                CacheInvalidateTarget::DevEnv { key_digest } => {
+                    cache::invalidate_dev_env(key_digest.as_deref(), cli.json, runner)?;
+                    Ok(exit::SUCCESS)
+                }
+            },
             CacheSubcommand::Explain { task, tasks } => {
                 if let Some(task) = task {
                     cache::explain_task(

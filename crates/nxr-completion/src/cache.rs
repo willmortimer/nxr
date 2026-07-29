@@ -9,6 +9,7 @@ use blake3::Hasher;
 use camino::{Utf8Path, Utf8PathBuf};
 use fs2::FileExt;
 use nxr_core::App;
+use nxr_core::{prune_timed_json_cache, remove_timed_json_entry, summarize_timed_json_cache};
 use nxr_task::{MAX_SUPPORTED_SCHEMA_VERSION as DISCOVERY_SCHEMA_VERSION, TaskDocument};
 use serde::{Deserialize, Serialize};
 
@@ -309,8 +310,11 @@ pub fn discovery_cache_dir() -> Option<PathBuf> {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct DiscoveryCacheStatus {
     pub path: String,
+    pub ttl_secs: Option<u64>,
     pub entries: usize,
     pub total_bytes: u64,
+    pub oldest_age_secs: Option<u64>,
+    pub newest_age_secs: Option<u64>,
 }
 
 /// Per-flake discovery cache metadata for explain / doctor diagnostics.
@@ -410,11 +414,27 @@ pub fn hint_discovery_inputs_for_root(local_root: &Utf8Path) -> Vec<String> {
 /// Returns [`io::Error`] when the cache directory cannot be read or entries
 /// cannot be removed.
 pub fn clear_discovery_cache() -> io::Result<usize> {
+    invalidate_discovery_cache(None)
+}
+
+/// Remove one or all discovery cache entries on disk.
+///
+/// When `file_stem` is `Some`, only `{stem}.json` (and `.tmp`) is removed.
+///
+/// # Errors
+///
+/// Returns [`io::Error`] when the cache directory cannot be read or entries
+/// cannot be removed.
+pub fn invalidate_discovery_cache(file_stem: Option<&str>) -> io::Result<usize> {
     let Some(root) = cache_root() else {
         return Ok(0);
     };
     if !root.is_dir() {
         return Ok(0);
+    }
+
+    if let Some(stem) = file_stem {
+        return remove_timed_json_entry(&root, stem).map(usize::from);
     }
 
     let mut removed = 0usize;
@@ -433,43 +453,55 @@ pub fn clear_discovery_cache() -> io::Result<usize> {
     Ok(removed)
 }
 
+/// Prune TTL-expired discovery cache entries.
+///
+/// # Errors
+///
+/// Returns [`io::Error`] when the cache directory cannot be read or entries cannot be removed.
+pub fn gc_discovery_cache() -> io::Result<usize> {
+    let Some(root) = cache_root() else {
+        return Ok(0);
+    };
+    prune_timed_json_cache(&root, unix_now_secs(), cache_ttl_secs(), extract_cached_at)
+}
+
 /// Summarize the discovery cache directory.
 ///
 /// # Errors
 ///
 /// Returns [`io::Error`] when the cache directory cannot be read.
 pub fn discovery_cache_status() -> io::Result<DiscoveryCacheStatus> {
+    let ttl_secs = cache_ttl_secs();
     let Some(root) = cache_root() else {
         return Ok(DiscoveryCacheStatus {
             path: String::new(),
+            ttl_secs,
             entries: 0,
             total_bytes: 0,
+            oldest_age_secs: None,
+            newest_age_secs: None,
         });
     };
 
     if !root.is_dir() {
         return Ok(DiscoveryCacheStatus {
             path: root.display().to_string(),
+            ttl_secs,
             entries: 0,
             total_bytes: 0,
+            oldest_age_secs: None,
+            newest_age_secs: None,
         });
     }
 
-    let mut entries = 0usize;
-    let mut total_bytes = 0u64;
-    for entry in fs::read_dir(&root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() && path.extension().is_some_and(|ext| ext == "json") {
-            entries += 1;
-            total_bytes += entry.metadata()?.len();
-        }
-    }
-
+    let summary = summarize_timed_json_cache(&root, unix_now_secs(), extract_cached_at)?;
     Ok(DiscoveryCacheStatus {
         path: root.display().to_string(),
-        entries,
-        total_bytes,
+        ttl_secs,
+        entries: summary.entries,
+        total_bytes: summary.total_bytes,
+        oldest_age_secs: summary.oldest_age_secs,
+        newest_age_secs: summary.newest_age_secs,
     })
 }
 
@@ -803,6 +835,12 @@ fn cache_ttl_secs() -> Option<u64> {
         }
         Err(_) => Some(DEFAULT_CACHE_TTL_SECS),
     }
+}
+
+fn extract_cached_at(contents: &str) -> Option<u64> {
+    serde_json::from_str::<CachedDiscovery>(contents)
+        .ok()
+        .map(|cached| cached.cached_at)
 }
 
 fn unix_now_secs() -> u64 {

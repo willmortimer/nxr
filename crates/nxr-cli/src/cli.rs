@@ -707,10 +707,17 @@ pub enum MigrateSubcommand {
 /// `nxr cache` subcommands.
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 pub enum CacheSubcommand {
-    /// Remove discovery, capability, and workspace CAS entries
+    /// Remove discovery, capability, workspace CAS, plan, and dev-environment entries
     Clear,
-    /// Show cache locations and sizes
+    /// Show cache locations, sizes, ages, and nxrd warm layers
     Status,
+    /// Prune TTL-expired discovery, prepared-plan, and dev-environment disk entries
+    Gc,
+    /// Drop warm discovery, prepared-plan, or dev-environment cache entries
+    Invalidate {
+        #[command(subcommand)]
+        target: CacheInvalidateTarget,
+    },
     /// Explain discovery cache and/or workspace CAS for a task
     Explain {
         /// Task name for workspace CAS explain (omit for discovery-only explain)
@@ -719,6 +726,32 @@ pub enum CacheSubcommand {
         /// Treat discovery cache as task-inclusive (require cached tasks document)
         #[arg(long = "tasks")]
         tasks: bool,
+    },
+}
+
+/// Targets for `nxr cache invalidate`.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum CacheInvalidateTarget {
+    /// Discovery cache (disk file stem and/or nxrd key)
+    Discovery {
+        /// Remove a single on-disk cache file stem (without `.json`)
+        #[arg(long = "file-stem", value_name = "STEM")]
+        file_stem: Option<String>,
+        /// Remove a single nxrd discovery key (daemon only)
+        #[arg(long = "key", value_name = "KEY")]
+        key: Option<String>,
+    },
+    /// Prepared-plan cache
+    Plan {
+        /// Remove a single cache entry by key digest (omit to clear all)
+        #[arg(long = "key-digest", value_name = "DIGEST")]
+        key_digest: Option<String>,
+    },
+    /// Dev-environment snapshot cache
+    DevEnv {
+        /// Remove a single cache entry by key digest (omit to clear all)
+        #[arg(long = "key-digest", value_name = "DIGEST")]
+        key_digest: Option<String>,
     },
 }
 
