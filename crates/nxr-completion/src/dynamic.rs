@@ -1,5 +1,6 @@
 //! Dynamic completion candidate protocol.
 
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::sync::mpsc;
 use std::thread;
@@ -7,6 +8,7 @@ use std::time::Duration;
 
 use clap::ValueEnum;
 use nxr_core::App;
+use nxr_task::{TaskParameter, TaskParameterType};
 
 use crate::cache::{
     DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, discover_workspace_with_cache,
@@ -36,6 +38,10 @@ pub enum CompleteTarget {
     Namespaces,
     /// Categories declared on apps/tasks.
     Categories,
+    /// Typed parameter names for a task (`task-parameters <TASK>`).
+    TaskParameters,
+    /// Typed parameter value candidates (`task-parameter-values <TASK> <PARAMETER>`).
+    TaskParameterValues,
 }
 
 /// Discover app candidates for shell completion.
@@ -86,6 +92,96 @@ pub fn write_app_candidates(apps: &[App], writer: &mut dyn Write) -> io::Result<
     Ok(())
 }
 
+/// Build sorted parameter-name candidates with type descriptions for completion.
+#[must_use]
+pub fn task_parameter_name_candidates(
+    parameters: &BTreeMap<String, TaskParameter>,
+) -> Vec<(String, String)> {
+    let mut entries: Vec<(String, String)> = parameters
+        .iter()
+        .map(|(name, definition)| (name.clone(), parameter_description(definition)))
+        .collect();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
+}
+
+/// Build value candidates for a typed task parameter.
+#[must_use]
+pub fn task_parameter_value_candidates(parameter: &TaskParameter) -> Vec<String> {
+    match parameter.param_type {
+        TaskParameterType::Boolean => vec!["false".to_owned(), "true".to_owned()],
+        TaskParameterType::Choice => {
+            let mut values = parameter.values.clone().unwrap_or_default();
+            values.sort();
+            values
+        }
+        TaskParameterType::String => parameter
+            .default
+            .as_ref()
+            .and_then(|value| value.as_str())
+            .map(|default| vec![default.to_owned()])
+            .unwrap_or_default(),
+    }
+}
+
+/// Write one parameter name per line as `name<TAB>description`.
+///
+/// # Errors
+///
+/// Returns an I/O error when writing fails.
+pub fn write_task_parameter_candidates(
+    parameters: &BTreeMap<String, TaskParameter>,
+    writer: &mut dyn Write,
+) -> io::Result<()> {
+    for (name, description) in task_parameter_name_candidates(parameters) {
+        writeln!(writer, "{name}\t{description}")?;
+    }
+    Ok(())
+}
+
+/// Write one parameter value candidate per line.
+///
+/// # Errors
+///
+/// Returns an I/O error when writing fails.
+pub fn write_task_parameter_value_candidates(
+    parameter: &TaskParameter,
+    writer: &mut dyn Write,
+) -> io::Result<()> {
+    for value in task_parameter_value_candidates(parameter) {
+        writeln!(writer, "{value}")?;
+    }
+    Ok(())
+}
+
+fn parameter_description(parameter: &TaskParameter) -> String {
+    match parameter.param_type {
+        TaskParameterType::String => {
+            let mut description = "string".to_owned();
+            if let Some(default) = parameter.default.as_ref().and_then(|value| value.as_str()) {
+                description.push_str(&format!(" (default: {default})"));
+            }
+            description
+        }
+        TaskParameterType::Boolean => {
+            let default = parameter
+                .default
+                .as_ref()
+                .and_then(|value| value.as_bool())
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "false".to_owned());
+            format!("boolean (default: {default})")
+        }
+        TaskParameterType::Choice => {
+            if let Some(values) = &parameter.values {
+                format!("choice: {}", values.join(", "))
+            } else {
+                "choice".to_owned()
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -94,8 +190,14 @@ mod tests {
     use std::time::Duration;
 
     use clap::ValueEnum;
+    use nxr_task::{TaskParameter, TaskParameterType};
+    use serde_json::json;
 
-    use super::{CompleteTarget, DISCOVERY_TIMEOUT, discover_app_candidates, write_app_candidates};
+    use super::{
+        CompleteTarget, DISCOVERY_TIMEOUT, discover_app_candidates, task_parameter_name_candidates,
+        task_parameter_value_candidates, write_app_candidates, write_task_parameter_candidates,
+        write_task_parameter_value_candidates,
+    };
     use crate::cache::{DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery};
     use nxr_core::App;
 
@@ -111,6 +213,8 @@ mod tests {
                 CompleteTarget::Shells,
                 CompleteTarget::Namespaces,
                 CompleteTarget::Categories,
+                CompleteTarget::TaskParameters,
+                CompleteTarget::TaskParameterValues,
             ]
         );
         assert_eq!(
@@ -158,6 +262,20 @@ mod tests {
                 .unwrap()
                 .get_name(),
             "categories"
+        );
+        assert_eq!(
+            CompleteTarget::TaskParameters
+                .to_possible_value()
+                .unwrap()
+                .get_name(),
+            "task-parameters"
+        );
+        assert_eq!(
+            CompleteTarget::TaskParameterValues
+                .to_possible_value()
+                .unwrap()
+                .get_name(),
+            "task-parameter-values"
         );
     }
 
@@ -208,5 +326,84 @@ mod tests {
             })
         });
         assert!(apps.is_empty());
+    }
+
+    fn sample_parameters() -> BTreeMap<String, TaskParameter> {
+        BTreeMap::from([
+            (
+                "mode".to_owned(),
+                TaskParameter {
+                    param_type: TaskParameterType::Choice,
+                    default: Some(json!("fast")),
+                    values: Some(vec!["fast".to_owned(), "slow".to_owned()]),
+                },
+            ),
+            (
+                "verbose".to_owned(),
+                TaskParameter {
+                    param_type: TaskParameterType::Boolean,
+                    default: Some(json!(false)),
+                    values: None,
+                },
+            ),
+            (
+                "label".to_owned(),
+                TaskParameter {
+                    param_type: TaskParameterType::String,
+                    default: Some(json!("fixture")),
+                    values: None,
+                },
+            ),
+        ])
+    }
+
+    #[test]
+    fn task_parameter_name_candidates_include_type_descriptions() {
+        let parameters = sample_parameters();
+        let candidates = task_parameter_name_candidates(&parameters);
+        assert_eq!(candidates.len(), 3);
+        assert_eq!(candidates[0].0, "label");
+        assert!(candidates[0].1.contains("string"));
+        assert!(candidates[0].1.contains("fixture"));
+        assert_eq!(candidates[1].0, "mode");
+        assert!(candidates[1].1.contains("choice"));
+        assert!(candidates[1].1.contains("fast"));
+        assert_eq!(candidates[2].0, "verbose");
+        assert!(candidates[2].1.contains("boolean"));
+    }
+
+    #[test]
+    fn task_parameter_value_candidates_follow_declared_types() {
+        let parameters = sample_parameters();
+        assert_eq!(
+            task_parameter_value_candidates(&parameters["mode"]),
+            vec!["fast".to_owned(), "slow".to_owned()]
+        );
+        assert_eq!(
+            task_parameter_value_candidates(&parameters["verbose"]),
+            vec!["false".to_owned(), "true".to_owned()]
+        );
+        assert_eq!(
+            task_parameter_value_candidates(&parameters["label"]),
+            vec!["fixture".to_owned()]
+        );
+    }
+
+    #[test]
+    fn write_task_parameter_candidates_use_tab_separated_descriptions() {
+        let mut cursor = Cursor::new(Vec::new());
+        write_task_parameter_candidates(&sample_parameters(), &mut cursor).expect("write");
+        let output = String::from_utf8(cursor.into_inner()).expect("utf8");
+        assert!(output.contains("mode\tchoice: fast, slow\n"));
+        assert!(output.contains("verbose\tboolean (default: false)\n"));
+    }
+
+    #[test]
+    fn write_task_parameter_value_candidates_emit_one_per_line() {
+        let parameters = sample_parameters();
+        let mut cursor = Cursor::new(Vec::new());
+        write_task_parameter_value_candidates(&parameters["mode"], &mut cursor).expect("write");
+        let output = String::from_utf8(cursor.into_inner()).expect("utf8");
+        assert_eq!(output, "fast\nslow\n");
     }
 }

@@ -16,7 +16,9 @@ pub use cache::{
     invalidate_discovery_cache,
 };
 pub use dynamic::{
-    CompleteTarget, DISCOVERY_TIMEOUT, discover_app_candidates, write_app_candidates,
+    CompleteTarget, DISCOVERY_TIMEOUT, discover_app_candidates, task_parameter_name_candidates,
+    task_parameter_value_candidates, write_app_candidates, write_task_parameter_candidates,
+    write_task_parameter_value_candidates,
 };
 pub use fingerprint::{FINGERPRINT_IGNORE_ENV, discovery_inputs_fingerprint, nix_tree_fingerprint};
 pub use generate::generate_script;

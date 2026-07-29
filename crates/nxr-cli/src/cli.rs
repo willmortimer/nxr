@@ -377,6 +377,12 @@ pub enum Command {
     Complete {
         /// Completion target
         target: CompleteTarget,
+        /// Task name for `task-parameters` / `task-parameter-values`
+        #[arg(value_name = "TASK")]
+        task: Option<String>,
+        /// Parameter name for `task-parameter-values`
+        #[arg(value_name = "PARAMETER")]
+        parameter: Option<String>,
     },
     /// Hidden man-page generator for packaging
     #[command(name = "__manpage", hide = true)]

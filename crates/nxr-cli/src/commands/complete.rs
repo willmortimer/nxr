@@ -6,10 +6,13 @@ use nxr_completion::cache::{
     DiscoveryCacheOptions, DiscoveryContext, WorkspaceDiscovery, cached_workspace_best_effort,
     discover_workspace_with_cache,
 };
-use nxr_completion::{CompleteTarget, discover_app_candidates, write_app_candidates};
+use nxr_completion::{
+    CompleteTarget, discover_app_candidates, write_app_candidates, write_task_parameter_candidates,
+    write_task_parameter_value_candidates,
+};
 use nxr_core::projects::{ProjectsDocument, load_projects_document};
 use nxr_nix::{OptionalNixFlags, OutputTable};
-use nxr_task::listable_tasks;
+use nxr_task::{TaskDefinition, TaskDocument, listable_tasks, resolve_task_name};
 
 use crate::commands::common::{build_adapter, current_invocation_directory};
 use crate::flake::resolve_flake;
@@ -31,12 +34,16 @@ pub enum CompleteError {
 /// Returns [`CompleteError`] only when stdout cannot be written.
 pub fn run(
     target: CompleteTarget,
+    task: Option<&str>,
+    parameter: Option<&str>,
     flake_arg: Option<&str>,
     nix_override: Option<&str>,
     refresh_discovery: bool,
     nix_flags: &OptionalNixFlags,
 ) -> Result<(), CompleteError> {
-    if !refresh_discovery && let Some(lines) = cache_only_completions(target, flake_arg) {
+    if !refresh_discovery
+        && let Some(lines) = cache_only_completions(target, flake_arg, task, parameter)
+    {
         return write_lines(&lines);
     }
 
@@ -75,10 +82,30 @@ pub fn run(
             refresh_discovery,
             nix_flags,
         )),
+        CompleteTarget::TaskParameters => write_task_parameter_completions(
+            flake_arg,
+            nix_override,
+            refresh_discovery,
+            nix_flags,
+            task,
+        ),
+        CompleteTarget::TaskParameterValues => write_task_parameter_value_completions(
+            flake_arg,
+            nix_override,
+            refresh_discovery,
+            nix_flags,
+            task,
+            parameter,
+        ),
     }
 }
 
-fn cache_only_completions(target: CompleteTarget, flake_arg: Option<&str>) -> Option<Vec<String>> {
+fn cache_only_completions(
+    target: CompleteTarget,
+    flake_arg: Option<&str>,
+    task: Option<&str>,
+    parameter: Option<&str>,
+) -> Option<Vec<String>> {
     let invocation_cwd = current_invocation_directory().ok()?;
     let flake = resolve_flake(flake_arg, &invocation_cwd).ok()?;
     let local_root = flake.local_root?;
@@ -95,6 +122,15 @@ fn cache_only_completions(target: CompleteTarget, flake_arg: Option<&str>) -> Op
         CompleteTarget::Namespaces => Some(namespace_completions(flake_arg)),
         CompleteTarget::Categories => Some(category_lines(&workspace)),
         CompleteTarget::Packages | CompleteTarget::Checks => None,
+        CompleteTarget::TaskParameters => {
+            let task = task?;
+            task_parameter_lines(workspace.tasks.as_ref()?, task)
+        }
+        CompleteTarget::TaskParameterValues => {
+            let task = task?;
+            let parameter = parameter?;
+            task_parameter_value_lines(workspace.tasks.as_ref()?, task, parameter)
+        }
     }
 }
 
@@ -347,4 +383,160 @@ fn namespace_names(doc: &ProjectsDocument) -> Vec<String> {
 
 fn flush_empty() -> Result<(), io::Error> {
     io::stdout().lock().flush()
+}
+
+fn task_definition<'a>(doc: &'a TaskDocument, task: &str) -> Option<&'a TaskDefinition> {
+    let canonical = resolve_task_name(doc, task).ok()?;
+    doc.tasks.get(canonical)
+}
+
+fn task_parameter_lines(doc: &TaskDocument, task: &str) -> Option<Vec<String>> {
+    let definition = task_definition(doc, task)?;
+    if definition.parameters.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut lines = Vec::new();
+    let mut stdout = Vec::new();
+    if write_task_parameter_candidates(&definition.parameters, &mut stdout).is_ok() {
+        let text = String::from_utf8(stdout).unwrap_or_default();
+        lines.extend(text.lines().map(str::to_owned));
+    }
+    Some(lines)
+}
+
+fn task_parameter_value_lines(
+    doc: &TaskDocument,
+    task: &str,
+    parameter: &str,
+) -> Option<Vec<String>> {
+    let definition = task_definition(doc, task)?;
+    let param = definition.parameters.get(parameter)?;
+    let mut lines = Vec::new();
+    let mut stdout = Vec::new();
+    if write_task_parameter_value_candidates(param, &mut stdout).is_ok() {
+        let text = String::from_utf8(stdout).unwrap_or_default();
+        lines.extend(text.lines().map(str::to_owned));
+    }
+    Some(lines)
+}
+
+fn write_task_parameter_completions(
+    flake_arg: Option<&str>,
+    nix_override: Option<&str>,
+    refresh_discovery: bool,
+    nix_flags: &OptionalNixFlags,
+    task: Option<&str>,
+) -> Result<(), CompleteError> {
+    let Some(task) = task else {
+        flush_empty()?;
+        return Ok(());
+    };
+    let Some(lines) =
+        task_parameter_completions(flake_arg, nix_override, refresh_discovery, nix_flags, task)
+    else {
+        flush_empty()?;
+        return Ok(());
+    };
+    write_lines(&lines)
+}
+
+fn write_task_parameter_value_completions(
+    flake_arg: Option<&str>,
+    nix_override: Option<&str>,
+    refresh_discovery: bool,
+    nix_flags: &OptionalNixFlags,
+    task: Option<&str>,
+    parameter: Option<&str>,
+) -> Result<(), CompleteError> {
+    let (Some(task), Some(parameter)) = (task, parameter) else {
+        flush_empty()?;
+        return Ok(());
+    };
+    let Some(lines) = task_parameter_value_completions(
+        flake_arg,
+        nix_override,
+        refresh_discovery,
+        nix_flags,
+        task,
+        parameter,
+    ) else {
+        flush_empty()?;
+        return Ok(());
+    };
+    write_lines(&lines)
+}
+
+fn task_parameter_completions(
+    flake_arg: Option<&str>,
+    nix_override: Option<&str>,
+    refresh_discovery: bool,
+    nix_flags: &OptionalNixFlags,
+    task: &str,
+) -> Option<Vec<String>> {
+    let workspace = discover_workspace(flake_arg, nix_override, refresh_discovery, nix_flags)?;
+    let doc = workspace.tasks?;
+    task_parameter_lines(&doc, task)
+}
+
+fn task_parameter_value_completions(
+    flake_arg: Option<&str>,
+    nix_override: Option<&str>,
+    refresh_discovery: bool,
+    nix_flags: &OptionalNixFlags,
+    task: &str,
+    parameter: &str,
+) -> Option<Vec<String>> {
+    let workspace = discover_workspace(flake_arg, nix_override, refresh_discovery, nix_flags)?;
+    let doc = workspace.tasks?;
+    task_parameter_value_lines(&doc, task, parameter)
+}
+
+#[cfg(test)]
+mod tests {
+    use nxr_task::parse_task_document;
+    use serde_json::json;
+
+    use super::{task_parameter_lines, task_parameter_value_lines};
+
+    fn sample_doc() -> nxr_task::TaskDocument {
+        parse_task_document(&json!({
+            "schema_version": 2,
+            "tasks": {
+                "demo": {
+                    "app": "demo",
+                    "parameters": {
+                        "mode": {
+                            "type": "choice",
+                            "values": ["fast", "slow"],
+                            "default": "fast"
+                        },
+                        "verbose": { "type": "boolean", "default": false }
+                    }
+                }
+            }
+        }))
+        .expect("sample task document")
+    }
+
+    #[test]
+    fn task_parameter_lines_lists_declared_names() {
+        let doc = sample_doc();
+        let lines = task_parameter_lines(&doc, "demo").expect("parameters");
+        assert_eq!(lines.len(), 2);
+        assert!(lines.iter().any(|line| line.starts_with("mode\t")));
+        assert!(lines.iter().any(|line| line.starts_with("verbose\t")));
+    }
+
+    #[test]
+    fn task_parameter_value_lines_resolves_choice_values() {
+        let doc = sample_doc();
+        let lines = task_parameter_value_lines(&doc, "demo", "mode").expect("choice values");
+        assert_eq!(lines, vec!["fast".to_owned(), "slow".to_owned()]);
+    }
+
+    #[test]
+    fn task_parameter_lines_empty_for_unknown_task() {
+        let doc = sample_doc();
+        assert!(task_parameter_lines(&doc, "missing").is_none());
+    }
 }

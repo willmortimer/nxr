@@ -109,9 +109,13 @@ pub fn try_run() -> Option<Result<i32, String>> {
                 Ok(target) => target,
                 Err(error) => return Some(Err(error.to_string())),
             };
+            let task = argv.get(index + 2).and_then(|value| value.to_str());
+            let parameter = argv.get(index + 3).and_then(|value| value.to_str());
             let (flake, nix, refresh_discovery) = parse_lean_globals(&argv);
             if let Err(error) = complete::run(
                 target,
+                task,
+                parameter,
                 flake.as_deref(),
                 nix.as_deref(),
                 refresh_discovery,

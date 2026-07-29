@@ -504,9 +504,15 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             completion::run(*shell)?;
             Ok(exit::SUCCESS)
         }
-        Some(Command::Complete { target }) => {
+        Some(Command::Complete {
+            target,
+            task,
+            parameter,
+        }) => {
             complete::run(
                 *target,
+                task.as_deref(),
+                parameter.as_deref(),
                 cli.flake.as_deref(),
                 cli.nix.as_deref(),
                 cli.refresh_discovery,

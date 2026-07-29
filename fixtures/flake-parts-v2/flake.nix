@@ -114,7 +114,7 @@
               echo "api"
             '';
             param-demo = mkApp "fixture-param-demo" ''
-              echo "mode=${NXR_PARAM_MODE:-unset} verbose=${NXR_PARAM_VERBOSE:-unset} label=${NXR_PARAM_LABEL:-unset}"
+              echo "mode=''${NXR_PARAM_MODE:-unset} verbose=''${NXR_PARAM_VERBOSE:-unset} label=''${NXR_PARAM_LABEL:-unset}"
             '';
           };
         };
