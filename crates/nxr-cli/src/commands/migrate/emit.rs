@@ -2,6 +2,10 @@
 
 use std::fmt::Write as _;
 
+use camino::{Utf8Path, Utf8PathBuf};
+
+use crate::commands::script::SCRIPT_CONVENTION_DIR;
+
 /// One migrated recipe/task mapped to an nxr app (and optional task deps).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MigratedEntry {
@@ -11,12 +15,38 @@ pub struct MigratedEntry {
     pub depends_on: Vec<String>,
 }
 
+/// How [`render_per_system_fragment`] emits app bodies.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub enum MigrateEmitStyle {
+    /// Inline `script = '' … ''` bodies (default).
+    #[default]
+    InlineScript,
+    /// File-backed `file = ".nxr/scripts/<name>.sh"` with optional fast path.
+    FileBacked,
+}
+
+/// Options for rendering and optionally writing workspace script files.
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
+pub struct MigrateEmitOptions {
+    pub style: MigrateEmitStyle,
+    /// When true, also emit `.nxr/scripts/<name>.sh` files.
+    pub emit_scripts: bool,
+}
+
+/// A workspace script file to write under `.nxr/scripts/`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceScriptFile {
+    pub relative_path: String,
+    pub contents: String,
+}
+
 /// Render a `perSystem` fragment with `nxr.apps` and optional `nxr.tasks`.
 #[must_use]
 pub fn render_per_system_fragment(
     source_label: &str,
     limitations: &[&str],
     entries: &[MigratedEntry],
+    options: &MigrateEmitOptions,
 ) -> String {
     let mut out = String::new();
     writeln!(
@@ -45,11 +75,21 @@ pub fn render_per_system_fragment(
             escape_nix_string(&entry.description)
         )
         .expect("string write");
-        writeln!(out, "    script = ''").expect("string write");
-        for line in entry.script.lines() {
-            writeln!(out, "      {line}").expect("string write");
+        match options.style {
+            MigrateEmitStyle::InlineScript => {
+                writeln!(out, "    script = ''").expect("string write");
+                for line in entry.script.lines() {
+                    writeln!(out, "      {line}").expect("string write");
+                }
+                writeln!(out, "    '';").expect("string write");
+            }
+            MigrateEmitStyle::FileBacked => {
+                let file_path = convention_script_relative_path(&entry.name);
+                writeln!(out, "    file = \"{}\";", escape_nix_string(&file_path))
+                    .expect("string write");
+                writeln!(out, "    fastPath = {{ enable = true; }};").expect("string write");
+            }
         }
-        writeln!(out, "    '';").expect("string write");
         writeln!(out, "  }};").expect("string write");
     }
     writeln!(out, "}};").expect("string write");
@@ -79,6 +119,60 @@ pub fn render_per_system_fragment(
     out
 }
 
+/// Build workspace script files for migrated entries.
+#[must_use]
+pub fn workspace_script_files(entries: &[MigratedEntry]) -> Vec<WorkspaceScriptFile> {
+    entries
+        .iter()
+        .map(|entry| WorkspaceScriptFile {
+            relative_path: convention_script_relative_path(&entry.name),
+            contents: render_workspace_script_body(&entry.script),
+        })
+        .collect()
+}
+
+/// Write `.nxr/scripts/*` files under `root`.
+pub fn write_workspace_scripts(
+    root: &Utf8Path,
+    entries: &[MigratedEntry],
+) -> Result<Vec<Utf8PathBuf>, std::io::Error> {
+    let mut written = Vec::new();
+    for file in workspace_script_files(entries) {
+        let path = root.join(&file.relative_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent.as_std_path())?;
+        }
+        std::fs::write(path.as_std_path(), file.contents)?;
+        written.push(path);
+    }
+    Ok(written)
+}
+
+#[must_use]
+pub fn convention_script_relative_path(name: &str) -> String {
+    format!("{SCRIPT_CONVENTION_DIR}/{}.sh", sanitize_script_name(name))
+}
+
+fn render_workspace_script_body(script: &str) -> String {
+    let trimmed = script.trim();
+    if trimmed.starts_with("#!") {
+        return format!("{trimmed}\n");
+    }
+    format!("#!/usr/bin/env bash\nset -euo pipefail\n{trimmed}\n")
+}
+
+fn sanitize_script_name(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 fn nix_attr_name(name: &str) -> String {
     if name
         .chars()
@@ -101,7 +195,10 @@ fn escape_nix_string(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{MigratedEntry, render_per_system_fragment};
+    use super::{
+        MigrateEmitOptions, MigrateEmitStyle, MigratedEntry, render_per_system_fragment,
+        workspace_script_files,
+    };
 
     #[test]
     fn renders_apps_and_task_dependencies() {
@@ -114,9 +211,36 @@ mod tests {
                 script: "cargo test".to_owned(),
                 depends_on: vec!["build".to_owned()],
             }],
+            &MigrateEmitOptions::default(),
         );
         assert!(fragment.contains("nxr.apps = {"));
         assert!(fragment.contains("nxr.tasks = {"));
         assert!(fragment.contains("dependsOn = [ \"build\" ];"));
+        assert!(fragment.contains("script = ''"));
+    }
+
+    #[test]
+    fn renders_file_backed_apps_and_script_files() {
+        let entries = [MigratedEntry {
+            name: "deploy".to_owned(),
+            description: "Migrated deploy".to_owned(),
+            script: "echo deploy".to_owned(),
+            depends_on: Vec::new(),
+        }];
+        let fragment = render_per_system_fragment(
+            "justfile",
+            &[],
+            &entries,
+            &MigrateEmitOptions {
+                style: MigrateEmitStyle::FileBacked,
+                emit_scripts: true,
+            },
+        );
+        assert!(fragment.contains("file = \".nxr/scripts/deploy.sh\";"));
+        assert!(fragment.contains("fastPath = { enable = true; };"));
+        let files = workspace_script_files(&entries);
+        assert_eq!(files.len(), 1);
+        assert!(files[0].relative_path.contains("deploy.sh"));
+        assert!(files[0].contents.contains("echo deploy"));
     }
 }

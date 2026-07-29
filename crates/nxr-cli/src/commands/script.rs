@@ -1,18 +1,22 @@
 //! `nxr script` — run a local workspace script without a flake app leaf.
 
+use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use nxr_completion::cached_workspace_best_effort;
 use nxr_core::diagnostics::exit;
 use nxr_core::{EnvironmentPolicy, Plan, PlanCommand, PlanKind};
 use nxr_nix::{NixError, OptionalNixFlags};
+use nxr_task::AppListingMetadata;
 
 use crate::commands::common::{
-    PrepareError, current_invocation_directory, locate_nix_path, resolve_execution_directory,
+    AppRequest, PrepareError, build_adapter, cold_discover_app_listings,
+    current_invocation_directory, locate_nix_path, resolve_execution_directory,
     strip_one_separator,
 };
 use crate::commands::dev_env::resolve_script_spawn_with_dev_env;
@@ -392,6 +396,239 @@ fn read_shebang(path: &Utf8Path) -> Result<Option<Vec<String>>, ScriptError> {
         parts.remove(0);
     }
     Ok(Some(parts))
+}
+
+/// Outcome of resolving a live file-backed app fast path (ADR-0170).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LiveFastPathOutcome {
+    Hit(PreparedScript),
+    Miss { reasons: Vec<String> },
+}
+
+/// One convention script entry under `.nxr/scripts`.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct ConventionScriptEntry {
+    pub name: String,
+    pub path: String,
+}
+
+/// Resolve whether `nxr <app>` should spawn a live workspace script.
+///
+/// When `allow_cold_eval` is true, performs one targeted `nxr` / `nxrMetadata`
+/// eval on warm discovery cache miss.
+///
+/// # Errors
+///
+/// Returns [`ScriptError`] when flake resolution or cold listing eval fails.
+pub fn resolve_live_file_backed_app(
+    request: &AppRequest<'_>,
+    allow_cold_eval: bool,
+) -> Result<LiveFastPathOutcome, ScriptError> {
+    let invocation_cwd = current_invocation_directory()?;
+    let flake = resolve_flake(request.flake_arg, &invocation_cwd).map_err(ScriptError::from)?;
+    let Some(local_root) = flake.local_root.as_ref() else {
+        return Ok(LiveFastPathOutcome::Miss {
+            reasons: vec!["remote flake: live fast path requires a local checkout".to_owned()],
+        });
+    };
+
+    let mut miss_reasons = Vec::new();
+    let listings = match warm_app_listings(local_root) {
+        Some(apps) => apps,
+        None => {
+            miss_reasons.push("discovery cache miss for nxr.apps listing metadata".to_owned());
+            if !allow_cold_eval {
+                return Ok(LiveFastPathOutcome::Miss {
+                    reasons: miss_reasons,
+                });
+            }
+            let nix = build_adapter(request.nix_override).map_err(ScriptError::Nix)?;
+            match cold_discover_app_listings(
+                &nix,
+                &flake.nix_ref,
+                Some(local_root),
+                request.nix_flags,
+            )? {
+                Some(apps) => apps,
+                None => {
+                    miss_reasons
+                        .push("cold nxr listing eval returned no nxr.apps metadata".to_owned());
+                    return Ok(LiveFastPathOutcome::Miss {
+                        reasons: miss_reasons,
+                    });
+                }
+            }
+        }
+    };
+
+    let Some(listing) = listings.get(request.app) else {
+        miss_reasons.push(format!(
+            "app `{}` has no nxr.apps listing metadata",
+            request.app
+        ));
+        return Ok(LiveFastPathOutcome::Miss {
+            reasons: miss_reasons,
+        });
+    };
+
+    resolve_listing_to_prepared(
+        request,
+        &flake,
+        local_root,
+        &invocation_cwd,
+        listing,
+        miss_reasons,
+    )
+}
+
+fn warm_app_listings(local_root: &Utf8Path) -> Option<BTreeMap<String, AppListingMetadata>> {
+    let cached = cached_workspace_best_effort(local_root)?;
+    let document = cached.tasks.as_ref()?;
+    if document.apps.is_empty() {
+        return None;
+    }
+    Some(document.apps.clone())
+}
+
+fn resolve_listing_to_prepared(
+    request: &AppRequest<'_>,
+    flake: &FlakeSelection,
+    local_root: &Utf8Path,
+    invocation_cwd: &Utf8Path,
+    listing: &AppListingMetadata,
+    mut miss_reasons: Vec<String>,
+) -> Result<LiveFastPathOutcome, ScriptError> {
+    let Some(fast_path) = listing.fast_path.as_ref() else {
+        miss_reasons.push("fastPath metadata is absent".to_owned());
+        return Ok(LiveFastPathOutcome::Miss {
+            reasons: miss_reasons,
+        });
+    };
+    if !fast_path.enable {
+        miss_reasons.push("fastPath.enable is false".to_owned());
+        return Ok(LiveFastPathOutcome::Miss {
+            reasons: miss_reasons,
+        });
+    }
+    let Some(workspace_path) = listing.workspace_path.as_deref() else {
+        miss_reasons.push("workspace_path is absent in nxr.apps listing".to_owned());
+        return Ok(LiveFastPathOutcome::Miss {
+            reasons: miss_reasons,
+        });
+    };
+
+    let script_path = local_root.join(workspace_path);
+    if !script_path.is_file() {
+        miss_reasons.push(format!(
+            "workspace script file is missing: {}",
+            script_path.as_str()
+        ));
+        return Ok(LiveFastPathOutcome::Miss {
+            reasons: miss_reasons,
+        });
+    }
+
+    let execution_directory =
+        resolve_execution_directory(invocation_cwd, flake, request.root, request.cwd)?;
+    let forwarded = strip_one_separator(request.args);
+    let prepared = prepare_live_file_app(
+        request.shell,
+        request.shell_mode,
+        request.environment_policy.clone(),
+        request.nix_override,
+        request.nix_flags,
+        flake,
+        local_root,
+        invocation_cwd,
+        &execution_directory,
+        request.app,
+        workspace_path,
+        listing.interpreter.as_deref(),
+        fast_path.shell.as_deref(),
+        &forwarded,
+    )?;
+    Ok(LiveFastPathOutcome::Hit(prepared))
+}
+
+/// List convention scripts in `.nxr/scripts` for a local flake checkout.
+///
+/// # Errors
+///
+/// Returns [`ScriptError`] when the flake is remote or paths cannot be read.
+pub fn list_convention_scripts(
+    flake_arg: Option<&str>,
+    nix_override: Option<&str>,
+) -> Result<Vec<ConventionScriptEntry>, ScriptError> {
+    let invocation_cwd = current_invocation_directory()?;
+    let flake = resolve_flake(flake_arg, &invocation_cwd).map_err(ScriptError::from)?;
+    let local_root = flake
+        .local_root
+        .clone()
+        .ok_or_else(|| ScriptError::RemoteFlake {
+            reference: flake.display.clone(),
+        })?;
+    let _ = nix_override; // flake resolution only; keeps CLI symmetry with other commands
+
+    let scripts_dir = local_root.join(SCRIPT_CONVENTION_DIR);
+    if !scripts_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(scripts_dir.as_std_path()).map_err(ScriptError::Supervision)? {
+        let entry = entry.map_err(ScriptError::Supervision)?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry
+            .file_name()
+            .to_str()
+            .map(str::to_owned)
+            .unwrap_or_default();
+        if file_name.starts_with('.') {
+            continue;
+        }
+        let relative = format!("{SCRIPT_CONVENTION_DIR}/{file_name}");
+        let name = convention_name_from_file(&file_name);
+        entries.push(ConventionScriptEntry {
+            name,
+            path: relative,
+        });
+    }
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(entries)
+}
+
+/// Print convention script entries as plain text or JSON.
+///
+/// # Errors
+///
+/// Returns [`ScriptError`] on I/O or serialization failures.
+pub fn write_convention_script_list(
+    entries: &[ConventionScriptEntry],
+    json: bool,
+) -> Result<(), ScriptError> {
+    let mut stdout = io::stdout().lock();
+    if json {
+        let rendered = serde_json::to_string_pretty(entries).map_err(|error| {
+            ScriptError::Plan(crate::commands::plan::PlanRenderError::Json(error))
+        })?;
+        writeln!(stdout, "{rendered}").map_err(ScriptError::Supervision)?;
+    } else {
+        for entry in entries {
+            writeln!(stdout, "{}  {}", entry.name, entry.path).map_err(ScriptError::Supervision)?;
+        }
+    }
+    Ok(())
+}
+
+fn convention_name_from_file(file_name: &str) -> String {
+    let stem = Path::new(file_name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(file_name);
+    stem.to_owned()
 }
 
 /// Prepare a live file-backed app spawn (ADR-0170 fast path).

@@ -712,6 +712,94 @@ pub(crate) fn cold_discover_workspace_with_root(
     })
 }
 
+/// One targeted `nxrMetadata` or `nxr.<system>` eval for app listing metadata.
+///
+/// Used by the live file-backed fast path when warm discovery cache is cold.
+pub(crate) fn cold_discover_app_listings(
+    nix: &NixAdapter,
+    flake_ref: &str,
+    local_root: Option<&Utf8Path>,
+    nix_flags: &OptionalNixFlags,
+) -> Result<Option<BTreeMap<String, nxr_task::AppListingMetadata>>, PrepareError> {
+    let worker = local_root
+        .and_then(|root| {
+            nxr_nix::eval_worker_context_for(
+                nix.nix.as_str(),
+                &nix.version_banner,
+                nix.config_json.as_deref(),
+                root,
+            )
+        })
+        .or_else(|| {
+            nxr_nix::local_root_from_flake_ref(flake_ref).and_then(|root| {
+                nxr_nix::eval_worker_context_for(
+                    nix.nix.as_str(),
+                    &nix.version_banner,
+                    nix.config_json.as_deref(),
+                    &root,
+                )
+            })
+        });
+
+    let mut discovery_flags = nix_flags.clone();
+    discovery_flags.no_write_lock_file = true;
+
+    if nxr_nix::nxr_metadata_preferred() {
+        let args = nix.compatible_argv(
+            nxr_nix::nxr_metadata_eval_args(flake_ref, &nix.system),
+            &discovery_flags,
+        )?;
+        match nxr_nix::discover_nxr_metadata_with_worker(
+            &nix.nix,
+            &nix.system,
+            &args,
+            worker.as_ref(),
+        ) {
+            Ok(Some(document)) => {
+                let workspace = document
+                    .into_workspace(flake_ref, &nix.system, true)
+                    .map_err(metadata_discovery_prepare_error)?;
+                if let Some(task_document) = workspace.tasks
+                    && !task_document.apps.is_empty()
+                {
+                    return Ok(Some(task_document.apps));
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("nxr: nxrMetadata listing eval failed, falling back: {error}");
+            }
+        }
+    }
+
+    let args = nix.compatible_argv(
+        nxr_nix::flake_eval_json_args(flake_ref, &nxr_nix::tasks_attr_path(&nix.system)),
+        &discovery_flags,
+    )?;
+    match nxr_nix::discover_tasks_with_worker(&nix.nix, &nix.system, &args, worker.as_ref()) {
+        Ok(document) => {
+            if document.apps.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(document.apps))
+            }
+        }
+        Err(error) => Err(PrepareError::TaskDiscovery(error)),
+    }
+}
+
+fn metadata_discovery_prepare_error(error: nxr_nix::MetadataDiscoveryError) -> PrepareError {
+    match error {
+        nxr_nix::MetadataDiscoveryError::Nix(error) => PrepareError::Nix(error),
+        nxr_nix::MetadataDiscoveryError::Tasks(error) => PrepareError::TaskDiscovery(error),
+        error => PrepareError::TaskDiscovery(nxr_nix::TaskDiscoveryError::Schema(
+            nxr_task::SchemaError::InvalidDocument {
+                message: error.to_string(),
+            },
+        )),
+    }
+}
+
 /// Whether stderr from a failed `nix run` indicates a missing installable/app.
 #[must_use]
 pub fn stderr_indicates_missing_installable(stderr: &str) -> bool {

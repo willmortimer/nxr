@@ -12,6 +12,7 @@ use nxr_task::{ExecutionPlan, FailurePolicy, PlanError, build_execution_plan, re
 use serde::Serialize;
 
 use crate::commands::common::{AppRequest, PrepareError, PreparedTaskNode, WorkspaceSnapshot};
+use crate::commands::script::{LiveFastPathOutcome, ScriptError, resolve_live_file_backed_app};
 use crate::commands::task::task_inherits_stdin;
 use crate::flake::FlakeSelection;
 use crate::output_task::{EventsFormat, TaskOutputMode};
@@ -52,6 +53,8 @@ pub enum ExplainError {
     #[error(transparent)]
     Prepare(#[from] PrepareError),
     #[error(transparent)]
+    Script(#[from] ScriptError),
+    #[error(transparent)]
     Plan(#[from] PlanError),
     #[error(transparent)]
     Io(#[from] io::Error),
@@ -64,6 +67,7 @@ impl ExplainError {
     pub const fn exit_code(&self) -> i32 {
         match self {
             Self::Prepare(error) => error.exit_code(),
+            Self::Script(error) => error.exit_code(),
             Self::Plan(error) => match error {
                 PlanError::UnknownRoot { .. } => exit::NOT_FOUND,
                 PlanError::MissingDependency { .. } | PlanError::Cycle { .. } => exit::TASK_GRAPH,
@@ -116,6 +120,15 @@ pub enum ExplainReport {
         shell_wrap: ShellWrapContext,
         command: PlanCommand,
         forwarded_arguments: Vec<String>,
+        fast_path: FastPathContext,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        workspace_script: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mutable_source: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fallback_app: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        environment_mode: Option<String>,
     },
     Task {
         schema_version: u32,
@@ -138,6 +151,14 @@ pub struct ShellWrapContext {
     pub applied: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip_reason: Option<String>,
+}
+
+/// Whether the live file-backed fast path was selected (ADR-0170).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct FastPathContext {
+    pub selected: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub miss_reasons: Vec<String>,
 }
 
 /// One prepared task node in an explain report.
@@ -229,25 +250,57 @@ fn explain_app(request: &ExplainRequest<'_>) -> Result<ExplainReport, ExplainErr
         false,
         request.nix_flags,
     )?;
-    let prepared = snapshot.prepare_discovered_app(&app_request)?;
     let workspace =
         workspace_context_from_snapshot(&snapshot, &request.environment_policy, request.shell)?;
+
+    let (prepared_plan, fast_path) = match resolve_live_file_backed_app(&app_request, true) {
+        Ok(LiveFastPathOutcome::Hit(live)) => {
+            let fast_path = FastPathContext {
+                selected: true,
+                miss_reasons: Vec::new(),
+            };
+            (
+                crate::commands::common::PreparedPlan {
+                    plan: live.plan,
+                    nix: snapshot.nix.nix.clone(),
+                    execution_directory: live.execution_directory,
+                    local_root: snapshot.flake.local_root.clone(),
+                },
+                fast_path,
+            )
+        }
+        Ok(LiveFastPathOutcome::Miss { reasons }) => {
+            let prepared = snapshot.prepare_discovered_app(&app_request)?;
+            let fast_path = FastPathContext {
+                selected: false,
+                miss_reasons: reasons,
+            };
+            (prepared, fast_path)
+        }
+        Err(error) => return Err(ExplainError::Script(error)),
+    };
+
     let shell_wrap = shell_wrap_context(
         request.shell,
         request.shell_mode,
         workspace.active_shell.as_deref(),
-        &prepared.plan,
+        &prepared_plan.plan,
     );
 
     Ok(ExplainReport::App {
         schema_version: SCHEMA_VERSION,
         workspace,
-        target: prepared.plan.target.clone(),
-        attr_path: prepared.plan.attr_path.clone(),
-        execution_directory: prepared.plan.execution_directory.clone(),
+        target: prepared_plan.plan.target.clone(),
+        attr_path: prepared_plan.plan.attr_path.clone(),
+        execution_directory: prepared_plan.plan.execution_directory.clone(),
         shell_wrap,
-        command: prepared.plan.command.clone(),
-        forwarded_arguments: prepared.plan.forwarded_arguments.clone(),
+        command: prepared_plan.plan.command.clone(),
+        forwarded_arguments: prepared_plan.plan.forwarded_arguments.clone(),
+        fast_path,
+        workspace_script: prepared_plan.plan.workspace_script.clone(),
+        mutable_source: prepared_plan.plan.mutable_source,
+        fallback_app: prepared_plan.plan.fallback_app.clone(),
+        environment_mode: prepared_plan.plan.environment_mode.clone(),
     })
 }
 
@@ -437,6 +490,11 @@ fn write_human_report(writer: &mut impl Write, report: &ExplainReport) -> io::Re
             shell_wrap,
             command,
             forwarded_arguments,
+            fast_path,
+            workspace_script,
+            mutable_source,
+            fallback_app,
+            environment_mode,
             ..
         } => {
             write_workspace_header(writer, workspace)?;
@@ -444,6 +502,19 @@ fn write_human_report(writer: &mut impl Write, report: &ExplainReport) -> io::Re
             writeln!(writer, "target: {target}")?;
             writeln!(writer, "attr_path: {attr_path}")?;
             writeln!(writer, "execution_directory: {execution_directory}")?;
+            write_fast_path(writer, fast_path)?;
+            if let Some(path) = workspace_script {
+                writeln!(writer, "workspace_script: {path}")?;
+            }
+            if *mutable_source {
+                writeln!(writer, "mutable_source: true")?;
+            }
+            if let Some(app) = fallback_app {
+                writeln!(writer, "fallback_app: {app}")?;
+            }
+            if let Some(mode) = environment_mode {
+                writeln!(writer, "environment_mode: {mode}")?;
+            }
             write_shell_wrap(writer, shell_wrap)?;
             write_command(writer, command)?;
             if !forwarded_arguments.is_empty() {
@@ -535,6 +606,26 @@ fn write_workspace_header(writer: &mut impl Write, workspace: &WorkspaceContext)
     }
     if let Some(shell) = &workspace.active_shell {
         writeln!(writer, "active_shell: {shell}")?;
+    }
+    Ok(())
+}
+
+fn write_fast_path(writer: &mut impl Write, fast_path: &FastPathContext) -> io::Result<()> {
+    writeln!(
+        writer,
+        "fast_path: {}",
+        if fast_path.selected {
+            "selected"
+        } else {
+            "skipped"
+        }
+    )?;
+    for reason in &fast_path.miss_reasons {
+        writeln!(
+            writer,
+            "fast_path_reason: {}",
+            sanitize_terminal_text(reason)
+        )?;
     }
     Ok(())
 }
@@ -767,6 +858,14 @@ mod tests {
                 ],
             },
             forwarded_arguments: Vec::new(),
+            fast_path: super::FastPathContext {
+                selected: false,
+                miss_reasons: vec!["discovery cache miss for nxr.apps listing metadata".to_owned()],
+            },
+            workspace_script: None,
+            mutable_source: false,
+            fallback_app: None,
+            environment_mode: None,
         };
 
         let rendered = serde_json::to_string_pretty(&report).expect("serialize explain json");

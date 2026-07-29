@@ -8,31 +8,21 @@ use serde::Deserialize;
 use super::MigrateError;
 use super::emit::{MigratedEntry, render_per_system_fragment};
 
-const LIMITATIONS: &[&str] = &[
+pub const LIMITATIONS: &[&str] = &[
     "only `[tasks]` entries are migrated; tool pins and env blocks are ignored",
     "string tasks become single-line scripts; table tasks use the `run` field",
     "task `depends` become nxr `dependsOn` when names match other migrated tasks",
     "no automatic runtimeInputs inference — add packages manually",
 ];
 
-/// Parse `mise.toml` and render a `perSystem` nxr fragment.
-///
-/// # Errors
-///
-/// Returns [`MigrateError`] when parsing fails or no tasks are found.
-pub fn migrate_mise(path: &Utf8Path, contents: &str) -> Result<String, MigrateError> {
+/// Parse `mise.toml` and return migrated entries.
+pub fn parse_mise_entries(contents: &str) -> Result<Vec<MigratedEntry>, MigrateError> {
     let document: MiseDocument = toml::from_str(contents).map_err(|error| MigrateError::Parse {
-        path: path.to_string(),
+        path: "mise.toml".to_owned(),
         message: error.to_string(),
     })?;
     let tasks = document.tasks.unwrap_or_default();
-    if tasks.is_empty() {
-        return Err(MigrateError::NoEntries {
-            path: path.to_string(),
-        });
-    }
-
-    let entries = tasks
+    Ok(tasks
         .into_iter()
         .map(|(name, task)| {
             let (script, depends_on) = match task {
@@ -49,12 +39,32 @@ pub fn migrate_mise(path: &Utf8Path, contents: &str) -> Result<String, MigrateEr
                 depends_on,
             }
         })
-        .collect::<Vec<_>>();
+        .collect())
+}
+
+/// Parse `mise.toml` and render a `perSystem` nxr fragment.
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] when parsing fails or no tasks are found.
+#[allow(dead_code)]
+pub fn migrate_mise(
+    path: &Utf8Path,
+    contents: &str,
+    options: &super::emit::MigrateEmitOptions,
+) -> Result<String, MigrateError> {
+    let entries = parse_mise_entries(contents)?;
+    if entries.is_empty() {
+        return Err(MigrateError::NoEntries {
+            path: path.to_string(),
+        });
+    }
 
     Ok(render_per_system_fragment(
         &format!("mise.toml ({path})"),
         LIMITATIONS,
         &entries,
+        options,
     ))
 }
 
@@ -98,7 +108,8 @@ run = "cargo test"
 [tasks.fmt]
 run = "cargo fmt --all"
 "#;
-        let rendered = migrate_mise(Utf8Path::new("mise.toml"), source).expect("render");
+        let rendered =
+            migrate_mise(Utf8Path::new("mise.toml"), source, &Default::default()).expect("render");
         assert!(rendered.contains("build = {"));
         assert!(rendered.contains("test = {"));
         assert!(rendered.contains("dependsOn = [ \"build\" ];"));
@@ -110,7 +121,8 @@ run = "cargo fmt --all"
 [tasks]
 lint = "cargo clippy"
 "#;
-        let rendered = migrate_mise(Utf8Path::new("mise.toml"), source).expect("render");
+        let rendered =
+            migrate_mise(Utf8Path::new("mise.toml"), source, &Default::default()).expect("render");
         assert!(rendered.contains("lint = {"));
         assert!(rendered.contains("cargo clippy"));
     }

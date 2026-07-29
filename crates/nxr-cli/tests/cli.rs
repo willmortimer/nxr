@@ -786,6 +786,82 @@ fn file_backed_app_nix_run_and_live_fast_path() {
 }
 
 #[test]
+fn script_list_lists_convention_scripts() {
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root.join("fixtures/workspace-scripts"))
+        .args(["script", "--list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello"))
+        .stdout(predicate::str::contains(".nxr/scripts/hello.sh"));
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root.join("fixtures/workspace-scripts"))
+        .args(["--json", "script", "--list"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse json");
+    let entries = value.as_array().expect("array");
+    assert!(
+        entries.iter().any(|entry| entry["name"] == "hello"
+            && entry["path"].as_str().unwrap().contains("hello.sh"))
+    );
+}
+
+#[test]
+fn explain_file_backed_app_reports_fast_path_selection() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let fixture = repo_root.join("fixtures/workspace-scripts");
+    let home = tempfile::TempDir::new().expect("cache home");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&fixture)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .args(["list"])
+        .assert()
+        .success();
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&fixture)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .args(["explain", "greet-file"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fast_path: selected"))
+        .stdout(predicate::str::contains("workspace_script:"))
+        .stdout(predicate::str::contains("mutable_source: true"))
+        .stdout(predicate::str::contains("fallback_app: greet-file"));
+}
+
+#[test]
+fn file_backed_cold_fast_path_without_warm_cache() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    let fixture = repo_root.join("fixtures/workspace-scripts");
+    let home = tempfile::TempDir::new().expect("cache home");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&fixture)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .arg("greet-file")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("greet-file:live-v1"));
+}
+
+#[test]
 fn run_hello_prints_greeting() {
     let Some(()) = require_nix() else {
         return;
@@ -5895,6 +5971,43 @@ fn migrate_justfile_write_creates_output_file() {
 
     let contents = std::fs::read_to_string(output).expect("output");
     assert!(contents.contains("hello = {"));
+}
+
+#[test]
+fn migrate_justfile_file_backed_emits_file_attr() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("Justfile"), "deploy:\n    echo deploy\n").expect("justfile");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(temp.path())
+        .args(["migrate", "justfile", "--file-backed"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "file = \".nxr/scripts/deploy.sh\";",
+        ))
+        .stdout(predicate::str::contains("fastPath = { enable = true; };"));
+}
+
+#[test]
+fn migrate_justfile_scripts_writes_nxr_scripts_dir() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("Justfile"), "deploy:\n    echo deploy\n").expect("justfile");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(temp.path())
+        .args(["migrate", "justfile", "--scripts", "--file-backed"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("wrote"))
+        .stdout(predicate::str::contains(
+            "file = \".nxr/scripts/deploy.sh\";",
+        ));
+
+    let script = temp.path().join(".nxr/scripts/deploy.sh");
+    assert!(script.is_file());
+    let contents = std::fs::read_to_string(script).expect("script");
+    assert!(contents.contains("echo deploy"));
 }
 
 #[test]

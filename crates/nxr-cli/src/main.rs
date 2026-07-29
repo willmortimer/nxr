@@ -249,9 +249,24 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             debounce,
             args,
         }) => dispatch_run_command(cli, &nix_flags, app, *watch, *debounce, args, runner),
-        Some(Command::Script { path_or_name, args }) => {
-            let request = script_request(cli, &nix_flags, path_or_name, args)?;
-            script::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+        Some(Command::Script {
+            list,
+            path_or_name,
+            args,
+        }) => {
+            if *list {
+                let entries =
+                    script::list_convention_scripts(cli.flake.as_deref(), cli.nix.as_deref())
+                        .map_err(RunError::from)?;
+                script::write_convention_script_list(&entries, cli.json).map_err(RunError::from)?;
+                Ok(exit::SUCCESS)
+            } else {
+                let path_or_name = path_or_name.as_deref().ok_or_else(|| {
+                    RunError::Usage("missing script path or convention name".to_owned())
+                })?;
+                let request = script_request(cli, &nix_flags, path_or_name, args)?;
+                script::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+            }
         }
         Some(Command::Build {
             target,
@@ -961,22 +976,45 @@ fn dispatch_doctor_subcommand(
 }
 
 fn dispatch_migrate(source: &MigrateSubcommand, runner: RunnerOutput) -> Result<i32, RunError> {
-    let (migrate_source, path, write) = match source {
-        MigrateSubcommand::Justfile { path, write } => (
+    let (migrate_source, path, write, file_backed, scripts) = match source {
+        MigrateSubcommand::Justfile {
+            path,
+            write,
+            file_backed,
+            scripts,
+        } => (
             migrate::MigrateSource::Justfile,
             path.as_deref(),
             write.as_deref(),
+            *file_backed,
+            *scripts,
         ),
-        MigrateSubcommand::Mise { path, write } => (
+        MigrateSubcommand::Mise {
+            path,
+            write,
+            file_backed,
+            scripts,
+        } => (
             migrate::MigrateSource::Mise,
             path.as_deref(),
             write.as_deref(),
+            *file_backed,
+            *scripts,
         ),
+    };
+    let emit_options = migrate::MigrateEmitOptions {
+        style: if file_backed {
+            migrate::MigrateEmitStyle::FileBacked
+        } else {
+            migrate::MigrateEmitStyle::InlineScript
+        },
+        emit_scripts: scripts,
     };
     let request = migrate::MigrateRequest {
         source: migrate_source,
         input: path.map(camino::Utf8Path::new),
         write: write.map(camino::Utf8Path::new),
+        emit_options,
     };
     migrate::run(request, runner).map_err(RunError::from)
 }

@@ -4,6 +4,8 @@ mod emit;
 mod justfile;
 mod mise;
 
+pub use emit::{MigrateEmitOptions, MigrateEmitStyle};
+
 use std::fs;
 use std::io::{self, Write};
 
@@ -55,6 +57,7 @@ pub struct MigrateRequest<'a> {
     pub source: MigrateSource,
     pub input: Option<&'a Utf8Path>,
     pub write: Option<&'a Utf8Path>,
+    pub emit_options: emit::MigrateEmitOptions,
 }
 
 /// Read the source file, render Nix, and print or write it.
@@ -75,10 +78,55 @@ pub fn run(request: MigrateRequest<'_>, runner: RunnerOutput) -> Result<i32, Mig
         }
     })?;
 
-    let rendered = match request.source {
-        MigrateSource::Justfile => justfile::migrate_justfile(&input, &contents)?,
-        MigrateSource::Mise => mise::migrate_mise(&input, &contents)?,
+    let entries = match request.source {
+        MigrateSource::Justfile => {
+            let entries = justfile::parse_justfile_entries(&contents);
+            if entries.is_empty() {
+                return Err(MigrateError::NoEntries {
+                    path: input.to_string(),
+                });
+            }
+            entries
+        }
+        MigrateSource::Mise => {
+            let entries = mise::parse_mise_entries(&contents)?;
+            if entries.is_empty() {
+                return Err(MigrateError::NoEntries {
+                    path: input.to_string(),
+                });
+            }
+            entries
+        }
     };
+
+    let source_label = match request.source {
+        MigrateSource::Justfile => format!("justfile ({input})"),
+        MigrateSource::Mise => format!("mise.toml ({input})"),
+    };
+    let limitations = match request.source {
+        MigrateSource::Justfile => justfile::LIMITATIONS,
+        MigrateSource::Mise => mise::LIMITATIONS,
+    };
+    let rendered = emit::render_per_system_fragment(
+        &source_label,
+        limitations,
+        &entries,
+        &request.emit_options,
+    );
+
+    if request.emit_options.emit_scripts {
+        let invocation_cwd = current_invocation_directory()?;
+        let scripts_root = request
+            .write
+            .and_then(|path| path.parent())
+            .unwrap_or(invocation_cwd.as_path());
+        let written = emit::write_workspace_scripts(scripts_root, &entries)?;
+        for path in written {
+            runner
+                .info(format!("wrote {path}"))
+                .map_err(MigrateError::Io)?;
+        }
+    }
 
     if let Some(path) = request.write {
         if path.exists() {
@@ -157,6 +205,7 @@ mod tests {
                 source: MigrateSource::Justfile,
                 input: Some(justfile.as_path()),
                 write: None,
+                emit_options: Default::default(),
             },
             runner,
         )

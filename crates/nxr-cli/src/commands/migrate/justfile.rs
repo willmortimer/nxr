@@ -5,27 +5,17 @@ use camino::Utf8Path;
 use super::MigrateError;
 use super::emit::{MigratedEntry, render_per_system_fragment};
 
-const LIMITATIONS: &[&str] = &[
+pub const LIMITATIONS: &[&str] = &[
     "only simple `recipe:` and `recipe dep:` forms at column 0 are parsed",
     "recipe attributes, modules, imports, and expressions are ignored",
     "shebang and multi-line bodies are copied verbatim without validation",
     "no automatic runtimeInputs inference — add packages manually",
 ];
 
-/// Parse a Justfile and render a `perSystem` nxr fragment.
-///
-/// # Errors
-///
-/// Returns [`MigrateError`] when the file cannot be read or no recipes are found.
-pub fn migrate_justfile(path: &Utf8Path, contents: &str) -> Result<String, MigrateError> {
+/// Parse a Justfile and return migrated entries.
+pub fn parse_justfile_entries(contents: &str) -> Vec<MigratedEntry> {
     let recipes = parse_justfile(contents);
-    if recipes.is_empty() {
-        return Err(MigrateError::NoEntries {
-            path: path.to_string(),
-        });
-    }
-
-    let entries = recipes
+    recipes
         .into_iter()
         .map(|recipe| {
             let name = recipe.name.clone();
@@ -36,12 +26,32 @@ pub fn migrate_justfile(path: &Utf8Path, contents: &str) -> Result<String, Migra
                 depends_on: recipe.depends_on,
             }
         })
-        .collect::<Vec<_>>();
+        .collect()
+}
+
+/// Parse a Justfile and render a `perSystem` nxr fragment.
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] when the file cannot be read or no recipes are found.
+#[allow(dead_code)]
+pub fn migrate_justfile(
+    path: &Utf8Path,
+    contents: &str,
+    options: &super::emit::MigrateEmitOptions,
+) -> Result<String, MigrateError> {
+    let entries = parse_justfile_entries(contents);
+    if entries.is_empty() {
+        return Err(MigrateError::NoEntries {
+            path: path.to_string(),
+        });
+    }
 
     Ok(render_per_system_fragment(
         &format!("justfile ({path})"),
         LIMITATIONS,
         &entries,
+        options,
     ))
 }
 
@@ -129,7 +139,8 @@ build:
 test: build
     cargo test
 "#;
-        let rendered = migrate_justfile(Utf8Path::new("Justfile"), source).expect("render");
+        let rendered = migrate_justfile(Utf8Path::new("Justfile"), source, &Default::default())
+            .expect("render");
         assert!(rendered.contains("build = {"));
         assert!(rendered.contains("test = {"));
         assert!(rendered.contains("cargo test"));

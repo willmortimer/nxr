@@ -272,9 +272,12 @@ pub enum Command {
     },
     /// Run a local workspace script (path or `.nxr/scripts/<name>`)
     Script {
+        /// List convention scripts under `.nxr/scripts`
+        #[arg(long = "list", conflicts_with = "path_or_name")]
+        list: bool,
         /// Script path (`./scripts/foo.sh`) or convention name (`deploy`)
-        #[arg(value_name = "PATH_OR_NAME")]
-        path_or_name: String,
+        #[arg(value_name = "PATH_OR_NAME", required_unless_present = "list")]
+        path_or_name: Option<String>,
         /// Arguments forwarded to the script (one leading `--` is stripped)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -677,6 +680,12 @@ pub enum MigrateSubcommand {
         /// Write output to a file instead of stdout
         #[arg(long = "write", value_name = "PATH")]
         write: Option<String>,
+        /// Emit file-backed `nxr.apps` (`file = …`) instead of inline `script`
+        #[arg(long = "file-backed")]
+        file_backed: bool,
+        /// Also write `.nxr/scripts/<name>.sh` files (to CWD or `--write` parent)
+        #[arg(long = "scripts")]
+        scripts: bool,
     },
     /// Suggest nxr Nix from mise.toml
     Mise {
@@ -686,6 +695,12 @@ pub enum MigrateSubcommand {
         /// Write output to a file instead of stdout
         #[arg(long = "write", value_name = "PATH")]
         write: Option<String>,
+        /// Emit file-backed `nxr.apps` (`file = …`) instead of inline `script`
+        #[arg(long = "file-backed")]
+        file_backed: bool,
+        /// Also write `.nxr/scripts/<name>.sh` files (to CWD or `--write` parent)
+        #[arg(long = "scripts")]
+        scripts: bool,
     },
 }
 
