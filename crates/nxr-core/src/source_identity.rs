@@ -92,8 +92,17 @@ mod tests {
 
     fn run_git(root: &Utf8Path, args: &[&str]) {
         let status = Command::new("git")
-            .args(["-C", root.as_str()])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "tag.gpgsign=false",
+                "-C",
+                root.as_str(),
+            ])
             .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
             .status()
             .expect("git");
         assert!(status.success(), "git {args:?}");

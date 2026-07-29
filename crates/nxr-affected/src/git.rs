@@ -193,7 +193,13 @@ mod tests {
     }
 
     fn run(cwd: &std::path::Path, args: &[&str]) {
-        let status = Command::new(args[0])
+        let mut cmd = Command::new(args[0]);
+        if args[0] == "git" {
+            cmd.args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"]);
+            cmd.env("GIT_CONFIG_GLOBAL", "/dev/null");
+            cmd.env("GIT_CONFIG_SYSTEM", "/dev/null");
+        }
+        let status = cmd
             .args(&args[1..])
             .current_dir(cwd)
             .status()

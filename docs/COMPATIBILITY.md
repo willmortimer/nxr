@@ -81,8 +81,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) §9 and ADR-0018 in [adr/README.md](adr/R
 ### CI Nix matrix
 
 Day-to-day quality ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) runs a
-**single** job on `ubuntu-latest` with Determinate Nix `latest` (build, `nxr task
-ci` dogfood, `nix flake check`, perf thresholds, fixture smokes).
+**single** job on `ubuntu-latest` with Determinate Nix `latest` (`nix run .#ci-gate`
+dogfood, `nix flake check`, perf thresholds, fixture smokes). Local developers
+use the same `nix run .#ci-gate` entrypoint ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 Compatibility coverage ([`.github/workflows/compat.yml`](../.github/workflows/compat.yml))
 runs on **`v*` tags** (and `workflow_dispatch`):

@@ -5,28 +5,42 @@ This page is for people working **on** the `nxr` repository. Consumers of `nxr` 
 ## Develop in this repo
 
 ```bash
-nix develop          # optional: project shell
-nix build .#packages.$(nix eval --raw --impure --expr 'builtins.currentSystem').default  # package the CLI
+nix develop          # optional: project shell (cargo-nextest, cargo-deny, …)
+nix build .#packages.$(nix eval --raw --impure --expr 'builtins.currentSystem').default
 ```
 
-Quality apps (main/PR CI: one `ubuntu-latest` job runs `nxr task ci` +
-`nix flake check`; tag `compat.yml` covers Nix 2.18 / Lix / macOS):
+### Local ≡ CI quality gate
+
+Use the same Nix entrypoint GitHub Actions uses. Do **not** treat host
+`cargo nextest` / `cargo clippy` as CI parity — those inherit shell pollution
+(`NXR_DEV_SHELL`, git signing agents) and host toolchains.
 
 ```bash
-nix run .#fmt        # rustfmt (add -- --check in CI)
+nix run .#ci-gate    # packaged nxr + task ci (fmt-check → lint/test/deny)
+nix flake check -L   # hermetic derivation checks (sandbox; skips Nix ITs)
+```
+
+`ci-gate` clears `NXR_DEV_SHELL` and isolates git config so results match a
+clean Actions runner. Quality flake apps (`test`, `lint`, `deny`, …) do the same.
+They deliberately **do not** pin `pkgs.nix` — discovery capability negotiation
+must use the same ambient flakes-capable Nix as GHA (Determinate). Pinning
+nixpkgs' `nix` flips cold discovery to `flake show` and breaks call-budget ITs.
+
+Individual apps (still hermetic via nixpkgs toolchains):
+
+```bash
+nix run .#fmt        # rustfmt (add -- --check for CI-style)
 nix run .#lint       # clippy -D warnings
 nix run .#test       # cargo nextest
 nix run .#deny       # cargo-deny
-nxr task ci          # orchestrated CI gate (fmt-check → lint/test/deny → ci)
 nxr ci plan --json   # provider-neutral CI plan export
 ```
 
-Or from a Cargo checkout:
+Host Cargo is fine for fast iteration only:
 
 ```bash
 cargo test -p nxr-cli
 cargo run -p nxr-cli -- --flake fixtures/basic-apps list
-cargo run -p nxr-cli -- --flake fixtures/task-dag task ci -j 2 --dry-run
 ```
 
 ## Fixtures

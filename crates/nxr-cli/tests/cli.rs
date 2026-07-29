@@ -3181,17 +3181,14 @@ fn watch_app_prefix_runs_named_app() {
         return;
     };
 
+    let fixture = isolated_basic_apps_flake();
+    let flake_dir = fixture.path().join("basic-apps");
+    let flake = flake_dir.to_string_lossy().into_owned();
+
     let mut child = Command::cargo_bin("nxr")
         .expect("nxr binary")
         .current_dir(repo_root())
-        .args([
-            "--flake",
-            "fixtures/basic-apps",
-            "watch",
-            "app:hello",
-            "--debounce",
-            "100",
-        ])
+        .args(["--flake", &flake, "watch", "app:hello", "--debounce", "100"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -3723,28 +3720,39 @@ fn store_exe_invalidates_on_package_source_edit() {
     let flake_path = flake.path().join("package-app");
 
     // Clean git identity so store-exe may key on HEAD + discoveryInputs.
+    // Isolate from caller signing agents (e.g. 1Password) that break fixture commits.
     let git_init = std::process::Command::new("git")
-        .args(["init"])
+        .args(["-c", "commit.gpgsign=false", "init"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .current_dir(&flake_path)
         .status()
         .expect("git init");
     assert!(git_init.success());
     let _ = std::process::Command::new("git")
         .args(["config", "user.email", "test@example.com"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .current_dir(&flake_path)
         .status();
     let _ = std::process::Command::new("git")
         .args(["config", "user.name", "test"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .current_dir(&flake_path)
         .status();
     let add = std::process::Command::new("git")
         .args(["add", "."])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .current_dir(&flake_path)
         .status()
         .expect("git add");
     assert!(add.success());
     let commit = std::process::Command::new("git")
-        .args(["commit", "-m", "init"])
+        .args(["-c", "commit.gpgsign=false", "commit", "-m", "init"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .current_dir(&flake_path)
         .status()
         .expect("git commit");
@@ -4224,14 +4232,20 @@ fn watch_app_does_not_double_workspace_init_on_first_generation() {
         return;
     };
 
+    let fixture = isolated_basic_apps_flake();
+    let flake_dir = fixture.path().join("basic-apps");
+    let flake = flake_dir.to_string_lossy().into_owned();
+    let home = tempfile::TempDir::new().expect("cache home");
+
     let counter = NixCallCounter::install();
-    let repo_root = repo_root();
     let mut child = Command::cargo_bin("nxr")
         .expect("nxr binary")
-        .current_dir(&repo_root)
+        .current_dir(repo_root())
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
         .env("NXR_NIX", &counter.wrapper)
         .env("NXR_STORE_EXE_CACHE", "off")
-        .args(["--flake", "fixtures/basic-apps", "watch", "hello"])
+        .args(["--flake", &flake, "watch", "hello"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -4298,15 +4312,21 @@ fn watch_unprefixed_app_skips_task_eval_on_first_generation() {
         return;
     };
 
+    let fixture = isolated_basic_apps_flake();
+    let flake_dir = fixture.path().join("basic-apps");
+    let flake = flake_dir.to_string_lossy().into_owned();
+    let home = tempfile::TempDir::new().expect("cache home");
+
     let counter = NixCallCounter::install();
-    let repo_root = repo_root();
     let mut child = Command::cargo_bin("nxr")
         .expect("nxr binary")
-        .current_dir(&repo_root)
+        .current_dir(repo_root())
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
         .env("NXR_NIX", &counter.wrapper)
         .env("NXR_NXR_METADATA", "off")
         .env("NXR_STORE_EXE_CACHE", "off")
-        .args(["--flake", "fixtures/basic-apps", "watch", "hello"])
+        .args(["--flake", &flake, "watch", "hello"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -4391,10 +4411,29 @@ fn watch_unprefixed_prefers_task_when_app_and_task_share_name() {
     let stdout = child.stdout.take().expect("stdout pipe");
     let rx = start_watch_stdout_reader(stdout);
     let mut output = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(90);
-    wait_for_watch_occurrences(&rx, &mut output, "fmt", 1, deadline);
-    wait_for_watch_occurrences(&rx, &mut output, "test", 1, deadline);
-    wait_for_watch_occurrences(&rx, &mut output, "ci", 1, deadline);
+    // Per-stage deadlines: under parallel nextest, cold `nix run` for the DAG
+    // can burn most of a single shared window on the first node alone.
+    wait_for_watch_occurrences(
+        &rx,
+        &mut output,
+        "fmt",
+        1,
+        Instant::now() + Duration::from_secs(90),
+    );
+    wait_for_watch_occurrences(
+        &rx,
+        &mut output,
+        "test",
+        1,
+        Instant::now() + Duration::from_secs(90),
+    );
+    wait_for_watch_occurrences(
+        &rx,
+        &mut output,
+        "ci",
+        1,
+        Instant::now() + Duration::from_secs(90),
+    );
 
     let _ = child.kill();
     let _ = child.wait();

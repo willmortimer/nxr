@@ -942,8 +942,11 @@ mod tests {
 
     fn git(args: &[&str], cwd: &Utf8Path) {
         let status = Command::new("git")
+            .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
             .args(args)
             .current_dir(cwd)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
             .env("GIT_AUTHOR_NAME", "nxr-test")
             .env("GIT_AUTHOR_EMAIL", "nxr-test@example.com")
             .env("GIT_COMMITTER_NAME", "nxr-test")

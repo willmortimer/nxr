@@ -11,11 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `nxr script` / live file-backed apps no longer cold-eval the task document
   unless `--context` is set, restoring the zero-Nix lean path for plain scripts.
+- `fixtures/configurations` evaluates on Linux `nix flake show` (set rootfs /
+  disable grub / `stateVersion`) so configuration adapter tests pass in CI.
+- Watch name-collision CLI test uses per-stage timeouts so parallel nextest load
+  does not starve later DAG nodes after a slow first `nix run`.
+- Fixture `git commit` helpers isolate from host signing agents (e.g. 1Password).
 
 ### Changed
 
 - CI: main/PR quality is a single `ubuntu-latest` / Nix latest job; Nix 2.18,
   Lix, and macOS matrix moved to tag-triggered `compat.yml`.
+- Local ≡ CI dogfood via `nix run .#ci-gate` (same entrypoint as GHA); quality
+  apps clear `NXR_DEV_SHELL` and isolate git config; `configurations-fixture`
+  nix check force-evals Linux NixOS assertions on Darwin too.
 
 ## [3.4.0] - 2026-07-28
 

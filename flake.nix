@@ -110,11 +110,24 @@
             inherit pkgs src;
           };
 
+          # Eval x86_64-linux NixOS assertions on every check host (incl. Darwin).
+          configurationsFixtureCheck = import ./nix/checks/configurations-fixture.nix {
+            inherit pkgs;
+            nixpkgs = if system == "x86_64-darwin" then nixpkgsIntelDarwin else nixpkgs;
+          };
+
           nxrApp = {
             type = "app";
             program = "${nxr}/bin/nxr";
             meta.description = "Run nxr";
           };
+
+          # Host env that changes CLI/nextest outcomes vs clean GHA runners.
+          hermeticRunnerEnv = ''
+            unset NXR_DEV_SHELL || true
+            export GIT_CONFIG_GLOBAL=/dev/null
+            export GIT_CONFIG_SYSTEM=/dev/null
+          '';
 
           rustDevInputs = with pkgs; [
             rustc
@@ -187,6 +200,7 @@
                 pkgs.rustfmt
               ];
               text = ''
+                ${hermeticRunnerEnv}
                 exec cargo fmt --all "$@"
               '';
             };
@@ -199,6 +213,7 @@
                 pkgs.rustfmt
               ];
               text = ''
+                ${hermeticRunnerEnv}
                 exec cargo fmt --all -- --check "$@"
               '';
             };
@@ -212,6 +227,7 @@
                 pkgs.rustc
               ];
               text = ''
+                ${hermeticRunnerEnv}
                 exec cargo clippy --workspace --all-targets -- -D warnings "$@"
               '';
             };
@@ -223,9 +239,16 @@
                 pkgs.cargo
                 pkgs.cargo-nextest
                 pkgs.rustc
+                pkgs.git
               ];
               text = ''
-                exec cargo nextest run --workspace "$@"
+                ${hermeticRunnerEnv}
+                # Use the ambient flakes-capable `nix` (Determinate on GHA /
+                # local). Do not pin pkgs.nix here — that changes discovery
+                # capability negotiation vs the Actions runner.
+                # --no-fail-fast: watch ITs under parallel cancel leave orphans
+                # that poison sibling nix-call budgets; report the full set.
+                exec cargo nextest run --workspace --no-fail-fast "$@"
               '';
             };
 
@@ -237,7 +260,27 @@
                 pkgs.cargo-deny
               ];
               text = ''
+                ${hermeticRunnerEnv}
                 exec cargo deny check "$@"
+              '';
+            };
+
+            # Single local ≡ GHA dogfood entrypoint (packaged nxr + task ci graph).
+            # Do not add pkgs.nix: nested `nix run .#test` must see the same
+            # ambient flakes-capable Nix as Actions (Determinate). Pinning
+            # nixpkgs' nix flips discovery to flake-show and fails call-budget ITs.
+            ci-gate = nxrLib.mkRepoApp {
+              name = "nxr-ci-gate";
+              description = "Same quality dogfood as GitHub Actions (nxr task ci)";
+              runtimeInputs = [
+                nxr
+                pkgs.git
+              ];
+              text = ''
+                ${hermeticRunnerEnv}
+                nxr ci plan --json >/dev/null
+                nxr task ci --dry-run
+                exec nxr task ci "$@"
               '';
             };
 
@@ -256,6 +299,7 @@
             flake-parts-v2-fields = flakePartsV2FieldsCheck;
             nxr-metadata-document = nxrMetadataDocumentCheck;
             workspace-src-includes = workspaceSrcIncludesCheck;
+            configurations-fixture = configurationsFixtureCheck;
           } // qualityChecks;
 
           formatter = pkgs.nixpkgs-fmt;
