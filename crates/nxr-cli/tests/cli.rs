@@ -3603,12 +3603,15 @@ fn task_dag_shared_shell_uses_one_print_dev_env_on_smart_mode() {
     };
 
     let counter = NixCallCounter::install();
+    let home = tempfile::TempDir::new().expect("cache home");
     let repo_root = repo_root();
     if !task_dag_discovery_available(&repo_root) {
         return;
     }
     cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
         .env("NXR_NIX", &counter.wrapper)
         .args(["--flake", "fixtures/task-dag", "task", "ci", "--dry-run"])
         .assert()
@@ -3618,6 +3621,8 @@ fn task_dag_shared_shell_uses_one_print_dev_env_on_smart_mode() {
 
     cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
         .env("NXR_NIX", &counter.wrapper)
         .env("NXR_STORE_EXE_CACHE", "off")
         .args([
