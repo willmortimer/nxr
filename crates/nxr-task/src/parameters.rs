@@ -12,6 +12,15 @@ use crate::schema::{SchemaError, TaskParameter, TaskParameterType};
 /// Prefix for spawn-time task parameter environment variables.
 pub const PARAM_ENV_PREFIX: &str = "NXR_PARAM_";
 
+/// Canonical parameter and matrix attribute name pattern: `[a-z][a-z0-9_]*`.
+pub(crate) fn is_canonical_ident(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_lowercase() => chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'),
+        _ => false,
+    }
+}
+
 /// Errors while resolving typed task parameters for spawn.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ParameterError {
@@ -203,22 +212,34 @@ pub fn validate_task_parameters(
     task: &str,
     parameters: &BTreeMap<String, TaskParameter>,
 ) -> Result<(), SchemaError> {
-    for (name, definition) in parameters {
+    let mut seen_normalized = BTreeMap::new();
+    for name in parameters.keys() {
         if name.trim().is_empty() {
             return Err(SchemaError::InvalidParameter {
                 task: task.to_owned(),
-                name: name.to_owned(),
+                name: name.clone(),
                 message: "name must not be empty".to_owned(),
             });
         }
-        if !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-        {
+        let normalized = name.to_ascii_uppercase();
+        if let Some(existing) = seen_normalized.get(&normalized) {
             return Err(SchemaError::InvalidParameter {
                 task: task.to_owned(),
-                name: name.to_owned(),
-                message: "name must be alphanumeric or underscore".to_owned(),
+                name: name.clone(),
+                message: format!(
+                    "name collides with parameter `{existing}` after normalization to {PARAM_ENV_PREFIX}{normalized}"
+                ),
+            });
+        }
+        seen_normalized.insert(normalized, name.clone());
+    }
+
+    for (name, definition) in parameters {
+        if !is_canonical_ident(name) {
+            return Err(SchemaError::InvalidParameter {
+                task: task.to_owned(),
+                name: name.clone(),
+                message: "name must match [a-z][a-z0-9_]*".to_owned(),
             });
         }
         match definition.param_type {
@@ -359,6 +380,47 @@ mod tests {
         let err =
             resolve_task_parameter_env_with("demo", &sample_choice(), lookup).expect_err("invalid");
         assert!(matches!(err, ParameterError::Invalid { .. }));
+    }
+
+    #[test]
+    fn validate_rejects_parameter_name_collision_after_normalization() {
+        let parameters = BTreeMap::from([
+            (
+                "foo".to_owned(),
+                TaskParameter {
+                    param_type: TaskParameterType::String,
+                    default: None,
+                    values: None,
+                },
+            ),
+            (
+                "Foo".to_owned(),
+                TaskParameter {
+                    param_type: TaskParameterType::String,
+                    default: None,
+                    values: None,
+                },
+            ),
+        ]);
+        let err = validate_task_parameters("demo", &parameters).expect_err("collision");
+        assert!(matches!(err, SchemaError::InvalidParameter { .. }));
+        let message = err.to_string();
+        assert!(message.contains("collides"));
+        assert!(message.contains("NXR_PARAM_FOO"));
+    }
+
+    #[test]
+    fn validate_rejects_parameter_name_with_leading_digit() {
+        let parameters = BTreeMap::from([(
+            "1foo".to_owned(),
+            TaskParameter {
+                param_type: TaskParameterType::String,
+                default: None,
+                values: None,
+            },
+        )]);
+        let err = validate_task_parameters("demo", &parameters).expect_err("leading digit");
+        assert!(matches!(err, SchemaError::InvalidParameter { .. }));
     }
 
     #[test]

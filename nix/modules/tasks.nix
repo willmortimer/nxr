@@ -407,7 +407,8 @@ let
         default = { };
         description = ''
           Typed task parameters injected as `NXR_PARAM_<NAME>` at spawn (schema
-          v2). Values never appear in plans or events.
+          v2). Parameter names must match `[a-z][a-z0-9_]*` and must not collide
+          after ASCII uppercasing. Values never appear in plans or events.
         '';
       };
 
@@ -421,7 +422,8 @@ let
                 );
                 description = ''
                   Each entry expands this task into one planned node. Attribute
-                  values are injected as `NXR_MATRIX_<KEY>` at spawn.
+                  keys must match `[a-z][a-z0-9_]*` and must not collide after
+                  ASCII uppercasing. Values are injected as `NXR_MATRIX_<KEY>` at spawn.
                 '';
               };
             };

@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 use serde_json::Value as JsonValue;
 
+use crate::parameters::is_canonical_ident;
 use crate::schema::{SchemaError, TaskDefinition, TaskMatrix};
 
 /// Prefix for spawn-time matrix attribute environment variables.
@@ -147,6 +148,29 @@ pub fn validate_task_matrix(task: &str, matrix: &TaskMatrix) -> Result<(), Schem
     Ok(())
 }
 
+/// Reject matrix expansion ids (`task@N`) that collide with declared task names.
+pub fn validate_matrix_instance_collisions(
+    tasks: &BTreeMap<String, TaskDefinition>,
+) -> Result<(), SchemaError> {
+    let task_names: std::collections::BTreeSet<&str> = tasks.keys().map(String::as_str).collect();
+    for (name, definition) in tasks {
+        if let Some(matrix) = &definition.matrix {
+            for index in 0..matrix.include.len() {
+                let instance_id = matrix_node_id(name, index);
+                if task_names.contains(instance_id.as_str()) && instance_id != *name {
+                    return Err(SchemaError::InvalidMatrix {
+                        task: name.clone(),
+                        message: format!(
+                            "expanded instance id `{instance_id}` collides with declared task name `{instance_id}`"
+                        ),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn expand_depends_on(deps: &[String], instance_ids: &BTreeMap<String, Vec<String>>) -> Vec<String> {
     let mut out = Vec::new();
     for dep in deps {
@@ -174,21 +198,33 @@ pub fn validate_matrix_attrs(
             message: format!("matrix.include[{index}] must not be empty"),
         });
     }
-    for (key, value) in attrs {
+
+    let mut seen_normalized = BTreeMap::new();
+    for key in attrs.keys() {
         if key.trim().is_empty() {
             return Err(SchemaError::InvalidMatrix {
                 task: task.to_owned(),
                 message: format!("matrix.include[{index}] key must not be empty"),
             });
         }
-        if !key
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-        {
+        let normalized = key.to_ascii_uppercase();
+        if let Some(existing) = seen_normalized.get(&normalized) {
             return Err(SchemaError::InvalidMatrix {
                 task: task.to_owned(),
                 message: format!(
-                    "matrix.include[{index}].{key}: key must be alphanumeric or underscore"
+                    "matrix.include[{index}].{key}: key collides with `{existing}` after normalization to {MATRIX_ENV_PREFIX}{normalized}"
+                ),
+            });
+        }
+        seen_normalized.insert(normalized, key.clone());
+    }
+
+    for (key, value) in attrs {
+        if !is_canonical_ident(key) {
+            return Err(SchemaError::InvalidMatrix {
+                task: task.to_owned(),
+                message: format!(
+                    "matrix.include[{index}].{key}: key must match [a-z][a-z0-9_]*"
                 ),
             });
         }
@@ -302,6 +338,34 @@ mod tests {
             expand_matrix_roots(&["shard"], &expansion),
             vec!["shard@0".to_owned(), "shard@1".to_owned()]
         );
+    }
+
+    #[test]
+    fn rejects_matrix_instance_id_collision_with_task_name() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert("foo@0".to_owned(), TaskDefinition::new("base"));
+        tasks.insert(
+            "foo".to_owned(),
+            matrix_task(vec![BTreeMap::from([("os".to_owned(), json!("linux"))])]),
+        );
+        let err = validate_matrix_instance_collisions(&tasks).expect_err("collision");
+        assert!(matches!(err, SchemaError::InvalidMatrix { .. }));
+        assert!(err.to_string().contains("foo@0"));
+    }
+
+    #[test]
+    fn rejects_matrix_key_collision_after_normalization() {
+        let err = validate_matrix_attrs(
+            "demo",
+            0,
+            &BTreeMap::from([
+                ("foo".to_owned(), json!("linux")),
+                ("Foo".to_owned(), json!("macos")),
+            ]),
+        )
+        .expect_err("collision");
+        assert!(matches!(err, SchemaError::InvalidMatrix { .. }));
+        assert!(err.to_string().contains("NXR_MATRIX_FOO"));
     }
 
     #[test]

@@ -80,6 +80,8 @@ pub enum ScriptError {
     InvalidShebang { path: String, message: String },
     #[error("convention script name must not contain path separators: {name}")]
     InvalidConventionName { name: String },
+    #[error("ambiguous convention script name {name}: multiple matches ({paths})")]
+    AmbiguousConventionName { name: String, paths: String },
     #[error("failed to supervise child process: {0}")]
     Supervision(#[source] io::Error),
 }
@@ -95,7 +97,8 @@ impl ScriptError {
             Self::RemoteFlake { .. } | Self::NotFound { .. } => exit::NOT_FOUND,
             Self::NotExecutable { .. }
             | Self::InvalidShebang { .. }
-            | Self::InvalidConventionName { .. } => exit::USAGE,
+            | Self::InvalidConventionName { .. }
+            | Self::AmbiguousConventionName { .. } => exit::USAGE,
             Self::Supervision(_) => exit::PROCESS_SUPERVISION,
         }
     }
@@ -341,10 +344,29 @@ pub fn resolve_script_path(
     }
 
     if !path_or_name.contains('.') {
+        let mut matches = Vec::new();
         for ext in SCRIPT_NAME_EXTENSIONS {
             let candidate = dir.join(format!("{path_or_name}.{ext}"));
             if candidate.is_file() {
-                return Ok(candidate.canonicalize_utf8().unwrap_or(candidate));
+                matches.push(candidate);
+            }
+        }
+        match matches.len() {
+            0 => {}
+            1 => {
+                let candidate = &matches[0];
+                return Ok(candidate.canonicalize_utf8().unwrap_or_else(|_| candidate.clone()));
+            }
+            _ => {
+                let paths = matches
+                    .iter()
+                    .map(|path| path.as_str().to_owned())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(ScriptError::AmbiguousConventionName {
+                    name: path_or_name.to_owned(),
+                    paths,
+                });
             }
         }
     }
@@ -392,10 +414,19 @@ fn read_shebang(path: &Utf8Path) -> Result<Option<Vec<String>>, ScriptError> {
         return Ok(None);
     }
 
-    // Support `#!/usr/bin/env bash` and `#!/bin/sh`.
+    // Support `#!/usr/bin/env bash`, `#!/usr/bin/env -S uv run`, and `#!/bin/sh`.
     let mut parts: Vec<String> = line.split_whitespace().map(str::to_owned).collect();
-    if parts.first().map(String::as_str) == Some("/usr/bin/env") && parts.len() >= 2 {
+    if parts.first().map(String::as_str) == Some("/usr/bin/env") {
         parts.remove(0);
+        if parts.first().map(String::as_str) == Some("-S") {
+            parts.remove(0);
+            if parts.is_empty() {
+                return Err(ScriptError::InvalidShebang {
+                    path: path.as_str().to_owned(),
+                    message: "/usr/bin/env -S requires a command".to_owned(),
+                });
+            }
+        }
     }
     Ok(Some(parts))
 }
@@ -720,7 +751,10 @@ fn validate_repo_relative_file(path: &str) -> Result<(), ScriptError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SCRIPT_CONVENTION_DIR, is_path_form, resolve_script_path};
+    use super::{
+        SCRIPT_CONVENTION_DIR, is_path_form, resolve_script_path, resolve_script_spawn,
+        ScriptError,
+    };
     use camino::Utf8PathBuf;
     use std::fs;
     use tempfile::TempDir;
@@ -748,5 +782,30 @@ mod tests {
             resolved.canonicalize_utf8().unwrap_or(resolved.clone()),
             script.canonicalize_utf8().unwrap_or(script)
         );
+    }
+
+    #[test]
+    fn convention_name_rejects_ambiguous_extension_matches() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8");
+        let dir = root.join(SCRIPT_CONVENTION_DIR);
+        fs::create_dir_all(&dir).expect("mkdir");
+        fs::write(dir.join("deploy.sh"), "#!/bin/sh\necho sh\n").expect("write sh");
+        fs::write(dir.join("deploy.py"), "#!/bin/sh\necho py\n").expect("write py");
+
+        let err = resolve_script_path("deploy", &root, &root).expect_err("ambiguous");
+        assert!(matches!(err, ScriptError::AmbiguousConventionName { .. }));
+    }
+
+    #[test]
+    fn shebang_env_split_string_runs_interpreter_and_args() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8");
+        let script = root.join("runner");
+        fs::write(&script, "#!/usr/bin/env -S uv run\n").expect("write");
+
+        let spawn = resolve_script_spawn(&script, None).expect("spawn");
+        assert_eq!(spawn.program.as_str(), "uv");
+        assert_eq!(spawn.prefix_args, vec!["run".to_owned(), script.as_str().to_owned()]);
     }
 }

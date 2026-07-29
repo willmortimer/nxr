@@ -251,6 +251,9 @@ impl TaskDocument {
                 })?;
             }
         }
+        if self.schema_version == SCHEMA_VERSION_V2 {
+            crate::matrix::validate_matrix_instance_collisions(&self.tasks)?;
+        }
         for process in self.processes.keys() {
             validate_node_id(process).map_err(|error| SchemaError::InvalidProcessName {
                 process: process.clone(),
@@ -2169,6 +2172,40 @@ mod tests {
         });
         let err = parse_task_document(&value).expect_err("choice without values rejected");
         assert!(matches!(err, SchemaError::InvalidParameter { .. }));
+    }
+
+    #[test]
+    fn parse_rejects_v2_parameter_name_collision() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "demo": {
+                    "app": "demo",
+                    "parameters": {
+                        "foo": { "type": "string" },
+                        "FOO": { "type": "string" }
+                    }
+                }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("parameter collision");
+        assert!(matches!(err, SchemaError::InvalidParameter { .. }));
+    }
+
+    #[test]
+    fn parse_rejects_v2_matrix_instance_id_collision() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "foo@0": { "app": "base" },
+                "foo": {
+                    "app": "shard",
+                    "matrix": { "include": [{ "os": "linux" }] }
+                }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("matrix instance collision");
+        assert!(matches!(err, SchemaError::InvalidMatrix { .. }));
     }
 
     #[test]
