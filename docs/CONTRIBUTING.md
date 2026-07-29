@@ -6,16 +6,18 @@ This page is for people working **on** the `nxr` repository. Consumers of `nxr` 
 
 ```bash
 nix develop          # optional: project shell
-nix build .#nxr      # package the CLI
+nix build .#packages.$(nix eval --raw --impure --expr 'builtins.currentSystem').default  # package the CLI
 ```
 
-Quality apps (CI runs `nix flake check` on ubuntu/latest; other matrix cells use these apps):
+Quality apps (CI runs `nix flake check` on ubuntu/latest; other matrix cells use `nxr task ci`):
 
 ```bash
 nix run .#fmt        # rustfmt (add -- --check in CI)
 nix run .#lint       # clippy -D warnings
 nix run .#test       # cargo nextest
 nix run .#deny       # cargo-deny
+nxr task ci          # orchestrated CI gate (fmt-check → lint/test/deny → ci)
+nxr ci plan --json   # provider-neutral CI plan export
 ```
 
 Or from a Cargo checkout:

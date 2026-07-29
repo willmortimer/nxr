@@ -46,7 +46,12 @@ resolve_nxr_bin() {
     return
   fi
   if command -v nix >/dev/null 2>&1; then
-    local out
+    local out system
+    system="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
+    if out="$(nix build ".#packages.${system}.default" --no-link --print-out-paths 2>/dev/null)"; then
+      echo "${out%/}/bin/nxr"
+      return
+    fi
     if out="$(nix build .#nxr --no-link --print-out-paths 2>/dev/null)"; then
       echo "${out%/}/bin/nxr"
       return

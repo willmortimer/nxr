@@ -57,31 +57,32 @@ jobs:
       - name: Build nxr
         id: nxr
         run: |
-          nix build .#nxr -L
+          system="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
+          nix build ".#packages.$system.default" -L
           nxr_bin="$(nix path-info ./result)/bin/nxr"
           echo "bin=$nxr_bin" >> "$GITHUB_OUTPUT"
           echo "Packaged nxr: $nxr_bin"
           "$nxr_bin" --version
 
+      - name: Root CI plan (dogfood)
+        if: matrix.os == 'ubuntu-latest' && matrix.nix_label == 'latest'
+        env:
+          NXR: ${{ steps.nxr.outputs.bin }}
+        run: |
+          "$NXR" ci plan --json
+          "$NXR" task ci --dry-run
+
       - name: Flake check (hermetic)
         if: matrix.os == 'ubuntu-latest' && matrix.nix_label == 'latest'
         run: nix flake check -L
 
-      - name: Format check
+      - name: CI task graph
         if: matrix.os != 'ubuntu-latest' || matrix.nix_label != 'latest'
-        run: nix run .#fmt -- --check
-
-      - name: Lint
-        if: matrix.os != 'ubuntu-latest' || matrix.nix_label != 'latest'
-        run: nix run .#lint
-
-      - name: Test
-        if: matrix.os != 'ubuntu-latest' || matrix.nix_label != 'latest'
-        run: nix run .#test
-
-      - name: Dependency policy
-        if: matrix.os != 'ubuntu-latest' || matrix.nix_label != 'latest'
-        run: nix run .#deny
+        env:
+          NXR: ${{ steps.nxr.outputs.bin }}
+        run: |
+          "$NXR" ci plan --json > /dev/null
+          "$NXR" task ci
 
       - name: Flake schema check
         if: matrix.os != 'ubuntu-latest' || matrix.nix_label != 'latest'

@@ -2595,6 +2595,42 @@ fn ci_plan_json_exports_ci_plan_schema() {
 }
 
 #[test]
+fn root_ci_plan_json_exports_ci_plan_schema() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !root_ci_tasks_available(&repo_root) {
+        return;
+    }
+
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .args(["--json", "ci", "plan"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse ci plan json");
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["roots"], serde_json::json!(["ci"]));
+    assert_eq!(value["execution_plan"]["schema_version"], 1);
+    assert_eq!(value["execution_plan"]["root"], "ci");
+    let serial = value["execution_plan"]["serial_order"]
+        .as_array()
+        .expect("serial_order array");
+    assert!(
+        serial.first() == Some(&serde_json::json!("fmt-check")),
+        "expected fmt-check first: {serial:?}"
+    );
+    assert!(
+        serial.last() == Some(&serde_json::json!("ci")),
+        "expected ci last: {serial:?}"
+    );
+}
+
+#[test]
 fn list_namespace_filter_limits_monorepo_fixture() {
     let Some(()) = require_nix() else {
         return;
@@ -2717,6 +2753,24 @@ fn task_dag_discovery_available(repo_root: &std::path::Path) -> bool {
         .expect("spawn nxr list");
     if !list.status.success() {
         eprintln!("skipping task-dag test: app discovery failed on this host");
+        return false;
+    }
+    true
+}
+
+fn root_ci_tasks_available(repo_root: &std::path::Path) -> bool {
+    let list = cargo_bin_cmd!("nxr")
+        .current_dir(repo_root)
+        .args(["list"])
+        .output()
+        .expect("spawn nxr list");
+    if !list.status.success() {
+        eprintln!("skipping root ci test: app discovery failed on this host");
+        return false;
+    }
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    if !stdout.contains("Available tasks") || !stdout.contains("ci") {
+        eprintln!("skipping root ci test: root flake has no ci task");
         return false;
     }
     true

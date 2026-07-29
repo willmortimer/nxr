@@ -52,7 +52,7 @@ Mise/Just-class UX without abandoning Nix leaves ([ADR-0148](adr/0148-automation
 - ~~Selectors (`category:`, `project:`, `changed`)~~; matrix expansion — **planned**
 - Reports: JUnit + task SARIF shipped; **coverage and benchmark remain scaffold stubs**
   (empty valid documents until artifact collection exists)
-- ~~`nxr ci plan --json`~~; dogfood one canonical local/CI graph — **partial**
+- ~~`nxr ci plan --json`~~; ~~dogfood one canonical local/CI graph~~ — **shipped**
 - ~~Generated CLI reference; golden example fixture~~
 
 ### 3.0 — Secure execution contexts — shipped as `v3.0.0`

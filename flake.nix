@@ -18,6 +18,10 @@
         };
     in
     flake-parts.lib.mkFlake { inherit inputs; } {
+      imports = [
+        ./nix/modules/root-tasks-only.nix
+      ];
+
       flake = {
         lib = let
           metadata = import ./nix/lib/metadata.nix { lib = nixpkgs.lib; };
@@ -124,6 +128,48 @@
           ];
         in
         {
+          nxr.tasks = {
+            fmt = {
+              description = "Format Rust sources";
+              app = "fmt";
+            };
+
+            fmt-check = {
+              description = "Verify Rust formatting (CI)";
+              app = "fmt-check";
+              hidden = true;
+            };
+
+            lint = {
+              description = "Run Clippy on the workspace";
+              app = "lint";
+              dependsOn = [ "fmt-check" ];
+            };
+
+            test = {
+              description = "Run the Rust test suite";
+              app = "test";
+              dependsOn = [ "lint" ];
+            };
+
+            deny = {
+              description = "Run cargo-deny";
+              app = "deny";
+              dependsOn = [ "fmt-check" ];
+            };
+
+            ci = {
+              description = "CI quality gate";
+              app = "test";
+              category = "validation";
+              dependsOn = [
+                "test"
+                "deny"
+              ];
+              aliases = [ "check" ];
+            };
+          };
+
           packages = {
             inherit nxr;
             default = nxr;
@@ -142,6 +188,18 @@
               ];
               text = ''
                 exec cargo fmt --all "$@"
+              '';
+            };
+
+            fmt-check = nxrLib.mkRepoApp {
+              name = "nxr-fmt-check";
+              description = "Verify Rust formatting (CI)";
+              runtimeInputs = [
+                pkgs.cargo
+                pkgs.rustfmt
+              ];
+              text = ''
+                exec cargo fmt --all -- --check "$@"
               '';
             };
 
