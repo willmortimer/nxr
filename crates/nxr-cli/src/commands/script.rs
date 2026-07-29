@@ -177,12 +177,10 @@ pub fn prepare_script(request: &ScriptRequest<'_>) -> Result<PreparedScript, Scr
         resolve_execution_directory(&invocation_cwd, &flake, request.root, request.cwd)?;
     let script_path = resolve_script_path(request.path_or_name, &invocation_cwd, &local_root)?;
     let forwarded = strip_one_separator(request.args);
-    let document = load_task_document(&flake, &local_root, request.nix_override, request.nix_flags)?;
-    let context_fields = resolve_script_context(
-        &document,
-        request.context,
-        &request.environment_policy,
-    )?;
+    let document =
+        load_task_document(&flake, &local_root, request.nix_override, request.nix_flags)?;
+    let context_fields =
+        resolve_script_context(&document, request.context, &request.environment_policy)?;
     let shell = resolve_effective_shell(request.shell, context_fields.shell.clone(), None);
     let spawn = resolve_script_spawn(&script_path, None)?;
     let nix = locate_nix_path(request.nix_override)?;
@@ -372,7 +370,9 @@ pub fn resolve_script_path(
             0 => {}
             1 => {
                 let candidate = &matches[0];
-                return Ok(candidate.canonicalize_utf8().unwrap_or_else(|_| candidate.clone()));
+                return Ok(candidate
+                    .canonicalize_utf8()
+                    .unwrap_or_else(|_| candidate.clone()));
             }
             _ => {
                 let paths = matches
@@ -711,8 +711,7 @@ pub fn prepare_live_file_app(
     let spawn = resolve_script_spawn(&script_path, interpreter)?;
     let nix = locate_nix_path(nix_override)?;
     let document = load_task_document(flake, local_root, nix_override, nix_flags)?;
-    let context_fields =
-        resolve_script_context(&document, context_name, &environment_policy)?;
+    let context_fields = resolve_script_context(&document, context_name, &environment_policy)?;
     let shell = resolve_effective_shell(
         request_shell,
         context_fields.shell.clone(),
@@ -790,11 +789,7 @@ pub fn execute_prepared_script(
     }
 
     if prepared.confirm {
-        let context_name = prepared
-            .plan
-            .context
-            .as_deref()
-            .unwrap_or("unknown");
+        let context_name = prepared.plan.context.as_deref().unwrap_or("unknown");
         enforce_context_confirm(context_name, confirm_label, true)?;
     }
 
@@ -897,7 +892,8 @@ fn build_script_spawn_env(
         authorize_script_secrets(&prepared.plan, &project_id, &user_config)?;
     }
     let entries = plan_secret_entries_from_core(&prepared.plan.secrets);
-    let spawn_secrets = prepare_spawn_secrets(&entries, &project_id, &user_config, &secret_bindings)?;
+    let spawn_secrets =
+        prepare_spawn_secrets(&entries, &project_id, &user_config, &secret_bindings)?;
     let mut merged = nxr_task::merge_spawn_env_overrides(
         &prepared.plan.context_env_set,
         &spawn_secrets.env_overrides,
@@ -925,7 +921,11 @@ fn authorize_script_secrets(
     if user_config.trusted_projects.is_empty() {
         return Ok(());
     }
-    let trust_refs: Vec<String> = plan.secrets.iter().map(|secret| secret.reference.clone()).collect();
+    let trust_refs: Vec<String> = plan
+        .secrets
+        .iter()
+        .map(|secret| secret.reference.clone())
+        .collect();
     authorize_secret_refs(project_id, &trust_refs, &user_config.trusted_projects)?;
     Ok(())
 }
@@ -1016,8 +1016,8 @@ mod tests {
         PreparedScript, SCRIPT_CONVENTION_DIR, ScriptError, build_script_spawn_env, is_path_form,
         prepend_runtime_path, resolve_script_path, resolve_script_spawn,
     };
-    use std::collections::BTreeMap;
     use camino::Utf8PathBuf;
+    use std::collections::BTreeMap;
     use std::fs;
     use tempfile::TempDir;
 
@@ -1032,8 +1032,8 @@ mod tests {
 
     #[test]
     fn build_script_spawn_env_prepends_runtime_path() {
-        use nxr_core::{EnvironmentPolicy, Plan, PlanCommand, PlanKind};
         use camino::Utf8PathBuf;
+        use nxr_core::{EnvironmentPolicy, Plan, PlanCommand, PlanKind};
 
         let prepared = PreparedScript {
             plan: Plan {
@@ -1074,9 +1074,10 @@ mod tests {
         };
         let (env_overrides, _, _) = build_script_spawn_env(&prepared).expect("spawn env");
         let env = env_overrides.expect("overrides");
-        assert!(env
-            .get("PATH")
-            .is_some_and(|path| path.starts_with("/nix/store/example/bin")));
+        assert!(
+            env.get("PATH")
+                .is_some_and(|path| path.starts_with("/nix/store/example/bin"))
+        );
     }
 
     #[test]
@@ -1123,6 +1124,9 @@ mod tests {
 
         let spawn = resolve_script_spawn(&script, None).expect("spawn");
         assert_eq!(spawn.program.as_str(), "uv");
-        assert_eq!(spawn.prefix_args, vec!["run".to_owned(), script.as_str().to_owned()]);
+        assert_eq!(
+            spawn.prefix_args,
+            vec!["run".to_owned(), script.as_str().to_owned()]
+        );
     }
 }

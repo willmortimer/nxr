@@ -188,8 +188,8 @@ pub fn append_rolling_tail(captured: &mut Vec<u8>, chunk: &[u8], capacity: usize
 #[cfg(unix)]
 mod unix {
     use super::{
-        BTreeMap, Command, Duration, EnvironmentPolicy, IsTerminal, OsStr, Path, STDERR_TAIL_CAPACITY,
-        Stdio, append_rolling_tail, exit_code_from_status, io, thread,
+        BTreeMap, Command, Duration, EnvironmentPolicy, IsTerminal, OsStr, Path,
+        STDERR_TAIL_CAPACITY, Stdio, append_rolling_tail, exit_code_from_status, io, thread,
     };
     use crate::signals::unix::SignalForwarder;
     use std::os::unix::process::CommandExt;
@@ -344,11 +344,7 @@ mod unix {
                             }
                             first_output_recorded = true;
                         }
-                        append_rolling_tail(
-                            &mut captured,
-                            line.as_bytes(),
-                            STDERR_TAIL_CAPACITY,
-                        );
+                        append_rolling_tail(&mut captured, line.as_bytes(), STDERR_TAIL_CAPACITY);
                         let trimmed = line.trim_end_matches(['\r', '\n']);
                         on_line(trimmed);
                     }

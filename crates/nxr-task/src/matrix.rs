@@ -223,9 +223,7 @@ pub fn validate_matrix_attrs(
         if !is_canonical_ident(key) {
             return Err(SchemaError::InvalidMatrix {
                 task: task.to_owned(),
-                message: format!(
-                    "matrix.include[{index}].{key}: key must match [a-z][a-z0-9_]*"
-                ),
+                message: format!("matrix.include[{index}].{key}: key must match [a-z][a-z0-9_]*"),
             });
         }
         if matrix_value_to_string(value).is_none() {

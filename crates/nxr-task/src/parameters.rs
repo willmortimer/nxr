@@ -16,7 +16,9 @@ pub const PARAM_ENV_PREFIX: &str = "NXR_PARAM_";
 pub(crate) fn is_canonical_ident(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
-        Some(first) if first.is_ascii_lowercase() => chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'),
+        Some(first) if first.is_ascii_lowercase() => {
+            chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+        }
         _ => false,
     }
 }

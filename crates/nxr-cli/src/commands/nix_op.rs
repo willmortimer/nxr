@@ -6,8 +6,8 @@ use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
 use nxr_nix::{
     NixError, NixProgressFormatter, NixProgressMode, OptionalNixFlags, OutputNotFoundError,
-    OutputTable, attr_installable, check_installable, ensure_internal_json_log_format,
-    locate_nom, package_installable, resolve_output_by_name, token_is_explicit_installable,
+    OutputTable, attr_installable, check_installable, ensure_internal_json_log_format, locate_nom,
+    package_installable, resolve_output_by_name, token_is_explicit_installable,
     write_progress_line,
 };
 use serde::Serialize;

@@ -217,13 +217,8 @@ fn run_with_context(
             context: Some(context_name),
         };
         let _ = adapter;
-        return script::execute(
-            &script_request,
-            request.dry_run,
-            request.json,
-            runner,
-        )
-        .map_err(ContextCommandError::from);
+        return script::execute(&script_request, request.dry_run, request.json, runner)
+            .map_err(ContextCommandError::from);
     }
 
     let (tasks, args) = parse_run_target(command)?;

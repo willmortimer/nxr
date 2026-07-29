@@ -152,7 +152,12 @@ impl NixProgressFormatter {
             return None;
         }
         let n = self.active.len();
-        let newest = self.active.values().next_back().cloned().unwrap_or_default();
+        let newest = self
+            .active
+            .values()
+            .next_back()
+            .cloned()
+            .unwrap_or_default();
         let line = if n == 1 {
             format!("… {newest}")
         } else {
@@ -246,9 +251,8 @@ mod tests {
             r#"@nix {"action":"start","id":1,"level":0,"text":"building 'foo'","type":0}"#,
         );
         assert_eq!(start.as_deref(), Some("… building 'foo'"));
-        let msg = fmt.feed_line(
-            r#"@nix {"action":"msg","level":1,"msg":"warning: something happened"}"#,
-        );
+        let msg =
+            fmt.feed_line(r#"@nix {"action":"msg","level":1,"msg":"warning: something happened"}"#);
         assert_eq!(msg.as_deref(), Some("warning: something happened"));
         let stop = fmt.feed_line(r#"@nix {"action":"stop","id":1}"#);
         assert!(stop.is_none());

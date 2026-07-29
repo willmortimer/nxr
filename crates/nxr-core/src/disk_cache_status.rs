@@ -193,9 +193,7 @@ fn ensure_within_root(root: &Path, path: &Path) -> io::Result<PathBuf> {
         }
         return Ok(canonical);
     }
-    let relative = absolute
-        .strip_prefix(root)
-        .unwrap_or(absolute.as_path());
+    let relative = absolute.strip_prefix(root).unwrap_or(absolute.as_path());
     if relative.components().any(|component| {
         matches!(
             component,
