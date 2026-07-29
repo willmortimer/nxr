@@ -178,6 +178,10 @@ pub struct PreparedTaskNode {
     pub parameter_env: BTreeMap<String, String>,
     /// Resolved `NXR_MATRIX_*` spawn env (reused at spawn).
     pub matrix_env: BTreeMap<String, String>,
+    /// Nix flags from preparation; required for store-exe reuse at spawn.
+    pub store_exe_nix_flags: Option<OptionalNixFlags>,
+    /// Nix version from the preparation snapshot; paired with [`Self::store_exe_nix_flags`].
+    pub store_exe_nix_version: Option<String>,
 }
 
 /// Once-per-invocation workspace evaluation: flake, Nix adapter, apps, optional tasks.
@@ -2012,6 +2016,8 @@ impl<'a> TaskNodePreparer<'a> {
             prep_stage: NodePrepStage::CasInputs,
             parameter_env,
             matrix_env,
+            store_exe_nix_flags: Some(nix_flags.clone()),
+            store_exe_nix_version: Some(snapshot.nix.capabilities.version.to_string()),
         })
     }
 }
@@ -3565,6 +3571,25 @@ mod tests {
         assert_eq!(
             preparer.prepared()["b"].prep_stage,
             super::NodePrepStage::CasInputs
+        );
+    }
+
+    #[test]
+    fn prepared_task_node_records_store_exe_nix_identity() {
+        let (snapshot, document, _order, _) = chain_fixture();
+        let mut nix_flags = OptionalNixFlags::default();
+        nix_flags.offline = true;
+        nix_flags.accept_flake_config = true;
+        let roots = vec!["c".to_owned()];
+        let policy = nxr_core::EnvironmentPolicy::Inherit;
+        let mut preparer =
+            pipeline_preparer(&snapshot, &document, &roots, &nix_flags, &policy, true);
+        preparer.ensure_prepared("a").expect("prepare a");
+        let node = preparer.prepared().get("a").expect("node a");
+        assert_eq!(node.store_exe_nix_flags.as_ref(), Some(&nix_flags));
+        assert_eq!(
+            node.store_exe_nix_version.as_deref(),
+            Some(snapshot.nix.capabilities.version.to_string().as_str()),
         );
     }
 }

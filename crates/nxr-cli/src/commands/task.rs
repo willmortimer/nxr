@@ -29,6 +29,7 @@ use crate::commands::run::RunError;
 use crate::commands::secrets::{
     SpawnSecrets, load_runtime_secret_config, prepare_spawn_secrets, project_identity,
 };
+use crate::commands::store_exe::{ResolvedAppSpawn, resolve_app_spawn_with_prewarm};
 use crate::commands::trust;
 use crate::commands::workspace_cache::{
     explain_workspace_cache, save_workspace_cache, try_workspace_cache_restore,
@@ -1176,6 +1177,33 @@ fn requires_project_trust(prepared_nodes: &BTreeMap<String, PreparedTaskNode>) -
         .any(|node| node.confirm || !node.plan.secrets.is_empty())
 }
 
+/// Resolve spawn argv for a prepared task node, reusing store-exe only when the
+/// preparer recorded immutable Nix identity (flags + version).
+fn resolve_prepared_task_spawn(
+    prepared: &PreparedTaskNode,
+    watch_prewarm: Option<&mut WatchPrewarm>,
+) -> ResolvedAppSpawn {
+    match (
+        prepared.store_exe_nix_flags.as_ref(),
+        prepared.store_exe_nix_version.as_deref(),
+    ) {
+        (Some(nix_flags), Some(nix_version)) => resolve_app_spawn_with_prewarm(
+            &prepared.plan,
+            &prepared.program,
+            Some(prepared.flake_root.as_path()),
+            nix_flags,
+            nix_version,
+            Some(prepared.cwd.as_std_path()),
+            watch_prewarm,
+        ),
+        _ => ResolvedAppSpawn {
+            program: prepared.program.clone(),
+            arguments: prepared.arguments.clone(),
+            used_store_exe: false,
+        },
+    }
+}
+
 fn spawn_node(
     preparer: &TaskNodePreparer<'_>,
     node_id: &str,
@@ -1211,15 +1239,7 @@ fn spawn_node(
 
     sink.emit(Event::node_started(node_id.to_owned()));
 
-    let spawn = crate::commands::store_exe::resolve_app_spawn_with_prewarm(
-        &prepared.plan,
-        &prepared.program,
-        Some(prepared.flake_root.as_path()),
-        &OptionalNixFlags::default(),
-        "",
-        Some(prepared.cwd.as_std_path()),
-        watch_prewarm,
-    );
+    let spawn = resolve_prepared_task_spawn(prepared, watch_prewarm);
     let program = spawn.program.as_std_path();
     let args = &spawn.arguments;
     let cwd = Some(prepared.cwd.as_std_path());
@@ -1473,12 +1493,16 @@ fn format_wave_summary(waves: &[Vec<String>]) -> String {
 mod tests {
     use super::{
         format_wave_summary, node_uses_piped_stdio, parallel_ready_waves, plan_exit_code,
-        plan_uses_piped_stdio, task_inherits_stdin,
+        plan_uses_piped_stdio, resolve_prepared_task_spawn, task_inherits_stdin,
     };
+    use crate::commands::common::{NodePrepStage, PreparedTaskNode};
     use crate::output_task::{EventsFormat, TaskOutputMode};
     use crate::reports::ReportPaths;
+    use camino::Utf8PathBuf;
     use nxr_core::EnvironmentPolicy;
     use nxr_core::diagnostics::exit;
+    use nxr_core::{Plan, PlanCommand, PlanKind};
+    use nxr_nix::OptionalNixFlags;
     use nxr_task::{
         FailurePolicy, PlanError, TaskDefinition, build_execution_plan, build_execution_plan_roots,
     };
@@ -1677,5 +1701,90 @@ mod tests {
         let mut unlocked: Vec<_> = to_start;
         unlocked.sort();
         assert_eq!(unlocked, vec!["child1".to_owned(), "child2".to_owned()]);
+    }
+
+    fn minimal_prepared_task_node() -> PreparedTaskNode {
+        PreparedTaskNode {
+            id: "leaf".to_owned(),
+            program: Utf8PathBuf::from("/nix/bin/nix"),
+            arguments: vec!["run".to_owned(), "/proj#leaf".to_owned()],
+            cwd: Utf8PathBuf::from("/proj"),
+            environment: EnvironmentPolicy::Inherit,
+            plan: Plan {
+                schema_version: Plan::SCHEMA_VERSION,
+                kind: PlanKind::App,
+                flake: "/proj".to_owned(),
+                system: "aarch64-darwin".to_owned(),
+                target: "leaf".to_owned(),
+                attr_path: "apps.aarch64-darwin.leaf".to_owned(),
+                invocation_directory: "/proj".to_owned(),
+                execution_directory: "/proj".to_owned(),
+                shell: None,
+                active_shell: None,
+                environment_policy: EnvironmentPolicy::Inherit,
+                context: None,
+                secrets: Vec::new(),
+                context_env_set: BTreeMap::new(),
+                parameters: Vec::new(),
+                matrix: Vec::new(),
+                command: PlanCommand {
+                    program: "/nix/bin/nix".to_owned(),
+                    arguments: vec!["run".to_owned(), "/proj#leaf".to_owned()],
+                },
+                forwarded_arguments: Vec::new(),
+                workspace_script: None,
+                mutable_source: false,
+                fallback_app: None,
+                environment_mode: None,
+            },
+            timeout: None,
+            termination_grace: None,
+            context_name: None,
+            confirm: false,
+            workspace_cache: None,
+            flake_root: Utf8PathBuf::from("/proj"),
+            prep_stage: NodePrepStage::SpawnPlan,
+            store_exe_nix_flags: None,
+            store_exe_nix_version: None,
+        }
+    }
+
+    #[test]
+    fn resolve_prepared_task_spawn_without_identity_skips_store_exe() {
+        let node = minimal_prepared_task_node();
+        let spawn = resolve_prepared_task_spawn(&node, None);
+        assert!(!spawn.used_store_exe);
+        assert_eq!(spawn.program, node.program);
+        assert_eq!(spawn.arguments, node.arguments);
+    }
+
+    #[test]
+    fn resolve_prepared_task_spawn_passes_offline_and_accept_flake_config_flags() {
+        use nxr_core::digest_nix_flags;
+
+        let mut flags = OptionalNixFlags::default();
+        flags.offline = true;
+        flags.accept_flake_config = true;
+        let mut node = minimal_prepared_task_node();
+        node.store_exe_nix_flags = Some(flags.clone());
+        node.store_exe_nix_version = Some("2.18.0".to_owned());
+
+        let digest = digest_nix_flags(
+            flags.offline,
+            flags.no_write_lock_file,
+            flags.accept_flake_config,
+            flags.json_log_format,
+            &flags.nix_options,
+            &flags.extra_argv,
+        );
+        assert_ne!(
+            digest,
+            digest_nix_flags(false, false, false, false, &[], &[]),
+            "offline and accept-flake-config must affect store-exe key material"
+        );
+        assert!(
+            node.store_exe_nix_flags.is_some() && node.store_exe_nix_version.is_some(),
+            "prepared nodes must carry store-exe identity for flag propagation"
+        );
     }
 }
