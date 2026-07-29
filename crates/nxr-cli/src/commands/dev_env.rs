@@ -76,7 +76,7 @@ pub fn resolve_script_spawn_with_dev_env(
     }
 
     if matches!(shell_mode, ShellMode::Always) {
-        return Ok(develop_wrap(
+        return develop_wrap(
             flake,
             nix,
             shell_name,
@@ -84,7 +84,7 @@ pub fn resolve_script_spawn_with_dev_env(
             spawn,
             &inner_args,
             base_environment_policy,
-        )?);
+        );
     }
 
     match try_process_spawn(
@@ -484,10 +484,10 @@ fn parse_env_stdout(stdout: &[u8]) -> Result<BTreeMap<String, String>, NixError>
     let text = String::from_utf8_lossy(stdout);
     let mut map = BTreeMap::new();
     for line in text.lines() {
-        if let Some((key, value)) = line.split_once('=') {
-            if !key.is_empty() {
-                map.insert(key.to_owned(), value.to_owned());
-            }
+        if let Some((key, value)) = line.split_once('=')
+            && !key.is_empty()
+        {
+            map.insert(key.to_owned(), value.to_owned());
         }
     }
     Ok(map)

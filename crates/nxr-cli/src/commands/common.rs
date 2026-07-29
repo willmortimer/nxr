@@ -1090,8 +1090,11 @@ enum PrepMode<'a> {
     Live(Box<LivePrep<'a>>),
     /// Watch reuse / pre-built map — lookups only, no further prepare.
     Sealed {
+        #[allow(dead_code)]
         document: Option<&'a TaskDocument>,
+        #[allow(dead_code)]
         execution_tasks: BTreeMap<String, nxr_task::TaskDefinition>,
+        #[allow(dead_code)]
         matrix_instances: BTreeMap<String, MatrixInstance>,
     },
 }
@@ -1238,6 +1241,7 @@ impl<'a> TaskNodePreparer<'a> {
 
     /// Task definition for a prepared node when document metadata is available.
     #[must_use]
+    #[allow(dead_code)]
     pub fn task_definition(&self, task_id: &str) -> Option<&nxr_task::TaskDefinition> {
         match &self.mode {
             PrepMode::Live(live) => live.execution_tasks.get(task_id),
@@ -1249,6 +1253,7 @@ impl<'a> TaskNodePreparer<'a> {
 
     /// Matrix instance metadata for an expanded node id.
     #[must_use]
+    #[allow(dead_code)]
     pub fn matrix_instance(&self, task_id: &str) -> Option<&MatrixInstance> {
         match &self.mode {
             PrepMode::Live(live) => live.matrix_expansion.instances.get(task_id),
@@ -1443,7 +1448,7 @@ impl<'a> TaskNodePreparer<'a> {
             &live.snapshot.nix.nix,
             flake_root,
             live.shell_mode,
-            &live.nix_flags,
+            live.nix_flags,
             shell,
             base_policy,
         )?;
@@ -3786,9 +3791,11 @@ mod tests {
     #[test]
     fn prepared_task_node_records_store_exe_nix_identity() {
         let (snapshot, document, _order, _) = chain_fixture();
-        let mut nix_flags = OptionalNixFlags::default();
-        nix_flags.offline = true;
-        nix_flags.accept_flake_config = true;
+        let nix_flags = OptionalNixFlags {
+            offline: true,
+            accept_flake_config: true,
+            ..Default::default()
+        };
         let roots = vec!["c".to_owned()];
         let policy = nxr_core::EnvironmentPolicy::Inherit;
         let mut preparer =

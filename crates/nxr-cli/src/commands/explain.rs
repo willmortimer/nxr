@@ -255,6 +255,7 @@ fn explain_app(request: &ExplainRequest<'_>) -> Result<ExplainReport, ExplainErr
 
     let (prepared_plan, fast_path) = match resolve_live_file_backed_app(&app_request, true) {
         Ok(LiveFastPathOutcome::Hit(live)) => {
+            let live = *live;
             let fast_path = FastPathContext {
                 selected: true,
                 miss_reasons: Vec::new(),

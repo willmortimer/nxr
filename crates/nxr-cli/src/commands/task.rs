@@ -1764,9 +1764,11 @@ mod tests {
     fn resolve_prepared_task_spawn_passes_offline_and_accept_flake_config_flags() {
         use nxr_core::digest_nix_flags;
 
-        let mut flags = OptionalNixFlags::default();
-        flags.offline = true;
-        flags.accept_flake_config = true;
+        let flags = OptionalNixFlags {
+            offline: true,
+            accept_flake_config: true,
+            ..Default::default()
+        };
         let mut node = minimal_prepared_task_node();
         node.store_exe_nix_flags = Some(flags.clone());
         node.store_exe_nix_version = Some("2.18.0".to_owned());

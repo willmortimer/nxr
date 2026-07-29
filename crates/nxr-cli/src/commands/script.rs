@@ -414,8 +414,7 @@ fn is_executable(path: &Path) -> bool {
 }
 
 fn read_shebang(path: &Utf8Path) -> Result<Option<Vec<String>>, ScriptError> {
-    let mut file =
-        fs::File::open(path.as_std_path()).map_err(|error| ScriptError::Supervision(error))?;
+    let mut file = fs::File::open(path.as_std_path()).map_err(ScriptError::Supervision)?;
     let mut buf = [0_u8; 512];
     let n = file.read(&mut buf).map_err(ScriptError::Supervision)?;
     if n < 2 || buf[0] != b'#' || buf[1] != b'!' {
@@ -451,7 +450,7 @@ fn read_shebang(path: &Utf8Path) -> Result<Option<Vec<String>>, ScriptError> {
 /// Outcome of resolving a live file-backed app fast path (ADR-0170).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LiveFastPathOutcome {
-    Hit(PreparedScript),
+    Hit(Box<PreparedScript>),
     Miss { reasons: Vec<String> },
 }
 
@@ -599,7 +598,7 @@ fn resolve_listing_to_prepared(
         listing.runtime_path.as_deref(),
         &forwarded,
     )?;
-    Ok(LiveFastPathOutcome::Hit(prepared))
+    Ok(LiveFastPathOutcome::Hit(Box::new(prepared)))
 }
 
 /// List convention scripts in `.nxr/scripts` for a local flake checkout.

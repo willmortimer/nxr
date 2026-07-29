@@ -95,11 +95,11 @@ pub fn parse_print_dev_env_json(json: &str) -> Result<DevEnvironment, DevEnvPars
 
     let mut env = DevEnvironment::default();
 
-    if let Some(functions) = root_obj.get("bashFunctions") {
-        if functions.as_object().is_some_and(|map| !map.is_empty()) {
-            env.unsupported_features
-                .push(UnsupportedDevEnvFeature::BashFunctions);
-        }
+    if let Some(functions) = root_obj.get("bashFunctions")
+        && functions.as_object().is_some_and(|map| !map.is_empty())
+    {
+        env.unsupported_features
+            .push(UnsupportedDevEnvFeature::BashFunctions);
     }
 
     let variables = root_obj

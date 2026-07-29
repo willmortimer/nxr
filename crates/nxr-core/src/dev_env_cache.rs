@@ -412,7 +412,7 @@ fn secret_value_is_real(value: &str) -> bool {
 }
 
 fn unique_cache_temp_path(path: &std::path::Path) -> PathBuf {
-    let parent = path.parent().unwrap_or_else(|| path.as_ref());
+    let parent = path.parent().unwrap_or(path);
     let stem = path
         .file_stem()
         .and_then(|stem| stem.to_str())
