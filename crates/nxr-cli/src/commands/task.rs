@@ -733,6 +733,8 @@ fn run_plan(
     let project_id = project_identity(std::path::Path::new(preparer.flake_root().as_str()));
     let mut node_secret_guards: BTreeMap<String, SpawnSecrets> = BTreeMap::new();
 
+    preparer.try_apply_one_shell(&plan.serial_order)?;
+
     let mut to_start = scheduler.schedule_ready();
     loop {
         if let Some(codes) = supervisor

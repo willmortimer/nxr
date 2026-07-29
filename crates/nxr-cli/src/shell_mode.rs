@@ -59,10 +59,6 @@ pub fn effective_shell_wrap(requested: Option<&str>, mode: ShellMode) -> Option<
 }
 
 /// Resolve shell precedence for task execution: CLI `--shell` > `context.shell` > `task.shell`.
-///
-/// Each prepared node currently wraps independently via `nix develop` when shell-mode allows.
-/// TODO(3.0): When every node in a DAG shares the same resolved shell, enter develop once and
-/// run the inner graph without per-node re-entry when that is cheap to detect safely.
 #[must_use]
 pub fn resolve_effective_shell(
     cli_shell: Option<&str>,
@@ -75,10 +71,26 @@ pub fn resolve_effective_shell(
         .or(task_shell)
 }
 
+/// Whether `arguments` are a `nix develop … -c <inner…>` wrapper.
+#[must_use]
+pub fn strip_nix_develop_wrap(arguments: &[String]) -> Option<Vec<String>> {
+    if arguments.len() < 4 {
+        return None;
+    }
+    if arguments.first().map(String::as_str) != Some("develop") {
+        return None;
+    }
+    if arguments.get(2).map(String::as_str) != Some("-c") {
+        return None;
+    }
+    Some(arguments[3..].to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ShellMode, effective_shell_wrap, resolve_effective_shell, should_wrap_shell_with_active,
+        strip_nix_develop_wrap,
     };
 
     #[test]
@@ -140,5 +152,22 @@ mod tests {
             resolve_effective_shell(None, None, Some("task".to_owned())),
             Some("task".to_owned())
         );
+    }
+
+    #[test]
+    fn strip_nix_develop_wrap_extracts_inner_argv() {
+        let wrapped = vec![
+            "develop".to_owned(),
+            ".#backend".to_owned(),
+            "-c".to_owned(),
+            "nix".to_owned(),
+            "run".to_owned(),
+            ".#fmt".to_owned(),
+        ];
+        assert_eq!(
+            strip_nix_develop_wrap(&wrapped),
+            Some(vec!["nix".to_owned(), "run".to_owned(), ".#fmt".to_owned()])
+        );
+        assert_eq!(strip_nix_develop_wrap(&["run".to_owned()]), None);
     }
 }

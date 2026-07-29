@@ -3597,6 +3597,144 @@ fn task_ci_uses_o1_discovery_not_per_node_flake_show() {
 }
 
 #[test]
+fn task_dag_shared_shell_uses_one_print_dev_env_on_smart_mode() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let repo_root = repo_root();
+    if !task_dag_discovery_available(&repo_root) {
+        return;
+    }
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/task-dag", "task", "ci", "--dry-run"])
+        .assert()
+        .success();
+
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_NIX", &counter.wrapper)
+        .env("NXR_STORE_EXE_CACHE", "off")
+        .args([
+            "--flake",
+            "fixtures/task-dag",
+            "--shell",
+            "default",
+            "task",
+            "ci",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fmt\ntest\nci\n"));
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    let print_dev_env = counter.count("print-dev-env");
+    let develop = counter.count("develop");
+    assert!(
+        print_dev_env == 1 || develop == 1,
+        "shared shell DAG should materialize once (print-dev-env or develop); log={log}"
+    );
+    assert_eq!(
+        print_dev_env + develop,
+        1,
+        "must not both print-dev-env and develop; log={log}"
+    );
+    assert_eq!(counter.count("run"), 3, "log={log}");
+}
+
+#[test]
+fn task_dag_shared_shell_uses_one_develop_on_always_mode() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let repo_root = repo_root();
+    if !task_dag_discovery_available(&repo_root) {
+        return;
+    }
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/task-dag", "task", "ci", "--dry-run"])
+        .assert()
+        .success();
+
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_NIX", &counter.wrapper)
+        .env("NXR_STORE_EXE_CACHE", "off")
+        .args([
+            "--flake",
+            "fixtures/task-dag",
+            "--shell",
+            "default",
+            "--shell-mode",
+            "always",
+            "task",
+            "ci",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fmt\ntest\nci\n"));
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert_eq!(
+        counter.count("develop"),
+        1,
+        "shared shell DAG should enter develop once on always; log={log}"
+    );
+    assert_eq!(counter.count("print-dev-env"), 0, "log={log}");
+    assert_eq!(counter.count("run"), 3, "log={log}");
+}
+
+#[test]
+fn task_golden_mixed_shells_keeps_per_node_develop() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let counter = NixCallCounter::install();
+    let repo_root = repo_root();
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_NIX", &counter.wrapper)
+        .args(["--flake", "fixtures/golden", "task", "ci", "--dry-run"])
+        .assert()
+        .success();
+
+    std::fs::write(&counter.log, "").expect("reset log");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("NXR_NIX", &counter.wrapper)
+        .env("NXR_STORE_EXE_CACHE", "off")
+        .args([
+            "--flake",
+            "fixtures/golden",
+            "--shell-mode",
+            "always",
+            "task",
+            "ci",
+        ])
+        .assert()
+        .success();
+
+    let log = std::fs::read_to_string(&counter.log).unwrap_or_default();
+    assert!(
+        counter.count("develop") >= 2,
+        "mixed backend/release shells must not one-shell optimize; log={log}"
+    );
+}
+
+#[test]
 fn coalesced_cold_task_discovery_uses_single_eval_when_forced() {
     let Some(()) = require_nix() else {
         return;

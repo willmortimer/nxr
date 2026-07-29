@@ -337,3 +337,156 @@ fn try_daemon_dev_env_store(
         })),
     );
 }
+
+/// Materialize a process-compatible shell policy for one-shell DAG runs (ADR-0129).
+///
+/// # Errors
+///
+/// Returns [`NixError`] when Nix subprocesses fail.
+pub(crate) fn materialize_process_shell_policy(
+    flake: &FlakeSelection,
+    nix: &Utf8Path,
+    local_root: &Utf8Path,
+    shell_name: &str,
+    base_environment_policy: &EnvironmentPolicy,
+    nix_flags: &OptionalNixFlags,
+) -> Result<Option<EnvironmentPolicy>, NixError> {
+    try_one_shell_process_policy(
+        flake,
+        nix,
+        local_root,
+        shell_name,
+        base_environment_policy,
+        nix_flags,
+    )
+}
+
+/// Capture a development shell via `nix develop -c env` for one-shell DAG runs.
+///
+/// # Errors
+///
+/// Returns [`NixError`] when Nix subprocesses fail.
+pub(crate) fn materialize_develop_shell_policy(
+    flake: &FlakeSelection,
+    nix: &Utf8Path,
+    shell_name: &str,
+    base_environment_policy: &EnvironmentPolicy,
+    nix_flags: &OptionalNixFlags,
+) -> Result<EnvironmentPolicy, NixError> {
+    let vars = capture_develop_process_env(flake, nix, shell_name, nix_flags)?;
+    Ok(environment_policy_with_vars(base_environment_policy, &vars))
+}
+
+fn try_one_shell_process_policy(
+    flake: &FlakeSelection,
+    nix: &Utf8Path,
+    local_root: &Utf8Path,
+    shell_name: &str,
+    base_environment_policy: &EnvironmentPolicy,
+    nix_flags: &OptionalNixFlags,
+) -> Result<Option<EnvironmentPolicy>, NixError> {
+    let capabilities = detect_capabilities(nix)?;
+    if !capabilities.supports_print_dev_env_json {
+        return Ok(None);
+    }
+
+    let nix_version = capabilities.version.to_string();
+    let Some(fingerprints) = shared_fingerprints(local_root, nix.as_str(), &nix_version) else {
+        return Ok(None);
+    };
+
+    let system = detect_system(nix)?;
+    let nix_flags_digest = digest_nix_flags(
+        nix_flags.offline,
+        nix_flags.no_write_lock_file,
+        nix_flags.accept_flake_config,
+        nix_flags.json_log_format,
+        &nix_flags.nix_options,
+        &nix_flags.extra_argv,
+    );
+    let key_material = DevEnvironmentCacheKeyMaterial {
+        flake_identity: flake.nix_ref.clone(),
+        local_root: local_root.as_str().to_owned(),
+        system: system.clone(),
+        shell_name: shell_name.to_owned(),
+        environment_mode: ENV_MODE_PROCESS.to_owned(),
+        nix_flags_digest,
+        fingerprints: fingerprints.clone(),
+        protocol_version: DEV_ENV_PROTOCOL_VERSION,
+    };
+    let key_digest = dev_env_cache_key_digest(&key_material);
+
+    let snapshot = if let Some(snapshot) = lookup_dev_env_snapshot(&key_digest, &fingerprints) {
+        snapshot
+    } else {
+        record_dev_env_cache_miss();
+        let parsed = match fetch_print_dev_env(nix, &flake.nix_ref, shell_name, nix_flags) {
+            Some(parsed) => parsed,
+            None => return Ok(None),
+        };
+        if !parsed.is_process_compatible() {
+            return Ok(None);
+        }
+        let snapshot = dev_environment_to_snapshot(
+            flake,
+            &system,
+            shell_name,
+            nix,
+            &nix_version,
+            &fingerprints,
+            &parsed,
+        );
+        let _ = store_dev_environment_snapshot(&key_digest, &snapshot, fingerprints.clone());
+        try_daemon_dev_env_store(&key_digest, &snapshot, fingerprints.clone());
+        snapshot
+    };
+
+    Ok(Some(environment_policy_with_snapshot(
+        base_environment_policy,
+        &snapshot,
+    )))
+}
+
+fn capture_develop_process_env(
+    flake: &FlakeSelection,
+    nix: &Utf8Path,
+    shell_name: &str,
+    nix_flags: &OptionalNixFlags,
+) -> Result<BTreeMap<String, String>, NixError> {
+    let base_argv =
+        nix_develop_wrap_command_args(&flake.nix_ref, shell_name, "env", &[] as &[&str]);
+    let capabilities = detect_capabilities(nix)?;
+    let argv = capabilities.apply_optional_flags(base_argv, nix_flags)?;
+    let stdout = run_nix(nix, &argv, NixFailureKind::Evaluation)?;
+    parse_env_stdout(&stdout)
+}
+
+fn parse_env_stdout(stdout: &[u8]) -> Result<BTreeMap<String, String>, NixError> {
+    let text = String::from_utf8_lossy(stdout);
+    let mut map = BTreeMap::new();
+    for line in text.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            if !key.is_empty() {
+                map.insert(key.to_owned(), value.to_owned());
+            }
+        }
+    }
+    Ok(map)
+}
+
+fn environment_policy_with_vars(
+    base: &EnvironmentPolicy,
+    vars: &BTreeMap<String, String>,
+) -> EnvironmentPolicy {
+    let mut set = base_set_map(base);
+    set.extend(vars.iter().map(|(k, v)| (k.clone(), v.clone())));
+    match base {
+        EnvironmentPolicy::Inherit => EnvironmentPolicy::inherit_with([], set, []),
+        EnvironmentPolicy::InheritWith { keep, unset, .. } => {
+            EnvironmentPolicy::inherit_with(keep.clone(), set, unset.clone())
+        }
+        EnvironmentPolicy::Clean { keep, unset, .. } => {
+            EnvironmentPolicy::clean(keep.clone(), set, unset.clone())
+        }
+    }
+}

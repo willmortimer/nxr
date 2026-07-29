@@ -38,9 +38,14 @@ use nxr_task::{
 };
 use nxr_watch::PrewarmContext;
 
+use crate::commands::dev_env::{
+    ENV_MODE_PROCESS, ENV_MODE_SHELL, materialize_develop_shell_policy,
+    materialize_process_shell_policy,
+};
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
 use crate::shell_mode::{
     ShellMode, active_dev_shell, effective_shell_wrap, resolve_effective_shell,
+    strip_nix_develop_wrap,
 };
 
 /// Inputs shared by `run`, bare-app, and `plan` preparation.
@@ -892,7 +897,21 @@ impl WorkspaceSnapshot {
             context_override,
         )?;
         preparer.prepare_all(serial_order)?;
-        Ok(preparer.into_prepared())
+        let mut prepared = preparer.into_prepared();
+        let flake_root = self
+            .flake
+            .local_root
+            .as_deref()
+            .unwrap_or(self.invocation_directory.as_path());
+        apply_one_shell_dag_optimization(
+            &mut prepared,
+            &self.flake,
+            &self.nix.nix,
+            flake_root,
+            shell_mode,
+            nix_flags,
+        )?;
+        Ok(prepared)
     }
 
     /// Whether any planned node requires project trust (confirm or secrets).
@@ -943,6 +962,8 @@ pub struct TaskNodePreparer<'a> {
     spawn_plan_cancelled: u64,
     /// When false, CasInputs advances through SpawnPlan in one shot (fused).
     pipeline: bool,
+    /// Whether ADR-0129 one-shell optimization already ran for this preparer.
+    one_shell_applied: bool,
 }
 
 enum PrepMode<'a> {
@@ -1043,6 +1064,7 @@ impl<'a> TaskNodePreparer<'a> {
             spawn_plan_cancelled: 0,
             // Pipeline only applies to live lazy runs; sealed/eager fuse stages.
             pipeline: cas_plan_pipeline_enabled(),
+            one_shell_applied: false,
         })
     }
 
@@ -1065,6 +1087,7 @@ impl<'a> TaskNodePreparer<'a> {
             spawn_plan_count,
             spawn_plan_cancelled: 0,
             pipeline: false,
+            one_shell_applied: true,
         }
     }
 
@@ -1122,6 +1145,7 @@ impl<'a> TaskNodePreparer<'a> {
             spawn_plan_count: prepare_count,
             spawn_plan_cancelled: 0,
             pipeline: false,
+            one_shell_applied: false,
         })
     }
 
@@ -1202,6 +1226,47 @@ impl<'a> TaskNodePreparer<'a> {
         let _timer = PlanPrepareGuard::start();
         for task_id in serial_order {
             self.ensure_prepared(task_id)?;
+        }
+        Ok(())
+    }
+
+    /// Apply ADR-0129 one-shell optimization when every wrapped node shares a shell.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrepareError`] when shell materialization fails.
+    pub fn try_apply_one_shell(&mut self, serial_order: &[String]) -> Result<(), PrepareError> {
+        if self.one_shell_applied {
+            return Ok(());
+        }
+        let (flake, nix, flake_root, shell_mode, nix_flags) = match &self.mode {
+            PrepMode::Live(live) => {
+                let flake_root = live
+                    .snapshot
+                    .flake
+                    .local_root
+                    .as_deref()
+                    .unwrap_or(live.snapshot.invocation_directory.as_path());
+                (
+                    live.snapshot.flake.clone(),
+                    live.snapshot.nix.nix.clone(),
+                    flake_root.to_path_buf(),
+                    live.shell_mode,
+                    live.nix_flags.clone(),
+                )
+            }
+            PrepMode::Sealed => return Ok(()),
+        };
+        self.ensure_prepared_many(serial_order)?;
+        if apply_one_shell_dag_optimization(
+            &mut self.prepared,
+            &flake,
+            &nix,
+            &flake_root,
+            shell_mode,
+            &nix_flags,
+        )? {
+            self.one_shell_applied = true;
         }
         Ok(())
     }
@@ -1949,6 +2014,134 @@ fn assemble_nix_run_argv(
         None => run_argv,
     };
     adapter.compatible_argv(base_arguments, nix_flags)
+}
+
+fn analyze_one_shell_dag_eligibility(
+    nodes: &[&PreparedTaskNode],
+    shell_mode: ShellMode,
+) -> Option<String> {
+    if matches!(shell_mode, ShellMode::Never) {
+        return None;
+    }
+
+    let mut wrapped: Vec<&PreparedTaskNode> = Vec::new();
+    for node in nodes {
+        let shell = node.plan.shell.as_deref()?;
+        if effective_shell_wrap(Some(shell), shell_mode).is_none() {
+            continue;
+        }
+        if strip_nix_develop_wrap(&node.arguments).is_none() {
+            continue;
+        }
+        if node.confirm || !node.plan.secrets.is_empty() {
+            return None;
+        }
+        if node
+            .workspace_cache
+            .as_ref()
+            .is_some_and(|plan| plan.cache_enabled)
+        {
+            return None;
+        }
+        wrapped.push(node);
+    }
+
+    if wrapped.len() < 2 {
+        return None;
+    }
+
+    let first = wrapped[0];
+    let shell = first.plan.shell.clone()?;
+    let environment = &first.environment;
+    let environment_policy = &first.plan.environment_policy;
+    let context_env_set = &first.plan.context_env_set;
+
+    for node in wrapped.iter().skip(1) {
+        if node.plan.shell.as_deref() != Some(shell.as_str()) {
+            return None;
+        }
+        if node.environment != *environment
+            || node.plan.environment_policy != *environment_policy
+            || node.plan.context_env_set != *context_env_set
+        {
+            return None;
+        }
+    }
+
+    Some(shell)
+}
+
+/// Strip per-node `nix develop` wraps after materializing a shared shell once.
+///
+/// # Errors
+///
+/// Returns [`PrepareError`] when Nix shell materialization fails.
+pub(crate) fn apply_one_shell_dag_optimization(
+    prepared: &mut BTreeMap<String, PreparedTaskNode>,
+    flake: &FlakeSelection,
+    nix: &Utf8Path,
+    flake_root: &Utf8Path,
+    shell_mode: ShellMode,
+    nix_flags: &OptionalNixFlags,
+) -> Result<bool, PrepareError> {
+    let refs: Vec<&PreparedTaskNode> = prepared.values().collect();
+    let Some(shell) = analyze_one_shell_dag_eligibility(&refs, shell_mode) else {
+        return Ok(false);
+    };
+
+    let sample = refs
+        .iter()
+        .find(|node| {
+            node.plan.shell.as_deref() == Some(shell.as_str())
+                && strip_nix_develop_wrap(&node.arguments).is_some()
+        })
+        .expect("eligibility ensures a wrapped node exists");
+    let base_policy = sample.environment.clone();
+
+    let (materialized, env_mode) = match shell_mode {
+        ShellMode::Smart => {
+            if let Some(policy) = materialize_process_shell_policy(
+                flake,
+                nix,
+                flake_root,
+                &shell,
+                &base_policy,
+                nix_flags,
+            )? {
+                (policy, ENV_MODE_PROCESS)
+            } else {
+                let policy =
+                    materialize_develop_shell_policy(flake, nix, &shell, &base_policy, nix_flags)?;
+                (policy, ENV_MODE_SHELL)
+            }
+        }
+        ShellMode::Always => {
+            let policy =
+                materialize_develop_shell_policy(flake, nix, &shell, &base_policy, nix_flags)?;
+            (policy, ENV_MODE_SHELL)
+        }
+        ShellMode::Never => return Ok(false),
+    };
+
+    for node in prepared.values_mut() {
+        if node.plan.shell.as_deref() != Some(shell.as_str()) {
+            continue;
+        }
+        let Some(mut inner) = strip_nix_develop_wrap(&node.arguments) else {
+            continue;
+        };
+        if inner.first().map(String::as_str) == Some(nix.as_str()) {
+            inner.remove(0);
+        }
+        node.arguments.clone_from(&inner);
+        node.plan.command.arguments = inner;
+        node.environment = materialized.clone();
+        node.plan.environment_policy = materialized.clone();
+        node.plan.environment_mode = Some(env_mode.to_owned());
+        node.plan.active_shell = active_dev_shell();
+    }
+
+    Ok(true)
 }
 
 #[allow(clippy::too_many_arguments)]

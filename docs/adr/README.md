@@ -84,7 +84,7 @@ Rejected   considered and explicitly not chosen
 | ADR-0126 | `nxr in` is ergonomic alias of `--shell`; never post-app flags | Proposed | 2.6 |
 | ADR-0127 | Export Home Manager module; do not ship homeConfigurations | Proposed | 2.6 |
 | ADR-0128 | direnv remains activation authority; nxr only generates/diagnoses | Proposed | 2.6 |
-| ADR-0129 | One-shell DAG optimization when all nodes share a context | Proposed | 3.0 |
+| ADR-0129 | One-shell DAG optimization when all nodes share a context | Accepted | 3.0 |
 | ADR-0130 | Do not reconstruct shells via print-dev-env | Superseded by ADR-0171 | 3.0 → 3.4 |
 | ADR-0131 | Configuration adapters inspect/build only; never switch/activate | Proposed | 2.6 |
 | ADR-0132 | Process nodes after task I/O; no built-in service module zoo | Proposed | 3.1 |
@@ -133,6 +133,8 @@ Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0145-capability-config-files.md`](0145-capability-config-files.md),
 [`0146-secret-provider-ref.md`](0146-secret-provider-ref.md),
 [`0147-two-tier-actions.md`](0147-two-tier-actions.md),
+[`0129-one-shell-dag.md`](0129-one-shell-dag.md),
+[`0129-one-shell-dag.md`](0129-one-shell-dag.md),
 [`0148-automation-ergonomics.md`](0148-automation-ergonomics.md),
 [`0149-context-shell-confirm.md`](0149-context-shell-confirm.md),
 [`0150-inventory-coalesce.md`](0150-inventory-coalesce.md),

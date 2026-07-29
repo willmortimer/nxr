@@ -74,6 +74,18 @@
         }
       );
 
+      devShells = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          default = pkgs.mkShell {
+            name = "task-dag-default";
+          };
+        }
+      );
+
       nxr = forAllSystems (_: nxrDoc);
     };
 }
