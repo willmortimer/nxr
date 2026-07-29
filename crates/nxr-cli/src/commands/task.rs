@@ -15,7 +15,7 @@ use nxr_task::{
     ContextError, Event, EventSink, ExecutionPlan, FailurePolicy, OutputPayload, PlanError,
     PlanSecretEntry, PlanSecretValuePlaceholder, RunEventDecorator, Scheduler, SchedulerError,
     SecretDelivery, SecretProvider, build_execution_plan_roots, enforce_context_confirm,
-    merge_spawn_env_overrides, resolve_task_name,
+    merge_spawn_env_overrides, resolve_task_name, resolve_task_parameter_env,
 };
 use nxr_watch::WatchPrewarm;
 
@@ -106,6 +106,8 @@ pub enum TaskError {
     #[error(transparent)]
     Context(#[from] ContextError),
     #[error(transparent)]
+    Parameter(#[from] nxr_task::ParameterError),
+    #[error(transparent)]
     Trust(#[from] trust::TrustCommandError),
     #[error("jobs must be >= 1 (got {0})")]
     InvalidJobs(usize),
@@ -139,7 +141,7 @@ impl TaskError {
             Self::Scheduler(_) | Self::Supervision(_) | Self::Io(_) | Self::Report(_) => {
                 exit::PROCESS_SUPERVISION
             }
-            Self::Context(_) | Self::Trust(_) => exit::EVALUATION,
+            Self::Context(_) | Self::Parameter(_) | Self::Trust(_) => exit::EVALUATION,
             Self::InvalidJobs(_)
             | Self::RawConflictsWithMultiplex
             | Self::InteractiveConflictsWithMultiplex => exit::USAGE,
@@ -443,7 +445,7 @@ pub fn execute_with_control(
             request.context_override.as_deref(),
         )?
     } else {
-        TaskNodePreparer::from_prepared(prepared_nodes)
+        TaskNodePreparer::from_prepared(prepared_nodes, Some(&document))
     };
 
     if pipe_stdio {
@@ -1224,6 +1226,13 @@ fn spawn_node(
     let env = &prepared.environment;
     let (env_overrides, stdin_payload, spawn_secrets) =
         build_spawn_env_overrides(&prepared.plan, user_config, secret_bindings, project_id)?;
+    let param_env = preparer
+        .task_definition(node_id)
+        .map(|definition| resolve_task_parameter_env(node_id, &definition.parameters))
+        .transpose()
+        .map_err(TaskError::Parameter)?
+        .unwrap_or_default();
+    let env_overrides = merge_spawn_env_with_parameters(env_overrides, &param_env);
     if stdin_payload.is_some() && pipe_stdio {
         return Err(TaskError::Context(ContextError::UnsupportedDelivery {
             slot: "stdin".to_owned(),
@@ -1266,6 +1275,18 @@ fn spawn_node(
     }
 
     Ok(compact)
+}
+
+fn merge_spawn_env_with_parameters(
+    env_overrides: Option<std::collections::BTreeMap<String, String>>,
+    param_env: &std::collections::BTreeMap<String, String>,
+) -> Option<std::collections::BTreeMap<String, String>> {
+    if param_env.is_empty() {
+        return env_overrides;
+    }
+    let base = env_overrides.unwrap_or_default();
+    let merged = merge_spawn_env_overrides(&base, param_env);
+    Some(merged)
 }
 
 fn build_spawn_env_overrides(

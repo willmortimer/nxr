@@ -594,6 +594,7 @@ mod tests {
             context: None,
             secrets: Vec::new(),
             context_env_set: BTreeMap::new(),
+            parameters: Vec::new(),
             command: PlanCommand {
                 program: "/nix/bin/nix".to_owned(),
                 arguments: vec!["run".to_owned(), "/proj#hello".to_owned()],

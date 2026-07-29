@@ -34,7 +34,7 @@ use nxr_nix::{
 use nxr_task::{
     ContextError, ExecutionPlan, PlanSecretEntry, SchemaError, SecretDelivery, TaskDocument,
     WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, WorkspaceCachePlan,
-    WorkspaceCachePlanOptions, apply_task_context, build_workspace_cache_plan,
+    WorkspaceCachePlanOptions, apply_task_context, build_workspace_cache_plan, parameter_names,
 };
 use nxr_watch::PrewarmContext;
 
@@ -1058,7 +1058,7 @@ enum PrepMode<'a> {
     /// Can prepare additional nodes from the workspace snapshot.
     Live(Box<LivePrep<'a>>),
     /// Watch reuse / pre-built map — lookups only, no further prepare.
-    Sealed,
+    Sealed { document: Option<&'a TaskDocument> },
 }
 
 struct LivePrep<'a> {
@@ -1158,7 +1158,10 @@ impl<'a> TaskNodePreparer<'a> {
 
     /// Wrap an already-prepared map (watch reuse into the scheduler).
     #[must_use]
-    pub fn from_prepared(prepared: BTreeMap<String, PreparedTaskNode>) -> Self {
+    pub fn from_prepared(
+        prepared: BTreeMap<String, PreparedTaskNode>,
+        document: Option<&'a TaskDocument>,
+    ) -> Self {
         let prepare_count = u64::try_from(prepared.len()).unwrap_or(u64::MAX);
         let spawn_plan_count = prepare_count;
         let prepared = prepared
@@ -1169,13 +1172,22 @@ impl<'a> TaskNodePreparer<'a> {
             })
             .collect();
         Self {
-            mode: PrepMode::Sealed,
+            mode: PrepMode::Sealed { document },
             prepared,
             prepare_count,
             spawn_plan_count,
             spawn_plan_cancelled: 0,
             pipeline: false,
             one_shell_applied: true,
+        }
+    }
+
+    /// Task definition for a prepared node when document metadata is available.
+    #[must_use]
+    pub fn task_definition(&self, task_id: &str) -> Option<&nxr_task::TaskDefinition> {
+        match &self.mode {
+            PrepMode::Live(live) => live.document.tasks.get(task_id),
+            PrepMode::Sealed { document } => document.and_then(|doc| doc.tasks.get(task_id)),
         }
     }
 
@@ -1301,7 +1313,7 @@ impl<'a> TaskNodePreparer<'a> {
     ) -> (BTreeMap<String, PreparedTaskNode>, RunDigestCache) {
         match self.mode {
             PrepMode::Live(live) => (self.prepared, live.digest_cache),
-            PrepMode::Sealed => (self.prepared, RunDigestCache::new()),
+            PrepMode::Sealed { .. } => (self.prepared, RunDigestCache::new()),
         }
     }
 
@@ -1343,7 +1355,7 @@ impl<'a> TaskNodePreparer<'a> {
                     live.nix_flags.clone(),
                 )
             }
-            PrepMode::Sealed => return Ok(()),
+            PrepMode::Sealed { .. } => return Ok(()),
         };
         self.ensure_prepared_many(serial_order)?;
         if apply_one_shell_dag_optimization(
@@ -1567,7 +1579,7 @@ impl<'a> TaskNodePreparer<'a> {
         started: &[String],
         budget: usize,
     ) -> Result<(), PrepareError> {
-        if budget == 0 || matches!(self.mode, PrepMode::Sealed) {
+        if budget == 0 || matches!(self.mode, PrepMode::Sealed { .. }) {
             return Ok(());
         }
         let mut dependents: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -1616,7 +1628,7 @@ impl<'a> TaskNodePreparer<'a> {
                 .as_deref()
                 .unwrap_or(live.snapshot.invocation_directory.as_path())
                 .to_path_buf(),
-            PrepMode::Sealed => Utf8PathBuf::from("."),
+            PrepMode::Sealed { .. } => Utf8PathBuf::from("."),
         }
     }
 
@@ -1630,7 +1642,7 @@ impl<'a> TaskNodePreparer<'a> {
         {
             return Ok(&self.prepared[task_id]);
         }
-        if matches!(self.mode, PrepMode::Sealed) {
+        if matches!(self.mode, PrepMode::Sealed { .. }) {
             return Err(PrepareError::WorkspaceCache(io::Error::other(format!(
                 "sealed preparer missing node {task_id}"
             ))));
@@ -1876,6 +1888,7 @@ impl<'a> TaskNodePreparer<'a> {
             context: None,
             secrets: Vec::new(),
             context_env_set: BTreeMap::new(),
+            parameters: parameter_names(&definition.parameters),
             command: PlanCommand {
                 program: snapshot.nix.nix.as_str().to_owned(),
                 arguments: command_argv.clone(),
@@ -2297,6 +2310,7 @@ fn compute_spawn_plan_parts(
         plan.context_env_set = applied.spawn_env_set.clone();
         plan.environment_policy = applied.environment_policy.clone();
     }
+    plan.parameters = parameter_names(&definition.parameters);
     let program = Utf8PathBuf::from(plan.command.program.as_str());
     let arguments = plan.command.arguments.clone();
     Ok(SpawnPlanParts {
@@ -2359,6 +2373,7 @@ fn build_plan(
         context: None,
         secrets: Vec::new(),
         context_env_set: BTreeMap::new(),
+        parameters: Vec::new(),
         command: PlanCommand {
             program: adapter.nix.as_str().to_owned(),
             arguments: command_arguments,
@@ -2421,6 +2436,7 @@ fn build_fast_plan(
         context: None,
         secrets: Vec::new(),
         context_env_set: BTreeMap::new(),
+        parameters: Vec::new(),
         command: PlanCommand {
             program: nix.as_str().to_owned(),
             arguments: command_arguments,

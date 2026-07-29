@@ -237,6 +237,7 @@ mod tests {
             context: None,
             secrets: Vec::new(),
             context_env_set: std::collections::BTreeMap::new(),
+            parameters: Vec::new(),
             command: PlanCommand {
                 program: "nix".to_owned(),
                 arguments: vec!["run".to_owned(), format!("{flake}#test"), "--".to_owned()],
@@ -294,6 +295,7 @@ mod tests {
             context: None,
             secrets: Vec::new(),
             context_env_set: std::collections::BTreeMap::new(),
+            parameters: Vec::new(),
             command: PlanCommand {
                 program: "nix".to_owned(),
                 arguments: vec!["run".to_owned(), ".#lint".to_owned(), "--".to_owned()],

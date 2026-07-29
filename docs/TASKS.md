@@ -290,20 +290,22 @@ changes require a new major `schema_version`. See [COMPATIBILITY.md](COMPATIBILI
 ### Schema v2 (partial — parse and module authoring)
 
 Do **not** add execution-affecting fields (`context`, `shell` on tasks, secrets,
-inputs/outputs, cache, resources, dependency states, confirmation) to schema v1.
+inputs/outputs, cache, resources, parameters, dependency states, confirmation) to schema v1.
 Unknown fields are currently ignored; an older runner would silently drop security
 policy.
 
 Schema v2 is documented at [`schemas/task-v2.schema.json`](../schemas/task-v2.schema.json).
 `crates/nxr-task` accepts `schema_version: 2` with strict rejection of unknown
 fields. The flake-parts module auto-emits `schema_version: 2` when contexts or
-task `shell` / `context` fields are present (override with
+task `shell` / `context` / `parameters` fields are present (override with
 `perSystem.nxr.schemaVersion`). Named **contexts** can be authored via flake-parts
 (`perSystem.nxr.contexts.<name>` in `nix/modules/contexts.nix`) and are emitted on
 `nxr.<system>.contexts`. Runtime **env-provider** secret delivery (`delivery =
 "env"`) and clean/inherit environment application for task nodes are implemented
 (H3); `file` / `stdin`, Home Manager bindings, and full inherit-mode env policy
-remain later work (see [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md)).
+remain later work (see [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md)). Typed
+`parameters` resolve at spawn into `NXR_PARAM_<NAME>` environment variables;
+plans and events list parameter names only (no values).
 
 See [TASK_SCHEMA_V2.md](TASK_SCHEMA_V2.md) for the full spec, ADR-0135/0138
 cross-links, and compatibility notes.

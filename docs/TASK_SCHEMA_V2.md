@@ -62,6 +62,7 @@ Same evaluable flake attribute as v1: `nxr.<system>`.
 | `resources` | CPU/memory/IO estimates and exclusivity locks |
 | `shell` | Optional `devShells.<name>` (shell-only context) |
 | `context` | Optional named execution context |
+| `parameters` | Typed spawn parameters (`NXR_PARAM_<NAME>`; names only in plans/events) |
 
 Top-level `contexts` maps context names to shell, environment policy, secret
 references (logical `ref` strings plus optional `provider`, default `env`), and

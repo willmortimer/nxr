@@ -193,6 +193,33 @@ let
     };
   };
 
+  taskParameterType = types.submodule {
+    options = {
+      type = lib.mkOption {
+        type = types.enum [
+          "string"
+          "choice"
+          "boolean"
+        ];
+        description = "Typed parameter kind (schema v2).";
+      };
+
+      default = lib.mkOption {
+        type = types.nullOr (types.either types.bool types.str);
+        default = null;
+        description = ''
+          Default value when the caller does not set `NXR_PARAM_<NAME>` at spawn.
+        '';
+      };
+
+      values = lib.mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = "Allowed values for choice parameters.";
+      };
+    };
+  };
+
   taskResourcesType = types.submodule {
     options = {
       cpu = lib.mkOption {
@@ -372,6 +399,15 @@ let
         description = ''
           Estimated resource demand and named exclusivity locks for cooperative
           scheduling (schema v2).
+        '';
+      };
+
+      parameters = lib.mkOption {
+        type = types.attrsOf taskParameterType;
+        default = { };
+        description = ''
+          Typed task parameters injected as `NXR_PARAM_<NAME>` at spawn (schema
+          v2). Values never appear in plans or events.
         '';
       };
     };

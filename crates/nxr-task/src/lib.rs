@@ -13,6 +13,7 @@ pub mod duration;
 pub mod events;
 pub mod graph;
 pub mod memory;
+pub mod parameters;
 pub mod plan_exec;
 pub mod planner;
 pub mod process;
@@ -39,6 +40,10 @@ pub use events::{
 };
 pub use graph::{GraphError, TaskGraph, render_dot, render_mermaid, render_text};
 pub use memory::{MemoryParseError, parse_memory};
+pub use parameters::{
+    PARAM_ENV_PREFIX, ParameterError, parameter_env_name, parameter_names,
+    resolve_task_parameter_env, resolve_task_parameter_env_with, validate_task_parameters,
+};
 pub use plan_exec::{
     ArgumentForwarding, EXECUTION_PLAN_SCHEMA_VERSION, ExecutionPlan, FailurePolicy, PlanNode,
     build_execution_plan, build_execution_plan_roots, build_serial_plan,
@@ -61,8 +66,8 @@ pub use schema::{
     ContextSecretRef, EnvInput, EnvInputBinding, ExecutionContext, IoIntensity,
     MAX_SUPPORTED_SCHEMA_VERSION, SCHEMA_VERSION, SCHEMA_VERSION_V2, SchemaError, SecretDelivery,
     SecretProvider, TaskCache, TaskCacheMode, TaskCacheSecretPolicy, TaskDefinition, TaskDocument,
-    TaskInputBinding, TaskInputs, TaskOutput, TaskOutputMode, TaskResources,
-    WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, parse_task_document,
+    TaskInputBinding, TaskInputs, TaskOutput, TaskOutputMode, TaskParameter, TaskParameterType,
+    TaskResources, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, parse_task_document,
     validate_schema_version, validate_working_directory,
 };
 pub use secrets::{

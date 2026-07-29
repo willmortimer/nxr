@@ -151,6 +151,40 @@
           "type": "string",
           "minLength": 1,
           "description": "Optional named execution context reference (`contexts.<name>`)."
+        },
+        "parameters": {
+          "type": "object",
+          "description": "Typed task parameters injected as NXR_PARAM_<NAME> at spawn. Values never appear in plans or events.",
+          "additionalProperties": {
+            "$ref": "#/$defs/taskParameter"
+          }
+        }
+      }
+    },
+    "taskParameter": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["string", "choice", "boolean"],
+          "description": "Parameter kind."
+        },
+        "default": {
+          "description": "Default when NXR_PARAM_<NAME> is unset at spawn.",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "boolean" }
+          ]
+        },
+        "values": {
+          "type": "array",
+          "description": "Allowed values for choice parameters.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     },

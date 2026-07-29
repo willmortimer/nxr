@@ -373,6 +373,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_v2_task_parameters() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "demo": {
+                    "app": "demo",
+                    "parameters": {
+                        "mode": {
+                            "type": "choice",
+                            "values": ["fast", "slow"],
+                            "default": "fast"
+                        },
+                        "verbose": { "type": "boolean", "default": false },
+                        "label": { "type": "string", "default": "fixture" }
+                    }
+                }
+            }
+        });
+        let doc = parse_task_document(&value).expect("task parameters accepted");
+        assert_eq!(doc.tasks["demo"].parameters.len(), 3);
+    }
+
+    #[test]
     fn missing_nxr_attr_detection() {
         let error = NixError::CommandFailed {
             nix: Utf8PathBuf::from("nix"),

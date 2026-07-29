@@ -86,12 +86,35 @@
             restart = "never";
           };
 
+          nxr.tasks.param-demo = {
+            description = "Typed parameters fixture (string, choice, boolean)";
+            app = "param-demo";
+            parameters = {
+              mode = {
+                type = "choice";
+                values = [ "fast" "slow" ];
+                default = "fast";
+              };
+              verbose = {
+                type = "boolean";
+                default = false;
+              };
+              label = {
+                type = "string";
+                default = "fixture";
+              };
+            };
+          };
+
           apps = {
             build = mkApp "fixture-build" ''
               echo "build"
             '';
             api = mkApp "fixture-api" ''
               echo "api"
+            '';
+            param-demo = mkApp "fixture-param-demo" ''
+              echo "mode=${NXR_PARAM_MODE:-unset} verbose=${NXR_PARAM_VERBOSE:-unset} label=${NXR_PARAM_LABEL:-unset}"
             '';
           };
         };

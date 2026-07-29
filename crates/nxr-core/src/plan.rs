@@ -49,6 +49,9 @@ pub struct Plan {
     /// Non-secret `environment.set` from inherit-mode contexts (applied at spawn).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub context_env_set: BTreeMap<String, String>,
+    /// Typed task parameter names for this node (values never serialized).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<String>,
     pub command: PlanCommand,
     pub forwarded_arguments: Vec<String>,
     /// Absolute workspace script path when [`Self::kind`] is [`PlanKind::WorkspaceScript`].

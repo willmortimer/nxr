@@ -104,6 +104,13 @@ pub enum SchemaError {
     /// Process metadata is invalid or unsupported.
     #[error("process {process}: {message}")]
     InvalidProcess { process: String, message: String },
+    /// Task parameter metadata is invalid.
+    #[error("task {task}: parameters.{name}: {message}")]
+    InvalidParameter {
+        task: String,
+        name: String,
+        message: String,
+    },
 }
 
 /// Versioned task document: `schema_version` plus named task definitions.
@@ -429,6 +436,30 @@ pub struct TaskDefinition {
     /// Optional named execution context reference (schema v2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
+
+    /// Typed task parameters injected as `NXR_PARAM_<NAME>` at spawn (schema v2).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parameters: BTreeMap<String, TaskParameter>,
+}
+
+/// Typed task parameter declaration (schema v2).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskParameter {
+    #[serde(rename = "type")]
+    pub param_type: TaskParameterType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values: Option<Vec<String>>,
+}
+
+/// Supported typed parameter kinds (schema v2).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskParameterType {
+    String,
+    Choice,
+    Boolean,
 }
 
 /// Declared inputs for cache-key fingerprinting and structured wiring (schema v2).
@@ -650,6 +681,7 @@ impl TaskDefinition {
             resources: None,
             shell: None,
             context: None,
+            parameters: BTreeMap::new(),
         }
     }
 }
@@ -680,6 +712,9 @@ fn validate_task_v2_semantics(task: &str, definition: &TaskDefinition) -> Result
     }
     if let Some(resources) = &definition.resources {
         validate_task_resources(task, resources)?;
+    }
+    if !definition.parameters.is_empty() {
+        crate::parameters::validate_task_parameters(task, &definition.parameters)?;
     }
     Ok(())
 }
@@ -912,6 +947,19 @@ struct TaskDefinitionV2Strict {
     shell: Option<String>,
     #[serde(default)]
     context: Option<String>,
+    #[serde(default)]
+    parameters: BTreeMap<String, TaskParameterV2Strict>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskParameterV2Strict {
+    #[serde(rename = "type")]
+    param_type: TaskParameterType,
+    #[serde(default)]
+    default: Option<JsonValue>,
+    #[serde(default)]
+    values: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1069,6 +1117,21 @@ impl From<TaskDefinitionV2Strict> for TaskDefinition {
             resources: strict.resources.map(Into::into),
             shell: strict.shell,
             context: strict.context,
+            parameters: strict
+                .parameters
+                .into_iter()
+                .map(|(name, param)| (name, param.into()))
+                .collect(),
+        }
+    }
+}
+
+impl From<TaskParameterV2Strict> for TaskParameter {
+    fn from(strict: TaskParameterV2Strict) -> Self {
+        Self {
+            param_type: strict.param_type,
+            default: strict.default,
+            values: strict.values,
         }
     }
 }
@@ -1212,6 +1275,7 @@ mod tests {
                 resources: None,
                 shell: None,
                 context: None,
+                parameters: BTreeMap::new(),
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1619,6 +1683,7 @@ mod tests {
                 resources: None,
                 shell: None,
                 context: None,
+                parameters: BTreeMap::new(),
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1652,6 +1717,7 @@ mod tests {
                 resources: None,
                 shell: None,
                 context: None,
+                parameters: BTreeMap::new(),
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1689,6 +1755,7 @@ mod tests {
                 resources: None,
                 shell: None,
                 context: None,
+                parameters: BTreeMap::new(),
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1721,6 +1788,7 @@ mod tests {
                 resources: None,
                 shell: None,
                 context: None,
+                parameters: BTreeMap::new(),
             },
         );
         let value = serde_json::to_value(TaskDocument::new(tasks)).expect("serialize");
@@ -1945,6 +2013,65 @@ mod tests {
             vec!["--port".to_owned(), "8080".to_owned()]
         );
         assert_eq!(process.shell.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn parse_accepts_v2_typed_parameters_document() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "demo": {
+                    "app": "demo",
+                    "parameters": {
+                        "mode": {
+                            "type": "choice",
+                            "values": ["fast", "slow"],
+                            "default": "fast"
+                        },
+                        "verbose": { "type": "boolean", "default": false },
+                        "label": { "type": "string", "default": "fixture" }
+                    }
+                }
+            }
+        });
+        let doc = parse_task_document(&value).expect("typed parameters accepted");
+        let params = &doc.tasks["demo"].parameters;
+        assert_eq!(params.len(), 3);
+        assert_eq!(params["mode"].param_type, TaskParameterType::Choice);
+    }
+
+    #[test]
+    fn parse_rejects_v2_unknown_parameter_type() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "demo": {
+                    "app": "demo",
+                    "parameters": {
+                        "mode": { "type": "matrix" }
+                    }
+                }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("unknown parameter type rejected");
+        assert!(matches!(err, SchemaError::InvalidDocument { .. }));
+    }
+
+    #[test]
+    fn parse_rejects_v2_choice_without_values() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "demo": {
+                    "app": "demo",
+                    "parameters": {
+                        "mode": { "type": "choice" }
+                    }
+                }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("choice without values rejected");
+        assert!(matches!(err, SchemaError::InvalidParameter { .. }));
     }
 
     #[test]
