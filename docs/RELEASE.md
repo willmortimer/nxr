@@ -1,13 +1,20 @@
 # Release process
 
-Releases are driven by [`.github/workflows/release.yml`](../.github/workflows/release.yml). Quality gates run on every push to `main` via [`ci.yml`](../.github/workflows/ci.yml); the release workflow builds and publishes artifacts only.
+Releases are driven by [`.github/workflows/release.yml`](../.github/workflows/release.yml).
+A **minimal** quality gate runs on every push to `main` and on PRs via
+[`ci.yml`](../.github/workflows/ci.yml) (single `ubuntu-latest` / Nix latest job).
+Support-floor, Lix, and Darwin coverage runs on `v*` tags via
+[`compat.yml`](../.github/workflows/compat.yml). The release workflow builds and
+publishes artifacts.
 
 ## Triggers
 
 | Event | Behavior |
 |---|---|
-| Push tag `v*` | Build all targets, generate checksums and SBOM, publish a GitHub Release |
-| `workflow_dispatch` | Same build steps; uploads workflow artifacts. Skips GitHub Release unless **dry_run** is unchecked |
+| Push / PR to `main` | Minimal `ci.yml` quality gate |
+| Push tag `v*` | `compat.yml` matrix + release build, checksums, SBOM, GitHub Release |
+| `workflow_dispatch` (release) | Same build steps; uploads workflow artifacts. Skips GitHub Release unless **dry_run** is unchecked |
+| `workflow_dispatch` (compat) | Re-run the compatibility matrix without tagging |
 
 Use **Actions → release → Run workflow** with **dry_run** enabled (default) to validate the pipeline without creating a release.
 

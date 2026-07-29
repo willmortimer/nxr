@@ -80,14 +80,18 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) §9 and ADR-0018 in [adr/README.md](adr/R
 
 ### CI Nix matrix
 
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) exercises two Nix versions on
-`ubuntu-latest` and `macos-latest`:
+Day-to-day quality ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) runs a
+**single** job on `ubuntu-latest` with Determinate Nix `latest` (build, `nxr task
+ci` dogfood, `nix flake check`, perf thresholds, fixture smokes).
 
-| Matrix label | Install source |
-|---|---|
-| `latest` | Default Determinate Nix from `nix-installer-action` |
-| `2.18` | Upstream Nix **2.18.9** via `nix-package-url` (support floor) |
-| `lix` | [Lix](https://lix.systems/) via `samueldr/lix-gha-installer-action` (ubuntu) |
+Compatibility coverage ([`.github/workflows/compat.yml`](../.github/workflows/compat.yml))
+runs on **`v*` tags** (and `workflow_dispatch`):
+
+| Matrix label | Install source | Runners |
+|---|---|---|
+| `latest` | Default Determinate Nix from `nix-installer-action` | ubuntu, macos |
+| `2.18` | Upstream Nix **2.18.9** via `nix-package-url` (support floor) | ubuntu, macos |
+| `lix` | [Lix](https://lix.systems/) via `samueldr/lix-gha-installer-action` | ubuntu |
 
 Fixture smoke tests run the packaged `nix build .#nxr` binary, not `nix run` on the
 project flake apps.

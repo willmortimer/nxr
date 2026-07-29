@@ -13,43 +13,13 @@ env:
 
 jobs:
   quality:
-    name: quality (${{ matrix.os }}, nix ${{ matrix.nix_label }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            nix_label: latest
-          - os: ubuntu-latest
-            nix_label: "2.18"
-            nix_package_url: https://releases.nixos.org/nix/nix-2.18.9/nix-2.18.9-x86_64-linux.tar.xz
-          - os: ubuntu-latest
-            nix_label: lix
-          - os: macos-latest
-            nix_label: latest
-          - os: macos-latest
-            nix_label: "2.18"
-            nix_package_url: https://releases.nixos.org/nix/nix-2.18.9/nix-2.18.9-aarch64-darwin.tar.xz
-    runs-on: ${{ matrix.os }}
+    name: quality (ubuntu-latest, nix latest)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - name: Install Nix (latest)
-        if: matrix.nix_label == 'latest'
+      - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41 # main
-
-      - name: Install Nix (2.18 support floor)
-        if: matrix.nix_label == '2.18'
-        uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41 # main
-        with:
-          nix-package-url: ${{ matrix.nix_package_url }}
-
-      - name: Install Lix
-        if: matrix.nix_label == 'lix'
-        uses: samueldr/lix-gha-installer-action@8dc19fbd6451fa106a68ecb2dafeeeb90dff3a29
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
 
       - name: Show Nix version
         run: nix --version
@@ -65,7 +35,6 @@ jobs:
           "$nxr_bin" --version
 
       - name: Root CI plan (dogfood)
-        if: matrix.os == 'ubuntu-latest' && matrix.nix_label == 'latest'
         env:
           NXR: ${{ steps.nxr.outputs.bin }}
         run: |
@@ -74,26 +43,9 @@ jobs:
           "$NXR" task ci
 
       - name: Flake check (hermetic)
-        if: matrix.os == 'ubuntu-latest' && matrix.nix_label == 'latest'
         run: nix flake check -L
 
-      - name: CI task graph
-        if: matrix.os != 'ubuntu-latest' || matrix.nix_label != 'latest'
-        env:
-          NXR: ${{ steps.nxr.outputs.bin }}
-        run: |
-          "$NXR" ci plan --json > /dev/null
-          "$NXR" task ci
-
-      - name: Flake schema check
-        if: matrix.os != 'ubuntu-latest' || matrix.nix_label != 'latest'
-        run: |
-          set -euo pipefail
-          system="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
-          nix build ".#checks.${system}.flake-schema" -L
-
       - name: Warm-path latency thresholds
-        if: matrix.os == 'ubuntu-latest' && matrix.nix_label == 'latest'
         env:
           NXR_BIN: ${{ steps.nxr.outputs.bin }}
           NXR_PERF_RUNS: "3"

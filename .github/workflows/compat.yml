@@ -1,0 +1,124 @@
+name: compat
+
+# Support-floor / Lix / Darwin matrix — tags and manual only.
+# Day-to-day main/PR quality stays in ci.yml (single ubuntu/latest job).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compat-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NIX_CONFIG: experimental-features = nix-command flakes
+
+jobs:
+  quality:
+    name: quality (${{ matrix.os }}, nix ${{ matrix.nix_label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            nix_label: latest
+          - os: ubuntu-latest
+            nix_label: "2.18"
+            nix_package_url: https://releases.nixos.org/nix/nix-2.18.9/nix-2.18.9-x86_64-linux.tar.xz
+          - os: ubuntu-latest
+            nix_label: lix
+          - os: macos-latest
+            nix_label: latest
+          - os: macos-latest
+            nix_label: "2.18"
+            nix_package_url: https://releases.nixos.org/nix/nix-2.18.9/nix-2.18.9-aarch64-darwin.tar.xz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install Nix (latest)
+        if: matrix.nix_label == 'latest'
+        uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41 # main
+
+      - name: Install Nix (2.18 support floor)
+        if: matrix.nix_label == '2.18'
+        uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41 # main
+        with:
+          nix-package-url: ${{ matrix.nix_package_url }}
+
+      - name: Install Lix
+        if: matrix.nix_label == 'lix'
+        uses: samueldr/lix-gha-installer-action@8dc19fbd6451fa106a68ecb2dafeeeb90dff3a29
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Show Nix version
+        run: nix --version
+
+      - name: Build nxr
+        id: nxr
+        run: |
+          system="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
+          nix build ".#packages.$system.default" -L
+          nxr_bin="$(nix path-info ./result)/bin/nxr"
+          echo "bin=$nxr_bin" >> "$GITHUB_OUTPUT"
+          echo "Packaged nxr: $nxr_bin"
+          "$nxr_bin" --version
+
+      # Skip ubuntu/latest dogfood+perf here — ci.yml already covers that on main.
+      # Compat focuses on floor Nix, Lix, and Darwin task-graph smoke.
+      - name: CI task graph
+        if: matrix.os != 'ubuntu-latest' || matrix.nix_label != 'latest'
+        env:
+          NXR: ${{ steps.nxr.outputs.bin }}
+        run: |
+          "$NXR" ci plan --json > /dev/null
+          "$NXR" task ci
+
+      - name: Flake schema check
+        if: matrix.os != 'ubuntu-latest' || matrix.nix_label != 'latest'
+        run: |
+          set -euo pipefail
+          system="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
+          nix build ".#checks.${system}.flake-schema" -L
+
+      - name: Build smoke (ubuntu/latest)
+        if: matrix.os == 'ubuntu-latest' && matrix.nix_label == 'latest'
+        env:
+          NXR: ${{ steps.nxr.outputs.bin }}
+        run: |
+          "$NXR" ci plan --json > /dev/null
+          "$NXR" --version
+
+      - name: Fixture smoke (basic-apps)
+        env:
+          NXR: ${{ steps.nxr.outputs.bin }}
+        run: |
+          "$NXR" --flake fixtures/basic-apps hello
+          "$NXR" --flake fixtures/basic-apps echo-args -- a b
+          "$NXR" --flake fixtures/basic-apps succeed
+          if "$NXR" --flake fixtures/basic-apps fail; then
+            echo "expected fail app to exit non-zero" >&2
+            exit 1
+          fi
+
+      - name: Fixture smoke (task-dag)
+        env:
+          NXR: ${{ steps.nxr.outputs.bin }}
+        run: |
+          "$NXR" --flake fixtures/task-dag task ci --dry-run
+          "$NXR" --flake fixtures/task-dag task ci
+
+      - name: Fixture smoke (shell-integration)
+        env:
+          NXR: ${{ steps.nxr.outputs.bin }}
+        run: |
+          "$NXR" --flake fixtures/shell-integration doctor --json >/dev/null
+          nix develop ./fixtures/shell-integration --command bash -lc 'command -v nxr >/dev/null'

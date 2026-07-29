@@ -590,6 +590,7 @@ fn script_shell_materializes_process_env_on_cold_run() {
         .env("HOME", home.path())
         .env("XDG_CACHE_HOME", home.path().join("cache"))
         .env("NXR_NIX", &counter.wrapper)
+        .env_remove("NXR_DEV_SHELL")
         .args(["--shell", "default", "script", "shell-marker"])
         .assert()
         .success()
@@ -622,6 +623,7 @@ fn script_shell_warm_dev_env_cache_skips_nix_on_second_run() {
         .env("XDG_CACHE_HOME", &cache)
         .env("NXR_DEV_ENV_CACHE", "on")
         .env("NXR_NIX", &counter.wrapper)
+        .env_remove("NXR_DEV_SHELL")
         .args(["--shell", "default", "script", "shell-marker"])
         .assert()
         .success()
@@ -637,6 +639,7 @@ fn script_shell_warm_dev_env_cache_skips_nix_on_second_run() {
         .env("XDG_CACHE_HOME", &cache)
         .env("NXR_DEV_ENV_CACHE", "on")
         .env("NXR_NIX", &counter.wrapper)
+        .env_remove("NXR_DEV_SHELL")
         .args(["--shell", "default", "script", "shell-marker"])
         .assert()
         .success()
@@ -706,6 +709,7 @@ fn script_shell_dry_run_json_reports_process_environment_mode() {
         .current_dir(&fixture)
         .env("HOME", home.path())
         .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env_remove("NXR_DEV_SHELL")
         .args(["--shell", "default", "script", "shell-marker"])
         .assert()
         .success();
@@ -714,6 +718,7 @@ fn script_shell_dry_run_json_reports_process_environment_mode() {
         .current_dir(&fixture)
         .env("HOME", home.path())
         .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env_remove("NXR_DEV_SHELL")
         .args([
             "--shell",
             "default",
@@ -1041,6 +1046,8 @@ fn shell_flag_runs_app_inside_named_dev_shell() {
     let repo_root = repo_root();
     cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
+        // Isolate from caller shell integration (smart mode skips wrap when set).
+        .env_remove("NXR_DEV_SHELL")
         .args([
             "--flake",
             "fixtures/named-dev-shells",
@@ -1062,6 +1069,7 @@ fn plan_with_shell_json_includes_shell_and_develop_argv() {
     let repo_root = repo_root();
     let assert = cargo_bin_cmd!("nxr")
         .current_dir(&repo_root)
+        .env_remove("NXR_DEV_SHELL")
         .args([
             "--flake",
             "fixtures/named-dev-shells",
@@ -3856,6 +3864,7 @@ fn task_dag_shared_shell_uses_one_print_dev_env_on_smart_mode() {
         .env("XDG_CACHE_HOME", home.path().join("cache"))
         .env("NXR_NIX", &counter.wrapper)
         .env("NXR_STORE_EXE_CACHE", "off")
+        .env_remove("NXR_DEV_SHELL")
         .args([
             "--flake",
             "fixtures/task-dag",
@@ -5533,6 +5542,7 @@ fn in_runs_app_inside_named_dev_shell() {
 
     cargo_bin_cmd!("nxr")
         .current_dir(repo_root())
+        .env_remove("NXR_DEV_SHELL")
         .args([
             "--flake",
             "fixtures/named-dev-shells",

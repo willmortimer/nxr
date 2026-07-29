@@ -177,10 +177,20 @@ pub fn prepare_script(request: &ScriptRequest<'_>) -> Result<PreparedScript, Scr
         resolve_execution_directory(&invocation_cwd, &flake, request.root, request.cwd)?;
     let script_path = resolve_script_path(request.path_or_name, &invocation_cwd, &local_root)?;
     let forwarded = strip_one_separator(request.args);
-    let document =
-        load_task_document(&flake, &local_root, request.nix_override, request.nix_flags)?;
-    let context_fields =
-        resolve_script_context(&document, request.context, &request.environment_policy)?;
+    // Keep the no-context script path Nix-free: context metadata is unused unless
+    // `--context` is set, so skip cold task-document discovery on the lean path.
+    let context_fields = match request.context {
+        Some(name) => {
+            let document =
+                load_task_document(&flake, &local_root, request.nix_override, request.nix_flags)?;
+            resolve_script_context(&document, Some(name), &request.environment_policy)?
+        }
+        None => resolve_script_context(
+            &TaskDocument::new(BTreeMap::new()),
+            None,
+            &request.environment_policy,
+        )?,
+    };
     let shell = resolve_effective_shell(request.shell, context_fields.shell.clone(), None);
     let spawn = resolve_script_spawn(&script_path, None)?;
     let nix = locate_nix_path(request.nix_override)?;
@@ -734,8 +744,19 @@ pub fn prepare_live_file_app(
     let script_path = local_root.join(workspace_path);
     let spawn = resolve_script_spawn(&script_path, interpreter)?;
     let nix = locate_nix_path(nix_override)?;
-    let document = load_task_document(flake, local_root, nix_override, nix_flags)?;
-    let context_fields = resolve_script_context(&document, context_name, &environment_policy)?;
+    // Live fast path already resolved listing metadata; only load the task
+    // document when `--context` requires it.
+    let context_fields = match context_name {
+        Some(name) => {
+            let document = load_task_document(flake, local_root, nix_override, nix_flags)?;
+            resolve_script_context(&document, Some(name), &environment_policy)?
+        }
+        None => resolve_script_context(
+            &TaskDocument::new(BTreeMap::new()),
+            None,
+            &environment_policy,
+        )?,
+    };
     let shell = resolve_effective_shell(
         request_shell,
         context_fields.shell.clone(),

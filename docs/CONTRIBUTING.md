@@ -9,7 +9,8 @@ nix develop          # optional: project shell
 nix build .#packages.$(nix eval --raw --impure --expr 'builtins.currentSystem').default  # package the CLI
 ```
 
-Quality apps (CI runs `nix flake check` on ubuntu/latest; other matrix cells use `nxr task ci`):
+Quality apps (main/PR CI: one `ubuntu-latest` job runs `nxr task ci` +
+`nix flake check`; tag `compat.yml` covers Nix 2.18 / Lix / macOS):
 
 ```bash
 nix run .#fmt        # rustfmt (add -- --check in CI)
