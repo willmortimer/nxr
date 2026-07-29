@@ -71,6 +71,7 @@ jobs:
         run: |
           "$NXR" ci plan --json
           "$NXR" task ci --dry-run
+          "$NXR" task ci
 
       - name: Flake check (hermetic)
         if: matrix.os == 'ubuntu-latest' && matrix.nix_label == 'latest'

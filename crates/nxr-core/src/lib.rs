@@ -63,8 +63,8 @@ pub use dev_env_cache::{
 pub use diagnostics::{Diagnostic, DiagnosticLevel};
 pub use digest_cache::RunDigestCache;
 pub use disk_cache_status::{
-    TimedDiskCacheSummary, prune_timed_json_cache, remove_timed_json_entry,
-    summarize_timed_json_cache,
+    TimedDiskCacheSummary, is_valid_timed_json_entry_stem, prune_timed_json_cache,
+    remove_timed_json_entry, summarize_timed_json_cache,
 };
 pub use ecosystem::{
     AdapterError, ECOSYSTEM_GRAPH_SCHEMA_VERSION, EcosystemGraph, EcosystemGraphAdapter,

@@ -2,9 +2,32 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use crate::record_fs_metadata;
+
+/// Hex-encoded BLAKE3 digest length used for timed JSON cache file stems.
+const BLAKE3_HEX_LEN: usize = 64;
+
+/// Returns whether `stem` is safe to use as a timed JSON cache file stem.
+///
+/// Accepts fixed-length lowercase hex digests (BLAKE3) or a conservative
+/// filename alphabet for discovery-style stems (`[a-z0-9_-]`).
+#[must_use]
+pub fn is_valid_timed_json_entry_stem(stem: &str) -> bool {
+    if stem.is_empty() {
+        return false;
+    }
+    if stem.len() == BLAKE3_HEX_LEN
+        && stem
+            .bytes()
+            .all(|byte| matches!(byte, b'a'..=b'f' | b'0'..=b'9'))
+    {
+        return true;
+    }
+    stem.bytes()
+        .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
+}
 
 /// Aggregate counts and entry ages for a directory of timestamped JSON cache files.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -125,10 +148,14 @@ pub fn prune_timed_json_cache(
 ///
 /// # Errors
 ///
-/// Returns [`io::Error`] when files cannot be removed.
+/// Returns [`io::Error`] when `stem` is invalid, escapes `root`, or files cannot be removed.
 pub fn remove_timed_json_entry(root: &Path, stem: &str) -> io::Result<bool> {
-    let json = root.join(format!("{stem}.json"));
-    let tmp = root.join(format!("{stem}.tmp"));
+    if !is_valid_timed_json_entry_stem(stem) {
+        return Err(invalid_stem_error(stem));
+    }
+
+    let json = timed_json_entry_path(root, stem, "json")?;
+    let tmp = timed_json_entry_path(root, stem, "tmp")?;
     let mut removed = false;
     if json.is_file() {
         fs::remove_file(&json)?;
@@ -138,6 +165,64 @@ pub fn remove_timed_json_entry(root: &Path, stem: &str) -> io::Result<bool> {
         fs::remove_file(&tmp)?;
     }
     Ok(removed)
+}
+
+fn timed_json_entry_path(root: &Path, stem: &str, ext: &str) -> io::Result<PathBuf> {
+    let path = root.join(format!("{stem}.{ext}"));
+    ensure_within_root(root, &path)
+}
+
+fn ensure_within_root(root: &Path, path: &Path) -> io::Result<PathBuf> {
+    let canonical_root = root.canonicalize().map_err(|source| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cache root `{}` cannot be canonicalized: {source}",
+                root.display()
+            ),
+        )
+    })?;
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    if let Ok(canonical) = absolute.canonicalize() {
+        if !canonical.starts_with(&canonical_root) {
+            return Err(cache_escape_error(root, path));
+        }
+        return Ok(canonical);
+    }
+    let relative = absolute
+        .strip_prefix(root)
+        .unwrap_or(absolute.as_path());
+    if relative.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(cache_escape_error(root, path));
+    }
+    Ok(absolute)
+}
+
+fn invalid_stem_error(stem: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("invalid timed JSON cache entry stem `{stem}`"),
+    )
+}
+
+fn cache_escape_error(root: &Path, path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "path `{}` escapes cache root `{}`",
+            path.display(),
+            root.display()
+        ),
+    )
 }
 
 fn remove_cache_file(path: &Path) -> io::Result<bool> {
@@ -207,5 +292,26 @@ mod tests {
         assert!(remove_timed_json_entry(&root, "abc").expect("remove"));
         assert!(!root.join("abc.json").exists());
         assert!(!root.join("abc.tmp").exists());
+    }
+
+    #[test]
+    fn remove_entry_rejects_path_traversal_stem() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path().join("cache");
+        let victim = temp.path().join("victim.json");
+        fs::create_dir_all(&root).expect("mkdir");
+        fs::write(&victim, b"{}").expect("write victim");
+
+        let err = remove_timed_json_entry(&root, "../victim").expect_err("reject traversal");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(victim.exists());
+    }
+
+    #[test]
+    fn accepts_blake3_hex_digest_stem() {
+        let digest = "a".repeat(64);
+        assert!(is_valid_timed_json_entry_stem(&digest));
+        let mixed = format!("{}{}", "a".repeat(63), "G");
+        assert!(!is_valid_timed_json_entry_stem(&mixed));
     }
 }

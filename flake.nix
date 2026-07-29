@@ -160,7 +160,7 @@
 
             ci = {
               description = "CI quality gate";
-              app = "test";
+              app = "ok";
               category = "validation";
               dependsOn = [
                 "test"
@@ -238,6 +238,14 @@
               ];
               text = ''
                 exec cargo deny check "$@"
+              '';
+            };
+
+            ok = nxrLib.mkRepoApp {
+              name = "nxr-ok";
+              description = "No-op success (task graph sink)";
+              text = ''
+                exit 0
               '';
             };
           };
