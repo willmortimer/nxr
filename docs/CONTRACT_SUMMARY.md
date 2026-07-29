@@ -5,10 +5,14 @@ This file records the shortest form of the decisions that must not drift.
 ## Product identity
 
 `nxr` is a Nix-native command, workflow, and **execution-context** runner for
-standard flake outputs.
+standard flake outputs—a flake-native orchestration schema that preserves
+standard Nix leaves (`apps`, `devShells`, `nix run`).
 
 It does not pin runtimes, replace Nix, own secret storage, construct development
-shells, manage system activation, or require another project task manifest.
+shells, manage system activation, or require another project task manifest
+(YAML/TOML). Task graphs, parameters, matrices, contexts, and processes are
+expressed through flake modules / `flake.nxr` documents, not a separate DSL
+owned outside Nix.
 
 Expanded design: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).
 

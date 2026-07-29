@@ -4,8 +4,10 @@ Ergonomic command plane for **standard Nix flake outputs**.
 
 `nxr test` is the pleasant form of `nix run .#test`. Flake apps remain the
 canonical leaf operations. `nxr` adds discovery, composition, diagnostics,
-structured plans, supervision, and shell integration—without becoming another
-task DSL, toolchain manager, or parallel implementation of Nix.
+structured plans, supervision, shell integration, and a flake-native
+orchestration schema (tasks, parameters, matrices, contexts, processes)—while
+preserving standard Nix leaves and `nix run` as the escape hatch. It is not a
+toolchain manager or a parallel implementation of Nix.
 
 <p align="center">
   <img src="docs/demo/nxr.gif" alt="nxr demo: list, run, inspect, graph, parallel tasks, shell, and watch" width="980" />
@@ -202,7 +204,7 @@ Coming from `mise` / `just`? [docs/MIGRATE_FROM_MISE_JUST.md](docs/MIGRATE_FROM_
 | [docs/MONOREPO_VIEWS.md](docs/MONOREPO_VIEWS.md) | Categories, namespaces, projects file |
 | [docs/DEV_ENV_INTEGRATION.md](docs/DEV_ENV_INTEGRATION.md) | Dev shells, direnv, shellIntegration |
 | [docs/EXECUTION_CONTEXT.md](docs/EXECUTION_CONTEXT.md) | Contexts, secrets, Home Manager; process MVP (preview) |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Active 2.7 → 3.1 plan |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Shipped through 3.2.1; 3.3–3.4 + 2.8 ergonomics on `main` (unreleased) |
 | [docs/ADAPTERS.md](docs/ADAPTERS.md) | Read-only ecosystem graph boundary |
 | [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | Platforms and schema freeze |
 | [docs/RELEASE.md](docs/RELEASE.md) | Release artifacts, checksums, SBOM |
@@ -215,7 +217,14 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**3.2.1** — local orchestration performance plus store-exe source-identity correctness, process metadata honesty (dep closure/topo, restart reject, process contexts, readiness fail-closed), and Home Manager `services.nxrd`; workspace CAS/actions remain **experimental**, process MVP **preview**.
+**3.2.1** (tagged) — local orchestration performance plus store-exe source-identity
+correctness, process metadata honesty, and Home Manager `services.nxrd`.
 
-History: [CHANGELOG.md](CHANGELOG.md). Next: [docs/ROADMAP.md](docs/ROADMAP.md)
-(Later: remote CAS, workers; full process supervision).
+**`main` (unreleased)** — workspace scripts + file-backed apps (3.3), materialized
+process environments + one-shell DAG (3.4), typed parameters/matrices, cache
+deepening, and audit hardening (opt-in env cache, action-key digests, lazy
+one-shell preflight). Workspace CAS/actions remain **experimental**; process MVP
+**preview**. Prefer **v3.3.0** / **v3.4.0** (or a combined RC) over tagging this
+head as a 3.2.x patch—see [docs/ROADMAP.md](docs/ROADMAP.md).
+
+History: [CHANGELOG.md](CHANGELOG.md).

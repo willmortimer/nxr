@@ -34,10 +34,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Roadmap: **3.3** / **3.4** and leftover 2.8 params/matrix/CI dogfood marked
   implemented on `main` (unreleased); ADR-0130 superseded by ADR-0171.
+- Product positioning: flake-native orchestration schema that preserves standard
+  Nix leaves (README / CONTRACT_SUMMARY)—not an absolute “never a task DSL.”
 - V4+ vision framed in [docs/ideas/V4_EXECUTION_PROTOCOL.md](docs/ideas/V4_EXECUTION_PROTOCOL.md);
   legacy control-plane prose remains ideas-only.
 - Prefer `nix build .#packages.$system.default` when `flake.nxr` task metadata is
   present (installable `.#nxr` can resolve to the document, not the package).
+
+### Fixed
+
+- Dev-environment disk/daemon retention sanitizes known secret names, rejects
+  poisoned `variables` maps, and writes `0700`/`0600` entries; persistence stays
+  opt-in via `NXR_DEV_ENV_CACHE=on`.
+- Workspace action keys digest resolved parameter and matrix values; required
+  params fail at plan/CasInputs before cache restore.
+- One-shell DAG metadata preflight avoids eagerly preparing ineligible graphs.
+- Task store-executable reuse preserves preparation-time Nix flags/version.
+- Root `ci` uses no-op `ok` leaf; cache invalidate rejects path-traversal stems;
+  parameter/matrix names are canonicalized; ambiguous `.nxr/scripts` names and
+  `env -S` shebangs are handled explicitly.
+- `nxr script --context` / `nxr context run … script` share trust/confirm/secrets;
+  live file-backed apps apply listing `runtime_path` from `runtimeInputs`.
 
 ## [3.2.1] - 2026-07-28
 
