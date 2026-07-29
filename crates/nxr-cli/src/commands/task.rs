@@ -1744,6 +1744,8 @@ mod tests {
             workspace_cache: None,
             flake_root: Utf8PathBuf::from("/proj"),
             prep_stage: NodePrepStage::SpawnPlan,
+            parameter_env: BTreeMap::new(),
+            matrix_env: BTreeMap::new(),
             store_exe_nix_flags: None,
             store_exe_nix_version: None,
         }
