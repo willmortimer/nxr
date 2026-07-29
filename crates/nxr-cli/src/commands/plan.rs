@@ -12,7 +12,8 @@ use nxr_nix::TaskDiscoveryError;
 use nxr_task::{
     ExecutionPlan, FailurePolicy, PlanError as TaskPlanError, ResolveTaskError,
     WorkspaceCachePlanOptions, build_execution_plan, build_execution_plan_roots,
-    build_workspace_cache_plan, resolve_task_name,
+    build_workspace_cache_plan, resolve_matrix_values, resolve_task_name,
+    resolve_task_parameter_values,
 };
 
 use crate::commands::common::{
@@ -106,6 +107,20 @@ fn plan_task(request: &AppRequest<'_>, json: bool, runner: RunnerOutput) -> Resu
         let Some(definition) = expansion.tasks.get(node_id) else {
             continue;
         };
+        let is_matrix_instance = expansion.instances.contains_key(node_id);
+        let matrix_values = expansion
+            .instances
+            .get(node_id)
+            .map(|instance| resolve_matrix_values(&instance.attrs))
+            .unwrap_or_default();
+        let parameter_values = if definition.parameters.is_empty() {
+            Some(std::collections::BTreeMap::new())
+        } else {
+            Some(
+                resolve_task_parameter_values(node_id, &definition.parameters)
+                    .map_err(PrepareError::from)?,
+            )
+        };
         build_workspace_cache_plan(
             &document,
             node_id,
@@ -114,7 +129,12 @@ fn plan_task(request: &AppRequest<'_>, json: bool, runner: RunnerOutput) -> Resu
             flake_root,
             invocation_cwd.as_str(),
             &std::collections::BTreeMap::new(),
-            &WorkspaceCachePlanOptions::default(),
+            &WorkspaceCachePlanOptions {
+                parameter_values,
+                matrix_values,
+                is_matrix_instance,
+                ..WorkspaceCachePlanOptions::default()
+            },
             Some(&mut digest_cache),
         )
         .map_err(PrepareError::WorkspaceCache)?;

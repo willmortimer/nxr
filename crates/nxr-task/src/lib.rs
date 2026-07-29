@@ -42,13 +42,14 @@ pub use events::{
 pub use graph::{GraphError, TaskGraph, render_dot, render_mermaid, render_text};
 pub use matrix::{
     MATRIX_ENV_PREFIX, MatrixExpansion, MatrixInstance, expand_matrix_roots, expand_matrix_tasks,
-    matrix_attr_names, matrix_env_name, resolve_matrix_env, validate_matrix_attrs,
-    validate_task_matrix,
+    matrix_attr_names, matrix_env_name, resolve_matrix_env, resolve_matrix_values,
+    validate_matrix_attrs, validate_task_matrix,
 };
 pub use memory::{MemoryParseError, parse_memory};
 pub use parameters::{
     PARAM_ENV_PREFIX, ParameterError, parameter_env_name, parameter_names,
-    resolve_task_parameter_env, resolve_task_parameter_env_with, validate_task_parameters,
+    parameter_values_from_env, resolve_task_parameter_env, resolve_task_parameter_env_with,
+    resolve_task_parameter_values, validate_task_parameters,
 };
 pub use plan_exec::{
     ArgumentForwarding, EXECUTION_PLAN_SCHEMA_VERSION, ExecutionPlan, FailurePolicy, PlanNode,

@@ -56,6 +56,15 @@ pub struct WorkspaceCachePlanOptions {
     pub context_secrets: Vec<PlanSecretEntry>,
     /// Non-secret context `environment.set` entries applied at spawn.
     pub context_spawn_env_set: BTreeMap<String, String>,
+    /// Normalized parameter values keyed by schema parameter name.
+    ///
+    /// `None` when resolution was not performed; parameterized tasks disable
+    /// workspace caching in that case.
+    pub parameter_values: Option<BTreeMap<String, String>>,
+    /// Normalized matrix attribute values keyed by include attribute name.
+    pub matrix_values: BTreeMap<String, String>,
+    /// Whether this node is a matrix-expanded instance.
+    pub is_matrix_instance: bool,
 }
 
 /// Build cache metadata for a task before execution.
@@ -135,6 +144,27 @@ pub fn build_workspace_cache_plan(
             BTreeMap::from([(
                 "cache_disabled".to_owned(),
                 "secret-bearing task disables workspace cache by default".to_owned(),
+            )]),
+        ));
+    }
+
+    if !definition.parameters.is_empty() && options.parameter_values.is_none() {
+        return Ok(disabled_plan(
+            tier,
+            outputs,
+            BTreeMap::from([(
+                "cache_disabled".to_owned(),
+                "task parameters require resolved values for workspace cache".to_owned(),
+            )]),
+        ));
+    }
+    if options.is_matrix_instance && options.matrix_values.is_empty() {
+        return Ok(disabled_plan(
+            tier,
+            outputs,
+            BTreeMap::from([(
+                "cache_disabled".to_owned(),
+                "matrix instance requires resolved attribute values for workspace cache".to_owned(),
             )]),
         ));
     }
@@ -219,6 +249,21 @@ pub fn build_workspace_cache_plan(
             format!("context.env_set:{name}"),
             digest_bytes(value.as_bytes()),
         );
+    }
+
+    let mut parameter_digests = BTreeMap::new();
+    if let Some(values) = &options.parameter_values {
+        for (name, value) in values {
+            let digest = digest_bytes(value.as_bytes());
+            key_components.insert(format!("parameter:{name}"), digest.clone());
+            parameter_digests.insert(name.clone(), digest);
+        }
+    }
+    let mut matrix_digests = BTreeMap::new();
+    for (key, value) in &options.matrix_values {
+        let digest = digest_bytes(value.as_bytes());
+        key_components.insert(format!("matrix:{key}"), digest.clone());
+        matrix_digests.insert(key.clone(), digest);
     }
 
     if let Some(program) = &options.command_program {
@@ -355,6 +400,8 @@ pub fn build_workspace_cache_plan(
             .iter()
             .map(|(name, value)| (name.clone(), digest_bytes(value.as_bytes())))
             .collect(),
+        parameter_values: parameter_digests,
+        matrix_values: matrix_digests,
         command: command_material(options),
         forwarded_args: options.forwarded_args.clone(),
         path_inputs: path_digests,
@@ -648,6 +695,10 @@ struct KeyMaterial {
     context_secrets: Vec<ContextSecretMaterial>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     context_spawn_env_set: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    parameter_values: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    matrix_values: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     command: Option<CommandMaterial>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -702,8 +753,9 @@ mod tests {
     use super::*;
     use crate::schema::{
         EnvInputBinding, TaskCache, TaskCacheMode, TaskDefinition, TaskDocument, TaskInputBinding,
-        TaskInputs, TaskOutput,
+        TaskInputs, TaskOutput, TaskParameter, TaskParameterType,
     };
+    use serde_json::json;
 
     fn workspace_task() -> TaskDefinition {
         let mut def = TaskDefinition::new("codegen");
@@ -1219,5 +1271,157 @@ mod tests {
         assert!(plan_b.cache_enabled);
         assert!(cache.hits() > hits_after_first);
         assert_eq!(cache.misses(), misses_after_first);
+    }
+
+    fn parameterized_workspace_task(mode: &str) -> TaskDefinition {
+        let mut def = workspace_task();
+        def.parameters = BTreeMap::from([(
+            "mode".to_owned(),
+            TaskParameter {
+                param_type: TaskParameterType::Choice,
+                default: Some(json!("fast")),
+                values: Some(vec!["fast".to_owned(), "slow".to_owned()]),
+            },
+        )]);
+        let _ = mode;
+        def
+    }
+
+    fn cache_options_with_parameters(mode: &str) -> WorkspaceCachePlanOptions {
+        let mut options = plan_options();
+        options.parameter_values = Some(BTreeMap::from([("mode".to_owned(), mode.to_owned())]));
+        options
+    }
+
+    #[test]
+    fn different_parameter_values_produce_distinct_action_keys() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let flake = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8");
+        let doc = empty_doc();
+        let def = parameterized_workspace_task("fast");
+        let cwd = tmp.path().join("proj");
+        std::fs::create_dir_all(&cwd).expect("mkdir");
+
+        let plan_a = build_workspace_cache_plan(
+            &doc,
+            "codegen",
+            &def,
+            "aarch64-darwin",
+            &flake,
+            cwd.as_os_str().to_str().expect("utf8"),
+            &BTreeMap::new(),
+            &cache_options_with_parameters("fast"),
+            None,
+        )
+        .expect("plan a");
+        let plan_b = build_workspace_cache_plan(
+            &doc,
+            "codegen",
+            &def,
+            "aarch64-darwin",
+            &flake,
+            cwd.as_os_str().to_str().expect("utf8"),
+            &BTreeMap::new(),
+            &cache_options_with_parameters("slow"),
+            None,
+        )
+        .expect("plan b");
+
+        assert_ne!(plan_a.action_key, plan_b.action_key);
+        assert!(plan_a.key_components.contains_key("parameter:mode"));
+        let components = serde_json::to_string(&plan_a.key_components).expect("json");
+        assert!(!components.contains("fast"));
+        assert!(!components.contains("slow"));
+    }
+
+    #[test]
+    fn different_matrix_values_produce_distinct_action_keys() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let flake = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8");
+        let doc = empty_doc();
+        let def = workspace_task();
+        let cwd = tmp.path().join("proj");
+        std::fs::create_dir_all(&cwd).expect("mkdir");
+
+        let mut options_a = plan_options();
+        options_a.is_matrix_instance = true;
+        options_a.matrix_values = BTreeMap::from([("os".to_owned(), "linux".to_owned())]);
+        let plan_a = build_workspace_cache_plan(
+            &doc,
+            "codegen",
+            &def,
+            "aarch64-darwin",
+            &flake,
+            cwd.as_os_str().to_str().expect("utf8"),
+            &BTreeMap::new(),
+            &options_a,
+            None,
+        )
+        .expect("plan a");
+
+        let mut options_b = plan_options();
+        options_b.is_matrix_instance = true;
+        options_b.matrix_values = BTreeMap::from([("os".to_owned(), "macos".to_owned())]);
+        let plan_b = build_workspace_cache_plan(
+            &doc,
+            "codegen",
+            &def,
+            "aarch64-darwin",
+            &flake,
+            cwd.as_os_str().to_str().expect("utf8"),
+            &BTreeMap::new(),
+            &options_b,
+            None,
+        )
+        .expect("plan b");
+
+        assert_ne!(plan_a.action_key, plan_b.action_key);
+        assert!(plan_a.key_components.contains_key("matrix:os"));
+    }
+
+    #[test]
+    fn unresolved_parameters_disable_workspace_cache() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let flake = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8");
+        let doc = empty_doc();
+        let def = parameterized_workspace_task("fast");
+
+        let plan = build_workspace_cache_plan(
+            &doc,
+            "codegen",
+            &def,
+            "aarch64-darwin",
+            &flake,
+            tmp.path().as_os_str().to_str().expect("utf8"),
+            &BTreeMap::new(),
+            &plan_options(),
+            None,
+        )
+        .expect("plan");
+
+        assert!(!plan.cache_enabled);
+        assert_eq!(
+            plan.key_components.get("cache_disabled"),
+            Some(&"task parameters require resolved values for workspace cache".to_owned())
+        );
+    }
+
+    #[test]
+    fn required_parameter_missing_fails_before_cache_lookup() {
+        use crate::parameters::resolve_task_parameter_values;
+
+        let parameters = BTreeMap::from([(
+            "mode".to_owned(),
+            TaskParameter {
+                param_type: TaskParameterType::Choice,
+                default: None,
+                values: Some(vec!["fast".to_owned(), "slow".to_owned()]),
+            },
+        )]);
+        let err = resolve_task_parameter_values("codegen", &parameters).expect_err("missing");
+        assert!(matches!(
+            err,
+            crate::parameters::ParameterError::Missing { .. }
+        ));
     }
 }

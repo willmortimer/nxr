@@ -47,14 +47,24 @@ pub fn matrix_attr_names(attrs: &BTreeMap<String, JsonValue>) -> Vec<String> {
     names
 }
 
+/// Normalized matrix attribute values keyed by include attribute name.
+#[must_use]
+pub fn resolve_matrix_values(attrs: &BTreeMap<String, JsonValue>) -> BTreeMap<String, String> {
+    let mut values = BTreeMap::new();
+    for (key, value) in attrs {
+        if let Some(normalized) = matrix_value_to_string(value) {
+            values.insert(key.clone(), normalized);
+        }
+    }
+    values
+}
+
 /// Resolve spawn-time `NXR_MATRIX_*` assignments for a matrix instance.
 #[must_use]
 pub fn resolve_matrix_env(attrs: &BTreeMap<String, JsonValue>) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
-    for (key, value) in attrs {
-        if let Some(normalized) = matrix_value_to_string(value) {
-            env.insert(matrix_env_name(key), normalized);
-        }
+    for (key, value) in resolve_matrix_values(attrs) {
+        env.insert(matrix_env_name(&key), value);
     }
     env
 }

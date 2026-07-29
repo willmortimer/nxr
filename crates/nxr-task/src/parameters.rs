@@ -66,6 +66,35 @@ pub fn resolve_task_parameter_env(
     })
 }
 
+/// Normalized parameter values keyed by schema parameter name.
+#[must_use]
+pub fn parameter_values_from_env(
+    parameters: &BTreeMap<String, TaskParameter>,
+    env: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    parameters
+        .keys()
+        .map(|name| {
+            let env_name = parameter_env_name(name);
+            let value = env.get(&env_name).cloned().unwrap_or_default();
+            (name.clone(), value)
+        })
+        .collect()
+}
+
+/// Resolve normalized parameter values keyed by schema parameter name.
+///
+/// # Errors
+///
+/// Returns [`ParameterError`] when a required parameter is unset or a value is invalid.
+pub fn resolve_task_parameter_values(
+    task: &str,
+    parameters: &BTreeMap<String, TaskParameter>,
+) -> Result<BTreeMap<String, String>, ParameterError> {
+    let env = resolve_task_parameter_env(task, parameters)?;
+    Ok(parameter_values_from_env(parameters, &env))
+}
+
 /// Like [`resolve_task_parameter_env`] with an explicit caller-env lookup hook.
 pub fn resolve_task_parameter_env_with(
     task: &str,

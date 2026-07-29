@@ -35,7 +35,8 @@ use nxr_task::{
     ContextError, ExecutionPlan, MatrixExpansion, MatrixInstance, PlanSecretEntry, SchemaError,
     SecretDelivery, TaskDocument, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION,
     WorkspaceCachePlan, WorkspaceCachePlanOptions, apply_task_context, build_workspace_cache_plan,
-    expand_matrix_tasks, matrix_attr_names, parameter_names,
+    expand_matrix_tasks, matrix_attr_names, parameter_names, resolve_matrix_env,
+    resolve_matrix_values, resolve_task_parameter_values,
 };
 use nxr_watch::PrewarmContext;
 
@@ -173,6 +174,10 @@ pub struct PreparedTaskNode {
     pub flake_root: Utf8PathBuf,
     /// Highest preparation stage reached for this node.
     pub prep_stage: NodePrepStage,
+    /// Resolved `NXR_PARAM_*` spawn env (reused at spawn).
+    pub parameter_env: BTreeMap<String, String>,
+    /// Resolved `NXR_MATRIX_*` spawn env (reused at spawn).
+    pub matrix_env: BTreeMap<String, String>,
 }
 
 /// Once-per-invocation workspace evaluation: flake, Nix adapter, apps, optional tasks.
@@ -368,6 +373,8 @@ pub enum PrepareError {
     TaskSchema(#[from] SchemaError),
     #[error(transparent)]
     Context(#[from] ContextError),
+    #[error(transparent)]
+    Parameter(#[from] nxr_task::ParameterError),
     #[error("failed to build workspace cache plan: {0}")]
     WorkspaceCache(#[source] io::Error),
 }
@@ -386,9 +393,10 @@ impl PrepareError {
             Self::Nix(error) => error.exit_code(),
             Self::NotFound(error) => error.exit_code(),
             Self::TaskDiscovery(error) => error.exit_code(),
-            Self::TaskSchema(_) | Self::Context(_) | Self::WorkspaceCache(_) => {
-                nxr_core::diagnostics::exit::EVALUATION
-            }
+            Self::TaskSchema(_)
+            | Self::Context(_)
+            | Self::Parameter(_)
+            | Self::WorkspaceCache(_) => nxr_core::diagnostics::exit::EVALUATION,
         }
     }
 }
@@ -1777,6 +1785,24 @@ impl<'a> TaskNodePreparer<'a> {
             .get(task_id)
             .map(|instance| matrix_attr_names(&instance.attrs))
             .unwrap_or_default();
+        let matrix_instance = live.matrix_expansion.instances.get(task_id);
+        let is_matrix_instance = matrix_instance.is_some();
+        let matrix_values = matrix_instance
+            .map(|instance| resolve_matrix_values(&instance.attrs))
+            .unwrap_or_default();
+        let matrix_env = matrix_instance
+            .map(|instance| resolve_matrix_env(&instance.attrs))
+            .unwrap_or_default();
+        let (parameter_values, parameter_env) = if definition.parameters.is_empty() {
+            (Some(BTreeMap::new()), BTreeMap::new())
+        } else {
+            let values = resolve_task_parameter_values(task_id, &definition.parameters)?;
+            let env = values
+                .iter()
+                .map(|(name, value)| (nxr_task::parameter_env_name(name), value.clone()))
+                .collect();
+            (Some(values), env)
+        };
         let matrix_base_task = live
             .matrix_expansion
             .instances
@@ -1925,6 +1951,9 @@ impl<'a> TaskNodePreparer<'a> {
                     .as_ref()
                     .map(|applied| applied.spawn_env_set.clone())
                     .unwrap_or_default(),
+                parameter_values,
+                matrix_values,
+                is_matrix_instance,
             },
             Some(digest_cache),
         )
@@ -1981,6 +2010,8 @@ impl<'a> TaskNodePreparer<'a> {
             workspace_cache: Some(workspace_cache),
             flake_root: flake_root.to_path_buf(),
             prep_stage: NodePrepStage::CasInputs,
+            parameter_env,
+            matrix_env,
         })
     }
 }
