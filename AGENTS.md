@@ -22,8 +22,8 @@ Do not contradict [docs/CONTRACT_SUMMARY.md](docs/CONTRACT_SUMMARY.md). In short
 
 Accepted foundational ADRs are listed in [docs/adr/README.md](docs/adr/README.md)
 (including audit absorb ADR-0143–0150).
-Active roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) (shipped through 3.2.1; next
-3.3–3.4 workspace scripting + materialized process envs; then V4+ /
+Active roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) (shipped through 3.2.1;
+3.3–3.4 + leftover 2.8 ergonomics implemented on `main` unreleased; next V4+ /
 [docs/ideas/V4_EXECUTION_PROTOCOL.md](docs/ideas/V4_EXECUTION_PROTOCOL.md)).
 
 ## Working agreements

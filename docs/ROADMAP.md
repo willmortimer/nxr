@@ -48,11 +48,14 @@ V4+ ideas: [ideas/V4_EXECUTION_PROTOCOL.md](ideas/V4_EXECUTION_PROTOCOL.md).
 Mise/Just-class UX without abandoning Nix leaves ([ADR-0148](adr/0148-automation-ergonomics.md)):
 
 - ~~`nxr init` templates; `nxr migrate justfile|mise`~~
-- Typed task parameters + generated completion — **planned** (not in schema yet)
-- ~~Selectors (`category:`, `project:`, `changed`)~~; matrix expansion — **planned**
+- ~~Typed task parameters + generated completion~~ (`NXR_PARAM_*`; `__complete`
+  `task-parameters` / `task-parameter-values`)
+- ~~Selectors (`category:`, `project:`, `changed`)~~; ~~matrix.include expansion~~
+  (`NXR_MATRIX_*`)
 - Reports: JUnit + task SARIF shipped; **coverage and benchmark remain scaffold stubs**
   (empty valid documents until artifact collection exists)
 - ~~`nxr ci plan --json`~~; ~~dogfood one canonical local/CI graph~~ — **shipped**
+  (root flake `ci` task + GHA `nxr task ci`)
 - ~~Generated CLI reference; golden example fixture~~
 
 ### 3.0 — Secure execution contexts — shipped as `v3.0.0`
@@ -62,7 +65,7 @@ Finish the security boundary before result caching:
 - Complete clean/inherit/keep/set/unset; shell execution; confirmation + project trust
 - Provider bindings (env, file, sops/sops-nix; Keychain/1Password/Vault as available)
 - Secure tempfile + stdin delivery; audit-safe plans/events
-- `nxr context list|inspect|run`; one-shell DAG optimization
+- ~~`nxr context list|inspect|run`~~; ~~one-shell DAG optimization~~ ([ADR-0129](adr/0129-one-shell-dag.md))
 - Semantic v2 validation (paths, cache policy, resources, secret slots)
 
 ### 3.1 — Workspace actions (“Nix Turborepo”) + process MVP — shipped as `v3.1.0`–`v3.1.4`
@@ -104,37 +107,36 @@ Store-exe source identity; process metadata honesty (dep closure/topo, reject
 unsupported restart, process context fields, readiness fail-on-timeout); Home
 Manager `services.nxrd`; regression coverage.
 
-### 3.3 — Workspace scripting — in progress
+### 3.3 — Workspace scripting — implemented on `main` (unreleased)
 
 Close the mise/Just ergonomic gap without abandoning Nix leaves
 ([ADR-0169](adr/0169-workspace-script-execution.md),
 [ADR-0170](adr/0170-file-backed-apps.md)):
 
 - ~~`nxr script <path|name>`; optional `.nxr/scripts/` convention; shebang execution~~
-- ~~Current environment / context / confirm / `-C` policy support (develop-wrap OK)~~
+- ~~Current environment / context / confirm / `-C` policy support~~
 - ~~File-backed `nxr.apps` (`file` XOR `script`) emitting standard store apps~~
 - ~~Optional local live-workspace fast-path metadata; plan visibility~~
-- **Not in 3.3:** task leaf unions, YAML/TOML manifests, TUI, WASI, workers;
-  materialized process envs are **3.4**
+- ~~Explain / `script --list` / migrate `--scripts`/`--file-backed` / cold live
+  fast path~~
 
 Acceptance: a checked-in script runs with exact argv/streams/signals; bare
 `nxr <name>` stays app-only; `nix run .#promoted` remains the escape hatch.
 
-### 3.4 — Materialized process environments — next
+### 3.4 — Materialized process environments — implemented on `main` (unreleased)
 
 Accelerate shell-backed script/app runs
 ([ADR-0171](adr/0171-materialized-dev-environments.md); supersedes ADR-0130’s
 absolute ban):
 
-- Feature-detected `nix print-dev-env` → normalized process-env snapshot + disk
-  cache; optional `nxrd` retention
-- Active-shell and warm-snapshot paths with **zero** Nix subprocesses
-- Explicit process vs exact-shell semantics; unsupported constructs fall back to
-  `nix develop -c` (never partial interactive-shell emulation)
-- Perf counters + regression table (0 / 0 / one / develop / 0 Nix)
-
-May ship as one public minor with 3.3, but keep as two architectural commits:
-addressability first, environment acceleration second.
+- ~~Feature-detected `nix print-dev-env` → normalized process-env snapshot + disk
+  cache; optional `nxrd` `dev_env.*` retention~~
+- ~~Active-shell and warm-snapshot paths with **zero** Nix subprocesses~~
+- ~~Explicit process vs exact-shell semantics; unsupported constructs fall back to
+  `nix develop -c`~~
+- ~~Perf counters + CLI regression coverage~~
+- ~~One-shell DAG optimization~~ ([ADR-0129](adr/0129-one-shell-dag.md))
+- ~~`nxr cache status|gc|invalidate` deepening for discovery/plan/dev_env~~
 
 ### Later — V4+ and distributed fabric
 
@@ -149,7 +151,7 @@ Older speculative prose: [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PL
 - V4.5 builtins.wasm + WASI/WIT operation tier
 - V5 remote workspace CAS, workers, capability pools (Nix builders for
   derivations; NXR workers for mutable/interactive work)
-- Optional `nxrd` deepening; Determinate feature matrix beyond doctor
+- Determinate feature matrix beyond doctor
 
 ### Later (unchanged carry-overs)
 

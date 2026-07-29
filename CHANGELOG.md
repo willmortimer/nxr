@@ -14,16 +14,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaf ([ADR-0169](docs/adr/0169-workspace-script-execution.md)).
 - File-backed `nxr.apps` (`file` XOR `script`) with optional `fastPath` live
   workspace execution metadata ([ADR-0170](docs/adr/0170-file-backed-apps.md)).
+- `nxr script --list`; migrate `--scripts` / `--file-backed`; cold live fast-path
+  listing eval; explain reports fast-path selection.
+- Materialized process environments via feature-detected `nix print-dev-env`
+  ([ADR-0171](docs/adr/0171-materialized-dev-environments.md)): disk + optional
+  `nxrd` `dev_env.*` cache; warm 0-Nix spawn; `--shell-mode always` develop escape.
+- One-shell DAG optimization for shared shell contexts
+  ([ADR-0129](docs/adr/0129-one-shell-dag.md)).
+- Schema v2 typed task `parameters` (`NXR_PARAM_*`) and `matrix.include`
+  (`NXR_MATRIX_*`); `__complete task-parameters` / `task-parameter-values`.
+- `nxr cache status|gc|invalidate` deepening for discovery, plan, and dev-env
+  caches (disk ages + nxrd warm-layer counts).
+- Root flake `ci` task graph dogfood; CI runs `nxr ci plan --json` + `nxr task ci`.
 - Fixture `fixtures/workspace-scripts` + CLI coverage for script argv, convention
   names, bare-app non-collision, zero-Nix no-shell path, and live fast path.
 
 ### Changed
 
-- Roadmap next line: **3.3** workspace scripting (`nxr script`, file-backed
-  apps) and **3.4** materialized process environments (ADR-0169–0171);
-  ADR-0130 superseded by ADR-0171’s process-env contract.
+- Roadmap: **3.3** / **3.4** and leftover 2.8 params/matrix/CI dogfood marked
+  implemented on `main` (unreleased); ADR-0130 superseded by ADR-0171.
 - V4+ vision framed in [docs/ideas/V4_EXECUTION_PROTOCOL.md](docs/ideas/V4_EXECUTION_PROTOCOL.md);
   legacy control-plane prose remains ideas-only.
+- Prefer `nix build .#packages.$system.default` when `flake.nxr` task metadata is
+  present (installable `.#nxr` can resolve to the document, not the package).
 
 ## [3.2.1] - 2026-07-28
 
