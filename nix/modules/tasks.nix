@@ -410,6 +410,29 @@ let
           v2). Values never appear in plans or events.
         '';
       };
+
+      matrix = lib.mkOption {
+        type = types.nullOr (
+          types.submodule {
+            options = {
+              include = lib.mkOption {
+                type = types.listOf (
+                  types.attrsOf (types.either types.bool (types.either types.str types.number))
+                );
+                description = ''
+                  Each entry expands this task into one planned node. Attribute
+                  values are injected as `NXR_MATRIX_<KEY>` at spawn.
+                '';
+              };
+            };
+          }
+        );
+        default = null;
+        description = ''
+          Matrix include expansion (schema v2). Values never appear in plans or
+          events.
+        '';
+      };
     };
   };
 in

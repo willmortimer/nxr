@@ -100,8 +100,10 @@ fn plan_task(request: &AppRequest<'_>, json: bool, runner: RunnerOutput) -> Resu
         .as_deref()
         .unwrap_or(invocation_cwd.as_path());
     let mut digest_cache = RunDigestCache::new();
+    let expansion = nxr_task::expand_matrix_tasks(&document.tasks)
+        .map_err(|error| PlanError::Prepare(PrepareError::TaskSchema(error)))?;
     for node_id in &plan.serial_order {
-        let Some(definition) = document.tasks.get(node_id) else {
+        let Some(definition) = expansion.tasks.get(node_id) else {
             continue;
         };
         build_workspace_cache_plan(
@@ -282,6 +284,7 @@ mod tests {
             secrets: Vec::new(),
             context_env_set: BTreeMap::new(),
             parameters: Vec::new(),
+            matrix: Vec::new(),
             command: PlanCommand {
                 program: "/nix/bin/nix".to_owned(),
                 arguments: vec!["run".to_owned(), "/project#hello".to_owned()],

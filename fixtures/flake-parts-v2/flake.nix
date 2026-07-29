@@ -106,6 +106,16 @@
             };
           };
 
+          nxr.tasks.matrix-demo = {
+            description = "Matrix include fixture (os x arch)";
+            app = "matrix-demo";
+            matrix.include = [
+              { os = "linux"; arch = "x64"; }
+              { os = "macos"; arch = "arm64"; }
+              { os = "linux"; arch = "arm64"; }
+            ];
+          };
+
           apps = {
             build = mkApp "fixture-build" ''
               echo "build"
@@ -115,6 +125,9 @@
             '';
             param-demo = mkApp "fixture-param-demo" ''
               echo "mode=''${NXR_PARAM_MODE:-unset} verbose=''${NXR_PARAM_VERBOSE:-unset} label=''${NXR_PARAM_LABEL:-unset}"
+            '';
+            matrix-demo = mkApp "fixture-matrix-demo" ''
+              echo "os=${NXR_MATRIX_OS:-unset} arch=${NXR_MATRIX_ARCH:-unset}"
             '';
           };
         };

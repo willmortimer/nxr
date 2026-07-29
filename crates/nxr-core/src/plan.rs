@@ -52,6 +52,9 @@ pub struct Plan {
     /// Typed task parameter names for this node (values never serialized).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parameters: Vec<String>,
+    /// Matrix attribute names for this node (values never serialized).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matrix: Vec<String>,
     pub command: PlanCommand,
     pub forwarded_arguments: Vec<String>,
     /// Absolute workspace script path when [`Self::kind`] is [`PlanKind::WorkspaceScript`].

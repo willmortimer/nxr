@@ -158,6 +158,33 @@
           "additionalProperties": {
             "$ref": "#/$defs/taskParameter"
           }
+        },
+        "matrix": {
+          "$ref": "#/$defs/taskMatrix",
+          "description": "Matrix include expansion into planned nodes. Attribute values are injected as NXR_MATRIX_<KEY> at spawn and never appear in plans or events."
+        }
+      }
+    },
+    "taskMatrix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["include"],
+      "properties": {
+        "include": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Each entry expands the task into one planned node.",
+          "items": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+              "oneOf": [
+                { "type": "string" },
+                { "type": "boolean" },
+                { "type": "number" }
+              ]
+            }
+          }
         }
       }
     },

@@ -559,6 +559,7 @@ mod tests {
                 shell: None,
                 context: None,
                 parameters: BTreeMap::new(),
+                matrix: None,
             },
         );
         tasks.insert(
@@ -582,6 +583,7 @@ mod tests {
                 shell: None,
                 context: None,
                 parameters: BTreeMap::new(),
+                matrix: None,
             },
         );
         TaskDocument::new(tasks)

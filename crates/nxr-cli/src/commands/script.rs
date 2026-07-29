@@ -202,6 +202,7 @@ pub fn prepare_script(request: &ScriptRequest<'_>) -> Result<PreparedScript, Scr
         secrets: Vec::new(),
         context_env_set: Default::default(),
         parameters: Vec::new(),
+        matrix: Vec::new(),
         command: PlanCommand {
             program: resolved.program.as_str().to_owned(),
             arguments: resolved.arguments.clone(),
@@ -686,6 +687,7 @@ pub fn prepare_live_file_app(
         secrets: Vec::new(),
         context_env_set: Default::default(),
         parameters: Vec::new(),
+        matrix: Vec::new(),
         command: PlanCommand {
             program: resolved.program.as_str().to_owned(),
             arguments: resolved.arguments.clone(),

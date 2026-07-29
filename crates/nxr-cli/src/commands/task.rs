@@ -15,7 +15,7 @@ use nxr_task::{
     ContextError, Event, EventSink, ExecutionPlan, FailurePolicy, OutputPayload, PlanError,
     PlanSecretEntry, PlanSecretValuePlaceholder, RunEventDecorator, Scheduler, SchedulerError,
     SecretDelivery, SecretProvider, build_execution_plan_roots, enforce_context_confirm,
-    merge_spawn_env_overrides, resolve_task_name, resolve_task_parameter_env,
+    merge_spawn_env_overrides, resolve_matrix_env, resolve_task_name, resolve_task_parameter_env,
 };
 use nxr_watch::WatchPrewarm;
 
@@ -1232,7 +1232,12 @@ fn spawn_node(
         .transpose()
         .map_err(TaskError::Parameter)?
         .unwrap_or_default();
+    let matrix_env = preparer
+        .matrix_instance(node_id)
+        .map(|instance| resolve_matrix_env(&instance.attrs))
+        .unwrap_or_default();
     let env_overrides = merge_spawn_env_with_parameters(env_overrides, &param_env);
+    let env_overrides = merge_spawn_env_with_parameters(env_overrides, &matrix_env);
     if stdin_payload.is_some() && pipe_stdio {
         return Err(TaskError::Context(ContextError::UnsupportedDelivery {
             slot: "stdin".to_owned(),

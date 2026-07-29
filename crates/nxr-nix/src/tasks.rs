@@ -396,6 +396,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_v2_task_matrix_include() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "shard": {
+                    "app": "shard",
+                    "matrix": {
+                        "include": [
+                            { "os": "linux", "arch": "x64" },
+                            { "os": "macos", "arch": "arm64" },
+                            { "os": "linux", "arch": "arm64" }
+                        ]
+                    }
+                }
+            }
+        });
+        let doc = parse_task_document(&value).expect("task matrix accepted");
+        let matrix = doc.tasks["shard"].matrix.as_ref().expect("matrix");
+        assert_eq!(matrix.include.len(), 3);
+    }
+
+    #[test]
     fn missing_nxr_attr_detection() {
         let error = NixError::CommandFailed {
             nix: Utf8PathBuf::from("nix"),

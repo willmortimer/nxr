@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventSink};
 use crate::graph::TaskGraph;
+use crate::matrix::{expand_matrix_roots, expand_matrix_tasks};
 use crate::planner::{PlanError, plan_serial_union};
 use crate::resources::NodeResources;
 use crate::schema::TaskDefinition;
@@ -165,13 +166,16 @@ pub fn build_execution_plan_roots(
     failure_policy: FailurePolicy,
     sink: Option<&mut dyn EventSink>,
 ) -> Result<ExecutionPlan, PlanError> {
-    let serial_order = plan_serial_union(tasks, roots)?;
-    let graph = TaskGraph::subgraph_union(tasks, roots)?;
+    let expansion = expand_matrix_tasks(tasks).map_err(matrix_plan_error)?;
+    let expanded_roots = expand_matrix_roots(roots, &expansion);
+    let root_refs: Vec<&str> = expanded_roots.iter().map(String::as_str).collect();
+    let serial_order = plan_serial_union(&expansion.tasks, &root_refs)?;
+    let graph = TaskGraph::subgraph_union(&expansion.tasks, &root_refs)?;
 
     let nodes: Vec<PlanNode> = graph
         .node_ids()
         .filter_map(|id| {
-            let definition = tasks.get(id)?;
+            let definition = expansion.tasks.get(id)?;
             Some(PlanNode {
                 id: id.to_owned(),
                 depends_on: graph
@@ -191,7 +195,7 @@ pub fn build_execution_plan_roots(
     // Serial case: one node per wave preserves order and envelope shape for P1.
     let waves: Vec<Vec<String>> = serial_order.iter().cloned().map(|id| vec![id]).collect();
 
-    let root_ids: Vec<String> = roots.iter().map(|id| (*id).to_owned()).collect();
+    let root_ids: Vec<String> = expanded_roots;
     let primary_root = root_ids
         .first()
         .cloned()
@@ -226,6 +230,19 @@ pub fn build_execution_plan_roots(
     }
 
     Ok(plan)
+}
+
+fn matrix_plan_error(error: crate::schema::SchemaError) -> PlanError {
+    match error {
+        crate::schema::SchemaError::InvalidMatrix { message, .. } => PlanError::MissingDependency {
+            task: "matrix".to_owned(),
+            dependency: message,
+        },
+        other => PlanError::MissingDependency {
+            task: "matrix".to_owned(),
+            dependency: other.to_string(),
+        },
+    }
 }
 
 /// Convenience: build with [`FailurePolicy::FailFast`] and no event sink.
@@ -365,6 +382,26 @@ mod tests {
         );
         assert_eq!(plan.interactive_node_ids().collect::<Vec<_>>(), vec!["b"]);
         assert!(plan.has_interactive_nodes());
+    }
+
+    #[test]
+    fn matrix_include_expands_root_into_multiple_nodes() {
+        use crate::schema::TaskMatrix;
+        use serde_json::json;
+
+        let mut tasks = BTreeMap::new();
+        let mut shard = TaskDefinition::new("shard");
+        shard.matrix = Some(TaskMatrix {
+            include: vec![
+                BTreeMap::from([("os".to_owned(), json!("linux"))]),
+                BTreeMap::from([("os".to_owned(), json!("macos"))]),
+            ],
+        });
+        tasks.insert("shard".to_owned(), shard);
+
+        let plan = build_serial_plan(&tasks, "shard").expect("plan");
+        assert_eq!(plan.serial_order, vec!["shard@0", "shard@1"]);
+        assert_eq!(plan.nodes.len(), 2);
     }
 
     #[test]

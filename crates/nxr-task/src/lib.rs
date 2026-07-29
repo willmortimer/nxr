@@ -12,6 +12,7 @@ pub mod context;
 pub mod duration;
 pub mod events;
 pub mod graph;
+pub mod matrix;
 pub mod memory;
 pub mod parameters;
 pub mod plan_exec;
@@ -39,6 +40,11 @@ pub use events::{
     RunOutcome, event_kind,
 };
 pub use graph::{GraphError, TaskGraph, render_dot, render_mermaid, render_text};
+pub use matrix::{
+    MATRIX_ENV_PREFIX, MatrixExpansion, MatrixInstance, expand_matrix_roots, expand_matrix_tasks,
+    matrix_attr_names, matrix_env_name, resolve_matrix_env, validate_matrix_attrs,
+    validate_task_matrix,
+};
 pub use memory::{MemoryParseError, parse_memory};
 pub use parameters::{
     PARAM_ENV_PREFIX, ParameterError, parameter_env_name, parameter_names,
@@ -66,9 +72,9 @@ pub use schema::{
     ContextSecretRef, EnvInput, EnvInputBinding, ExecutionContext, IoIntensity,
     MAX_SUPPORTED_SCHEMA_VERSION, SCHEMA_VERSION, SCHEMA_VERSION_V2, SchemaError, SecretDelivery,
     SecretProvider, TaskCache, TaskCacheMode, TaskCacheSecretPolicy, TaskDefinition, TaskDocument,
-    TaskInputBinding, TaskInputs, TaskOutput, TaskOutputMode, TaskParameter, TaskParameterType,
-    TaskResources, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, parse_task_document,
-    validate_schema_version, validate_working_directory,
+    TaskInputBinding, TaskInputs, TaskMatrix, TaskOutput, TaskOutputMode, TaskParameter,
+    TaskParameterType, TaskResources, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION,
+    parse_task_document, validate_schema_version, validate_working_directory,
 };
 pub use secrets::{
     ResolvedSecrets, SecureTempFile, authorize_secret_refs, resolve_context_secrets,

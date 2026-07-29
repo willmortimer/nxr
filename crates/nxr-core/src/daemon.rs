@@ -1607,6 +1607,7 @@ mod tests {
             secrets: Vec::new(),
             context_env_set: BTreeMap::new(),
             parameters: Vec::new(),
+            matrix: Vec::new(),
             command: PlanCommand {
                 program: "nix".to_owned(),
                 arguments: vec!["run".to_owned(), ".#test".to_owned()],

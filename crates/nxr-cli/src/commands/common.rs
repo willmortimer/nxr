@@ -32,9 +32,10 @@ use nxr_nix::{
     parse_outputs_from_flake_show, resolve_app_by_name,
 };
 use nxr_task::{
-    ContextError, ExecutionPlan, PlanSecretEntry, SchemaError, SecretDelivery, TaskDocument,
-    WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, WorkspaceCachePlan,
-    WorkspaceCachePlanOptions, apply_task_context, build_workspace_cache_plan, parameter_names,
+    ContextError, ExecutionPlan, MatrixExpansion, MatrixInstance, PlanSecretEntry, SchemaError,
+    SecretDelivery, TaskDocument, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION,
+    WorkspaceCachePlan, WorkspaceCachePlanOptions, apply_task_context, build_workspace_cache_plan,
+    expand_matrix_tasks, matrix_attr_names, parameter_names,
 };
 use nxr_watch::PrewarmContext;
 
@@ -1016,8 +1017,9 @@ impl WorkspaceSnapshot {
         environment_policy: &EnvironmentPolicy,
         context_override: Option<&str>,
     ) -> Result<bool, PrepareError> {
+        let expansion = expand_matrix_tasks(&document.tasks).map_err(PrepareError::TaskSchema)?;
         for node in &plan.nodes {
-            let definition = document
+            let definition = expansion
                 .tasks
                 .get(&node.id)
                 .expect("execution plan only includes known task ids");
@@ -1058,12 +1060,18 @@ enum PrepMode<'a> {
     /// Can prepare additional nodes from the workspace snapshot.
     Live(Box<LivePrep<'a>>),
     /// Watch reuse / pre-built map — lookups only, no further prepare.
-    Sealed { document: Option<&'a TaskDocument> },
+    Sealed {
+        document: Option<&'a TaskDocument>,
+        execution_tasks: BTreeMap<String, nxr_task::TaskDefinition>,
+        matrix_instances: BTreeMap<String, MatrixInstance>,
+    },
 }
 
 struct LivePrep<'a> {
     snapshot: &'a WorkspaceSnapshot,
     document: &'a TaskDocument,
+    matrix_expansion: MatrixExpansion,
+    execution_tasks: BTreeMap<String, nxr_task::TaskDefinition>,
     root_task_ids: &'a [String],
     request_args: &'a [String],
     root: bool,
@@ -1127,10 +1135,15 @@ impl<'a> TaskNodePreparer<'a> {
         context_override: Option<&'a str>,
     ) -> Result<Self, PrepareError> {
         document.validate().map_err(PrepareError::TaskSchema)?;
+        let matrix_expansion =
+            expand_matrix_tasks(&document.tasks).map_err(PrepareError::TaskSchema)?;
+        let execution_tasks = matrix_expansion.tasks.clone();
         Ok(Self {
             mode: PrepMode::Live(Box::new(LivePrep {
                 snapshot,
                 document,
+                matrix_expansion,
+                execution_tasks,
                 root_task_ids,
                 request_args,
                 root,
@@ -1172,7 +1185,17 @@ impl<'a> TaskNodePreparer<'a> {
             })
             .collect();
         Self {
-            mode: PrepMode::Sealed { document },
+            mode: PrepMode::Sealed {
+                document,
+                execution_tasks: document
+                    .and_then(|doc| expand_matrix_tasks(&doc.tasks).ok())
+                    .map(|expansion| expansion.tasks)
+                    .unwrap_or_default(),
+                matrix_instances: document
+                    .and_then(|doc| expand_matrix_tasks(&doc.tasks).ok())
+                    .map(|expansion| expansion.instances)
+                    .unwrap_or_default(),
+            },
             prepared,
             prepare_count,
             spawn_plan_count,
@@ -1186,8 +1209,21 @@ impl<'a> TaskNodePreparer<'a> {
     #[must_use]
     pub fn task_definition(&self, task_id: &str) -> Option<&nxr_task::TaskDefinition> {
         match &self.mode {
-            PrepMode::Live(live) => live.document.tasks.get(task_id),
-            PrepMode::Sealed { document } => document.and_then(|doc| doc.tasks.get(task_id)),
+            PrepMode::Live(live) => live.execution_tasks.get(task_id),
+            PrepMode::Sealed {
+                execution_tasks, ..
+            } => execution_tasks.get(task_id),
+        }
+    }
+
+    /// Matrix instance metadata for an expanded node id.
+    #[must_use]
+    pub fn matrix_instance(&self, task_id: &str) -> Option<&MatrixInstance> {
+        match &self.mode {
+            PrepMode::Live(live) => live.matrix_expansion.instances.get(task_id),
+            PrepMode::Sealed {
+                matrix_instances, ..
+            } => matrix_instances.get(task_id),
         }
     }
 
@@ -1217,6 +1253,9 @@ impl<'a> TaskNodePreparer<'a> {
         context_hints: BTreeMap<String, PrewarmContext>,
     ) -> Result<Self, PrepareError> {
         document.validate().map_err(PrepareError::TaskSchema)?;
+        let matrix_expansion =
+            expand_matrix_tasks(&document.tasks).map_err(PrepareError::TaskSchema)?;
+        let execution_tasks = matrix_expansion.tasks.clone();
         for node in prepared.values_mut() {
             node.prep_stage = NodePrepStage::SpawnPlan;
         }
@@ -1225,6 +1264,8 @@ impl<'a> TaskNodePreparer<'a> {
             mode: PrepMode::Live(Box::new(LivePrep {
                 snapshot,
                 document,
+                matrix_expansion,
+                execution_tasks,
                 root_task_ids,
                 request_args,
                 root,
@@ -1474,6 +1515,7 @@ impl<'a> TaskNodePreparer<'a> {
         let apps = live.snapshot.apps.clone();
         let invocation_directory = live.snapshot.invocation_directory.clone();
         let document = live.document.clone();
+        let matrix_instances = live.matrix_expansion.instances.clone();
         let handle = std::thread::spawn(move || {
             if cancel_worker.load(Ordering::Relaxed) {
                 return Err(PrepareError::WorkspaceCache(io::Error::other(
@@ -1504,6 +1546,7 @@ impl<'a> TaskNodePreparer<'a> {
                 &apps,
                 &invocation_directory,
                 &node,
+                &matrix_instances,
             )
         });
         Ok(SpawnPlanTicket {
@@ -1712,6 +1755,7 @@ impl<'a> TaskNodePreparer<'a> {
             &live.snapshot.apps,
             &live.snapshot.invocation_directory,
             &node,
+            &live.matrix_expansion.instances,
         )?;
         self.apply_spawn_plan_parts(task_id, parts)
     }
@@ -1722,6 +1766,22 @@ impl<'a> TaskNodePreparer<'a> {
                 "sealed preparer cannot prepare nodes",
             )));
         };
+        let definition = live
+            .execution_tasks
+            .get(task_id)
+            .cloned()
+            .expect("execution plan only includes known task ids");
+        let matrix_attr_keys = live
+            .matrix_expansion
+            .instances
+            .get(task_id)
+            .map(|instance| matrix_attr_names(&instance.attrs))
+            .unwrap_or_default();
+        let matrix_base_task = live
+            .matrix_expansion
+            .instances
+            .get(task_id)
+            .map(|instance| instance.base_task.clone());
         let LivePrep {
             snapshot,
             document,
@@ -1739,14 +1799,14 @@ impl<'a> TaskNodePreparer<'a> {
             context_hints,
             context_hits,
             context_misses,
+            ..
         } = live.as_mut();
 
-        let definition = document
-            .tasks
-            .get(task_id)
-            .expect("execution plan only includes known task ids");
         let apps: Vec<App> = snapshot.apps.values().cloned().collect();
-        let forwarded = if root_task_ids.iter().any(|id| id == task_id) {
+        let forwarded = if root_task_ids
+            .iter()
+            .any(|id| id == task_id || matrix_base_task.as_deref() == Some(id.as_str()))
+        {
             *request_args
         } else {
             &[][..]
@@ -1845,7 +1905,7 @@ impl<'a> TaskNodePreparer<'a> {
         let workspace_cache = build_workspace_cache_plan(
             document,
             task_id,
-            definition,
+            &definition,
             &snapshot.nix.system,
             flake_root,
             execution_directory.as_str(),
@@ -1889,6 +1949,7 @@ impl<'a> TaskNodePreparer<'a> {
             secrets: Vec::new(),
             context_env_set: BTreeMap::new(),
             parameters: parameter_names(&definition.parameters),
+            matrix: matrix_attr_keys,
             command: PlanCommand {
                 program: snapshot.nix.nix.as_str().to_owned(),
                 arguments: command_argv.clone(),
@@ -2263,13 +2324,20 @@ fn compute_spawn_plan_parts(
     apps: &BTreeMap<String, App>,
     invocation_directory: &Utf8Path,
     cas_node: &PreparedTaskNode,
+    matrix_instances: &BTreeMap<String, MatrixInstance>,
 ) -> Result<SpawnPlanParts, PrepareError> {
-    let definition = document
+    let expansion = expand_matrix_tasks(&document.tasks).map_err(PrepareError::TaskSchema)?;
+    let definition = expansion
         .tasks
         .get(task_id)
         .expect("execution plan only includes known task ids");
     let app_list: Vec<App> = apps.values().cloned().collect();
-    let forwarded = if root_task_ids.iter().any(|id| id == task_id) {
+    let forwarded = if root_task_ids.iter().any(|id| {
+        id == task_id
+            || matrix_instances
+                .get(task_id)
+                .is_some_and(|instance| instance.base_task == *id)
+    }) {
         request_args
     } else {
         &[][..]
@@ -2311,6 +2379,10 @@ fn compute_spawn_plan_parts(
         plan.environment_policy = applied.environment_policy.clone();
     }
     plan.parameters = parameter_names(&definition.parameters);
+    plan.matrix = matrix_instances
+        .get(task_id)
+        .map(|instance| matrix_attr_names(&instance.attrs))
+        .unwrap_or_default();
     let program = Utf8PathBuf::from(plan.command.program.as_str());
     let arguments = plan.command.arguments.clone();
     Ok(SpawnPlanParts {
@@ -2374,6 +2446,7 @@ fn build_plan(
         secrets: Vec::new(),
         context_env_set: BTreeMap::new(),
         parameters: Vec::new(),
+        matrix: Vec::new(),
         command: PlanCommand {
             program: adapter.nix.as_str().to_owned(),
             arguments: command_arguments,
@@ -2437,6 +2510,7 @@ fn build_fast_plan(
         secrets: Vec::new(),
         context_env_set: BTreeMap::new(),
         parameters: Vec::new(),
+        matrix: Vec::new(),
         command: PlanCommand {
             program: nix.as_str().to_owned(),
             arguments: command_arguments,

@@ -111,6 +111,9 @@ pub enum SchemaError {
         name: String,
         message: String,
     },
+    /// Task matrix metadata is invalid.
+    #[error("task {task}: matrix: {message}")]
+    InvalidMatrix { task: String, message: String },
 }
 
 /// Versioned task document: `schema_version` plus named task definitions.
@@ -440,6 +443,16 @@ pub struct TaskDefinition {
     /// Typed task parameters injected as `NXR_PARAM_<NAME>` at spawn (schema v2).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub parameters: BTreeMap<String, TaskParameter>,
+
+    /// Matrix include expansion (schema v2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matrix: Option<TaskMatrix>,
+}
+
+/// Matrix expansion metadata (schema v2).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskMatrix {
+    pub include: Vec<BTreeMap<String, JsonValue>>,
 }
 
 /// Typed task parameter declaration (schema v2).
@@ -682,6 +695,7 @@ impl TaskDefinition {
             shell: None,
             context: None,
             parameters: BTreeMap::new(),
+            matrix: None,
         }
     }
 }
@@ -715,6 +729,12 @@ fn validate_task_v2_semantics(task: &str, definition: &TaskDefinition) -> Result
     }
     if !definition.parameters.is_empty() {
         crate::parameters::validate_task_parameters(task, &definition.parameters)?;
+    }
+    if let Some(matrix) = &definition.matrix {
+        crate::matrix::validate_task_matrix(task, matrix)?;
+        for (index, attrs) in matrix.include.iter().enumerate() {
+            crate::matrix::validate_matrix_attrs(task, index, attrs)?;
+        }
     }
     Ok(())
 }
@@ -949,6 +969,14 @@ struct TaskDefinitionV2Strict {
     context: Option<String>,
     #[serde(default)]
     parameters: BTreeMap<String, TaskParameterV2Strict>,
+    #[serde(default)]
+    matrix: Option<TaskMatrixV2Strict>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskMatrixV2Strict {
+    include: Vec<BTreeMap<String, JsonValue>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1122,6 +1150,15 @@ impl From<TaskDefinitionV2Strict> for TaskDefinition {
                 .into_iter()
                 .map(|(name, param)| (name, param.into()))
                 .collect(),
+            matrix: strict.matrix.map(Into::into),
+        }
+    }
+}
+
+impl From<TaskMatrixV2Strict> for TaskMatrix {
+    fn from(strict: TaskMatrixV2Strict) -> Self {
+        Self {
+            include: strict.include,
         }
     }
 }
@@ -1276,6 +1313,7 @@ mod tests {
                 shell: None,
                 context: None,
                 parameters: BTreeMap::new(),
+                matrix: None,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1684,6 +1722,7 @@ mod tests {
                 shell: None,
                 context: None,
                 parameters: BTreeMap::new(),
+                matrix: None,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1718,6 +1757,7 @@ mod tests {
                 shell: None,
                 context: None,
                 parameters: BTreeMap::new(),
+                matrix: None,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1756,6 +1796,7 @@ mod tests {
                 shell: None,
                 context: None,
                 parameters: BTreeMap::new(),
+                matrix: None,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1789,6 +1830,7 @@ mod tests {
                 shell: None,
                 context: None,
                 parameters: BTreeMap::new(),
+                matrix: None,
             },
         );
         let value = serde_json::to_value(TaskDocument::new(tasks)).expect("serialize");
@@ -2038,6 +2080,61 @@ mod tests {
         let params = &doc.tasks["demo"].parameters;
         assert_eq!(params.len(), 3);
         assert_eq!(params["mode"].param_type, TaskParameterType::Choice);
+    }
+
+    #[test]
+    fn parse_accepts_v2_matrix_include_document() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "shard": {
+                    "app": "shard",
+                    "matrix": {
+                        "include": [
+                            { "os": "linux", "arch": "x64" },
+                            { "os": "macos", "arch": "arm64" }
+                        ]
+                    }
+                }
+            }
+        });
+        let doc = parse_task_document(&value).expect("matrix include accepted");
+        let matrix = doc.tasks["shard"].matrix.as_ref().expect("matrix present");
+        assert_eq!(matrix.include.len(), 2);
+        assert_eq!(matrix.include[0]["os"], json!("linux"));
+    }
+
+    #[test]
+    fn parse_rejects_v2_unknown_matrix_field() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "demo": {
+                    "app": "demo",
+                    "matrix": {
+                        "include": [{ "os": "linux" }],
+                        "exclude": []
+                    }
+                }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("unknown matrix field rejected");
+        assert!(matches!(err, SchemaError::InvalidDocument { .. }));
+    }
+
+    #[test]
+    fn parse_rejects_v2_empty_matrix_include() {
+        let value = json!({
+            "schema_version": 2,
+            "tasks": {
+                "demo": {
+                    "app": "demo",
+                    "matrix": { "include": [] }
+                }
+            }
+        });
+        let err = parse_task_document(&value).expect_err("empty include rejected");
+        assert!(matches!(err, SchemaError::InvalidMatrix { .. }));
     }
 
     #[test]

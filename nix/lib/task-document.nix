@@ -77,6 +77,12 @@ let
       values = param.values;
     };
 
+  taskMatrixToJson =
+    matrix:
+    {
+      include = matrix.include;
+    };
+
   taskToJson =
     task:
     {
@@ -128,6 +134,9 @@ let
     }
     // lib.optionalAttrs (task.parameters != { }) {
       parameters = lib.mapAttrs (_: param: taskParameterToJson param) task.parameters;
+    }
+    // lib.optionalAttrs (task.matrix != null) {
+      matrix = taskMatrixToJson task.matrix;
     };
 
   processReadinessToJson =
@@ -235,7 +244,8 @@ let
     || task.outputs != [ ]
     || (task.cache != null && taskCacheToJson task.cache != { })
     || (task.resources != null && taskResourcesToJson task.resources != { })
-    || task.parameters != { };
+    || task.parameters != { }
+    || task.matrix != null;
 in
 {
   inherit taskUsesSchemaV2 taskInputsPresent;
@@ -256,7 +266,7 @@ in
         if forcedVersion == 2 then
           2
         else if forcedVersion == 1 && hasV2Fields then
-          throw "nxr.schemaVersion = 1 but the nxr document uses schema v2 fields (contexts, processes, task.shell, task.context, task.inputs, task.outputs, task.cache, task.resources, task.parameters, …). Set schemaVersion = 2 or remove v2 fields."
+          throw "nxr.schemaVersion = 1 but the nxr document uses schema v2 fields (contexts, processes, task.shell, task.context, task.inputs, task.outputs, task.cache, task.resources, task.parameters, task.matrix, …). Set schemaVersion = 2 or remove v2 fields."
         else if hasV2Fields then
           2
         else
