@@ -78,8 +78,11 @@ keep the per-node path.
    - `never`, or when `NXR_DEV_SHELL` already matches (`smart` skip): no-op.
 4. **Inner argv** — after materialization, replace per-node
    `develop … -c nix run …` with bare `nix run …` for wrapped nodes only.
-5. **Lazy prep** — `TaskNodePreparer` applies the optimization once per run
-   after all `serial_order` nodes reach `SpawnPlan`, before the first spawn.
+5. **Lazy prep** — `TaskNodePreparer::try_apply_one_shell` runs metadata-only
+   preflight over `serial_order` (definitions + context metadata) without preparing
+   nodes. When ineligible it returns immediately; when eligible it materializes the
+   shared shell once and strips per-node `nix develop` wraps lazily as each node
+   reaches SpawnPlan.
 6. **Observability** — dry-run / explain show the optimized inner argv and
    `environment_mode` like single-node plans.
 

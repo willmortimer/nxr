@@ -24,6 +24,7 @@ use nxr_core::{
     git_source_identity, lookup_prepared_plan, plan_cache_enabled, plan_cache_key_digest,
     record_node_prepared, record_plan_cache_hit, record_plan_cache_miss,
     record_spawn_plan_cancelled, record_spawn_plan_prepared, store_prepared_plan, try_once,
+    workspace_cache_enabled,
 };
 use nxr_nix::{
     AppNotFoundError, NixAdapter, NixCapabilities, NixError, OptionalNixFlags, OutputTable,
@@ -32,11 +33,12 @@ use nxr_nix::{
     parse_outputs_from_flake_show, resolve_app_by_name,
 };
 use nxr_task::{
-    ContextError, ExecutionPlan, MatrixExpansion, MatrixInstance, PlanSecretEntry, SchemaError,
-    SecretDelivery, TaskDocument, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION,
-    WorkspaceCachePlan, WorkspaceCachePlanOptions, apply_task_context, build_workspace_cache_plan,
-    expand_matrix_tasks, matrix_attr_names, parameter_names, resolve_matrix_env,
-    resolve_matrix_values, resolve_task_parameter_values,
+    ContextError, EnvInput, ExecutionPlan, MatrixExpansion, MatrixInstance, PlanSecretEntry,
+    SchemaError, SecretDelivery, TaskCacheMode, TaskCacheSecretPolicy, TaskDefinition,
+    TaskDocument, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, WorkspaceCachePlan,
+    WorkspaceCachePlanOptions, apply_task_context, build_workspace_cache_plan, expand_matrix_tasks,
+    matrix_attr_names, parameter_names, resolve_matrix_env, resolve_matrix_values,
+    resolve_task_parameter_values,
 };
 use nxr_watch::PrewarmContext;
 
@@ -1053,6 +1055,10 @@ impl WorkspaceSnapshot {
 /// type. Callers prepare only nodes approaching execution (phase 3) and may
 /// speculate likely successors within a bounded pool (phase 4).
 ///
+/// Phase 1 (DAG / affected) and phase 2 (resource readiness) remain outside this
+/// type. Callers prepare only nodes approaching execution (phase 3) and may
+/// speculate likely successors within a bounded pool (phase 4).
+///
 /// Live lazy runs split [`NodePrepStage::CasInputs`] from
 /// [`NodePrepStage::SpawnPlan`] so CAS lookup can overlap argv assembly; cache
 /// hits cancel or skip SpawnPlan. `NXR_CAS_PLAN_PIPELINE=off` fuses stages.
@@ -1066,6 +1072,16 @@ pub struct TaskNodePreparer<'a> {
     pipeline: bool,
     /// Whether ADR-0129 one-shell optimization already ran for this preparer.
     one_shell_applied: bool,
+    /// Shared shell materialization for lazy one-shell runs (ADR-0129).
+    one_shell_shared: Option<OneShellShared>,
+}
+
+/// Materialized shared dev shell policy applied lazily at SpawnPlan.
+#[derive(Clone, Debug)]
+struct OneShellShared {
+    shell: String,
+    materialized: EnvironmentPolicy,
+    env_mode: String,
 }
 
 enum PrepMode<'a> {
@@ -1178,6 +1194,7 @@ impl<'a> TaskNodePreparer<'a> {
             // Pipeline only applies to live lazy runs; sealed/eager fuse stages.
             pipeline: cas_plan_pipeline_enabled(),
             one_shell_applied: false,
+            one_shell_shared: None,
         })
     }
 
@@ -1214,6 +1231,7 @@ impl<'a> TaskNodePreparer<'a> {
             spawn_plan_cancelled: 0,
             pipeline: false,
             one_shell_applied: true,
+            one_shell_shared: None,
         }
     }
 
@@ -1299,6 +1317,7 @@ impl<'a> TaskNodePreparer<'a> {
             spawn_plan_cancelled: 0,
             pipeline: false,
             one_shell_applied: false,
+            one_shell_shared: None,
         })
     }
 
@@ -1385,6 +1404,10 @@ impl<'a> TaskNodePreparer<'a> {
 
     /// Apply ADR-0129 one-shell optimization when every wrapped node shares a shell.
     ///
+    /// Metadata preflight runs without preparing nodes. When ineligible, returns
+    /// immediately. When eligible, materializes the shared shell once and strips
+    /// per-node `nix develop` wraps lazily as nodes reach SpawnPlan.
+    ///
     /// # Errors
     ///
     /// Returns [`PrepareError`] when shell materialization fails.
@@ -1392,35 +1415,39 @@ impl<'a> TaskNodePreparer<'a> {
         if self.one_shell_applied {
             return Ok(());
         }
-        let (flake, nix, flake_root, shell_mode, nix_flags) = match &self.mode {
-            PrepMode::Live(live) => {
-                let flake_root = live
-                    .snapshot
-                    .flake
-                    .local_root
-                    .as_deref()
-                    .unwrap_or(live.snapshot.invocation_directory.as_path());
-                (
-                    live.snapshot.flake.clone(),
-                    live.snapshot.nix.nix.clone(),
-                    flake_root.to_path_buf(),
-                    live.shell_mode,
-                    live.nix_flags.clone(),
-                )
-            }
-            PrepMode::Sealed { .. } => return Ok(()),
+        let PrepMode::Live(live) = &self.mode else {
+            return Ok(());
         };
-        self.ensure_prepared_many(serial_order)?;
-        if apply_one_shell_dag_optimization(
-            &mut self.prepared,
-            &flake,
-            &nix,
-            &flake_root,
-            shell_mode,
-            &nix_flags,
-        )? {
-            self.one_shell_applied = true;
+        let preflight = preflight_one_shell_metadata_eligibility(
+            live.document,
+            &live.execution_tasks,
+            serial_order,
+            live.shell,
+            live.shell_mode,
+            live.environment_policy,
+            live.context_override,
+        )?;
+        if preflight.is_none() {
+            return Ok(());
         }
+        let (shell, base_policy) = preflight.expect("checked above");
+        let flake_root = live
+            .snapshot
+            .flake
+            .local_root
+            .as_deref()
+            .unwrap_or(live.snapshot.invocation_directory.as_path());
+        let shared = materialize_one_shell_shared(
+            &live.snapshot.flake,
+            &live.snapshot.nix.nix,
+            flake_root,
+            live.shell_mode,
+            &live.nix_flags,
+            shell,
+            base_policy,
+        )?;
+        self.one_shell_shared = Some(shared);
+        self.one_shell_applied = true;
         Ok(())
     }
 
@@ -1736,6 +1763,13 @@ impl<'a> TaskNodePreparer<'a> {
         node.prep_stage = NodePrepStage::SpawnPlan;
         self.spawn_plan_count = self.spawn_plan_count.saturating_add(1);
         record_spawn_plan_prepared();
+        if let Some(shared) = &self.one_shell_shared {
+            let nix = match &self.mode {
+                PrepMode::Live(live) => &live.snapshot.nix.nix,
+                PrepMode::Sealed { .. } => return Ok(()),
+            };
+            apply_one_shell_strip_to_node(node, shared, nix);
+        }
         Ok(())
     }
 
@@ -2270,6 +2304,207 @@ fn analyze_one_shell_dag_eligibility(
     Some(shell)
 }
 
+struct OneShellPreflightNode {
+    effective_shell: String,
+    environment: EnvironmentPolicy,
+    context_env_set: BTreeMap<String, String>,
+}
+
+/// Metadata-only ADR-0129 eligibility without building SpawnPlans.
+fn preflight_one_shell_metadata_eligibility(
+    document: &TaskDocument,
+    execution_tasks: &BTreeMap<String, TaskDefinition>,
+    serial_order: &[String],
+    cli_shell: Option<&str>,
+    shell_mode: ShellMode,
+    environment_policy: &EnvironmentPolicy,
+    context_override: Option<&str>,
+) -> Result<Option<(String, EnvironmentPolicy)>, PrepareError> {
+    if matches!(shell_mode, ShellMode::Never) {
+        return Ok(None);
+    }
+
+    let mut wrapped: Vec<OneShellPreflightNode> = Vec::new();
+    for task_id in serial_order {
+        let definition = execution_tasks
+            .get(task_id)
+            .expect("execution plan only includes known task ids");
+        let effective_context = context_override.or(definition.context.as_deref());
+        let applied_context = effective_context
+            .map(|name| apply_task_context(document, task_id, name, environment_policy))
+            .transpose()?;
+        if applied_context
+            .as_ref()
+            .is_some_and(|applied| applied.confirm)
+        {
+            return Ok(None);
+        }
+        if applied_context
+            .as_ref()
+            .is_some_and(|applied| !applied.plan_secrets.is_empty())
+        {
+            return Ok(None);
+        }
+        let context_shell = applied_context
+            .as_ref()
+            .and_then(|applied| applied.shell.clone());
+        let effective_shell =
+            resolve_effective_shell(cli_shell, context_shell, definition.shell.clone());
+        if effective_shell_wrap(effective_shell.as_deref(), shell_mode).is_none() {
+            continue;
+        }
+        let shell = effective_shell.expect("wrap implies shell name");
+        let node_environment = applied_context
+            .as_ref()
+            .map(|applied| applied.environment_policy.clone())
+            .unwrap_or_else(|| environment_policy.clone());
+        let context_env_set = applied_context
+            .as_ref()
+            .map(|applied| applied.spawn_env_set.clone())
+            .unwrap_or_default();
+        let context_secrets = applied_context
+            .as_ref()
+            .map(|applied| applied.plan_secrets.as_slice())
+            .unwrap_or(&[]);
+        if metadata_workspace_cache_likely_enabled(definition, context_secrets) {
+            return Ok(None);
+        }
+        wrapped.push(OneShellPreflightNode {
+            effective_shell: shell,
+            environment: node_environment,
+            context_env_set,
+        });
+    }
+
+    if wrapped.len() < 2 {
+        return Ok(None);
+    }
+
+    let first = &wrapped[0];
+    let shell = first.effective_shell.clone();
+    let environment = first.environment.clone();
+    let context_env_set = first.context_env_set.clone();
+    for node in wrapped.iter().skip(1) {
+        if node.effective_shell != shell {
+            return Ok(None);
+        }
+        if node.environment != environment || node.context_env_set != context_env_set {
+            return Ok(None);
+        }
+    }
+
+    Ok(Some((shell, environment)))
+}
+
+fn metadata_workspace_cache_likely_enabled(
+    definition: &TaskDefinition,
+    context_secrets: &[PlanSecretEntry],
+) -> bool {
+    let cache_mode = definition
+        .cache
+        .as_ref()
+        .and_then(|cache| cache.mode.as_ref());
+    let mode_label = match cache_mode {
+        Some(TaskCacheMode::Disabled) => Some("disabled"),
+        Some(TaskCacheMode::Local) => Some("local"),
+        Some(TaskCacheMode::SharedRead) => Some("shared-read"),
+        Some(TaskCacheMode::Shared) => Some("shared"),
+        None => None,
+    };
+    if !workspace_cache_enabled(definition.outputs.len(), mode_label) {
+        return false;
+    }
+    let ignore_secret_values = matches!(
+        definition
+            .cache
+            .as_ref()
+            .and_then(|cache| cache.secret_policy),
+        Some(TaskCacheSecretPolicy::IgnoreValues)
+    );
+    if ignore_secret_values {
+        return true;
+    }
+    if task_has_secret_env_input(definition) || !context_secrets.is_empty() {
+        return false;
+    }
+    true
+}
+
+fn task_has_secret_env_input(definition: &TaskDefinition) -> bool {
+    definition.inputs.as_ref().is_some_and(|inputs| {
+        inputs.env.iter().any(|env_input| match env_input {
+            EnvInput::Name(_) => false,
+            EnvInput::Binding(binding) => binding.secret,
+        })
+    })
+}
+
+fn materialize_one_shell_shared(
+    flake: &FlakeSelection,
+    nix: &Utf8Path,
+    flake_root: &Utf8Path,
+    shell_mode: ShellMode,
+    nix_flags: &OptionalNixFlags,
+    shell: String,
+    base_policy: EnvironmentPolicy,
+) -> Result<OneShellShared, PrepareError> {
+    let (materialized, env_mode) = match shell_mode {
+        ShellMode::Smart => {
+            if let Some(policy) = materialize_process_shell_policy(
+                flake,
+                nix,
+                flake_root,
+                &shell,
+                &base_policy,
+                nix_flags,
+            )? {
+                (policy, ENV_MODE_PROCESS.to_owned())
+            } else {
+                let policy =
+                    materialize_develop_shell_policy(flake, nix, &shell, &base_policy, nix_flags)?;
+                (policy, ENV_MODE_SHELL.to_owned())
+            }
+        }
+        ShellMode::Always => {
+            let policy =
+                materialize_develop_shell_policy(flake, nix, &shell, &base_policy, nix_flags)?;
+            (policy, ENV_MODE_SHELL.to_owned())
+        }
+        ShellMode::Never => {
+            return Err(PrepareError::WorkspaceCache(io::Error::other(
+                "one-shell materialization requires shell wrapping",
+            )));
+        }
+    };
+    Ok(OneShellShared {
+        shell,
+        materialized,
+        env_mode,
+    })
+}
+
+fn apply_one_shell_strip_to_node(
+    node: &mut PreparedTaskNode,
+    shared: &OneShellShared,
+    nix: &Utf8Path,
+) {
+    if node.plan.shell.as_deref() != Some(shared.shell.as_str()) {
+        return;
+    }
+    let Some(mut inner) = strip_nix_develop_wrap(&node.arguments) else {
+        return;
+    };
+    if inner.first().map(String::as_str) == Some(nix.as_str()) {
+        inner.remove(0);
+    }
+    node.arguments.clone_from(&inner);
+    node.plan.command.arguments = inner;
+    node.environment = shared.materialized.clone();
+    node.plan.environment_policy = shared.materialized.clone();
+    node.plan.environment_mode = Some(shared.env_mode.clone());
+    node.plan.active_shell = active_dev_shell();
+}
+
 /// Strip per-node `nix develop` wraps after materializing a shared shell once.
 ///
 /// # Errors
@@ -2296,48 +2531,18 @@ pub(crate) fn apply_one_shell_dag_optimization(
         })
         .expect("eligibility ensures a wrapped node exists");
     let base_policy = sample.environment.clone();
-
-    let (materialized, env_mode) = match shell_mode {
-        ShellMode::Smart => {
-            if let Some(policy) = materialize_process_shell_policy(
-                flake,
-                nix,
-                flake_root,
-                &shell,
-                &base_policy,
-                nix_flags,
-            )? {
-                (policy, ENV_MODE_PROCESS)
-            } else {
-                let policy =
-                    materialize_develop_shell_policy(flake, nix, &shell, &base_policy, nix_flags)?;
-                (policy, ENV_MODE_SHELL)
-            }
-        }
-        ShellMode::Always => {
-            let policy =
-                materialize_develop_shell_policy(flake, nix, &shell, &base_policy, nix_flags)?;
-            (policy, ENV_MODE_SHELL)
-        }
-        ShellMode::Never => return Ok(false),
-    };
+    let shared = materialize_one_shell_shared(
+        flake,
+        nix,
+        flake_root,
+        shell_mode,
+        nix_flags,
+        shell,
+        base_policy,
+    )?;
 
     for node in prepared.values_mut() {
-        if node.plan.shell.as_deref() != Some(shell.as_str()) {
-            continue;
-        }
-        let Some(mut inner) = strip_nix_develop_wrap(&node.arguments) else {
-            continue;
-        };
-        if inner.first().map(String::as_str) == Some(nix.as_str()) {
-            inner.remove(0);
-        }
-        node.arguments.clone_from(&inner);
-        node.plan.command.arguments = inner;
-        node.environment = materialized.clone();
-        node.plan.environment_policy = materialized.clone();
-        node.plan.environment_mode = Some(env_mode.to_owned());
-        node.plan.active_shell = active_dev_shell();
+        apply_one_shell_strip_to_node(node, &shared, nix);
     }
 
     Ok(true)
@@ -3590,6 +3795,167 @@ mod tests {
         assert_eq!(
             node.store_exe_nix_version.as_deref(),
             Some(snapshot.nix.capabilities.version.to_string().as_str()),
+        );
+    }
+
+    fn mixed_shell_chain_fixture(
+        count: usize,
+    ) -> (
+        super::WorkspaceSnapshot,
+        nxr_task::TaskDocument,
+        Vec<String>,
+        OptionalNixFlags,
+    ) {
+        use nxr_task::{FailurePolicy, TaskDefinition, build_execution_plan};
+
+        let mut tasks = BTreeMap::new();
+        for i in 0..count {
+            let id = format!("t{i}");
+            let mut def = TaskDefinition::new("leaf");
+            if i > 0 {
+                def.depends_on = vec![format!("t{}", i - 1)];
+            }
+            def.shell = if i % 2 == 0 {
+                Some("shell-a".to_owned())
+            } else {
+                Some("shell-b".to_owned())
+            };
+            tasks.insert(id, def);
+        }
+        let root = format!("t{}", count - 1);
+        let document = nxr_task::TaskDocument::new(tasks);
+        let plan = build_execution_plan(&document.tasks, &root, FailurePolicy::FailFast, None)
+            .expect("plan");
+
+        let flake = FlakeSelection {
+            display: "/tmp/lazy-prep".to_owned(),
+            nix_ref: "/tmp/lazy-prep".to_owned(),
+            local_root: Some(camino::Utf8PathBuf::from("/tmp/lazy-prep")),
+        };
+        let adapter = NixAdapter::with_nix_and_system(
+            camino::Utf8PathBuf::from("/nix/bin/nix"),
+            "aarch64-darwin".to_owned(),
+        );
+        let app = App {
+            name: "leaf".to_owned(),
+            attr_path: "apps.aarch64-darwin.leaf".to_owned(),
+            flake_ref: flake.nix_ref.clone(),
+            system: "aarch64-darwin".to_owned(),
+            description: None,
+            is_default: false,
+            metadata: BTreeMap::new(),
+        };
+        let mut apps = BTreeMap::new();
+        apps.insert("leaf".to_owned(), app);
+        let dev_shells = ["shell-a", "shell-b"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let snapshot = super::WorkspaceSnapshot {
+            flake,
+            nix: adapter,
+            apps,
+            tasks: Some(document.clone()),
+            invocation_directory: camino::Utf8PathBuf::from("/tmp/lazy-prep"),
+            dev_shells,
+        };
+        (
+            snapshot,
+            document,
+            plan.serial_order,
+            OptionalNixFlags::default(),
+        )
+    }
+
+    fn always_shell_preparer<'a>(
+        snapshot: &'a super::WorkspaceSnapshot,
+        document: &'a nxr_task::TaskDocument,
+        roots: &'a [String],
+        nix_flags: &'a OptionalNixFlags,
+        policy: &'a nxr_core::EnvironmentPolicy,
+    ) -> super::TaskNodePreparer<'a> {
+        super::TaskNodePreparer::new(
+            snapshot,
+            document,
+            roots,
+            &[],
+            false,
+            None,
+            None,
+            ShellMode::Always,
+            policy,
+            nix_flags,
+            None,
+        )
+        .expect("preparer")
+    }
+
+    #[test]
+    fn try_apply_one_shell_ineligible_skips_prepare_on_large_chain() {
+        let (snapshot, document, serial_order, nix_flags) = mixed_shell_chain_fixture(100);
+        let roots = vec![serial_order.last().cloned().expect("root")];
+        let policy = nxr_core::EnvironmentPolicy::Inherit;
+        let mut preparer = always_shell_preparer(&snapshot, &document, &roots, &nix_flags, &policy);
+        preparer
+            .try_apply_one_shell(&serial_order)
+            .expect("preflight only");
+        assert_eq!(preparer.prepare_count(), 0);
+        assert!(preparer.prepared().is_empty());
+    }
+
+    #[test]
+    fn preflight_one_shell_metadata_rejects_mixed_shells() {
+        use nxr_task::expand_matrix_tasks;
+
+        let (_, document, serial_order, _) = mixed_shell_chain_fixture(4);
+        let expansion = expand_matrix_tasks(&document.tasks).expect("expand");
+        let eligible = super::preflight_one_shell_metadata_eligibility(
+            &document,
+            &expansion.tasks,
+            &serial_order,
+            None,
+            ShellMode::Always,
+            &nxr_core::EnvironmentPolicy::Inherit,
+            None,
+        )
+        .expect("scan");
+        assert!(eligible.is_none(), "mixed shells must not preflight");
+    }
+
+    #[test]
+    fn preflight_one_shell_metadata_accepts_matching_shells() {
+        use nxr_task::{FailurePolicy, TaskDefinition, build_execution_plan, expand_matrix_tasks};
+
+        let mut tasks = BTreeMap::new();
+        for id in ["a", "b", "c"] {
+            let mut def = TaskDefinition::new("leaf");
+            def.shell = Some("default".to_owned());
+            if id != "a" {
+                def.depends_on = vec![match id {
+                    "b" => "a".to_owned(),
+                    "c" => "b".to_owned(),
+                    _ => unreachable!(),
+                }];
+            }
+            tasks.insert(id.to_owned(), def);
+        }
+        let document = nxr_task::TaskDocument::new(tasks);
+        let plan = build_execution_plan(&document.tasks, "c", FailurePolicy::FailFast, None)
+            .expect("plan");
+        let expansion = expand_matrix_tasks(&document.tasks).expect("expand");
+        let eligible = super::preflight_one_shell_metadata_eligibility(
+            &document,
+            &expansion.tasks,
+            &plan.serial_order,
+            None,
+            ShellMode::Always,
+            &nxr_core::EnvironmentPolicy::Inherit,
+            None,
+        )
+        .expect("scan");
+        assert_eq!(
+            eligible,
+            Some(("default".to_owned(), nxr_core::EnvironmentPolicy::Inherit))
         );
     }
 }
