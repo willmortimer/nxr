@@ -8,6 +8,7 @@
   outputs =
     { nixpkgs, ... }:
     let
+      lib = nixpkgs.lib;
       systems = [
         "aarch64-darwin"
         "x86_64-linux"
@@ -51,18 +52,25 @@
       );
 
       # Listing metadata for ADR-0170 live fast path (no flake-parts / path:../..).
-      nxr = forAllSystems (_system: {
-        schema_version = 1;
-        tasks = { };
-        apps = {
-          greet-file = {
-            workspace_path = "scripts/greet.sh";
-            fastPath = {
-              enable = true;
+      nxr = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          schema_version = 1;
+          tasks = { };
+          apps = {
+            greet-file = {
+              workspace_path = "scripts/greet.sh";
+              runtime_path = lib.makeBinPath [ pkgs.hello ];
+              fastPath = {
+                enable = true;
+              };
             };
           };
-        };
-        discoveryInputs = [ "scripts/greet.sh" ];
-      });
+          discoveryInputs = [ "scripts/greet.sh" ];
+        }
+      );
     };
 }

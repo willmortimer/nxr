@@ -50,6 +50,8 @@ pub struct MetadataAppListing {
     pub interpreter: Option<String>,
     #[serde(default, rename = "fastPath")]
     pub fast_path: Option<MetadataAppFastPath>,
+    #[serde(default, rename = "runtime_path")]
+    pub runtime_path: Option<String>,
 }
 
 /// Local live-workspace fast-path hint inside `nxrMetadata.apps`.
@@ -293,6 +295,12 @@ impl NxrMetadataDocument {
                             fp.insert("shell".to_owned(), JsonValue::String(shell.clone()));
                         }
                         meta.insert("fastPath".to_owned(), JsonValue::Object(fp));
+                    }
+                    if let Some(runtime_path) = listing.runtime_path.as_ref() {
+                        meta.insert(
+                            "runtime_path".to_owned(),
+                            JsonValue::String(runtime_path.clone()),
+                        );
                     }
                     if meta.is_empty() {
                         None

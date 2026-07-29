@@ -10,21 +10,28 @@ use std::path::Path;
 use camino::{Utf8Path, Utf8PathBuf};
 use nxr_completion::cached_workspace_best_effort;
 use nxr_core::diagnostics::exit;
-use nxr_core::{EnvironmentPolicy, Plan, PlanCommand, PlanKind};
+use nxr_core::{EnvironmentPolicy, Plan, PlanCommand, PlanKind, PlanSecretRef};
 use nxr_nix::{NixError, OptionalNixFlags};
-use nxr_task::AppListingMetadata;
+use nxr_task::{
+    AppListingMetadata, ContextError, PlanSecretEntry, SecretDelivery, SecretProvider,
+    TaskDocument, apply_task_context, authorize_secret_refs, enforce_context_confirm,
+};
 
 use crate::commands::common::{
-    AppRequest, PrepareError, build_adapter, cold_discover_app_listings,
+    AppRequest, PrepareError, build_adapter, cold_discover_app_listings, cold_discover_workspace,
     current_invocation_directory, locate_nix_path, resolve_execution_directory,
     strip_one_separator,
 };
 use crate::commands::dev_env::resolve_script_spawn_with_dev_env;
 use crate::commands::history;
 use crate::commands::plan::{PlanRenderError, write_plan};
+use crate::commands::secrets::{
+    SpawnSecrets, load_runtime_secret_config, prepare_spawn_secrets, project_identity,
+};
+use crate::commands::trust;
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
 use crate::runner_output::RunnerOutput;
-use crate::shell_mode::{ShellMode, active_dev_shell};
+use crate::shell_mode::{ShellMode, active_dev_shell, resolve_effective_shell};
 
 /// Convention directory under the flake root for named scripts.
 pub const SCRIPT_CONVENTION_DIR: &str = ".nxr/scripts";
@@ -47,6 +54,8 @@ pub struct ScriptRequest<'a> {
     pub shell_mode: ShellMode,
     pub environment_policy: EnvironmentPolicy,
     pub nix_flags: &'a OptionalNixFlags,
+    /// When set, applies a named execution context (schema v2).
+    pub context: Option<&'a str>,
 }
 
 /// Prepared workspace-script execution.
@@ -57,6 +66,10 @@ pub struct PreparedScript {
     pub arguments: Vec<String>,
     pub execution_directory: Utf8PathBuf,
     pub script_path: Utf8PathBuf,
+    pub confirm: bool,
+    pub runtime_path: Option<String>,
+    pub flake_display: String,
+    pub local_root: Option<Utf8PathBuf>,
 }
 
 /// Errors while resolving or running a workspace script.
@@ -70,6 +83,10 @@ pub enum ScriptError {
     Nix(#[from] NixError),
     #[error(transparent)]
     Plan(#[from] PlanRenderError),
+    #[error(transparent)]
+    Context(#[from] ContextError),
+    #[error(transparent)]
+    Trust(#[from] crate::commands::trust::TrustCommandError),
     #[error("workspace scripts require a local flake checkout (got remote ref {reference})")]
     RemoteFlake { reference: String },
     #[error("script not found: {path}")]
@@ -94,6 +111,8 @@ impl ScriptError {
             Self::Flake(error) => error.exit_code(),
             Self::Nix(error) => error.exit_code(),
             Self::Plan(_) => exit::EVALUATION,
+            Self::Context(_) => exit::EVALUATION,
+            Self::Trust(error) => error.exit_code(),
             Self::RemoteFlake { .. } | Self::NotFound { .. } => exit::NOT_FOUND,
             Self::NotExecutable { .. }
             | Self::InvalidShebang { .. }
@@ -124,20 +143,7 @@ pub fn execute(
         return Ok(exit::SUCCESS);
     }
 
-    runner
-        .verbose(format!(
-            "running workspace script {} from {}",
-            prepared.script_path, prepared.plan.flake
-        ))
-        .map_err(ScriptError::Supervision)?;
-
-    let (code, _stderr) = nxr_process::run_in_with_stderr(
-        prepared.program.as_std_path(),
-        &prepared.arguments,
-        Some(prepared.execution_directory.as_std_path()),
-        &prepared.plan.environment_policy,
-    )
-    .map_err(ScriptError::Supervision)?;
+    let code = execute_prepared_script(&prepared, "workspace-script", runner)?;
 
     history::record_completed_run(
         started,
@@ -171,6 +177,13 @@ pub fn prepare_script(request: &ScriptRequest<'_>) -> Result<PreparedScript, Scr
         resolve_execution_directory(&invocation_cwd, &flake, request.root, request.cwd)?;
     let script_path = resolve_script_path(request.path_or_name, &invocation_cwd, &local_root)?;
     let forwarded = strip_one_separator(request.args);
+    let document = load_task_document(&flake, &local_root, request.nix_override, request.nix_flags)?;
+    let context_fields = resolve_script_context(
+        &document,
+        request.context,
+        &request.environment_policy,
+    )?;
+    let shell = resolve_effective_shell(request.shell, context_fields.shell.clone(), None);
     let spawn = resolve_script_spawn(&script_path, None)?;
     let nix = locate_nix_path(request.nix_override)?;
 
@@ -178,9 +191,9 @@ pub fn prepare_script(request: &ScriptRequest<'_>) -> Result<PreparedScript, Scr
         &flake,
         &nix,
         &local_root,
-        request.shell,
+        shell.as_deref(),
         request.shell_mode,
-        &request.environment_policy,
+        &context_fields.environment_policy,
         request.nix_flags,
         &spawn,
         &forwarded,
@@ -198,12 +211,12 @@ pub fn prepare_script(request: &ScriptRequest<'_>) -> Result<PreparedScript, Scr
         attr_path: format!("workspace-script:{}", script_path),
         invocation_directory: invocation_cwd.as_str().to_owned(),
         execution_directory: execution_directory.as_str().to_owned(),
-        shell: request.shell.map(str::to_owned),
+        shell: shell.clone(),
         active_shell: active_dev_shell(),
         environment_policy: resolved.environment_policy.clone(),
-        context: None,
-        secrets: Vec::new(),
-        context_env_set: Default::default(),
+        context: context_fields.context,
+        secrets: context_fields.secrets,
+        context_env_set: context_fields.context_env_set,
         parameters: Vec::new(),
         matrix: Vec::new(),
         command: PlanCommand {
@@ -223,6 +236,10 @@ pub fn prepare_script(request: &ScriptRequest<'_>) -> Result<PreparedScript, Scr
         arguments: resolved.arguments,
         execution_directory,
         script_path,
+        confirm: context_fields.confirm,
+        runtime_path: None,
+        flake_display: flake.display.clone(),
+        local_root: Some(local_root),
     })
 }
 
@@ -570,6 +587,7 @@ fn resolve_listing_to_prepared(
         request.environment_policy.clone(),
         request.nix_override,
         request.nix_flags,
+        request.context,
         flake,
         local_root,
         invocation_cwd,
@@ -578,6 +596,7 @@ fn resolve_listing_to_prepared(
         workspace_path,
         listing.interpreter.as_deref(),
         fast_path.shell.as_deref(),
+        listing.runtime_path.as_deref(),
         &forwarded,
     )?;
     Ok(LiveFastPathOutcome::Hit(prepared))
@@ -675,6 +694,7 @@ pub fn prepare_live_file_app(
     environment_policy: EnvironmentPolicy,
     nix_override: Option<&str>,
     nix_flags: &OptionalNixFlags,
+    context_name: Option<&str>,
     flake: &FlakeSelection,
     local_root: &Utf8Path,
     invocation_cwd: &Utf8Path,
@@ -683,20 +703,28 @@ pub fn prepare_live_file_app(
     workspace_path: &str,
     interpreter: Option<&str>,
     fast_path_shell: Option<&str>,
+    runtime_path: Option<&str>,
     forwarded: &[String],
 ) -> Result<PreparedScript, ScriptError> {
     validate_repo_relative_file(workspace_path)?;
     let script_path = local_root.join(workspace_path);
     let spawn = resolve_script_spawn(&script_path, interpreter)?;
     let nix = locate_nix_path(nix_override)?;
-    let shell = request_shell.or(fast_path_shell);
+    let document = load_task_document(flake, local_root, nix_override, nix_flags)?;
+    let context_fields =
+        resolve_script_context(&document, context_name, &environment_policy)?;
+    let shell = resolve_effective_shell(
+        request_shell,
+        context_fields.shell.clone(),
+        fast_path_shell.map(str::to_owned),
+    );
     let resolved = wrap_script_spawn(
         flake,
         &nix,
         local_root,
-        shell,
+        shell.as_deref(),
         request_shell_mode,
-        &environment_policy,
+        &context_fields.environment_policy,
         nix_flags,
         &spawn,
         forwarded,
@@ -711,12 +739,12 @@ pub fn prepare_live_file_app(
         attr_path: format!("apps.local.{app_name}"),
         invocation_directory: invocation_cwd.as_str().to_owned(),
         execution_directory: execution_directory.as_str().to_owned(),
-        shell: shell.map(str::to_owned),
+        shell: shell.clone(),
         active_shell: active_dev_shell(),
         environment_policy: resolved.environment_policy.clone(),
-        context: None,
-        secrets: Vec::new(),
-        context_env_set: Default::default(),
+        context: context_fields.context,
+        secrets: context_fields.secrets,
+        context_env_set: context_fields.context_env_set,
         parameters: Vec::new(),
         matrix: Vec::new(),
         command: PlanCommand {
@@ -736,7 +764,240 @@ pub fn prepare_live_file_app(
         arguments: resolved.arguments,
         execution_directory: execution_directory.to_path_buf(),
         script_path,
+        confirm: context_fields.confirm,
+        runtime_path: runtime_path.map(str::to_owned),
+        flake_display: flake.display.clone(),
+        local_root: Some(local_root.to_path_buf()),
     })
+}
+
+/// Execute a prepared workspace or live file-backed script in the foreground.
+///
+/// # Errors
+///
+/// Returns [`ScriptError`] when trust, confirmation, secret resolution, or spawn fails.
+pub fn execute_prepared_script(
+    prepared: &PreparedScript,
+    confirm_label: &str,
+    runner: RunnerOutput,
+) -> Result<i32, ScriptError> {
+    if prepared.requires_project_trust() {
+        trust::enforce_for_execution(
+            &prepared.flake_display,
+            prepared.local_root.as_deref(),
+            &prepared.plan.flake,
+        )?;
+    }
+
+    if prepared.confirm {
+        let context_name = prepared
+            .plan
+            .context
+            .as_deref()
+            .unwrap_or("unknown");
+        enforce_context_confirm(context_name, confirm_label, true)?;
+    }
+
+    runner
+        .verbose(format!(
+            "running workspace script {} from {}",
+            prepared.script_path, prepared.plan.flake
+        ))
+        .map_err(ScriptError::Supervision)?;
+
+    let (env_overrides, _stdin_payload, _spawn_secrets) = build_script_spawn_env(prepared)?;
+    let (code, _stderr) = nxr_process::run_in_with_stderr(
+        prepared.program.as_std_path(),
+        &prepared.arguments,
+        Some(prepared.execution_directory.as_std_path()),
+        &prepared.plan.environment_policy,
+        env_overrides.as_ref(),
+    )
+    .map_err(ScriptError::Supervision)?;
+
+    Ok(code)
+}
+
+impl PreparedScript {
+    #[must_use]
+    pub fn requires_project_trust(&self) -> bool {
+        self.confirm || !self.plan.secrets.is_empty()
+    }
+}
+
+struct ResolvedScriptContext {
+    environment_policy: EnvironmentPolicy,
+    context: Option<String>,
+    secrets: Vec<PlanSecretRef>,
+    context_env_set: BTreeMap<String, String>,
+    shell: Option<String>,
+    confirm: bool,
+}
+
+fn resolve_script_context(
+    document: &TaskDocument,
+    context_name: Option<&str>,
+    base_policy: &EnvironmentPolicy,
+) -> Result<ResolvedScriptContext, ScriptError> {
+    let Some(name) = context_name else {
+        return Ok(ResolvedScriptContext {
+            environment_policy: base_policy.clone(),
+            context: None,
+            secrets: Vec::new(),
+            context_env_set: BTreeMap::new(),
+            shell: None,
+            confirm: false,
+        });
+    };
+    let applied = apply_task_context(document, "workspace-script", name, base_policy)?;
+    Ok(ResolvedScriptContext {
+        environment_policy: applied.environment_policy,
+        context: Some(applied.context_name),
+        secrets: plan_secrets_for_core(&applied.plan_secrets),
+        context_env_set: applied.spawn_env_set,
+        shell: applied.shell,
+        confirm: applied.confirm,
+    })
+}
+
+fn load_task_document(
+    flake: &FlakeSelection,
+    local_root: &Utf8Path,
+    nix_override: Option<&str>,
+    nix_flags: &OptionalNixFlags,
+) -> Result<TaskDocument, ScriptError> {
+    if let Some(cached) = cached_workspace_best_effort(local_root)
+        && let Some(document) = cached.tasks
+    {
+        return Ok(document);
+    }
+    let nix = build_adapter(nix_override).map_err(ScriptError::Nix)?;
+    let workspace = cold_discover_workspace(&nix, &flake.nix_ref, true, nix_flags)
+        .map_err(ScriptError::Prepare)?;
+    Ok(workspace
+        .discovery
+        .tasks
+        .unwrap_or_else(|| TaskDocument::new(BTreeMap::new())))
+}
+
+fn build_script_spawn_env(
+    prepared: &PreparedScript,
+) -> Result<
+    (
+        Option<BTreeMap<String, String>>,
+        Option<Vec<u8>>,
+        SpawnSecrets,
+    ),
+    ScriptError,
+> {
+    let flake_root = prepared.script_path.parent().map(|path| path.as_std_path());
+    let project_id = project_identity(flake_root.unwrap_or_else(|| Path::new(".")));
+    let (user_config, secret_bindings) = load_runtime_secret_config()?;
+    if !prepared.plan.secrets.is_empty() {
+        authorize_script_secrets(&prepared.plan, &project_id, &user_config)?;
+    }
+    let entries = plan_secret_entries_from_core(&prepared.plan.secrets);
+    let spawn_secrets = prepare_spawn_secrets(&entries, &project_id, &user_config, &secret_bindings)?;
+    let mut merged = nxr_task::merge_spawn_env_overrides(
+        &prepared.plan.context_env_set,
+        &spawn_secrets.env_overrides,
+    );
+    if let Some(runtime_path) = prepend_runtime_path(prepared.runtime_path.as_deref()) {
+        merged.insert("PATH".to_owned(), runtime_path);
+    }
+    let env_overrides = if merged.is_empty() {
+        None
+    } else {
+        Some(merged)
+    };
+    Ok((
+        env_overrides,
+        spawn_secrets.stdin_payload.clone(),
+        spawn_secrets,
+    ))
+}
+
+fn authorize_script_secrets(
+    plan: &Plan,
+    project_id: &str,
+    user_config: &nxr_core::config::UserConfig,
+) -> Result<(), ScriptError> {
+    if user_config.trusted_projects.is_empty() {
+        return Ok(());
+    }
+    let trust_refs: Vec<String> = plan.secrets.iter().map(|secret| secret.reference.clone()).collect();
+    authorize_secret_refs(project_id, &trust_refs, &user_config.trusted_projects)?;
+    Ok(())
+}
+
+fn prepend_runtime_path(runtime_path: Option<&str>) -> Option<String> {
+    let fragment = runtime_path.filter(|value| !value.is_empty())?;
+    let current = std::env::var("PATH").unwrap_or_default();
+    Some(if current.is_empty() {
+        fragment.to_owned()
+    } else {
+        format!("{fragment}:{current}")
+    })
+}
+
+fn plan_secrets_for_core(entries: &[PlanSecretEntry]) -> Vec<PlanSecretRef> {
+    entries
+        .iter()
+        .map(|entry| PlanSecretRef {
+            name: entry.name.clone(),
+            reference: entry.reference.clone(),
+            delivery: secret_delivery_label(entry.delivery).to_owned(),
+            provider: secret_provider_label(entry.provider).to_owned(),
+            value: "<runtime>".to_owned(),
+        })
+        .collect()
+}
+
+fn plan_secret_entries_from_core(secrets: &[PlanSecretRef]) -> Vec<PlanSecretEntry> {
+    secrets
+        .iter()
+        .map(|secret| PlanSecretEntry {
+            name: secret.name.clone(),
+            reference: secret.reference.clone(),
+            delivery: parse_plan_secret_delivery(&secret.delivery),
+            provider: parse_plan_secret_provider(&secret.provider),
+            value: nxr_task::PlanSecretValuePlaceholder::RUNTIME,
+        })
+        .collect()
+}
+
+fn parse_plan_secret_delivery(label: &str) -> SecretDelivery {
+    match label {
+        "file" => SecretDelivery::File,
+        "stdin" => SecretDelivery::Stdin,
+        _ => SecretDelivery::Env,
+    }
+}
+
+fn parse_plan_secret_provider(label: &str) -> SecretProvider {
+    match label {
+        "file" => SecretProvider::File,
+        "sops" => SecretProvider::Sops,
+        "sops-nix" => SecretProvider::SopsNix,
+        _ => SecretProvider::Env,
+    }
+}
+
+fn secret_provider_label(provider: SecretProvider) -> &'static str {
+    match provider {
+        SecretProvider::Env => "env",
+        SecretProvider::File => "file",
+        SecretProvider::Sops => "sops",
+        SecretProvider::SopsNix => "sops-nix",
+    }
+}
+
+fn secret_delivery_label(delivery: SecretDelivery) -> &'static str {
+    match delivery {
+        SecretDelivery::Env => "env",
+        SecretDelivery::File => "file",
+        SecretDelivery::Stdin => "stdin",
+    }
 }
 
 fn validate_repo_relative_file(path: &str) -> Result<(), ScriptError> {
@@ -752,9 +1013,10 @@ fn validate_repo_relative_file(path: &str) -> Result<(), ScriptError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SCRIPT_CONVENTION_DIR, is_path_form, resolve_script_path, resolve_script_spawn,
-        ScriptError,
+        PreparedScript, SCRIPT_CONVENTION_DIR, ScriptError, build_script_spawn_env, is_path_form,
+        prepend_runtime_path, resolve_script_path, resolve_script_spawn,
     };
+    use std::collections::BTreeMap;
     use camino::Utf8PathBuf;
     use std::fs;
     use tempfile::TempDir;
@@ -766,6 +1028,61 @@ mod tests {
         assert!(is_path_form("/tmp/hello.sh"));
         assert!(!is_path_form("deploy"));
         assert!(!is_path_form("hello.sh"));
+    }
+
+    #[test]
+    fn build_script_spawn_env_prepends_runtime_path() {
+        use nxr_core::{EnvironmentPolicy, Plan, PlanCommand, PlanKind};
+        use camino::Utf8PathBuf;
+
+        let prepared = PreparedScript {
+            plan: Plan {
+                schema_version: Plan::SCHEMA_VERSION,
+                kind: PlanKind::WorkspaceScript,
+                flake: "path:/tmp".to_owned(),
+                system: "local".to_owned(),
+                target: "greet".to_owned(),
+                attr_path: "workspace-script:greet".to_owned(),
+                invocation_directory: "/tmp".to_owned(),
+                execution_directory: "/tmp".to_owned(),
+                shell: None,
+                active_shell: None,
+                environment_policy: EnvironmentPolicy::Inherit,
+                context: None,
+                secrets: Vec::new(),
+                context_env_set: BTreeMap::new(),
+                parameters: Vec::new(),
+                matrix: Vec::new(),
+                command: PlanCommand {
+                    program: "/bin/sh".to_owned(),
+                    arguments: Vec::new(),
+                },
+                forwarded_arguments: Vec::new(),
+                workspace_script: None,
+                mutable_source: true,
+                fallback_app: None,
+                environment_mode: None,
+            },
+            program: Utf8PathBuf::from("/bin/sh"),
+            arguments: Vec::new(),
+            execution_directory: Utf8PathBuf::from("/tmp"),
+            script_path: Utf8PathBuf::from("/tmp/greet.sh"),
+            confirm: false,
+            runtime_path: Some("/nix/store/example/bin".to_owned()),
+            flake_display: "path:/tmp".to_owned(),
+            local_root: None,
+        };
+        let (env_overrides, _, _) = build_script_spawn_env(&prepared).expect("spawn env");
+        let env = env_overrides.expect("overrides");
+        assert!(env
+            .get("PATH")
+            .is_some_and(|path| path.starts_with("/nix/store/example/bin")));
+    }
+
+    #[test]
+    fn prepend_runtime_path_prefixes_fragment() {
+        let merged = prepend_runtime_path(Some("/nix/store/bin")).expect("path");
+        assert!(merged.starts_with("/nix/store/bin"));
     }
 
     #[test]

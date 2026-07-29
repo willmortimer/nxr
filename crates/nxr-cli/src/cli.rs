@@ -97,6 +97,10 @@ pub struct Cli {
     #[arg(long = "unset-env", global = true, value_name = "NAME")]
     pub unset_env: Vec<String>,
 
+    /// Named execution context for script/task runs (schema v2)
+    #[arg(long = "context", global = true, value_name = "NAME")]
+    pub execution_context: Option<String>,
+
     /// Suppress non-error nxr messages
     #[arg(short = 'q', long = "quiet", global = true, action = ArgAction::Count)]
     pub quiet: u8,

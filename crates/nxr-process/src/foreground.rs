@@ -15,6 +15,7 @@
 //! missing-installable suggestions are skipped. When stderr is not a terminal
 //! (pipes, CI), stderr is tee'd with a bounded rolling tail for diagnostics.
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::{self, IsTerminal};
 use std::path::Path;
@@ -65,7 +66,7 @@ where
     P: AsRef<OsStr>,
     A: AsRef<OsStr>,
 {
-    Ok(run_in_with_stderr(program, args, cwd, environment)?.0)
+    Ok(run_in_with_stderr(program, args, cwd, environment, None)?.0)
 }
 
 /// Like [`run_in`], but may return a bounded stderr tail for diagnostics.
@@ -82,6 +83,7 @@ pub fn run_in_with_stderr<P, A>(
     args: &[A],
     cwd: Option<&Path>,
     environment: &EnvironmentPolicy,
+    env_overrides: Option<&BTreeMap<String, String>>,
 ) -> io::Result<(i32, String)>
 where
     P: AsRef<OsStr>,
@@ -89,12 +91,12 @@ where
 {
     #[cfg(unix)]
     {
-        unix::run_with_stderr(program.as_ref(), args, cwd, environment)
+        unix::run_with_stderr(program.as_ref(), args, cwd, environment, env_overrides)
     }
 
     #[cfg(windows)]
     {
-        let _ = (program, args, cwd, environment);
+        let _ = (program, args, cwd, environment, env_overrides);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Windows foreground supervision is not implemented yet",
@@ -103,7 +105,7 @@ where
 
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = (program, args, cwd, environment);
+        let _ = (program, args, cwd, environment, env_overrides);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "foreground supervision is not supported on this platform",
@@ -135,8 +137,8 @@ pub fn append_rolling_tail(captured: &mut Vec<u8>, chunk: &[u8], capacity: usize
 #[cfg(unix)]
 mod unix {
     use super::{
-        Command, Duration, EnvironmentPolicy, IsTerminal, OsStr, Path, STDERR_TAIL_CAPACITY, Stdio,
-        append_rolling_tail, exit_code_from_status, io, thread,
+        BTreeMap, Command, Duration, EnvironmentPolicy, IsTerminal, OsStr, Path, STDERR_TAIL_CAPACITY,
+        Stdio, append_rolling_tail, exit_code_from_status, io, thread,
     };
     use crate::signals::unix::SignalForwarder;
     use std::os::unix::process::CommandExt;
@@ -148,7 +150,7 @@ mod unix {
         cwd: Option<&Path>,
         environment: &EnvironmentPolicy,
     ) -> io::Result<i32> {
-        Ok(run_with_stderr(program, args, cwd, environment)?.0)
+        Ok(run_with_stderr(program, args, cwd, environment, None)?.0)
     }
 
     pub(super) fn run_with_stderr<A: AsRef<OsStr>>(
@@ -156,6 +158,7 @@ mod unix {
         args: &[A],
         cwd: Option<&Path>,
         environment: &EnvironmentPolicy,
+        env_overrides: Option<&BTreeMap<String, String>>,
     ) -> io::Result<(i32, String)> {
         use std::io::{Read, Write};
 
@@ -177,7 +180,7 @@ mod unix {
         if let Some(dir) = cwd {
             command.current_dir(dir);
         }
-        environment.apply(&mut command);
+        environment.apply_with_overrides(&mut command, env_overrides.unwrap_or(&BTreeMap::new()));
 
         let mut child = command.spawn()?;
         let program_str = program.to_string_lossy();

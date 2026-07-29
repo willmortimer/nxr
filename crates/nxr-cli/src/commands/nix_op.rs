@@ -153,6 +153,7 @@ fn run_nix_child_with_stderr(
         arguments,
         Some(cwd.as_std_path()),
         environment,
+        None,
     )
     .map_err(NixOpError::Io)
 }

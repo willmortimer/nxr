@@ -41,7 +41,8 @@ V1 implements the app-oriented subset. V2 activates task-oriented commands. Flak
 
 Reserved `script` ([ADR-0169](adr/0169-workspace-script-execution.md)): run a local
 workspace script (exact path or `.nxr/scripts/<name>`). Does **not** participate
-in bare `nxr <name>` resolution. Local checkout only.
+in bare `nxr <name>` resolution. Local checkout only. Optional `--context <name>`
+applies schema v2 execution contexts (environment, secrets, confirm) like tasks.
 
 ## 2. Name resolution
 
@@ -539,6 +540,7 @@ Do not treat these as stable until the named release ships.
 
 ```bash
 nxr context <name> <app|task …>
+nxr context run <name> script <path-or-name> [--] [args...]
 ```
 
 Contexts, secret references, task I/O, and dependency states require **task

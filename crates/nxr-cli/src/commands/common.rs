@@ -65,6 +65,7 @@ pub struct AppRequest<'a> {
     pub shell_mode: ShellMode,
     pub environment_policy: EnvironmentPolicy,
     pub nix_flags: &'a OptionalNixFlags,
+    pub context: Option<&'a str>,
 }
 
 /// Inputs for flake discovery without a resolved app target.
@@ -2604,6 +2605,7 @@ fn compute_spawn_plan_parts(
         shell_mode,
         environment_policy: environment_policy.clone(),
         nix_flags,
+        context: None,
     };
     let mut plan = build_plan(
         &app_request,
@@ -3273,6 +3275,7 @@ mod tests {
             shell_mode: ShellMode::Smart,
             environment_policy: nxr_core::EnvironmentPolicy::Inherit,
             nix_flags: &nix_flags,
+            context: None,
         };
         let plan = build_plan(
             &request,
@@ -3448,6 +3451,7 @@ mod tests {
             shell_mode: ShellMode::Always,
             environment_policy: nxr_core::EnvironmentPolicy::Inherit,
             nix_flags: &nix_flags,
+            context: None,
         };
         let plan = build_plan(
             &request,

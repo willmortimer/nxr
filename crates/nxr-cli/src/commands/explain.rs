@@ -430,6 +430,7 @@ fn app_request_from_explain<'a>(request: &'a ExplainRequest<'a>) -> AppRequest<'
         shell_mode: request.shell_mode,
         environment_policy: request.environment_policy.clone(),
         nix_flags: request.nix_flags,
+        context: None,
     }
 }
 

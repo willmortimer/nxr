@@ -1203,6 +1203,7 @@ fn app_request_in_shell<'a>(
         shell_mode: cli.shell_mode,
         environment_policy: environment_policy_from_cli(cli)?,
         nix_flags,
+        context: cli.execution_context.as_deref(),
     })
 }
 
@@ -1425,6 +1426,7 @@ fn app_request<'a>(
         shell_mode: cli.shell_mode,
         environment_policy: environment_policy_from_cli(cli)?,
         nix_flags,
+        context: cli.execution_context.as_deref(),
     })
 }
 
@@ -1445,6 +1447,7 @@ fn script_request<'a>(
         shell_mode: cli.shell_mode,
         environment_policy: environment_policy_from_cli(cli)?,
         nix_flags,
+        context: cli.execution_context.as_deref(),
     })
 }
 
@@ -1466,6 +1469,7 @@ fn script_request_in_shell<'a>(
         shell_mode: cli.shell_mode,
         environment_policy: environment_policy_from_cli(cli)?,
         nix_flags,
+        context: cli.execution_context.as_deref(),
     })
 }
 

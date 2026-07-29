@@ -656,6 +656,7 @@ fn collect_clean_env_findings(
         shell_mode: ShellMode::Smart,
         environment_policy: EnvironmentPolicy::Inherit,
         nix_flags: &nix_flags,
+        context: None,
     };
 
     match prepare_app_plan_in_state(&app_request, workspace) {

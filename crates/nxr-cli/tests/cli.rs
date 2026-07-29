@@ -813,6 +813,70 @@ fn script_list_lists_convention_scripts() {
 }
 
 #[test]
+fn script_context_dry_run_plan_includes_context_metadata() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let repo_root = repo_root();
+    if !contexts_fixture_available(&repo_root) {
+        return;
+    }
+
+    let home = tempfile::TempDir::new().expect("temp home");
+    let assert = cargo_bin_cmd!("nxr")
+        .current_dir(&repo_root)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("XDG_CONFIG_HOME", home.path().join("config"))
+        .args([
+            "--flake",
+            "fixtures/contexts",
+            "--context",
+            "backend",
+            "--dry-run",
+            "--json",
+            "script",
+            "show-log",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse plan json");
+    assert_eq!(value["context"], "backend");
+    assert_eq!(value["context_env_set"]["RUST_LOG"], "debug");
+}
+
+#[test]
+fn workspace_scripts_listing_includes_runtime_path() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let fixture = repo_root().join("fixtures/workspace-scripts");
+    let output = std::process::Command::new("nix")
+        .current_dir(&fixture)
+        .args(["eval", "--json", ".#nxr.aarch64-darwin.apps.greet-file"])
+        .output()
+        .expect("nix eval");
+    assert!(
+        output.status.success(),
+        "nix eval failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse nxr listing json");
+    assert!(
+        value
+            .get("runtime_path")
+            .and_then(|path| path.as_str())
+            .is_some_and(|path| path.contains("/bin")),
+        "expected runtime_path bin fragment, got {value}"
+    );
+}
+
+#[test]
 fn explain_file_backed_app_reports_fast_path_selection() {
     let Some(()) = require_nix() else {
         return;

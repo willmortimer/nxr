@@ -222,6 +222,10 @@ let
       lib.optionalAttrs (app.category != null) {
         category = app.category;
       }
+      // lib.optionalAttrs (app.runtimeInputs != [ ]) {
+        runtime_path =
+          if app.runtimeInputs != [ ] then lib.makeBinPath app.runtimeInputs else null;
+      }
       // lib.optionalAttrs (app.file != null) {
         workspace_path = app.file;
       }

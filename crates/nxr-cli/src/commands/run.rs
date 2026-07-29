@@ -76,20 +76,8 @@ pub fn execute(
             return Ok(exit::SUCCESS);
         }
 
-        runner
-            .verbose(format!(
-                "running live workspace script {} (fallback app {})",
-                live.script_path, request.app
-            ))
-            .map_err(RunError::Supervision)?;
-
-        let (code, _stderr) = nxr_process::run_in_with_stderr(
-            live.program.as_std_path(),
-            &live.arguments,
-            Some(live.execution_directory.as_std_path()),
-            &live.plan.environment_policy,
-        )
-        .map_err(RunError::Supervision)?;
+        let code = script::execute_prepared_script(&live, request.app, runner)
+            .map_err(RunError::Script)?;
 
         history::record_completed_run(
             started,
@@ -143,6 +131,7 @@ pub fn execute(
         &spawn.arguments,
         Some(prepared.execution_directory.as_std_path()),
         &prepared.plan.environment_policy,
+        None,
     )
     .map_err(RunError::Supervision)?;
 

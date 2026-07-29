@@ -21,6 +21,7 @@ use serde::Serialize;
 use crate::commands::common::{
     PrepareError, build_adapter, cold_discover_workspace, current_invocation_directory,
 };
+use crate::commands::script::{self, ScriptRequest};
 use crate::commands::secrets::project_identity;
 use crate::commands::task::{TaskError, TaskRequest};
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
@@ -76,6 +77,8 @@ pub enum ContextCommandError {
     #[error(transparent)]
     Task(#[from] TaskError),
     #[error(transparent)]
+    Script(#[from] script::ScriptError),
+    #[error(transparent)]
     Context(#[from] nxr_task::ContextError),
     #[error(transparent)]
     Io(#[from] io::Error),
@@ -98,6 +101,7 @@ impl ContextCommandError {
             Self::Nix(error) => error.exit_code(),
             Self::Tasks(error) => error.exit_code(),
             Self::Task(error) => error.exit_code(),
+            Self::Script(error) => error.exit_code(),
             Self::Context(_) => exit::EVALUATION,
             Self::Io(_) | Self::Json(_) => exit::EVALUATION,
             Self::UnknownContext { .. } | Self::MissingRunTarget | Self::InvalidRunTarget => {
@@ -198,6 +202,30 @@ fn run_with_context(
     )?;
     authorize_context_run(&flake, &applied.plan_secrets)?;
 
+    if let Some(path_or_name) = parse_script_run_target(command) {
+        let script_request = ScriptRequest {
+            flake_arg: request.flake_arg,
+            nix_override: request.nix_override,
+            path_or_name: &path_or_name.0,
+            args: &path_or_name.1,
+            root: request.root,
+            cwd: request.cwd,
+            shell: request.shell,
+            shell_mode: request.shell_mode,
+            environment_policy: request.environment_policy.clone(),
+            nix_flags: request.nix_flags,
+            context: Some(context_name),
+        };
+        let _ = adapter;
+        return script::execute(
+            &script_request,
+            request.dry_run,
+            request.json,
+            runner,
+        )
+        .map_err(ContextCommandError::from);
+    }
+
     let (tasks, args) = parse_run_target(command)?;
     let task_request = TaskRequest {
         flake_arg: request.flake_arg,
@@ -250,6 +278,15 @@ fn authorize_context_run(
         .collect();
     authorize_secret_refs(&project_id, &trust_refs, &user_config.trusted_projects)
         .map_err(ContextCommandError::from)
+}
+
+fn parse_script_run_target(command: &[String]) -> Option<(String, Vec<String>)> {
+    let first = command.first()?;
+    if first != "script" {
+        return None;
+    }
+    let path_or_name = command.get(1)?.clone();
+    Some((path_or_name, command.get(2..).unwrap_or(&[]).to_vec()))
 }
 
 fn parse_run_target(command: &[String]) -> Result<(Vec<String>, Vec<String>), ContextCommandError> {

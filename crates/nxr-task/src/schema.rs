@@ -158,6 +158,13 @@ pub struct AppListingMetadata {
     /// Optional interpreter store path or absolute path for live/workspace runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interpreter: Option<String>,
+    /// PATH fragment from app `runtimeInputs` for live fast-path spawns (ADR-0170).
+    #[serde(
+        default,
+        rename = "runtime_path",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub runtime_path: Option<String>,
     /// Optional local live-workspace fast path (ADR-0170).
     #[serde(default, rename = "fastPath", skip_serializing_if = "Option::is_none")]
     pub fast_path: Option<AppFastPathMetadata>,

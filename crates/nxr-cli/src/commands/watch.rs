@@ -616,6 +616,7 @@ fn run_generation(
                 shell_mode: request.shell_mode,
                 environment_policy: request.environment_policy.clone(),
                 nix_flags: request.nix_flags,
+                context: None,
             };
             let prepared = if let Some(cached) = caches.app_plan.as_ref() {
                 if invalidate_snapshot {

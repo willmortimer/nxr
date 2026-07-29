@@ -639,6 +639,7 @@ fn process_app_request<'a>(
         shell_mode: ShellMode::Smart,
         environment_policy,
         nix_flags: context.nix_flags,
+        context: None,
     }
 }
 
