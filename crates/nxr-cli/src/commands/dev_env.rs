@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use nxr_core::{
-    DEV_ENV_PROTOCOL_VERSION, DevEnvironmentCacheKeyMaterial, DevEnvironmentNixIdentity,
-    DevEnvironmentSnapshot, EnvironmentPolicy, PlanCacheSharedFingerprints,
-    dev_env_cache_key_digest, digest_nix_flags, lookup_dev_environment_snapshot,
-    record_dev_env_cache_hit, record_dev_env_cache_miss, store_dev_environment_snapshot,
+    DEV_ENV_PROTOCOL_VERSION, DaemonDevEnvEntry, DevEnvironmentCacheKeyMaterial,
+    DevEnvironmentNixIdentity, DevEnvironmentSnapshot, EnvironmentPolicy,
+    PlanCacheSharedFingerprints, daemon_dev_env_entry, dev_env_cache_key_digest, digest_nix_flags,
+    lookup_dev_environment_snapshot, record_dev_env_cache_hit, record_dev_env_cache_miss,
+    store_dev_environment_snapshot, try_once,
 };
 use nxr_nix::{
     DevEnvironment, NixError, NixFailureKind, OptionalNixFlags, detect_capabilities, detect_system,
@@ -174,9 +175,8 @@ fn try_process_spawn(
     };
     let key_digest = dev_env_cache_key_digest(&key_material);
 
-    let snapshot = if let Some(hit) = lookup_dev_environment_snapshot(&key_digest, &fingerprints) {
-        record_dev_env_cache_hit();
-        hit.snapshot
+    let snapshot = if let Some(snapshot) = lookup_dev_env_snapshot(&key_digest, &fingerprints) {
+        snapshot
     } else {
         record_dev_env_cache_miss();
         let parsed = match fetch_print_dev_env(nix, &flake.nix_ref, shell_name, nix_flags) {
@@ -196,6 +196,7 @@ fn try_process_spawn(
             &parsed,
         );
         let _ = store_dev_environment_snapshot(&key_digest, &snapshot, fingerprints.clone());
+        try_daemon_dev_env_store(&key_digest, &snapshot, fingerprints.clone());
         snapshot
     };
 
@@ -285,4 +286,54 @@ fn base_set_map(policy: &EnvironmentPolicy) -> BTreeMap<String, String> {
             set.clone()
         }
     }
+}
+
+fn lookup_dev_env_snapshot(
+    key_digest: &str,
+    fingerprints: &PlanCacheSharedFingerprints,
+) -> Option<DevEnvironmentSnapshot> {
+    if let Some(snapshot) = try_daemon_dev_env_lookup(key_digest, fingerprints) {
+        return Some(snapshot);
+    }
+    if let Some(hit) = lookup_dev_environment_snapshot(key_digest, fingerprints) {
+        try_daemon_dev_env_store(key_digest, &hit.snapshot, fingerprints.clone());
+        return Some(hit.snapshot);
+    }
+    None
+}
+
+fn try_daemon_dev_env_lookup(
+    key_digest: &str,
+    expected: &PlanCacheSharedFingerprints,
+) -> Option<DevEnvironmentSnapshot> {
+    let result: serde_json::Value = try_once(
+        "dev_env.get",
+        Some(serde_json::json!({ "key_digest": key_digest })),
+    )?;
+    if result.get("hit").and_then(serde_json::Value::as_bool) != Some(true) {
+        return None;
+    }
+    let entry: DaemonDevEnvEntry = serde_json::from_value(result.get("entry")?.clone()).ok()?;
+    if &entry.fingerprints != expected {
+        return None;
+    }
+    record_dev_env_cache_hit();
+    Some(entry.snapshot)
+}
+
+fn try_daemon_dev_env_store(
+    key_digest: &str,
+    snapshot: &DevEnvironmentSnapshot,
+    fingerprints: PlanCacheSharedFingerprints,
+) {
+    let Some(entry) = daemon_dev_env_entry(snapshot, fingerprints) else {
+        return;
+    };
+    let _: Option<serde_json::Value> = try_once(
+        "dev_env.put",
+        Some(serde_json::json!({
+            "key_digest": key_digest,
+            "entry": entry,
+        })),
+    );
 }

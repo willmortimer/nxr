@@ -41,8 +41,9 @@ pub use config::{
 };
 pub use daemon::{
     DAEMON_ENV, DAEMON_PROTOCOL_VERSION, DAEMON_ROLE, DAEMON_SOCKET_ENV, DaemonClientError,
-    DaemonConnection, DaemonHello, DaemonPlanEntry, DaemonRequest, DaemonResponse, DaemonState,
-    DaemonStatus, SharedDaemonState, cleanup_socket_files, daemon_connect_enabled, daemon_pid_path,
+    DaemonConnection, DaemonDevEnvEntry, DaemonHello, DaemonPlanEntry, DaemonRequest,
+    DaemonResponse, DaemonState, DaemonStatus, SharedDaemonState, cleanup_socket_files,
+    daemon_connect_enabled, daemon_dev_env_entry, daemon_dev_env_to_hit, daemon_pid_path,
     daemon_plan_entry, daemon_plan_to_hit, daemon_socket_path, ensure_socket_parent,
     handle_request, read_pid_file, serve, try_connect, try_once, write_pid_file,
 };

@@ -23,6 +23,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::dev_env_cache::{
+    DevEnvironmentCacheHit, DevEnvironmentSnapshot, snapshot_contains_secret_values,
+};
 use crate::eval_worker::{EvalKind, EvalPrepareParams, EvalWorkerCache};
 use crate::log_broker::{FILE_POLL_MS, LogBroker, LogEvent, decode_log_bytes, encode_log_bytes};
 use crate::merkle_index::touched_directories;
@@ -145,6 +148,7 @@ pub struct DaemonStatus {
     pub socket: String,
     pub discovery_entries: usize,
     pub plan_entries: usize,
+    pub dev_env_entries: usize,
     pub fingerprint_entries: usize,
     pub merkle_roots: usize,
     pub action_key_entries: usize,
@@ -162,11 +166,19 @@ pub struct DaemonPlanEntry {
     pub fingerprints: PlanCacheSharedFingerprints,
 }
 
+/// Dev-environment snapshot entry retained in daemon memory.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DaemonDevEnvEntry {
+    pub snapshot: DevEnvironmentSnapshot,
+    pub fingerprints: PlanCacheSharedFingerprints,
+}
+
 /// In-memory daemon state (cache / coordination only).
 #[derive(Debug, Default)]
 pub struct DaemonState {
     discovery: BTreeMap<String, Value>,
     plans: BTreeMap<String, DaemonPlanEntry>,
+    dev_envs: BTreeMap<String, DaemonDevEnvEntry>,
     fingerprints: BTreeMap<String, String>,
     /// Flake root → recently invalidated repo-relative paths.
     merkle_invalidated: BTreeMap<String, BTreeSet<String>>,
@@ -205,6 +217,7 @@ impl DaemonState {
             socket: socket.display().to_string(),
             discovery_entries: self.discovery.len(),
             plan_entries: self.plans.len(),
+            dev_env_entries: self.dev_envs.len(),
             fingerprint_entries: self.fingerprints.len(),
             merkle_roots: self.merkle_invalidated.len(),
             action_key_entries: self.action_keys.len(),
@@ -337,6 +350,74 @@ pub fn handle_request(
             }
             state.plans.insert(key, entry);
             ok_json(request, &serde_json::json!({ "stored": true }))
+        }
+        "dev_env.get" => {
+            let key = match param_str(request, "key_digest") {
+                Ok(key) => key,
+                Err(resp) => return resp,
+            };
+            match state.dev_envs.get(&key) {
+                Some(entry) => {
+                    if snapshot_contains_secret_values(&entry.snapshot) {
+                        state.dev_envs.remove(&key);
+                        return ok_json(request, &serde_json::json!({ "hit": false }));
+                    }
+                    ok_json(
+                        request,
+                        &serde_json::json!({
+                            "hit": true,
+                            "entry": entry,
+                        }),
+                    )
+                }
+                None => ok_json(request, &serde_json::json!({ "hit": false })),
+            }
+        }
+        "dev_env.put" => {
+            let key = match param_str(request, "key_digest") {
+                Ok(key) => key,
+                Err(resp) => return resp,
+            };
+            let entry: DaemonDevEnvEntry = match param_decode(request, "entry") {
+                Ok(entry) => entry,
+                Err(resp) => return resp,
+            };
+            if snapshot_contains_secret_values(&entry.snapshot) {
+                return error_response(
+                    request,
+                    "secret_rejected",
+                    "refusing to retain dev-environment snapshot with non-placeholder secret values",
+                );
+            }
+            if state.dev_envs.len() >= MAX_ENTRIES_PER_MAP
+                && !state.dev_envs.contains_key(&key)
+                && let Some(first) = state.dev_envs.keys().next().cloned()
+            {
+                state.dev_envs.remove(&first);
+            }
+            state.dev_envs.insert(key, entry);
+            ok_json(request, &serde_json::json!({ "stored": true }))
+        }
+        "dev_env.invalidate" => {
+            let key = match optional_param_str(request, "key_digest") {
+                Ok(key) => key,
+                Err(resp) => return resp,
+            };
+            let invalidated = match key {
+                Some(key) => {
+                    if state.dev_envs.remove(&key).is_some() {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                None => {
+                    let count = state.dev_envs.len();
+                    state.dev_envs.clear();
+                    count
+                }
+            };
+            ok_json(request, &serde_json::json!({ "invalidated": invalidated }))
         }
         "fingerprint.get" => {
             let key = match param_str(request, "key") {
@@ -771,6 +852,30 @@ pub fn daemon_plan_to_hit(entry: DaemonPlanEntry) -> PreparedPlanCacheHit {
         execution_directory: entry.execution_directory,
         fingerprints: entry.fingerprints,
     }
+}
+
+/// Convert a daemon dev-environment entry into the disk-cache hit shape.
+#[must_use]
+pub fn daemon_dev_env_to_hit(entry: DaemonDevEnvEntry) -> DevEnvironmentCacheHit {
+    DevEnvironmentCacheHit {
+        snapshot: entry.snapshot,
+        fingerprints: entry.fingerprints,
+    }
+}
+
+/// Build a daemon dev-environment entry (rejects secret values).
+#[must_use]
+pub fn daemon_dev_env_entry(
+    snapshot: &DevEnvironmentSnapshot,
+    fingerprints: PlanCacheSharedFingerprints,
+) -> Option<DaemonDevEnvEntry> {
+    if snapshot_contains_secret_values(snapshot) {
+        return None;
+    }
+    Some(DaemonDevEnvEntry {
+        snapshot: snapshot.clone(),
+        fingerprints,
+    })
 }
 
 /// Build a daemon plan entry from prepare outputs (rejects secret values).
@@ -1387,6 +1492,7 @@ pub fn unix_now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dev_env_cache::DevEnvironmentNixIdentity;
     use crate::log_broker::encode_log_bytes;
     use crate::plan::{PlanCommand, PlanKind};
     use crate::plan_cache::PlanPrepareKind;
@@ -1446,6 +1552,121 @@ mod tests {
         assert!(!daemon_connect_enabled_for(Some("false")));
         assert!(!daemon_connect_enabled_for(Some("no")));
         assert!(daemon_connect_enabled_for(Some("on")));
+    }
+
+    #[test]
+    fn handle_request_dev_env_round_trip_and_invalidate() {
+        let mut state = DaemonState::new();
+        let socket = PathBuf::from("/tmp/nxr-test.sock");
+        let fingerprints = sample_fingerprints();
+        let snapshot = sample_dev_env_snapshot(fingerprints.clone());
+        let entry = daemon_dev_env_entry(&snapshot, fingerprints.clone()).expect("entry");
+        let put = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id: 1,
+            method: "dev_env.put".to_owned(),
+            params: Some(serde_json::json!({
+                "key_digest": "dev-key",
+                "entry": entry,
+            })),
+        };
+        assert!(handle_request(&mut state, &socket, &put).ok);
+
+        let get = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id: 2,
+            method: "dev_env.get".to_owned(),
+            params: Some(serde_json::json!({ "key_digest": "dev-key" })),
+        };
+        let get_resp = handle_request(&mut state, &socket, &get);
+        assert!(get_resp.ok);
+        assert!(get_resp.result.unwrap()["hit"].as_bool().unwrap());
+
+        let invalidate_one = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id: 3,
+            method: "dev_env.invalidate".to_owned(),
+            params: Some(serde_json::json!({ "key_digest": "dev-key" })),
+        };
+        let invalidate_resp = handle_request(&mut state, &socket, &invalidate_one);
+        assert!(invalidate_resp.ok);
+        assert_eq!(invalidate_resp.result.unwrap()["invalidated"], 1);
+
+        let miss = handle_request(&mut state, &socket, &get);
+        assert!(miss.ok);
+        assert!(!miss.result.unwrap()["hit"].as_bool().unwrap());
+
+        let put2 = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id: 4,
+            method: "dev_env.put".to_owned(),
+            params: Some(serde_json::json!({
+                "key_digest": "dev-key-2",
+                "entry": daemon_dev_env_entry(&snapshot, fingerprints).expect("entry"),
+            })),
+        };
+        assert!(handle_request(&mut state, &socket, &put2).ok);
+
+        let invalidate_all = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id: 5,
+            method: "dev_env.invalidate".to_owned(),
+            params: None,
+        };
+        let invalidate_all_resp = handle_request(&mut state, &socket, &invalidate_all);
+        assert!(invalidate_all_resp.ok);
+        assert_eq!(invalidate_all_resp.result.unwrap()["invalidated"], 1);
+    }
+
+    #[test]
+    fn handle_request_dev_env_secret_reject() {
+        let mut state = DaemonState::new();
+        let socket = PathBuf::from("/tmp/nxr-test.sock");
+        let fingerprints = sample_fingerprints();
+        let mut snapshot = sample_dev_env_snapshot(fingerprints.clone());
+        snapshot.secret_variables.push(crate::DevEnvSecretVariable {
+            name: "TOKEN".to_owned(),
+            value: "super-secret".to_owned(),
+        });
+        assert!(daemon_dev_env_entry(&snapshot, fingerprints.clone()).is_none());
+
+        let put = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id: 1,
+            method: "dev_env.put".to_owned(),
+            params: Some(serde_json::json!({
+                "key_digest": "secret-key",
+                "entry": DaemonDevEnvEntry {
+                    snapshot,
+                    fingerprints,
+                },
+            })),
+        };
+        let put_resp = handle_request(&mut state, &socket, &put);
+        assert!(!put_resp.ok);
+        assert_eq!(put_resp.error.unwrap().code, "secret_rejected");
+    }
+
+    fn sample_dev_env_snapshot(
+        fingerprints: PlanCacheSharedFingerprints,
+    ) -> DevEnvironmentSnapshot {
+        DevEnvironmentSnapshot {
+            flake_identity: "github:org/repo".to_owned(),
+            system: "aarch64-darwin".to_owned(),
+            shell: "default".to_owned(),
+            nix_identity: DevEnvironmentNixIdentity {
+                nix_path: "/nix/bin/nix".to_owned(),
+                nix_version: "2.34.0".to_owned(),
+                nix_file_identity: Some("1:2:3".to_owned()),
+                nix_tree_fingerprint: "tree".to_owned(),
+            },
+            variables: BTreeMap::from([("PATH".to_owned(), "/nix/store/bin".to_owned())]),
+            path_entries: vec!["/nix/store/bin".to_owned()],
+            unsupported_features: Vec::new(),
+            fingerprints,
+            protocol_version: crate::DEV_ENV_PROTOCOL_VERSION,
+            secret_variables: Vec::new(),
+        }
     }
 
     #[test]

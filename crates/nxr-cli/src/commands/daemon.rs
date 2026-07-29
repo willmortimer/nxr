@@ -244,13 +244,14 @@ pub fn status(
                 )?;
             } else {
                 runner.info(format!(
-                    "running pid={} protocol={} role={} socket={} discovery={} plans={}",
+                    "running pid={} protocol={} role={} socket={} discovery={} plans={} dev_env={}",
                     status.pid,
                     status.protocol_version,
                     status.role,
                     status.socket,
                     status.discovery_entries,
-                    status.plan_entries
+                    status.plan_entries,
+                    status.dev_env_entries
                 ))?;
             }
             Ok(exit::SUCCESS)
