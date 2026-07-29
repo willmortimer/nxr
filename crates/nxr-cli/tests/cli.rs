@@ -745,8 +745,11 @@ fn file_backed_app_nix_run_and_live_fast_path() {
     };
 
     let repo_root = repo_root();
-    let fixture = repo_root.join("fixtures/workspace-scripts");
     let home = tempfile::TempDir::new().expect("cache home");
+    let scratch = tempfile::TempDir::new().expect("fixture copy");
+    let fixture = scratch.path().join("workspace-scripts");
+    copy_dir_recursive(&repo_root.join("fixtures/workspace-scripts"), &fixture)
+        .expect("copy workspace-scripts fixture");
 
     // Warm discovery so live fast-path metadata is available.
     cargo_bin_cmd!("nxr")
@@ -773,18 +776,14 @@ fn file_backed_app_nix_run_and_live_fast_path() {
     let updated = original.replace("live-v1", "live-v2");
     std::fs::write(&greet, &updated).expect("write greet");
 
-    let result = std::panic::catch_unwind(|| {
-        cargo_bin_cmd!("nxr")
-            .current_dir(&fixture)
-            .env("HOME", home.path())
-            .env("XDG_CACHE_HOME", home.path().join("cache"))
-            .arg("greet-file")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("greet-file:live-v2"));
-    });
-    std::fs::write(&greet, original).expect("restore greet");
-    result.expect("live fast path should observe script edit");
+    cargo_bin_cmd!("nxr")
+        .current_dir(&fixture)
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .arg("greet-file")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("greet-file:live-v2"));
 }
 
 #[test]

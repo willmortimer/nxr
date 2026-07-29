@@ -491,6 +491,16 @@ pub fn resolve_live_file_backed_app(
                     reasons: miss_reasons,
                 });
             }
+            // Keep the bare-app lean path (no capability probes / listing eval)
+            // when the checkout cannot declare live fast-path metadata.
+            if !local_flake_may_declare_live_fast_path(local_root) {
+                miss_reasons.push(
+                    "flake.nix has no live fast-path markers (workspace_path/fastPath)".to_owned(),
+                );
+                return Ok(LiveFastPathOutcome::Miss {
+                    reasons: miss_reasons,
+                });
+            }
             let nix = build_adapter(request.nix_override).map_err(ScriptError::Nix)?;
             match cold_discover_app_listings(
                 &nix,
@@ -537,6 +547,21 @@ fn warm_app_listings(local_root: &Utf8Path) -> Option<BTreeMap<String, AppListin
         return None;
     }
     Some(document.apps.clone())
+}
+
+/// Cheap local gate before opportunistic cold listing eval.
+///
+/// Avoids capability probes + `nix eval` on bare `nxr <app>` for ordinary
+/// flakes that cannot express ADR-0170 live fast-path metadata.
+fn local_flake_may_declare_live_fast_path(local_root: &Utf8Path) -> bool {
+    let path = local_root.join("flake.nix");
+    let Ok(contents) = fs::read_to_string(path.as_std_path()) else {
+        // Unreadable: prefer attempting cold eval over silently skipping.
+        return true;
+    };
+    contents.contains("workspace_path")
+        || contents.contains("fastPath")
+        || contents.contains("nxr.apps")
 }
 
 fn resolve_listing_to_prepared(
