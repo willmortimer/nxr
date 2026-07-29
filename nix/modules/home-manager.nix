@@ -253,8 +253,15 @@ in
               "--foreground"
             ];
             RunAtLoad = true;
-            KeepAlive = true;
+            # Restart only after abnormal exit so `nxr daemon stop` (exit 0)
+            # does not fight launchd. Throttle rapid crash loops.
+            KeepAlive = {
+              SuccessfulExit = false;
+            };
+            ThrottleInterval = 10;
             EnvironmentVariables = nxrdEnv;
+            StandardOutPath = "${config.home.homeDirectory}/Library/Logs/nxrd.out.log";
+            StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/nxrd.err.log";
           };
         };
       }

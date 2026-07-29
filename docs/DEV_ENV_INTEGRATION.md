@@ -171,6 +171,56 @@ The module:
 
 Never put secret values in the module or generated config.
 
+### Coexistence with an existing Home Manager install
+
+If Home Manager already installs the `nxr` package and manages Zsh/direnv
+hooks, **do not** flip on `programs.nxr.enable` with default shell/direnv
+integration — that duplicates packages and completion.
+
+Prefer either:
+
+1. Keep the current manual package + shell fragment (recommended until you
+   deliberately migrate), or
+2. Migrate to the module with ownership concentrated in one place:
+
+```nix
+imports = [ inputs.nxr.homeManagerModules.default ];
+
+programs.nxr = {
+  enable = true;
+  package = inputs.nxr.packages.${pkgs.system}.nxr;
+  shellIntegration = {
+    bash = false;
+    zsh = false; # already handled by a custom HM fragment
+    fish = false;
+  };
+  direnvIntegration.enable = false; # already managed elsewhere
+};
+```
+
+Then remove the duplicate package declaration. The module is for declarative
+defaults and optional `services.nxrd` — not for synthesizing a global
+`nxr list` catalog. `nxr list` remains **project-relative** (discover
+`flake.nix` upward from CWD, or pass `-C` / `--flake`).
+
+### Optional persistent `nxrd` (macOS launchd / Linux systemd-user)
+
+`services.nxrd` is independent of inventing a global flake. Enable only after
+a measured experiment (see [PERFORMANCE.md](PERFORMANCE.md#optional-local-cache-daemon-nxrd)).
+
+```nix
+services.nxrd = {
+  enable = true;
+  package = inputs.nxr.packages.${pkgs.system}.nxr;
+  evalWorker = false; # experimental; keep off until ordinary cache path is stable
+  logBroker = true;
+};
+```
+
+On macOS the agent label is `dev.nxr.nxrd` (`RunAtLoad`, restart on crash only,
+`ThrottleInterval = 10`). Logs: `~/Library/Logs/nxrd.{out,err}.log`. On Linux:
+systemd-user unit `nxrd` with `Restart=on-failure`.
+
 ## 4. Automatic completion through the dev shell
 
 The `nxr` flake-parts module can install session-local shell integration into

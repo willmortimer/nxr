@@ -174,6 +174,34 @@ nxr daemon stop
 - Watch best-effort calls `merkle.invalidate` on restart classification;
   in-process `WatchIncrementalSnapshot` is Wave 5a ([ADR-0160](adr/0160-watch-incremental-snapshot.md)).
 
+### Home Manager persistence (optional experiment)
+
+Prefer **manual** `nxr daemon start` until warm-start gains are measured. When
+enabling `services.nxrd` via Home Manager
+([DEV_ENV_INTEGRATION.md](DEV_ENV_INTEGRATION.md#optional-persistent-nxrd-macos-launchd--linux-systemd-user)):
+
+- Keep `evalWorker = false` initially.
+- macOS label: `dev.nxr.nxrd` (crash-only KeepAlive + throttle; not an
+  unconditional restart loop).
+- Socket remains user-scoped; nxrd is still **non-authoritative** for execution
+  and must not retain secret values.
+
+Validation checklist before treating launchd/systemd enablement as
+production-ready:
+
+1. Standalone baseline: `NXR_DAEMON=off time nxr -C <repo> list --json` (several runs).
+2. Manual daemon: `nxr daemon start` → `nxr daemon status --json` → repeat list.
+3. Compare output equivalence, exit status, latency, CPU/RSS, cache growth.
+4. Fallback: `nxr daemon stop` + `NXR_DAEMON=off` still works.
+5. Inspect: `nxr cache status --json`, `du -sh ~/.cache/nxr`.
+6. Exercise several repos / Cursor worktrees — no continuous scan/rebuild/lock.
+7. Multi-day soak: restart count, cache size, stale results, no secrets in
+   cache/logs.
+
+Do **not** route ordinary `nix` through `nom` inside nxr. `nix-output-monitor`
+improves direct Nix TTY output; nxr already owns discovery/task/plan rendering.
+Use `nom build` / `nom develop` explicitly when desired.
+
 ## Run-scoped digest cache
 
 Per-invocation memo for workspace action-key hashing ([ADR-0154](adr/0154-run-digest-cache.md)).

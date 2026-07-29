@@ -55,7 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `env -S` shebangs are handled explicitly.
 - `nxr script --context` / `nxr context run … script` share trust/confirm/secrets;
   live file-backed apps apply listing `runtime_path` from `runtimeInputs`.
-
+- Home Manager `services.nxrd` launchd agent: crash-only KeepAlive + throttle
+  (so clean `nxr daemon stop` is not fought), plus stdout/stderr log paths.
 ## [3.2.1] - 2026-07-28
 
 Correctness polish on the 3.2 performance surface: store-exe source identity,
