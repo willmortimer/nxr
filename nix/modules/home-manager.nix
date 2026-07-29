@@ -6,12 +6,17 @@
   config,
   lib,
   pkgs,
+  options,
   ...
 }:
 let
   inherit (lib) mkIf mkOption mkEnableOption types;
 
   cfg = config.programs.nxr;
+
+  # Home Manager ≥26.05: programs.zsh.initContent (initExtra is deprecated).
+  # Older HM only has initExtra — pick whichever option exists.
+  zshUsesInitContent = options.programs ? zsh && options.programs.zsh ? initContent;
 
   settingsToml =
     let
@@ -199,23 +204,33 @@ in
   };
 
   config = lib.mkMerge [
-    (mkIf cfg.enable {
-      home.packages = [ cfg.package ];
+    (mkIf cfg.enable (lib.mkMerge [
+      {
+        home.packages = [ cfg.package ];
 
-      # When the CLI is enabled, default the daemon package to the same binary.
-      services.nxrd.package = lib.mkDefault cfg.package;
+        # When the CLI is enabled, default the daemon package to the same binary.
+        services.nxrd.package = lib.mkDefault cfg.package;
 
-      xdg.configFile."nxr/config.toml".text = settingsToml;
+        xdg.configFile."nxr/config.toml".text = settingsToml;
 
-      programs.bash.initExtra = mkIf cfg.shellIntegration.bash (completionHook "bash");
-      programs.zsh.initExtra = mkIf cfg.shellIntegration.zsh (completionHook "zsh");
-      programs.fish.interactiveShellInit = mkIf cfg.shellIntegration.fish (completionHook "fish");
+        programs.bash.initExtra = mkIf cfg.shellIntegration.bash (completionHook "bash");
+        programs.fish.interactiveShellInit = mkIf cfg.shellIntegration.fish (completionHook "fish");
 
-      programs.direnv = mkIf cfg.direnvIntegration.enable {
-        enable = true;
-        nix-direnv.enable = cfg.direnvIntegration.nixDirenv;
-      };
-    })
+        programs.direnv = mkIf cfg.direnvIntegration.enable {
+          enable = true;
+          nix-direnv.enable = cfg.direnvIntegration.nixDirenv;
+        };
+      }
+      (lib.optionalAttrs zshUsesInitContent {
+        programs.zsh.initContent = mkIf cfg.shellIntegration.zsh (
+          # Default / former-initExtra priority (HM docs: 1000).
+          lib.mkOrder 1000 (completionHook "zsh")
+        );
+      })
+      (lib.optionalAttrs (!zshUsesInitContent) {
+        programs.zsh.initExtra = mkIf cfg.shellIntegration.zsh (completionHook "zsh");
+      })
+    ]))
 
     (mkIf config.services.nxrd.enable (
       let

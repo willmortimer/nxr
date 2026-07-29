@@ -204,7 +204,7 @@ Coming from `mise` / `just`? [docs/MIGRATE_FROM_MISE_JUST.md](docs/MIGRATE_FROM_
 | [docs/MONOREPO_VIEWS.md](docs/MONOREPO_VIEWS.md) | Categories, namespaces, projects file |
 | [docs/DEV_ENV_INTEGRATION.md](docs/DEV_ENV_INTEGRATION.md) | Dev shells, direnv, shellIntegration |
 | [docs/EXECUTION_CONTEXT.md](docs/EXECUTION_CONTEXT.md) | Contexts, secrets, Home Manager; process MVP (preview) |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Shipped through 3.2.1; 3.3–3.4 + 2.8 ergonomics on `main` (unreleased) |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Shipped through 3.4.0; next V4+ / execution protocol ideas |
 | [docs/ADAPTERS.md](docs/ADAPTERS.md) | Read-only ecosystem graph boundary |
 | [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | Platforms and schema freeze |
 | [docs/RELEASE.md](docs/RELEASE.md) | Release artifacts, checksums, SBOM |
@@ -217,14 +217,11 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**3.2.1** (tagged) — local orchestration performance plus store-exe source-identity
-correctness, process metadata honesty, and Home Manager `services.nxrd`.
-
-**`main` (unreleased)** — workspace scripts + file-backed apps (3.3), materialized
+**3.4.0** (tagged) — workspace scripts + file-backed apps (3.3), materialized
 process environments + one-shell DAG (3.4), typed parameters/matrices, cache
-deepening, and audit hardening (opt-in env cache, action-key digests, lazy
+deepening, nom-style Nix progress, Home Manager `initContent` / `nxrd`
+hardening, and audit fixes (opt-in env cache, action-key digests, lazy
 one-shell preflight). Workspace CAS/actions remain **experimental**; process MVP
-**preview**. Prefer **v3.3.0** / **v3.4.0** (or a combined RC) over tagging this
-head as a 3.2.x patch—see [docs/ROADMAP.md](docs/ROADMAP.md).
+**preview**. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 History: [CHANGELOG.md](CHANGELOG.md).

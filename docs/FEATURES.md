@@ -46,7 +46,8 @@ nxr shell [name]      # nix develop .#<name>
 
 These commands are thin ergonomics over Nix. They do not redefine checks as
 nxr tasks, and `nix build` / `nix flake check` / `nix develop` remain escape
-hatches.
+hatches. Interactive `build` / `check` / `shell` use a nom-style progress
+formatter by default (`NXR_NIX_PROGRESS=auto|builtin|nom|off`; ADR-0172).
 
 ### 1.2 Ergonomic execution
 

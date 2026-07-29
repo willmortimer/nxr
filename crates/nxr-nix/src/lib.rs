@@ -12,6 +12,7 @@ pub mod discovery;
 pub mod eval_worker;
 pub mod inventory;
 pub mod inventory_list;
+pub mod json_log;
 pub mod metadata;
 pub mod resolve;
 pub mod store_exe;
@@ -76,6 +77,10 @@ pub use inventory::{
 };
 pub use inventory_list::{
     InventoryEntry, InventoryRole, list_inventory_entries, list_inventory_roles,
+};
+pub use json_log::{
+    NIX_PROGRESS_ENV, NixProgressFormatter, NixProgressMode, ensure_internal_json_log_format,
+    locate_nom, write_progress_line,
 };
 pub use metadata::{
     FORCE_NXR_METADATA_ENV, MetadataDiscoveryError, MetadataInventory, MetadataWorkspace,

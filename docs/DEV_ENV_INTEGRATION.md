@@ -164,49 +164,25 @@ For permanent install outside a project flake, import the reusable module into
 The module:
 
 - adds nxr to `home.packages`;
-- installs Bash/Zsh/Fish completion hooks;
+- installs Bash/Zsh/Fish completion hooks (`programs.zsh.initContent` on
+  Home Manager ≥26.05, `initExtra` fallback on older HM);
 - writes `$XDG_CONFIG_HOME/nxr/config.toml` with non-secret defaults;
 - optionally enables `programs.direnv` + nix-direnv;
 - accepts stub `trustedProjects` / `secretBindings` (path/ref only) for 3.0.
 
 Never put secret values in the module or generated config.
 
-### Coexistence with an existing Home Manager install
-
-If Home Manager already installs the `nxr` package and manages Zsh/direnv
-hooks, **do not** flip on `programs.nxr.enable` with default shell/direnv
-integration — that duplicates packages and completion.
-
-Prefer either:
-
-1. Keep the current manual package + shell fragment (recommended until you
-   deliberately migrate), or
-2. Migrate to the module with ownership concentrated in one place:
-
-```nix
-imports = [ inputs.nxr.homeManagerModules.default ];
-
-programs.nxr = {
-  enable = true;
-  package = inputs.nxr.packages.${pkgs.system}.nxr;
-  shellIntegration = {
-    bash = false;
-    zsh = false; # already handled by a custom HM fragment
-    fish = false;
-  };
-  direnvIntegration.enable = false; # already managed elsewhere
-};
-```
-
-Then remove the duplicate package declaration. The module is for declarative
-defaults and optional `services.nxrd` — not for synthesizing a global
-`nxr list` catalog. `nxr list` remains **project-relative** (discover
-`flake.nix` upward from CWD, or pass `-C` / `--flake`).
+Disable individual shell/direnv hooks when another layer already owns them
+(`shellIntegration.*.enable = false`, `direnvIntegration.enable = false`).
+`nxr list` is project-relative (upward `flake.nix` discovery, or `-C` /
+`--flake`); the module does not invent a global catalog.
 
 ### Optional persistent `nxrd` (macOS launchd / Linux systemd-user)
 
-`services.nxrd` is independent of inventing a global flake. Enable only after
-a measured experiment (see [PERFORMANCE.md](PERFORMANCE.md#optional-local-cache-daemon-nxrd)).
+Enable `services.nxrd` after a short warm-start check (see
+[PERFORMANCE.md](PERFORMANCE.md#optional-local-cache-daemon-nxrd)). Local
+measurement recommends leaving it on for interactive hosts (~10 MB RSS, clean
+fallback; keep `evalWorker = false`):
 
 ```nix
 services.nxrd = {

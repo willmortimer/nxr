@@ -1,8 +1,8 @@
 # ADR-0171: Materialized process-compatible development environments
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-28
-- **Target release:** 3.4
+- **Target release:** 3.4.0 / `v3.4.0`
 - **Related ADRs:** ADR-0008, ADR-0113, ADR-0114, ADR-0128, ADR-0129, ADR-0157, ADR-0169, ADR-0170
 - **Supersedes:** ADR-0130 (absolute ban on `print-dev-env` reconstruction)
 - **Superseded by:** —

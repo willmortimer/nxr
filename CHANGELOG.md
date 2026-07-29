@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-07-28
+
+Workspace scripting, materialized process environments, leftover 2.8 ergonomics,
+and audit/HM polish in one minor.
+
 ### Added
 
 - `nxr script <path|name>` — run a local workspace script (exact path or
@@ -29,20 +34,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Root flake `ci` task graph dogfood; CI runs `nxr ci plan --json` + `nxr task ci`.
 - Fixture `fixtures/workspace-scripts` + CLI coverage for script argv, convention
   names, bare-app non-collision, zero-Nix no-shell path, and live fast path.
+- Nom-style Nix progress for interactive `nxr build` / `check` / `shell`
+  (`NXR_NIX_PROGRESS=auto|builtin|nom|off`; [ADR-0172](docs/adr/0172-nix-progress-formatter.md)).
 
 ### Changed
 
+- Workspace and Nix package version **3.4.0**.
 - Roadmap: **3.3** / **3.4** and leftover 2.8 params/matrix/CI dogfood marked
-  implemented on `main` (unreleased); ADR-0130 superseded by ADR-0171.
+  shipped; ADR-0130 superseded by ADR-0171.
 - Product positioning: flake-native orchestration schema that preserves standard
   Nix leaves (README / CONTRACT_SUMMARY)—not an absolute “never a task DSL.”
 - V4+ vision framed in [docs/ideas/V4_EXECUTION_PROTOCOL.md](docs/ideas/V4_EXECUTION_PROTOCOL.md);
   legacy control-plane prose remains ideas-only.
-- Prefer `nix build .#packages.$system.default` when `flake.nxr` task metadata is
-  present (installable `.#nxr` can resolve to the document, not the package).
+- PERFORMANCE: measured `services.nxrd` recommendation after local warm/cold
+  checks (enable; keep `evalWorker` off).
 
 ### Fixed
 
+- `task-document.nix` tolerates missing `parameters` / `runtimeInputs` (and related
+  attrs) so `nix flake show` and cold discovery evaluate against partial smoke
+  fixtures.
+- Prefer `nix build .#packages.$system.default` when `flake.nxr` task metadata is
+  present (installable `.#nxr` can resolve to the document, not the package).
+- Home Manager module uses `programs.zsh.initContent` when available (HM ≥26.05),
+  with `initExtra` fallback for older Home Manager.
 - Dev-environment disk/daemon retention sanitizes known secret names, rejects
   poisoned `variables` maps, and writes `0700`/`0600` entries; persistence stays
   opt-in via `NXR_DEV_ENV_CACHE=on`.
@@ -57,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live file-backed apps apply listing `runtime_path` from `runtimeInputs`.
 - Home Manager `services.nxrd` launchd agent: crash-only KeepAlive + throttle
   (so clean `nxr daemon stop` is not fought), plus stdout/stderr log paths.
+
 ## [3.2.1] - 2026-07-28
 
 Correctness polish on the 3.2 performance surface: store-exe source identity,

@@ -13,7 +13,7 @@ mod test_unix;
 
 pub use chunk_coalesce::{ChunkCoalescer, CoalesceLimits};
 pub use deadline::DeadlineQueue;
-pub use foreground::{run, run_in, run_in_with_stderr};
+pub use foreground::{run, run_in, run_in_with_stderr, run_in_with_stderr_lines};
 pub use pipe_multiplex::{PipeChunk, PipeMultiplexer, PipeStream};
 pub use session::{ChildSession, SpawnStdio, spawn_in, spawn_in_with};
 pub use signals::{InterruptFlags, exit_code_from_status};

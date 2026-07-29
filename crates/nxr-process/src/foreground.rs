@@ -113,6 +113,57 @@ where
     }
 }
 
+/// Like [`run_in_with_stderr`], but always pipes stderr and invokes `on_line` for
+/// each complete line (without the trailing newline). The returned string is a
+/// rolling raw-stderr tail for diagnostics.
+///
+/// # Errors
+///
+/// Same as [`run`].
+pub fn run_in_with_stderr_lines<P, A, F>(
+    program: P,
+    args: &[A],
+    cwd: Option<&Path>,
+    environment: &EnvironmentPolicy,
+    env_overrides: Option<&BTreeMap<String, String>>,
+    on_line: F,
+) -> io::Result<(i32, String)>
+where
+    P: AsRef<OsStr>,
+    A: AsRef<OsStr>,
+    F: FnMut(&str) + Send + 'static,
+{
+    #[cfg(unix)]
+    {
+        unix::run_with_stderr_lines(
+            program.as_ref(),
+            args,
+            cwd,
+            environment,
+            env_overrides,
+            on_line,
+        )
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = (program, args, cwd, environment, env_overrides, on_line);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Windows foreground supervision is not implemented yet",
+        ))
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (program, args, cwd, environment, env_overrides, on_line);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "foreground supervision is not supported on this platform",
+        ))
+    }
+}
+
 /// Append `chunk` to `captured`, keeping only the last `capacity` bytes.
 pub fn append_rolling_tail(captured: &mut Vec<u8>, chunk: &[u8], capacity: usize) {
     if capacity == 0 {
@@ -235,6 +286,94 @@ mod unix {
         let stderr = tee
             .map(|handle| handle.join().unwrap_or_default())
             .unwrap_or_default();
+        Ok((exit_code_from_status(status), stderr))
+    }
+
+    pub(super) fn run_with_stderr_lines<A, F>(
+        program: &OsStr,
+        args: &[A],
+        cwd: Option<&Path>,
+        environment: &EnvironmentPolicy,
+        env_overrides: Option<&BTreeMap<String, String>>,
+        mut on_line: F,
+    ) -> io::Result<(i32, String)>
+    where
+        A: AsRef<OsStr>,
+        F: FnMut(&str) + Send + 'static,
+    {
+        use std::io::{BufRead, BufReader, Write};
+
+        let forwarder = SignalForwarder::install()?;
+        let mut command = Command::new(program);
+        command
+            .args(args)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::piped())
+            .process_group(0);
+
+        if let Some(dir) = cwd {
+            command.current_dir(dir);
+        }
+        environment.apply_with_overrides(&mut command, env_overrides.unwrap_or(&BTreeMap::new()));
+
+        let mut child = command.spawn()?;
+        let program_str = program.to_string_lossy();
+        if program_str == "nix" || program_str.ends_with("/nix") {
+            nxr_core::record_nix_spawn();
+        }
+        let pgid = child.id();
+        let spawn_started = nxr_core::perf_enabled().then(std::time::Instant::now);
+
+        let mut stderr_pipe = child.stderr.take().expect("piped stderr");
+        let tee = thread::spawn(move || {
+            let mut captured = Vec::new();
+            let mut reader = BufReader::new(&mut stderr_pipe);
+            let mut line = String::new();
+            let mut first_output_recorded = false;
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        if !first_output_recorded {
+                            if let Some(started) = spawn_started {
+                                nxr_core::record_spawn_to_child_output_us(
+                                    started.elapsed().as_micros().min(u64::MAX as u128) as u64,
+                                );
+                            }
+                            first_output_recorded = true;
+                        }
+                        append_rolling_tail(
+                            &mut captured,
+                            line.as_bytes(),
+                            STDERR_TAIL_CAPACITY,
+                        );
+                        let trimmed = line.trim_end_matches(['\r', '\n']);
+                        on_line(trimmed);
+                    }
+                }
+            }
+            // Flush any trailing CR-updated status line on TTYs.
+            if io::stderr().is_terminal() {
+                let mut real_stderr = io::stderr();
+                let _ = write!(real_stderr, "\r\x1b[2K");
+                let _ = real_stderr.flush();
+            }
+            String::from_utf8_lossy(&captured).into_owned()
+        });
+
+        let status = loop {
+            forwarder.poll_and_forward(pgid);
+            match child.try_wait()? {
+                Some(status) => break status,
+                None => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        };
+
+        let stderr = tee.join().unwrap_or_default();
         Ok((exit_code_from_status(status), stderr))
     }
 }

@@ -126,7 +126,8 @@ Rejected   considered and explicitly not chosen
 | ADR-0168 | Experimental optional Nix eval worker via `nxrd` | Accepted | Unreleased |
 | ADR-0169 | Workspace script execution (`nxr script`) | Accepted (Wave A) | 3.3 |
 | ADR-0170 | File-backed `nxr.apps` and live-workspace fast path | Accepted (Wave A) | 3.3 |
-| ADR-0171 | Materialized process-compatible development environments | Proposed | 3.4 |
+| ADR-0171 | Materialized process-compatible development environments | Accepted | 3.4.0 |
+| ADR-0172 | Nom-style Nix progress for interactive build ops | Accepted | 3.4.0 |
 
 Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0144-auto-schema-v2.md`](0144-auto-schema-v2.md),
@@ -158,15 +159,15 @@ Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0168-experimental-eval-worker.md`](0168-experimental-eval-worker.md),
 [`0169-workspace-script-execution.md`](0169-workspace-script-execution.md),
 [`0170-file-backed-apps.md`](0170-file-backed-apps.md),
-[`0171-materialized-dev-environments.md`](0171-materialized-dev-environments.md).
+[`0171-materialized-dev-environments.md`](0171-materialized-dev-environments.md),
+[`0172-nix-progress-formatter.md`](0172-nix-progress-formatter.md).
 
 Audit absorb (2026-07, post-`a040e50`): remaps active delivery to
 **2.7.1 → 2.8 → 3.0 → 3.1** (process workflows remain in 3.1 MVP; distributed
 workers stay Later / former “3.2”). Internal DAG: `docs/internal/dag-to-3.1.md`
 (gitignored).
 
-Post-3.2.1 next line: **3.3 workspace scripting → 3.4 materialized process
-envs** (ADR-0169–0171). V4+ ordering:
+Shipped **3.4.0** (ADR-0169–0172). Next line: V4+ ordering in
 [ideas/V4_EXECUTION_PROTOCOL.md](../ideas/V4_EXECUTION_PROTOCOL.md).
 Internal implementation DAG: `docs/internal/workspace-scripting-dag.md`
 (gitignored).

@@ -65,6 +65,8 @@ let
             network = false;
             exclusive = [ "cargo-target" ];
           };
+          parameters = { };
+          matrix = null;
         };
       };
       processes = {

@@ -174,33 +174,41 @@ nxr daemon stop
 - Watch best-effort calls `merkle.invalidate` on restart classification;
   in-process `WatchIncrementalSnapshot` is Wave 5a ([ADR-0160](adr/0160-watch-incremental-snapshot.md)).
 
-### Home Manager persistence (optional experiment)
+### Home Manager persistence (optional)
 
-Prefer **manual** `nxr daemon start` until warm-start gains are measured. When
-enabling `services.nxrd` via Home Manager
+When enabling `services.nxrd` via Home Manager
 ([DEV_ENV_INTEGRATION.md](DEV_ENV_INTEGRATION.md#optional-persistent-nxrd-macos-launchd--linux-systemd-user)):
 
-- Keep `evalWorker = false` initially.
-- macOS label: `dev.nxr.nxrd` (crash-only KeepAlive + throttle; not an
-  unconditional restart loop).
-- Socket remains user-scoped; nxrd is still **non-authoritative** for execution
-  and must not retain secret values.
+- Keep `evalWorker = false` until the ordinary cache path is proven useful.
+- macOS label: `dev.nxr.nxrd` (crash-only KeepAlive + throttle).
+- Socket remains user-scoped; nxrd is **non-authoritative** for execution and
+  must not retain secret values.
 
-Validation checklist before treating launchd/systemd enablement as
-production-ready:
+Measure before leaving it on: compare `NXR_DAEMON=off` vs daemon warm for
+representative `list` / `task --dry-run` / completion paths; confirm output
+equivalence, fallback when stopped, and bounded RSS/cache. No multi-day soak is
+required if those checks are green.
 
-1. Standalone baseline: `NXR_DAEMON=off time nxr -C <repo> list --json` (several runs).
-2. Manual daemon: `nxr daemon start` → `nxr daemon status --json` → repeat list.
-3. Compare output equivalence, exit status, latency, CPU/RSS, cache growth.
-4. Fallback: `nxr daemon stop` + `NXR_DAEMON=off` still works.
-5. Inspect: `nxr cache status --json`, `du -sh ~/.cache/nxr`.
-6. Exercise several repos / Cursor worktrees — no continuous scan/rebuild/lock.
-7. Multi-day soak: restart count, cache size, stale results, no secrets in
-   cache/logs.
+**Measured recommendation (local, 2026-07-28):** enable `services.nxrd` for
+interactive machines. Warm on-disk discovery already makes single-repo
+`list` / dry-run ~10–30 ms with or without the daemon; the first cold miss is
+~1–3 s then disk-warm. nxrd costs ~10 MB RSS, preserves JSON equivalence, and
+falls back cleanly when stopped—cheap insurance for plan/dev-env/process-log
+warm layers and multi-shell sessions. Keep `evalWorker = false` until that path
+is measured separately.
 
-Do **not** route ordinary `nix` through `nom` inside nxr. `nix-output-monitor`
-improves direct Nix TTY output; nxr already owns discovery/task/plan rendering.
-Use `nom build` / `nom develop` explicitly when desired.
+## Nix build progress (nom-style)
+
+Interactive `nxr build` / `check` / `shell` format Nix
+`--log-format internal-json` into a compact activity line (ADR-0172). Control
+with `NXR_NIX_PROGRESS`:
+
+| Value | Behavior |
+| --- | --- |
+| `auto` (default) | Builtin formatter when stderr is a TTY; otherwise raw |
+| `builtin` / `on` | Always builtin formatter |
+| `nom` | Use `nom` on `PATH` when present; else builtin |
+| `off` | Inherit/tee raw Nix stderr |
 
 ## Run-scoped digest cache
 

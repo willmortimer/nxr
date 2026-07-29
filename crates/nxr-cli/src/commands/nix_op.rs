@@ -5,8 +5,10 @@ use std::io::{self, Write};
 use nxr_core::EnvironmentPolicy;
 use nxr_core::diagnostics::exit;
 use nxr_nix::{
-    NixError, OptionalNixFlags, OutputNotFoundError, OutputTable, attr_installable,
-    check_installable, package_installable, resolve_output_by_name, token_is_explicit_installable,
+    NixError, NixProgressFormatter, NixProgressMode, OptionalNixFlags, OutputNotFoundError,
+    OutputTable, attr_installable, check_installable, ensure_internal_json_log_format,
+    locate_nom, package_installable, resolve_output_by_name, token_is_explicit_installable,
+    write_progress_line,
 };
 use serde::Serialize;
 
@@ -148,14 +150,71 @@ fn run_nix_child_with_stderr(
     cwd: &camino::Utf8Path,
     environment: &EnvironmentPolicy,
 ) -> Result<(i32, String), NixOpError> {
-    nxr_process::run_in_with_stderr(
+    match NixProgressMode::from_env() {
+        NixProgressMode::Off => nxr_process::run_in_with_stderr(
+            nix.as_std_path(),
+            arguments,
+            Some(cwd.as_std_path()),
+            environment,
+            None,
+        )
+        .map_err(NixOpError::Io),
+        NixProgressMode::Nom => {
+            if let Some(nom) = locate_nom() {
+                // `nom build …` mirrors `nix build …` argv; nom formats progress itself.
+                nxr_process::run_in_with_stderr(
+                    &nom,
+                    arguments,
+                    Some(cwd.as_std_path()),
+                    environment,
+                    None,
+                )
+                .map_err(NixOpError::Io)
+            } else {
+                run_nix_child_with_builtin_progress(nix, arguments, cwd, environment)
+            }
+        }
+        NixProgressMode::Builtin => {
+            run_nix_child_with_builtin_progress(nix, arguments, cwd, environment)
+        }
+    }
+}
+
+fn run_nix_child_with_builtin_progress(
+    nix: &camino::Utf8Path,
+    arguments: &[String],
+    cwd: &camino::Utf8Path,
+    environment: &EnvironmentPolicy,
+) -> Result<(i32, String), NixOpError> {
+    use std::io::{self, IsTerminal, Write};
+
+    let mut args = arguments.to_vec();
+    ensure_internal_json_log_format(&mut args);
+    let is_tty = io::stderr().is_terminal();
+    let mut formatter = NixProgressFormatter::new();
+
+    nxr_process::run_in_with_stderr_lines(
         nix.as_std_path(),
-        arguments,
+        &args,
         Some(cwd.as_std_path()),
         environment,
         None,
+        move |line| {
+            if let Some(rendered) = formatter.feed_line(line) {
+                let mut stderr = io::stderr().lock();
+                let _ = write_progress_line(&mut stderr, &rendered, is_tty);
+            }
+        },
     )
     .map_err(NixOpError::Io)
+    .map(|(code, stderr)| {
+        if is_tty {
+            let mut out = io::stderr().lock();
+            let _ = write!(out, "\r\x1b[2K");
+            let _ = out.flush();
+        }
+        (code, stderr)
+    })
 }
 
 /// After a failed direct installable, discover outputs and map missing names to suggestions.

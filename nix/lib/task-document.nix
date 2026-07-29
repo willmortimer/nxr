@@ -85,58 +85,73 @@ let
 
   taskToJson =
     task:
+    let
+      # Defensive defaults: smoke fixtures and partial task attrs may omit
+      # options that the flake-parts submodule would otherwise default.
+      parameters = task.parameters or { };
+      matrix = task.matrix or null;
+      outputs = task.outputs or [ ];
+      paths = task.paths or [ ];
+      aliases = task.aliases or [ ];
+      interactive = task.interactive or false;
+      shell = task.shell or null;
+      context = task.context or null;
+      inputs = task.inputs or null;
+      cache = task.cache or null;
+      resources = task.resources or null;
+    in
     {
       app = task.app;
       dependsOn = task.dependsOn;
-      hidden = task.hidden;
+      hidden = task.hidden or false;
     }
-    // lib.optionalAttrs (task.description != null) {
+    // lib.optionalAttrs ((task.description or null) != null) {
       description = task.description;
     }
-    // lib.optionalAttrs (task.workingDirectory != null) {
+    // lib.optionalAttrs ((task.workingDirectory or null) != null) {
       workingDirectory = task.workingDirectory;
     }
-    // lib.optionalAttrs (task.category != null) {
+    // lib.optionalAttrs ((task.category or null) != null) {
       category = task.category;
     }
-    // lib.optionalAttrs (task.aliases != [ ]) {
-      aliases = task.aliases;
+    // lib.optionalAttrs (aliases != [ ]) {
+      inherit aliases;
     }
-    // lib.optionalAttrs task.interactive {
-      interactive = task.interactive;
+    // lib.optionalAttrs interactive {
+      inherit interactive;
     }
-    // lib.optionalAttrs (task.paths != [ ]) {
-      paths = task.paths;
+    // lib.optionalAttrs (paths != [ ]) {
+      inherit paths;
     }
-    // lib.optionalAttrs (task.timeout != null) {
+    // lib.optionalAttrs ((task.timeout or null) != null) {
       timeout = task.timeout;
     }
-    // lib.optionalAttrs (task.terminationGracePeriod != null) {
+    // lib.optionalAttrs ((task.terminationGracePeriod or null) != null) {
       terminationGracePeriod = task.terminationGracePeriod;
     }
-    // lib.optionalAttrs (task.shell != null) {
-      shell = task.shell;
+    // lib.optionalAttrs (shell != null) {
+      inherit shell;
     }
-    // lib.optionalAttrs (task.context != null) {
-      context = task.context;
+    // lib.optionalAttrs (context != null) {
+      inherit context;
     }
-    // lib.optionalAttrs (task.inputs != null && taskInputsPresent task.inputs) {
-      inputs = taskInputsToJson task.inputs;
+    // lib.optionalAttrs (inputs != null && taskInputsPresent inputs) {
+      inputs = taskInputsToJson inputs;
     }
-    // lib.optionalAttrs (task.outputs != [ ]) {
-      outputs = map taskOutputToJson task.outputs;
+    // lib.optionalAttrs (outputs != [ ]) {
+      outputs = map taskOutputToJson outputs;
     }
-    // lib.optionalAttrs (task.cache != null && taskCacheToJson task.cache != { }) {
-      cache = taskCacheToJson task.cache;
+    // lib.optionalAttrs (cache != null && taskCacheToJson cache != { }) {
+      cache = taskCacheToJson cache;
     }
-    // lib.optionalAttrs (task.resources != null && taskResourcesToJson task.resources != { }) {
-      resources = taskResourcesToJson task.resources;
+    // lib.optionalAttrs (resources != null && taskResourcesToJson resources != { }) {
+      resources = taskResourcesToJson resources;
     }
-    // lib.optionalAttrs (task.parameters != { }) {
-      parameters = lib.mapAttrs (_: param: taskParameterToJson param) task.parameters;
+    // lib.optionalAttrs (parameters != { }) {
+      parameters = lib.mapAttrs (_: param: taskParameterToJson param) parameters;
     }
-    // lib.optionalAttrs (task.matrix != null) {
-      matrix = taskMatrixToJson task.matrix;
+    // lib.optionalAttrs (matrix != null) {
+      matrix = taskMatrixToJson matrix;
     };
 
   processReadinessToJson =
@@ -218,38 +233,45 @@ let
 
   appListingToJson =
     app:
+    let
+      # `empty-apps.nix` uses `types.raw`; tolerate missing attrs.
+      category = app.category or null;
+      runtimeInputs = app.runtimeInputs or [ ];
+      file = app.file or null;
+      interpreter = app.interpreter or null;
+      fastPath = app.fastPath or { };
+    in
     lib.filterAttrs (_: v: v != null && v != { } && v != false) (
-      lib.optionalAttrs (app.category != null) {
-        category = app.category;
+      lib.optionalAttrs (category != null) {
+        inherit category;
       }
-      // lib.optionalAttrs (app.runtimeInputs != [ ]) {
-        runtime_path =
-          if app.runtimeInputs != [ ] then lib.makeBinPath app.runtimeInputs else null;
+      // lib.optionalAttrs (runtimeInputs != [ ]) {
+        runtime_path = lib.makeBinPath runtimeInputs;
       }
-      // lib.optionalAttrs (app.file != null) {
-        workspace_path = app.file;
+      // lib.optionalAttrs (file != null) {
+        workspace_path = file;
       }
-      // lib.optionalAttrs (app.interpreter != null) {
-        interpreter = app.interpreter;
+      // lib.optionalAttrs (interpreter != null) {
+        inherit interpreter;
       }
-      // lib.optionalAttrs (app.file != null) {
+      // lib.optionalAttrs (file != null) {
         fastPath = lib.filterAttrs (_: v: v != null && v != false) {
-          enable = app.fastPath.enable;
-          shell = app.fastPath.shell;
+          enable = fastPath.enable or false;
+          shell = fastPath.shell or null;
         };
       }
     );
 
   taskUsesSchemaV2 =
     task:
-    task.shell != null
-    || task.context != null
-    || (task.inputs != null && taskInputsPresent task.inputs)
-    || task.outputs != [ ]
-    || (task.cache != null && taskCacheToJson task.cache != { })
-    || (task.resources != null && taskResourcesToJson task.resources != { })
-    || task.parameters != { }
-    || task.matrix != null;
+    (task.shell or null) != null
+    || (task.context or null) != null
+    || ((task.inputs or null) != null && taskInputsPresent task.inputs)
+    || (task.outputs or [ ]) != [ ]
+    || ((task.cache or null) != null && taskCacheToJson task.cache != { })
+    || ((task.resources or null) != null && taskResourcesToJson task.resources != { })
+    || (task.parameters or { }) != { }
+    || (task.matrix or null) != null;
 in
 {
   inherit taskUsesSchemaV2 taskInputsPresent;
