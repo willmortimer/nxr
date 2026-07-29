@@ -132,6 +132,9 @@ Exclude: complete caller environment, secret values, script contents, CWD
 Add non-authoritative `dev_env.get` / `dev_env.put` / `dev_env.invalidate`
 retaining the same disk-cache + standalone fallback rules as other caches.
 
+Disk persistence is **opt-in** via `NXR_DEV_ENV_CACHE=on` (unset = disabled) until
+secret provenance is complete; both paths reject non-placeholder secret values.
+
 ## Public contract
 
 - Feature-detect `nix print-dev-env` / JSON; degrade to develop-wrap when
@@ -171,6 +174,8 @@ retaining the same disk-cache + standalone fallback rules as other caches.
 ## Security and trust
 
 - Snapshot cache must never persist secret values or secret material.
+- Dev-environment disk cache is **opt-in** (`NXR_DEV_ENV_CACHE=on`) until secret
+  provenance is complete; callers sanitize known secret names before persistence.
 - Cache keys never include secret values.
 - Untrusted flake metadata sanitized before terminal rendering (existing rule).
 

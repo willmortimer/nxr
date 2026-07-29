@@ -1735,6 +1735,38 @@ mod tests {
         assert_eq!(put_resp.error.unwrap().code, "secret_rejected");
     }
 
+    #[test]
+    fn handle_request_dev_env_secret_in_variables_reject() {
+        let mut state = DaemonState::new();
+        let socket = PathBuf::from("/tmp/nxr-test.sock");
+        let fingerprints = sample_fingerprints();
+        let mut snapshot = sample_dev_env_snapshot(fingerprints.clone());
+        snapshot.secret_variables.push(crate::DevEnvSecretVariable {
+            name: "API_TOKEN".to_owned(),
+            value: crate::DEV_ENV_SECRET_RUNTIME_PLACEHOLDER.to_owned(),
+        });
+        snapshot
+            .variables
+            .insert("API_TOKEN".to_owned(), "super-secret".to_owned());
+        assert!(daemon_dev_env_entry(&snapshot, fingerprints.clone()).is_none());
+
+        let put = DaemonRequest {
+            v: DAEMON_PROTOCOL_VERSION,
+            id: 1,
+            method: "dev_env.put".to_owned(),
+            params: Some(serde_json::json!({
+                "key_digest": "secret-vars-key",
+                "entry": DaemonDevEnvEntry {
+                    snapshot,
+                    fingerprints,
+                },
+            })),
+        };
+        let put_resp = handle_request(&mut state, &socket, &put);
+        assert!(!put_resp.ok);
+        assert_eq!(put_resp.error.unwrap().code, "secret_rejected");
+    }
+
     fn sample_dev_env_snapshot(
         fingerprints: PlanCacheSharedFingerprints,
     ) -> DevEnvironmentSnapshot {

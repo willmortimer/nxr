@@ -17,8 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `nxr script --list`; migrate `--scripts` / `--file-backed`; cold live fast-path
   listing eval; explain reports fast-path selection.
 - Materialized process environments via feature-detected `nix print-dev-env`
-  ([ADR-0171](docs/adr/0171-materialized-dev-environments.md)): disk + optional
-  `nxrd` `dev_env.*` cache; warm 0-Nix spawn; `--shell-mode always` develop escape.
+  ([ADR-0171](docs/adr/0171-materialized-dev-environments.md)): opt-in disk +
+  optional `nxrd` `dev_env.*` cache (`NXR_DEV_ENV_CACHE=on`); warm 0-Nix spawn;
+  `--shell-mode always` develop escape.
 - One-shell DAG optimization for shared shell contexts
   ([ADR-0129](docs/adr/0129-one-shell-dag.md)).
 - Schema v2 typed task `parameters` (`NXR_PARAM_*`) and `matrix.include`

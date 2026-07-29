@@ -8,7 +8,8 @@ use nxr_core::{
     DevEnvironmentNixIdentity, DevEnvironmentSnapshot, EnvironmentPolicy,
     PlanCacheSharedFingerprints, daemon_dev_env_entry, dev_env_cache_key_digest, digest_nix_flags,
     lookup_dev_environment_snapshot, record_dev_env_cache_hit, record_dev_env_cache_miss,
-    store_dev_environment_snapshot, try_once,
+    sanitize_snapshot_for_cache, snapshot_contains_secret_values, store_dev_environment_snapshot,
+    try_once,
 };
 use nxr_nix::{
     DevEnvironment, NixError, NixFailureKind, OptionalNixFlags, detect_capabilities, detect_system,
@@ -186,7 +187,7 @@ fn try_process_spawn(
         if !parsed.is_process_compatible() {
             return Ok(None);
         }
-        let snapshot = dev_environment_to_snapshot(
+        let mut snapshot = dev_environment_to_snapshot(
             flake,
             &system,
             shell_name,
@@ -195,8 +196,7 @@ fn try_process_spawn(
             &fingerprints,
             &parsed,
         );
-        let _ = store_dev_environment_snapshot(&key_digest, &snapshot, fingerprints.clone());
-        try_daemon_dev_env_store(&key_digest, &snapshot, fingerprints.clone());
+        persist_dev_env_snapshot(&key_digest, &mut snapshot, fingerprints.clone(), Some(&[]));
         snapshot
     };
 
@@ -338,6 +338,26 @@ fn try_daemon_dev_env_store(
     );
 }
 
+/// Persist a snapshot to disk and optional nxrd when secret provenance is known.
+///
+/// `known_secret_names: None` skips persistence (unknown provenance / impure).
+fn persist_dev_env_snapshot(
+    key_digest: &str,
+    snapshot: &mut DevEnvironmentSnapshot,
+    fingerprints: PlanCacheSharedFingerprints,
+    known_secret_names: Option<&[String]>,
+) {
+    let Some(names) = known_secret_names else {
+        return;
+    };
+    sanitize_snapshot_for_cache(snapshot, names);
+    if snapshot_contains_secret_values(snapshot) {
+        return;
+    }
+    let _ = store_dev_environment_snapshot(key_digest, snapshot, fingerprints.clone());
+    try_daemon_dev_env_store(key_digest, snapshot, fingerprints);
+}
+
 /// Materialize a process-compatible shell policy for one-shell DAG runs (ADR-0129).
 ///
 /// # Errors
@@ -427,7 +447,7 @@ fn try_one_shell_process_policy(
         if !parsed.is_process_compatible() {
             return Ok(None);
         }
-        let snapshot = dev_environment_to_snapshot(
+        let mut snapshot = dev_environment_to_snapshot(
             flake,
             &system,
             shell_name,
@@ -436,8 +456,7 @@ fn try_one_shell_process_policy(
             &fingerprints,
             &parsed,
         );
-        let _ = store_dev_environment_snapshot(&key_digest, &snapshot, fingerprints.clone());
-        try_daemon_dev_env_store(&key_digest, &snapshot, fingerprints.clone());
+        persist_dev_env_snapshot(&key_digest, &mut snapshot, fingerprints.clone(), Some(&[]));
         snapshot
     };
 

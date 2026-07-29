@@ -57,7 +57,7 @@ pub use dev_env_cache::{
     DevEnvironmentCacheStatus, DevEnvironmentNixIdentity, DevEnvironmentSnapshot,
     clear_dev_env_cache, dev_env_cache_dir, dev_env_cache_enabled, dev_env_cache_key_digest,
     dev_env_cache_status, gc_dev_env_cache, invalidate_dev_env_cache,
-    lookup_dev_environment_snapshot, snapshot_contains_secret_values,
+    lookup_dev_environment_snapshot, sanitize_snapshot_for_cache, snapshot_contains_secret_values,
     store_dev_environment_snapshot,
 };
 pub use diagnostics::{Diagnostic, DiagnosticLevel};

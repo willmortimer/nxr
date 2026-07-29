@@ -2,8 +2,9 @@
 //!
 //! Stores normalized process-env snapshots keyed by flake + shell + Nix identity
 //! fingerprints. Secret *values* are never persisted; snapshots with non-placeholder
-//! secret variable fields are rejected. Disabled with `NXR_DEV_ENV_CACHE=off` (or
-//! `0` / `false` / `no`). See ADR-0171.
+//! secret variable fields are rejected. **Opt-in** via `NXR_DEV_ENV_CACHE=on` (or
+//! `1` / `true` / `yes`); unset or any other value leaves the cache disabled.
+//! See ADR-0171.
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -21,7 +22,7 @@ use crate::{
     summarize_timed_json_cache,
 };
 
-/// Environment variable disabling the dev-environment snapshot cache (`off`, `0`, `false`, `no`).
+/// Environment variable enabling the dev-environment snapshot cache (`on`, `1`, `true`, `yes`).
 pub const DEV_ENV_CACHE_ENV: &str = "NXR_DEV_ENV_CACHE";
 
 /// On-disk schema version for dev-environment cache entries.
@@ -123,11 +124,17 @@ struct CachedDevEnvironmentSnapshot {
 thread_local! {
     static TEST_CACHE_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
     static TEST_CACHE_TTL_SECS: std::cell::RefCell<Option<Option<u64>>> = const { std::cell::RefCell::new(None) };
+    static TEST_CACHE_ENABLED: std::cell::RefCell<Option<bool>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Whether the dev-environment disk cache is enabled.
 #[must_use]
 pub fn dev_env_cache_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(enabled) = TEST_CACHE_ENABLED.with(|cell| *cell.borrow()) {
+        return enabled;
+    }
+
     cache_enabled_for_env(std::env::var(DEV_ENV_CACHE_ENV).ok().as_deref())
 }
 
@@ -135,9 +142,9 @@ fn cache_enabled_for_env(value: Option<&str>) -> bool {
     match value {
         Some(value) => {
             let normalized = value.trim().to_ascii_lowercase();
-            !matches!(normalized.as_str(), "off" | "0" | "false" | "no")
+            matches!(normalized.as_str(), "on" | "1" | "true" | "yes")
         }
-        None => true,
+        None => false,
     }
 }
 
@@ -224,6 +231,7 @@ pub fn store_dev_environment_snapshot(
     };
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+        restrict_cache_dir_permissions(parent)?;
     }
 
     let entry = CachedDevEnvironmentSnapshot {
@@ -236,7 +244,7 @@ pub fn store_dev_environment_snapshot(
     let payload = serde_json::to_vec_pretty(&entry)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
 
-    let tmp = path.with_extension("tmp");
+    let tmp = unique_cache_temp_path(&path);
     {
         let mut file = OpenOptions::new()
             .create(true)
@@ -246,8 +254,10 @@ pub fn store_dev_environment_snapshot(
         file.lock_exclusive()?;
         file.write_all(&payload)?;
         file.sync_all()?;
+        restrict_cache_file_permissions(&tmp)?;
     }
     fs::rename(&tmp, &path)?;
+    restrict_cache_file_permissions(&path)?;
     Ok(())
 }
 
@@ -354,23 +364,42 @@ pub fn dev_env_cache_status() -> io::Result<DevEnvironmentCacheStatus> {
     })
 }
 
-/// Whether any secret variable slot holds a real value (not the runtime placeholder).
+/// Whether the snapshot still carries secret values that must not be persisted.
+///
+/// Checks every declared secret name: a real value in either [`DevEnvSecretVariable::value`]
+/// or [`DevEnvironmentSnapshot::variables`] rejects persistence.
 #[must_use]
 pub fn snapshot_contains_secret_values(snapshot: &DevEnvironmentSnapshot) -> bool {
-    snapshot
-        .secret_variables
-        .iter()
-        .any(secret_variable_has_value)
-        || snapshot
+    snapshot.secret_variables.iter().any(|secret| {
+        secret_variable_has_value(secret)
+            || snapshot
+                .variables
+                .get(&secret.name)
+                .is_some_and(|value| secret_value_is_real(value))
+    })
+}
+
+/// Strip known secret names from [`DevEnvironmentSnapshot::variables`] and record
+/// runtime placeholders in [`DevEnvironmentSnapshot::secret_variables`].
+pub fn sanitize_snapshot_for_cache(
+    snapshot: &mut DevEnvironmentSnapshot,
+    known_secret_names: &[String],
+) {
+    for name in known_secret_names {
+        snapshot.variables.remove(name);
+        if let Some(slot) = snapshot
             .secret_variables
-            .iter()
-            .filter(|secret| secret_variable_has_value(secret))
-            .any(|secret| {
-                snapshot
-                    .variables
-                    .get(&secret.name)
-                    .is_some_and(|value| secret_value_is_real(value))
-            })
+            .iter_mut()
+            .find(|secret| secret.name == *name)
+        {
+            slot.value = DEV_ENV_SECRET_RUNTIME_PLACEHOLDER.to_owned();
+        } else {
+            snapshot.secret_variables.push(DevEnvSecretVariable {
+                name: name.clone(),
+                value: DEV_ENV_SECRET_RUNTIME_PLACEHOLDER.to_owned(),
+            });
+        }
+    }
 }
 
 fn secret_variable_has_value(secret: &DevEnvSecretVariable) -> bool {
@@ -380,6 +409,42 @@ fn secret_variable_has_value(secret: &DevEnvSecretVariable) -> bool {
 fn secret_value_is_real(value: &str) -> bool {
     let trimmed = value.trim();
     !trimmed.is_empty() && trimmed != DEV_ENV_SECRET_RUNTIME_PLACEHOLDER
+}
+
+fn unique_cache_temp_path(path: &std::path::Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| path.as_ref());
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("entry");
+    let rand = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.subsec_nanos());
+    parent.join(format!("{stem}.tmp.{}.{}", std::process::id(), rand))
+}
+
+#[cfg(unix)]
+fn restrict_cache_dir_permissions(path: &std::path::Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn restrict_cache_dir_permissions(_path: &std::path::Path) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn restrict_cache_file_permissions(path: &std::path::Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn restrict_cache_file_permissions(_path: &std::path::Path) -> io::Result<()> {
+    Ok(())
 }
 
 fn extract_recorded_at(contents: &str) -> Option<u64> {
@@ -496,6 +561,23 @@ pub(crate) fn test_with_cache_dir<T>(root: PathBuf, f: impl FnOnce() -> T) -> T 
 }
 
 #[cfg(test)]
+fn test_with_cache_enabled<T>(f: impl FnOnce() -> T) -> T {
+    TEST_CACHE_ENABLED.with(|cell| {
+        *cell.borrow_mut() = Some(true);
+    });
+    let result = f();
+    TEST_CACHE_ENABLED.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+    result
+}
+
+#[cfg(test)]
+fn test_with_dev_env_cache<T>(root: PathBuf, f: impl FnOnce() -> T) -> T {
+    test_with_cache_enabled(|| test_with_cache_dir(root, f))
+}
+
+#[cfg(test)]
 mod tests {
     use std::fs;
 
@@ -564,7 +646,7 @@ mod tests {
         let temp = TempDir::new().expect("tempdir");
         let cache_home = temp.path().join("dev-env");
         fs::create_dir_all(&cache_home).expect("mkdir");
-        test_with_cache_dir(cache_home, || {
+        test_with_dev_env_cache(cache_home, || {
             let fingerprints = sample_fingerprints();
             let key = dev_env_cache_key_digest(&sample_key(fingerprints.clone(), "process"));
             assert!(lookup_dev_environment_snapshot(&key, &fingerprints).is_none());
@@ -593,7 +675,7 @@ mod tests {
         let temp = TempDir::new().expect("tempdir");
         let cache_home = temp.path().join("dev-env");
         fs::create_dir_all(&cache_home).expect("mkdir");
-        test_with_cache_dir(cache_home.clone(), || {
+        test_with_dev_env_cache(cache_home.clone(), || {
             let fingerprints = sample_fingerprints();
             let key = dev_env_cache_key_digest(&sample_key(fingerprints.clone(), "process"));
             let mut snapshot = sample_snapshot(fingerprints.clone());
@@ -667,7 +749,7 @@ mod tests {
         let temp = TempDir::new().expect("tempdir");
         let cache_home = temp.path().join("dev-env");
         fs::create_dir_all(&cache_home).expect("mkdir");
-        test_with_cache_dir(cache_home, || {
+        test_with_dev_env_cache(cache_home, || {
             let fingerprints = sample_fingerprints();
             let key = dev_env_cache_key_digest(&sample_key(fingerprints.clone(), "process"));
             store_dev_environment_snapshot(
@@ -684,9 +766,12 @@ mod tests {
     }
 
     #[test]
-    fn kill_switch_parses_off_values() {
-        assert!(cache_enabled_for_env(None));
+    fn kill_switch_parses_opt_in_values() {
+        assert!(!cache_enabled_for_env(None));
+        assert!(cache_enabled_for_env(Some("on")));
         assert!(cache_enabled_for_env(Some("1")));
+        assert!(cache_enabled_for_env(Some("true")));
+        assert!(cache_enabled_for_env(Some("YES")));
         assert!(!cache_enabled_for_env(Some("off")));
         assert!(!cache_enabled_for_env(Some("0")));
         assert!(!cache_enabled_for_env(Some("false")));
@@ -694,11 +779,62 @@ mod tests {
     }
 
     #[test]
+    fn rejects_secret_value_in_variables_with_runtime_slot() {
+        let fingerprints = sample_fingerprints();
+        let mut snapshot = sample_snapshot(fingerprints);
+        snapshot.secret_variables.push(DevEnvSecretVariable {
+            name: "API_TOKEN".to_owned(),
+            value: DEV_ENV_SECRET_RUNTIME_PLACEHOLDER.to_owned(),
+        });
+        snapshot
+            .variables
+            .insert("API_TOKEN".to_owned(), "super-secret".to_owned());
+        assert!(snapshot_contains_secret_values(&snapshot));
+    }
+
+    #[test]
+    fn sanitize_snapshot_strips_known_secret_names() {
+        let fingerprints = sample_fingerprints();
+        let mut snapshot = sample_snapshot(fingerprints);
+        snapshot
+            .variables
+            .insert("API_TOKEN".to_owned(), "super-secret".to_owned());
+        sanitize_snapshot_for_cache(&mut snapshot, &["API_TOKEN".to_owned()]);
+        assert!(!snapshot.variables.contains_key("API_TOKEN"));
+        assert_eq!(snapshot.secret_variables.len(), 1);
+        assert_eq!(snapshot.secret_variables[0].name, "API_TOKEN");
+        assert_eq!(
+            snapshot.secret_variables[0].value,
+            DEV_ENV_SECRET_RUNTIME_PLACEHOLDER
+        );
+        assert!(!snapshot_contains_secret_values(&snapshot));
+    }
+
+    #[test]
+    fn sanitized_snapshot_can_be_stored_and_loaded() {
+        let temp = TempDir::new().expect("tempdir");
+        let cache_home = temp.path().join("dev-env");
+        fs::create_dir_all(&cache_home).expect("mkdir");
+        test_with_dev_env_cache(cache_home, || {
+            let fingerprints = sample_fingerprints();
+            let key = dev_env_cache_key_digest(&sample_key(fingerprints.clone(), "process"));
+            let mut snapshot = sample_snapshot(fingerprints.clone());
+            snapshot
+                .variables
+                .insert("API_TOKEN".to_owned(), "super-secret".to_owned());
+            sanitize_snapshot_for_cache(&mut snapshot, &["API_TOKEN".to_owned()]);
+            store_dev_environment_snapshot(&key, &snapshot, fingerprints.clone()).expect("store");
+            let hit = lookup_dev_environment_snapshot(&key, &fingerprints).expect("hit");
+            assert!(!hit.snapshot.variables.contains_key("API_TOKEN"));
+        });
+    }
+
+    #[test]
     fn poisoned_cache_file_never_serializes_secret_literal() {
         let temp = TempDir::new().expect("tempdir");
         let cache_home = temp.path().join("dev-env");
         fs::create_dir_all(&cache_home).expect("mkdir");
-        test_with_cache_dir(cache_home.clone(), || {
+        test_with_dev_env_cache(cache_home.clone(), || {
             let fingerprints = sample_fingerprints();
             let key = dev_env_cache_key_digest(&sample_key(fingerprints.clone(), "process"));
             let snapshot = sample_snapshot(fingerprints.clone());
