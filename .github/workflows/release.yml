@@ -403,22 +403,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Best-effort: signing must not block publishing if the OIDC audience
-          # is unavailable, but failures are reported clearly.
           shopt -s nullglob
           files=(release/*.tar.gz release/SHA256SUMS release/*.cdx.json)
           if [[ ${#files[@]} -eq 0 ]]; then
             echo "error: no release files to sign" >&2
             exit 1
           fi
+          # Cosign v3 requires --bundle (sig+cert+tlog in one file). Legacy
+          # --output-signature/--output-certificate are ignored under the new
+          # bundle format and leave nothing to verify.
           for f in "${files[@]}"; do
             echo "signing $f"
-            cosign sign-blob --yes \
-              --output-signature "${f}.sig" \
-              --output-certificate "${f}.pem" \
-              "$f"
+            cosign sign-blob --yes --bundle "${f}.sigstore.json" "$f"
           done
-          ls -1 release/*.sig release/*.pem
+          ls -1 release/*.sigstore.json
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
@@ -447,8 +445,7 @@ jobs:
 
             ```bash
             cosign verify-blob \
-              --certificate <file>.pem \
-              --signature <file>.sig \
+              --bundle <file>.sigstore.json \
               --certificate-identity-regexp 'https://github.com/willmortimer/nxr/.*' \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
               <file>

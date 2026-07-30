@@ -430,9 +430,8 @@ mod tests {
                 None
             }
         };
-        let env =
-            resolve_task_parameter_env_layered("demo", &sample_choice(), &cli, lookup, None)
-                .expect("cli");
+        let env = resolve_task_parameter_env_layered("demo", &sample_choice(), &cli, lookup, None)
+            .expect("cli");
         assert_eq!(env.get("NXR_PARAM_MODE").map(String::as_str), Some("slow"));
     }
 

@@ -1856,17 +1856,16 @@ impl<'a> TaskNodePreparer<'a> {
             (Some(BTreeMap::new()), BTreeMap::new())
         } else {
             let resolved = &live.resolved_parameter_env;
-            let values = resolve_task_parameter_env_with(task_id, &definition.parameters, |env_name| {
-                resolved
-                    .get(env_name)
-                    .cloned()
-                    .or_else(|| {
+            let values =
+                resolve_task_parameter_env_with(task_id, &definition.parameters, |env_name| {
+                    resolved.get(env_name).cloned().or_else(|| {
                         std::env::var(env_name)
                             .ok()
                             .filter(|value| !value.is_empty())
                     })
-            })?;
-            let parameter_values = nxr_task::parameter_values_from_env(&definition.parameters, &values);
+                })?;
+            let parameter_values =
+                nxr_task::parameter_values_from_env(&definition.parameters, &values);
             (Some(parameter_values), values)
         };
         let matrix_base_task = live

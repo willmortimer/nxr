@@ -390,8 +390,8 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 coverage: coverage.clone(),
                 benchmark: benchmark.clone(),
             };
-            let param_sets = crate::commands::task_params::parse_param_sets(set)
-                .map_err(RunError::Usage)?;
+            let param_sets =
+                crate::commands::task_params::parse_param_sets(set).map_err(RunError::Usage)?;
             let use_affected = *affected || selectors::tokens_request_affected(tasks);
             if use_affected {
                 let requested = if tasks.is_empty() {

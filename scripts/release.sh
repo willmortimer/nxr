@@ -6,25 +6,34 @@
 #
 # Usage:
 #   nix run .#release
-#   nix run .#release -- --execute          # prompt, then tag -s + push
-#   nix run .#release -- --execute --yes    # no prompt (still requires clean tree)
-#   nxr task release                        # runs ci gate, then this app (dry-run)
+#   nix run .#release -- --execute          # requires host+linux gate stamps
+#   nix run .#release -- --execute --yes
+#   nix run .#release -- --execute --skip-gates   # break-glass only
+#   nxr task release                        # runs host `ci` graph, then dry-run
 #   nxr task release -- --execute
 set -euo pipefail
 
 execute=0
 assume_yes=0
 skip_remote_check=0
+skip_gates=0
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+gates_sh="$script_dir/release-gates.sh"
 
 usage() {
   cat <<'EOF'
-Usage: release [--execute] [--yes] [--skip-remote-check]
+Usage: release [--execute] [--yes] [--skip-remote-check] [--skip-gates]
 
   (default)     Check repo state and print git tag/push commands.
   --execute     Create annotated/signed tag and push to origin.
+                Requires .nxr/release-gates/{host,linux}.<HEAD> stamps from:
+                  nix run .#ci-gate
+                  nix run .#ci-gate-linux
   --yes         With --execute, skip the interactive confirmation.
   --skip-remote-check
                 Do not require origin/main containment / remote tag probe.
+  --skip-gates  Break-glass: allow --execute without gate stamps (loud warning).
 
 Environment:
   NXR_RELEASE_REMOTE   Remote name (default: origin)
@@ -47,6 +56,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-remote-check)
       skip_remote_check=1
+      shift
+      ;;
+    --skip-gates)
+      skip_gates=1
       shift
       ;;
     *)
@@ -176,18 +189,11 @@ if [[ "$skip_remote_check" -eq 0 ]]; then
   fi
 fi
 
-# --- gate reminder ---
-cat <<EOF
-
-Pre-tag gates (run before --execute unless already green):
-  nix run .#ci-gate
-  nix run .#ci-gate-linux
-
-Or via the task graph (runs host ci, then this app):
-  nxr task release
-  nxr task release -- --execute
-
-EOF
+# --- dogfood gate stamps ---
+echo
+echo "Local dogfood gate stamps (HEAD=$(git rev-parse --short HEAD)):"
+"$gates_sh" status
+echo
 
 tag_cmd=(git tag -s "$tag" -m "nxr ${version}")
 push_cmd=(git push "$remote" "refs/tags/${tag}")
@@ -200,8 +206,16 @@ printf '\n'
 
 if [[ "$execute" -eq 0 ]]; then
   echo
-  echo "Dry-run only. Re-run with --execute to create and push ${tag}."
+  echo "Dry-run only. Re-run with --execute after:"
+  echo "  nix run .#ci-gate"
+  echo "  nix run .#ci-gate-linux"
   exit 0
+fi
+
+if [[ "$skip_gates" -eq 1 ]]; then
+  echo "WARNING: --skip-gates set; tagging WITHOUT host+linux dogfood stamps" >&2
+else
+  "$gates_sh" require
 fi
 
 if [[ "$assume_yes" -eq 0 ]]; then

@@ -53,11 +53,12 @@ pub fn resolve_plan_parameters(
     plan: &ExecutionPlan,
     cli_sets: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>, ParameterError> {
-    let expansion = expand_matrix_tasks(&document.tasks).map_err(|error| ParameterError::Invalid {
-        task: plan.root.clone(),
-        name: "matrix".to_owned(),
-        message: error.to_string(),
-    })?;
+    let expansion =
+        expand_matrix_tasks(&document.tasks).map_err(|error| ParameterError::Invalid {
+            task: plan.root.clone(),
+            name: "matrix".to_owned(),
+            message: error.to_string(),
+        })?;
 
     let mut known_names = BTreeSet::new();
     let mut tasks_with_params: BTreeMap<String, &nxr_task::TaskDefinition> = BTreeMap::new();
@@ -129,11 +130,14 @@ fn prompt_parameter(
     let prompt = format!("task {task}: parameter {name}");
     let result = match definition.param_type {
         TaskParameterType::Choice => {
-            let values = definition.values.as_ref().ok_or_else(|| ParameterError::Invalid {
-                task: task.to_owned(),
-                name: name.to_owned(),
-                message: "choice parameter has no values".to_owned(),
-            })?;
+            let values = definition
+                .values
+                .as_ref()
+                .ok_or_else(|| ParameterError::Invalid {
+                    task: task.to_owned(),
+                    name: name.to_owned(),
+                    message: "choice parameter has no values".to_owned(),
+                })?;
             let selection = Select::new()
                 .with_prompt(&prompt)
                 .items(values)
@@ -174,14 +178,15 @@ fn prompt_parameter(
             }
         }
         TaskParameterType::String => {
-            let value: String = Input::new()
-                .with_prompt(&prompt)
-                .interact_text()
-                .map_err(|error| ParameterError::Prompt {
-                    task: task.to_owned(),
-                    name: name.to_owned(),
-                    message: error.to_string(),
-                })?;
+            let value: String =
+                Input::new()
+                    .with_prompt(&prompt)
+                    .interact_text()
+                    .map_err(|error| ParameterError::Prompt {
+                        task: task.to_owned(),
+                        name: name.to_owned(),
+                        message: error.to_string(),
+                    })?;
             if value.is_empty() {
                 Err(ParameterError::Missing {
                     task: task.to_owned(),

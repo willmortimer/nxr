@@ -68,11 +68,12 @@ run_orb() {
   local orb_bin
   orb_bin="$(command -v orb 2>/dev/null || echo /opt/homebrew/bin/orb)"
   echo "info: OrbStack machine $machine → $*" >&2
-  exec "$orb_bin" -m "$machine" -w "$root" bash -lc "
+  "$orb_bin" -m "$machine" -w "$root" bash -lc "
     set -euo pipefail
     export PATH=\"/nix/var/nix/profiles/default/bin:\$HOME/.nix-profile/bin:\$PATH\"
     . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || true
     unset NXR_DEV_SHELL || true
+    export NXR_CI_LINUX=1
     export GIT_CONFIG_GLOBAL=/dev/null
     export GIT_CONFIG_SYSTEM=/dev/null
     cd $(printf '%q' "$root")
@@ -133,12 +134,13 @@ run_docker() {
   "$DOCKER" volume create "$nix_volume" >/dev/null
 
   echo "info: docker run $image → $*" >&2
-  exec "$DOCKER" run --rm --platform "$platform" \
+  "$DOCKER" run --rm --platform "$platform" \
     -v "$root:/src:rw" \
     -v "$nix_volume:/nix" \
     -w /src \
     -e "NIX_CONFIG=experimental-features = nix-command flakes" \
     -e NXR_DEV_SHELL= \
+    -e NXR_CI_LINUX=1 \
     "$image" "$@"
 }
 
@@ -164,3 +166,5 @@ case "$backend" in
     exit 1
     ;;
 esac
+
+exec "$root/scripts/release-gates.sh" stamp linux

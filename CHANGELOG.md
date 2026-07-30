@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.1] - 2026-07-30
+
+### Fixed
+
+- rustfmt so `fmt-check` / `nxr task ci` pass (missed before the 3.5.0 tag).
+- Keyless Cosign in `release.yml` uses Cosign v3 `--bundle *.sigstore.json`
+  (legacy `--output-signature` / `--output-certificate` are ignored and left
+  empty paths under the new bundle format).
+
+### Changed
+
+- Workspace and Nix package version **3.5.1**.
+- `.#release --execute` **fail-closed** unless `.nxr/release-gates/{host,linux}.<HEAD>`
+  stamps exist (written by `.#ci-gate` / `.#ci-gate-linux`). `--skip-gates` is
+  break-glass only.
+
 ## [3.5.0] - 2026-07-30
 
 ### Added

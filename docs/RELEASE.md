@@ -10,21 +10,27 @@ Cosign** signatures for release blobs.
 
 ## Tag from the flake (preferred)
 
-After Mac + Linux gates are green and `CHANGELOG.md` has a `## [X.Y.Z]` section
-matching `Cargo.toml`:
+**Fail-closed:** `nix run .#release -- --execute` refuses to tag unless both
+local dogfood stamps exist for `HEAD` (written by the gate apps):
 
 ```bash
-nix run .#ci-gate
-nix run .#ci-gate-linux
+nix run .#ci-gate         # host: fmt-check → lint → test → deny (+ stamps host)
+nix run .#ci-gate-linux   # OrbStack/Docker Linux parity (+ stamps linux)
+```
 
-# Dry-run: version sync, clean tree, print exact git commands
+Then, with `CHANGELOG.md` having a `## [X.Y.Z]` section matching `Cargo.toml`:
+
+```bash
+# Dry-run: version sync, clean tree, print exact git commands + stamp status
 nix run .#release
 # or: nxr task release          # runs host `ci` graph, then release dry-run
 
-# Create signed tag + push (prompts unless --yes)
+# Create signed tag + push (prompts unless --yes; requires gate stamps)
 nix run .#release -- --execute
 # or: nxr task release -- --execute
 ```
+
+Break-glass only: `--skip-gates` (loud warning). Not for normal releases.
 
 Equivalent manual commands (what the app prints):
 
@@ -58,7 +64,7 @@ For each supported flake system the workflow publishes **two** tarball classes:
 | `SHA256SUMS` | `sha256sum` lines for every tarball |
 | `nxr-cargo.cdx.json` | CycloneDX SBOM for the `nxr` CLI binary (`cargo-cyclonedx --describe binaries`) |
 | `nxr-syft.cdx.json` | CycloneDX SBOM from the built Nix package (`syft dir:result`) |
-| `*.sig` / `*.pem` | Keyless Cosign signature + certificate per signed blob |
+| `*.sigstore.json` | Keyless Cosign Sigstore bundle per signed blob (Cosign v3) |
 
 ### Nix-package archives are not portable
 
@@ -109,12 +115,11 @@ After downloading a tarball:
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 
-**Cosign** (keyless, GitHub Actions OIDC):
+**Cosign** (keyless, GitHub Actions OIDC; Cosign v3 bundle):
 
 ```bash
 cosign verify-blob \
-  --certificate nxr-….tar.gz.pem \
-  --signature nxr-….tar.gz.sig \
+  --bundle nxr-….tar.gz.sigstore.json \
   --certificate-identity-regexp 'https://github.com/willmortimer/nxr/.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   nxr-….tar.gz
@@ -152,7 +157,7 @@ The release workflow runs two smoke jobs:
 | Layer | Mechanism |
 |---|---|
 | Git tag | Operator `git tag -s` (SSH/GPG); `.#release -- --execute` |
-| Release blobs | Keyless Cosign in `release.yml` (`.sig` + `.pem` beside each asset) |
+| Release blobs | Keyless Cosign in `release.yml` (`.sigstore.json` bundle per asset) |
 | Broader provenance / promotion | Tracked in ADR-0409 / Phase 38 — not fully productized |
 
 ## Local dry run (artifacts)

@@ -373,9 +373,8 @@ impl<'a> TaskOutputRenderer<'a> {
                 | WatchNodePhase::Skipped => failed += 1,
             }
         }
-        let line = format!(
-            "\r[nxr] {running} running · {queued} queued · {done} done · {failed} failed"
-        );
+        let line =
+            format!("\r[nxr] {running} running · {queued} queued · {done} done · {failed} failed");
         let _ = write!(self.stderr, "{line:<96}");
         let _ = self.stderr.flush();
         self.state.watch.line_open = true;

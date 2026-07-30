@@ -3277,12 +3277,7 @@ fn task_required_param_fail_closed_without_set() {
 
     cargo_bin_cmd!("nxr")
         .current_dir(repo_root())
-        .args([
-            "--flake",
-            "fixtures/task-params",
-            "task",
-            "param-required",
-        ])
+        .args(["--flake", "fixtures/task-params", "task", "param-required"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("required parameter reason"));

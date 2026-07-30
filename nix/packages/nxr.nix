@@ -8,7 +8,7 @@
 
 rustPlatform.buildRustPackage {
   pname = "nxr";
-  version = "3.5.0";
+  version = "3.5.1";
 
   inherit src;
 

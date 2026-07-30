@@ -287,7 +287,11 @@
                 ${hermeticRunnerEnv}
                 nxr ci plan --json >/dev/null
                 nxr task ci --dry-run
-                exec nxr task ci "$@"
+                nxr task ci "$@"
+                # Linux dogfood runs this app too; only the host entrypoint stamps "host".
+                if [[ "''${NXR_CI_LINUX:-}" != "1" ]]; then
+                  exec ./scripts/release-gates.sh stamp host
+                fi
               '';
             };
 
