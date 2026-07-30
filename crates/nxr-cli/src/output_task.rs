@@ -5,7 +5,7 @@
 //! pipe reads never split multi-byte characters into replacement garbage.
 
 use std::collections::BTreeMap;
-use std::io::{self, BufReader, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, IsTerminal, Seek, SeekFrom, Write};
 
 use clap::ValueEnum;
 use nxr_task::{ChunkEncoding, Event, EventSink, NullSink, OutputPayload};
@@ -182,6 +182,25 @@ struct TaskOutputRendererState {
     live_stdout: BTreeMap<String, StreamState>,
     live_stderr: BTreeMap<String, StreamState>,
     grouped: BTreeMap<String, NodeBuffers>,
+    /// Compact parallel status (`gh run watch`-style) for live mode on a TTY.
+    watch: WatchStatusState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WatchNodePhase {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+    Skipped,
+    Cancelled,
+    TimedOut,
+}
+
+#[derive(Default)]
+struct WatchStatusState {
+    nodes: BTreeMap<String, WatchNodePhase>,
+    line_open: bool,
 }
 
 /// Incremental UTF-8 decode + line pending buffer for one node's stream.
@@ -322,7 +341,56 @@ impl<'a> TaskOutputRenderer<'a> {
         }
     }
 
+    fn watch_enabled(&self) -> bool {
+        matches!(self.mode, TaskOutputMode::Live) && io::stderr().is_terminal()
+    }
+
+    fn clear_status_line(&mut self) {
+        if !self.state.watch.line_open {
+            return;
+        }
+        let _ = write!(self.stderr, "\r{:<96}\r", "");
+        let _ = self.stderr.flush();
+        self.state.watch.line_open = false;
+    }
+
+    fn redraw_status_line(&mut self) {
+        if !self.watch_enabled() || self.state.watch.nodes.is_empty() {
+            return;
+        }
+        let mut queued = 0usize;
+        let mut running = 0usize;
+        let mut done = 0usize;
+        let mut failed = 0usize;
+        for phase in self.state.watch.nodes.values() {
+            match phase {
+                WatchNodePhase::Queued => queued += 1,
+                WatchNodePhase::Running => running += 1,
+                WatchNodePhase::Succeeded => done += 1,
+                WatchNodePhase::Failed
+                | WatchNodePhase::TimedOut
+                | WatchNodePhase::Cancelled
+                | WatchNodePhase::Skipped => failed += 1,
+            }
+        }
+        let line = format!(
+            "\r[nxr] {running} running · {queued} queued · {done} done · {failed} failed"
+        );
+        let _ = write!(self.stderr, "{line:<96}");
+        let _ = self.stderr.flush();
+        self.state.watch.line_open = true;
+    }
+
+    fn set_watch_phase(&mut self, node: &str, phase: WatchNodePhase) {
+        if !matches!(self.mode, TaskOutputMode::Live) {
+            return;
+        }
+        self.state.watch.nodes.insert(node.to_owned(), phase);
+        self.redraw_status_line();
+    }
+
     fn ingest_live(&mut self, is_stdout: bool, node: &str, payload: &OutputPayload) {
+        self.clear_status_line();
         let map = if is_stdout {
             &mut self.state.live_stdout
         } else {
@@ -361,6 +429,7 @@ impl<'a> TaskOutputRenderer<'a> {
     }
 
     fn flush_live_partial(&mut self, node: &str) {
+        self.clear_status_line();
         flush_stream_on_exit(self.stdout, node, &mut self.state.live_stdout);
         flush_stream_on_exit(self.stderr, node, &mut self.state.live_stderr);
     }
@@ -446,8 +515,25 @@ impl EventSink for TaskOutputRenderer<'_> {
                     );
                     let _ = writeln!(self.stdout, "{node:<24} {status:<10} {duration}");
                 }
+
+                let phase = match status {
+                    Some(nxr_task::NodeOutcome::Succeeded) => WatchNodePhase::Succeeded,
+                    Some(nxr_task::NodeOutcome::Failed) => WatchNodePhase::Failed,
+                    Some(nxr_task::NodeOutcome::Cancelled) => WatchNodePhase::Cancelled,
+                    Some(nxr_task::NodeOutcome::Skipped) => WatchNodePhase::Skipped,
+                    Some(nxr_task::NodeOutcome::TimedOut) => WatchNodePhase::TimedOut,
+                    None => {
+                        if matches!(code, Some(0)) {
+                            WatchNodePhase::Succeeded
+                        } else {
+                            WatchNodePhase::Failed
+                        }
+                    }
+                };
+                self.set_watch_phase(&node, phase);
             }
             Event::Diagnostic { message } => {
+                self.clear_status_line();
                 let _ = writeln!(self.stderr, "{message}");
             }
             Event::PlanCreated { .. } => {
@@ -455,7 +541,15 @@ impl EventSink for TaskOutputRenderer<'_> {
                     let _ = writeln!(self.stdout, "{:<24} {:<10} DURATION", "TASK", "STATUS");
                 }
             }
-            Event::NodeQueued { .. } | Event::NodeStarted { .. } | Event::RunCompleted { .. } => {}
+            Event::NodeQueued { node, .. } => {
+                self.set_watch_phase(&node, WatchNodePhase::Queued);
+            }
+            Event::NodeStarted { node, .. } => {
+                self.set_watch_phase(&node, WatchNodePhase::Running);
+            }
+            Event::RunCompleted { .. } => {
+                self.clear_status_line();
+            }
         }
     }
 }

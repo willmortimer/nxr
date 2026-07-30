@@ -28,6 +28,7 @@ valid under pure `path:` flake refs (Nix 2.18+).
 | [diamond-dedupe](diamond-dedupe/) | Multi-root union with shared diamond ancestor |
 | [configurations](configurations/) | Minimal `nixosConfigurations` for list/inspect/build adapters |
 | [contexts](contexts/) | Named execution contexts with task `context` / `shell` refs (schema v2) |
+| [task-params](task-params/) | Typed parameters: required `--set` fail-closed + defaults |
 | [workspace-cache](workspace-cache/) | Workspace action local CAS + secret/shared cache-safety cases |
 | [processes](processes/) | Declared processes for `up` / `status` / `logs` / `down` |
 | [inventory-custom](inventory-custom/) | Custom inventory role for Determinate-style envelopes |

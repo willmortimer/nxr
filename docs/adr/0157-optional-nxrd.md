@@ -10,7 +10,7 @@
 Each CLI invocation pays process start and reloads discovery / plan / Merkle
 warm state from disk (or rebuilds). Watch keeps some state in-process, but
 ordinary `nxr list` / `nxr plan` lose RAM caches on exit. Phase 27 of
-[FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md) and deferred
+[FUTURE_CONTROL_PLANE.md](../vision/FUTURE_CONTROL_PLANE.md) and deferred
 ADR-0301 describe a full workspace control plane; this wave ships only a
 **cache and coordination** daemon for local latency.
 

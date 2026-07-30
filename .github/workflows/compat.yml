@@ -44,11 +44,11 @@ jobs:
 
       - name: Install Nix (latest)
         if: matrix.nix_label == 'latest'
-        uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41 # main
+        uses: DeterminateSystems/determinate-nix-action@d96678350ffd6a456235832eb11e1c491589b7bb # v3.21.8
 
       - name: Install Nix (2.18 support floor)
         if: matrix.nix_label == '2.18'
-        uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41 # main
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           nix-package-url: ${{ matrix.nix_package_url }}
 

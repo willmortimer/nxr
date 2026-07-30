@@ -46,7 +46,7 @@ Each higher layer is optional, and each leaf operation remains an ordinary flake
 Post-2.4 expansion (contexts, secrets, Home Manager, processes) is the committed
 roadmap in [ROADMAP.md](ROADMAP.md) / [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).
 Speculative control-plane steps beyond that remain ideas-only in
-[ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md).
+[vision/FUTURE_CONTROL_PLANE.md](vision/FUTURE_CONTROL_PLANE.md).
 
 ## Why nxr exists
 
@@ -240,7 +240,7 @@ After V2.0, minor releases focus on trustworthiness, flake UX, and monorepo ergo
 
 ### Deferred: workspace control plane
 
-Ideas for projects, affected analysis, action contracts, artifact caches, CI planning, remote workers, service fabric, and IDE protocols are preserved in [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md). They are not scheduled work. Nix derivations continue to use the Nix store, substituters, and remote builders; `nxr` does not replace those primitives.
+Ideas for projects, affected analysis, action contracts, artifact caches, CI planning, remote workers, service fabric, and IDE protocols are preserved in [vision/FUTURE_CONTROL_PLANE.md](vision/FUTURE_CONTROL_PLANE.md). They are not scheduled work. Nix derivations continue to use the Nix store, substituters, and remote builders; `nxr` does not replace those primitives.
 
 ## Non-goals
 
@@ -268,7 +268,7 @@ Start at [INDEX.md](INDEX.md).
 - [DEV_ENV_INTEGRATION.md](DEV_ENV_INTEGRATION.md) — dev shells, direnv, DevPod, and containers
 - [TECH_STACK_AND_REPO_SHAPE.md](TECH_STACK_AND_REPO_SHAPE.md) — implementation stack and repository layout
 - [ROADMAP.md](ROADMAP.md) — shipped V1–V2 and active 2.1–2.3 plan
-- [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md) — deferred V3 control-plane ideas (not scheduled)
+- [vision/FUTURE_CONTROL_PLANE.md](vision/FUTURE_CONTROL_PLANE.md) — deferred V3 control-plane ideas (not scheduled)
 - [ECOSYSTEM_SYNTHESIS.md](ECOSYSTEM_SYNTHESIS.md) — which ideas to inherit from adjacent tools and which boundaries to preserve
 - [CONTRACT_SUMMARY.md](CONTRACT_SUMMARY.md) — locked decisions that must not drift
 - [adr/README.md](adr/README.md) — architecture decisions (Accepted / Proposed / Deferred)

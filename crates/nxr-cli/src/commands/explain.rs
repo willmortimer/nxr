@@ -340,6 +340,7 @@ fn explain_task(request: &ExplainRequest<'_>) -> Result<ExplainReport, ExplainEr
         &request.environment_policy,
         request.nix_flags,
         None,
+        &std::collections::BTreeMap::new(),
     )?;
 
     let workspace =

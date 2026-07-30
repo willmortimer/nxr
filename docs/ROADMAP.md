@@ -25,13 +25,14 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 | **V3.0** | Secure execution contexts | Env policy, trust, secret bindings/delivery, `nxr context` — `v3.0.0`. |
 | **V3.1** | Workspace actions + process MVP | Local CAS, resources, `up`/`status`/`logs`/`down`, inventory, history, coalesced discovery — `v3.1.0`–`v3.1.4`. Cache safety ([#1](https://github.com/willmortimer/nxr/issues/1), [#2](https://github.com/willmortimer/nxr/issues/2)) shipped in **v3.1.4**. |
 | **V3.2** | Local orchestration performance | Plan/store-exe caches, digests/Merkle, optional `nxrd`, lazy prep, watch fast path, lean CLI, I/O batching, Determinate eval strategy, optional `nxrMetadata` — `v3.2.0`–`v3.2.1` (ADR-0151–0168). |
+| **V3.5** | Operator ergonomics MVP | `--set` + TTY params, `--log-dir` + live status, release path / Cosign — `v3.5.0`. |
 | **V3.3–3.4** | Workspace scripting + materialized envs | Scripts/file-backed apps, print-dev-env snapshots, one-shell DAG, params/matrix, nom-style progress — `v3.4.0` (ADR-0169–0172). |
 
 ## Active roadmap
 
 Design: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md). ADRs: [adr/README.md](adr/README.md)
 (0143–0150 absorb the 2026-07 audit; 0169–0172 shipped in 3.4.0).
-V4+ ideas: [ideas/V4_EXECUTION_PROTOCOL.md](ideas/V4_EXECUTION_PROTOCOL.md).
+V4+ ideas: [vision/V4_EXECUTION_PROTOCOL.md](vision/V4_EXECUTION_PROTOCOL.md).
 
 ### 2.7.1 — Correctness — shipped as `v2.7.1`
 
@@ -141,8 +142,8 @@ absolute ban):
 
 ### Later — V4+ and distributed fabric
 
-Ordered vision: [ideas/V4_EXECUTION_PROTOCOL.md](ideas/V4_EXECUTION_PROTOCOL.md).
-Older speculative prose: [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md).
+Ordered vision: [vision/V4_EXECUTION_PROTOCOL.md](vision/V4_EXECUTION_PROTOCOL.md).
+Older speculative prose: [vision/FUTURE_CONTROL_PLANE.md](vision/FUTURE_CONTROL_PLANE.md).
 
 - V4.0 operation IR + event envelope / run protocol
 - V4.1 durable runs, prompts, optional run-coordinator role for `nxrd`

@@ -475,9 +475,9 @@ Upcoming major releases:
 - **3.4** materialized process-compatible development environments.
 
 Speculative post-3.4 protocol ideas live in
-[ideas/V4_EXECUTION_PROTOCOL.md](ideas/V4_EXECUTION_PROTOCOL.md). Older V3
+[vision/V4_EXECUTION_PROTOCOL.md](vision/V4_EXECUTION_PROTOCOL.md). Older V3
 control-plane prose remains in
-[ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md) (mine for
+[vision/FUTURE_CONTROL_PLANE.md](vision/FUTURE_CONTROL_PLANE.md) (mine for
 requirements; do not treat as the schedule).
 
 Near-term (3.3–3.4): workspace scripts, file-backed apps, materialized process

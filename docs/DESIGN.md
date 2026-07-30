@@ -499,4 +499,4 @@ for what *is* now scheduled):
 - workflow marketplace;
 - container lifecycle management.
 
-Speculative control-plane prose: [ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md).
+Speculative control-plane prose: [vision/FUTURE_CONTROL_PLANE.md](vision/FUTURE_CONTROL_PLANE.md).

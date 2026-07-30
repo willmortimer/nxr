@@ -106,6 +106,16 @@
             };
           };
 
+          nxr.tasks.param-required = {
+            description = "Required string parameter (no default; CI uses --set)";
+            app = "param-demo";
+            parameters = {
+              reason = {
+                type = "string";
+              };
+            };
+          };
+
           nxr.tasks.matrix-demo = {
             description = "Matrix include fixture (os x arch)";
             app = "matrix-demo";
@@ -127,7 +137,7 @@
               echo "mode=''${NXR_PARAM_MODE:-unset} verbose=''${NXR_PARAM_VERBOSE:-unset} label=''${NXR_PARAM_LABEL:-unset}"
             '';
             matrix-demo = mkApp "fixture-matrix-demo" ''
-              echo "os=${NXR_MATRIX_OS:-unset} arch=${NXR_MATRIX_ARCH:-unset}"
+              echo "os=''${NXR_MATRIX_OS:-unset} arch=''${NXR_MATRIX_ARCH:-unset}"
             '';
           };
         };

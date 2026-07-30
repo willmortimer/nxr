@@ -77,6 +77,8 @@ pub struct TaskWatchSettings {
     pub output_mode: Option<TaskOutputMode>,
     pub events_format: Option<EventsFormat>,
     pub reports: ReportPaths,
+    pub param_sets: std::collections::BTreeMap<String, String>,
+    pub log_dir: Option<std::path::PathBuf>,
 }
 
 /// Inputs for watch mode.
@@ -666,7 +668,7 @@ fn run_task_generation(
     runner: RunnerOutput,
 ) -> Result<GenerationOutcome, WatchCommandError> {
     let single_root;
-    let (tasks, jobs, keep_going, output_mode, events_format, reports) =
+    let (tasks, jobs, keep_going, output_mode, events_format, reports, param_sets, log_dir) =
         if let Some(settings) = &request.task_settings {
             (
                 settings.tasks.as_slice(),
@@ -675,6 +677,8 @@ fn run_task_generation(
                 settings.output_mode,
                 settings.events_format,
                 settings.reports.clone(),
+                settings.param_sets.clone(),
+                settings.log_dir.clone(),
             )
         } else {
             single_root = vec![resolved_name.to_owned()];
@@ -685,6 +689,8 @@ fn run_task_generation(
                 request.output_mode,
                 request.events_format,
                 ReportPaths::default(),
+                std::collections::BTreeMap::new(),
+                None,
             )
         };
 
@@ -706,6 +712,8 @@ fn run_task_generation(
         nix_flags: request.nix_flags,
         context_override: None,
         refresh_discovery: false,
+        param_sets,
+        log_dir,
     };
 
     let reuse_from_cache = !invalidate_snapshot && caches.task_plan.is_some();

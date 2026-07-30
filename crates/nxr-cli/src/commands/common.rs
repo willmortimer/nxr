@@ -38,7 +38,7 @@ use nxr_task::{
     TaskDocument, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION, WorkspaceCachePlan,
     WorkspaceCachePlanOptions, apply_task_context, build_workspace_cache_plan, expand_matrix_tasks,
     matrix_attr_names, parameter_names, resolve_matrix_env, resolve_matrix_values,
-    resolve_task_parameter_values,
+    resolve_task_parameter_env_with,
 };
 use nxr_watch::PrewarmContext;
 
@@ -986,6 +986,7 @@ impl WorkspaceSnapshot {
         environment_policy: &EnvironmentPolicy,
         nix_flags: &OptionalNixFlags,
         context_override: Option<&str>,
+        resolved_parameter_env: &BTreeMap<String, String>,
     ) -> Result<BTreeMap<String, PreparedTaskNode>, PrepareError> {
         let mut preparer = TaskNodePreparer::new(
             self,
@@ -999,7 +1000,8 @@ impl WorkspaceSnapshot {
             environment_policy,
             nix_flags,
             context_override,
-        )?;
+        )?
+        .with_resolved_parameter_env(resolved_parameter_env.clone());
         preparer.prepare_all(serial_order)?;
         let mut prepared = preparer.into_prepared();
         let flake_root = self
@@ -1118,6 +1120,8 @@ struct LivePrep<'a> {
     context_hints: BTreeMap<String, PrewarmContext>,
     context_hits: u64,
     context_misses: u64,
+    /// Pre-resolved `NXR_PARAM_*` from CLI `--set` / TTY prompts (empty = env/defaults only).
+    resolved_parameter_env: BTreeMap<String, String>,
 }
 
 /// In-flight SpawnPlan work that can be cancelled on CAS hit.
@@ -1190,6 +1194,7 @@ impl<'a> TaskNodePreparer<'a> {
                 context_hints: BTreeMap::new(),
                 context_hits: 0,
                 context_misses: 0,
+                resolved_parameter_env: BTreeMap::new(),
             })),
             prepared: BTreeMap::new(),
             prepare_count: 0,
@@ -1200,6 +1205,15 @@ impl<'a> TaskNodePreparer<'a> {
             one_shell_applied: false,
             one_shell_shared: None,
         })
+    }
+
+    /// Attach pre-resolved task parameter env (`NXR_PARAM_*`) from CLI/`--set`/TTY.
+    #[must_use]
+    pub fn with_resolved_parameter_env(mut self, env: BTreeMap<String, String>) -> Self {
+        if let PrepMode::Live(live) = &mut self.mode {
+            live.resolved_parameter_env = env;
+        }
+        self
     }
 
     /// Wrap an already-prepared map (watch reuse into the scheduler).
@@ -1316,6 +1330,7 @@ impl<'a> TaskNodePreparer<'a> {
                 context_hints,
                 context_hits: 0,
                 context_misses: 0,
+                resolved_parameter_env: BTreeMap::new(),
             })),
             prepared,
             prepare_count,
@@ -1840,12 +1855,19 @@ impl<'a> TaskNodePreparer<'a> {
         let (parameter_values, parameter_env) = if definition.parameters.is_empty() {
             (Some(BTreeMap::new()), BTreeMap::new())
         } else {
-            let values = resolve_task_parameter_values(task_id, &definition.parameters)?;
-            let env = values
-                .iter()
-                .map(|(name, value)| (nxr_task::parameter_env_name(name), value.clone()))
-                .collect();
-            (Some(values), env)
+            let resolved = &live.resolved_parameter_env;
+            let values = resolve_task_parameter_env_with(task_id, &definition.parameters, |env_name| {
+                resolved
+                    .get(env_name)
+                    .cloned()
+                    .or_else(|| {
+                        std::env::var(env_name)
+                            .ok()
+                            .filter(|value| !value.is_empty())
+                    })
+            })?;
+            let parameter_values = nxr_task::parameter_values_from_env(&definition.parameters, &values);
+            (Some(parameter_values), values)
         };
         let matrix_base_task = live
             .matrix_expansion
@@ -3617,6 +3639,7 @@ mod tests {
                 &policy,
                 &nix_flags,
                 None,
+                &BTreeMap::new(),
             )
             .expect("eager");
         assert_eq!(all.len(), 3);

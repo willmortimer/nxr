@@ -62,3 +62,5 @@ Thumbs.db
 
 # --- Local-only docs (not shared) ---
 /docs/internal/
+# Speculative scratch. Tracked vision docs live in docs/vision/.
+/docs/ideas/

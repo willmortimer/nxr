@@ -3265,7 +3265,83 @@ fn task_help_mentions_jobs_and_keep_going() {
         .success()
         .stdout(predicate::str::contains("--jobs"))
         .stdout(predicate::str::contains("-j"))
-        .stdout(predicate::str::contains("--keep-going"));
+        .stdout(predicate::str::contains("--keep-going"))
+        .stdout(predicate::str::contains("--set"));
+}
+
+#[test]
+fn task_required_param_fail_closed_without_set() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/task-params",
+            "task",
+            "param-required",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("required parameter reason"));
+}
+
+#[test]
+fn task_required_param_accepts_set() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/task-params",
+            "task",
+            "--set",
+            "reason=deploy",
+            "param-required",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reason=deploy"));
+}
+
+#[test]
+fn task_log_dir_tees_node_output() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    let dir = tempfile::TempDir::new().expect("log dir");
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/task-params",
+            "--log-dir",
+            dir.path().to_str().expect("utf8"),
+            "task",
+            "--set",
+            "reason=logs",
+            "param-required",
+        ])
+        .assert()
+        .success();
+
+    let stdout_log = dir.path().join("param-required.stdout");
+    assert!(
+        stdout_log.is_file(),
+        "expected tee file {}",
+        stdout_log.display()
+    );
+    let contents = std::fs::read_to_string(&stdout_log).expect("read log");
+    assert!(
+        contents.contains("reason=logs"),
+        "expected param output in log:\n{contents}"
+    );
 }
 
 #[test]

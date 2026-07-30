@@ -48,8 +48,8 @@ pub use matrix::{
 pub use memory::{MemoryParseError, parse_memory};
 pub use parameters::{
     PARAM_ENV_PREFIX, ParameterError, parameter_env_name, parameter_names,
-    parameter_values_from_env, resolve_task_parameter_env, resolve_task_parameter_env_with,
-    resolve_task_parameter_values, validate_task_parameters,
+    parameter_values_from_env, resolve_task_parameter_env, resolve_task_parameter_env_layered,
+    resolve_task_parameter_env_with, resolve_task_parameter_values, validate_task_parameters,
 };
 pub use plan_exec::{
     ArgumentForwarding, EXECUTION_PLAN_SCHEMA_VERSION, ExecutionPlan, FailurePolicy, PlanNode,

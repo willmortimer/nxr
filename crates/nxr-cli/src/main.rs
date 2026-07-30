@@ -5,6 +5,7 @@ mod commands;
 mod error_format;
 mod flake;
 mod lean;
+mod log_dir;
 mod nix_flags;
 mod output;
 mod output_options;
@@ -380,6 +381,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             sarif,
             coverage,
             benchmark,
+            set,
             args,
         }) => {
             let report_options = TaskReportOptions {
@@ -388,6 +390,8 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 coverage: coverage.clone(),
                 benchmark: benchmark.clone(),
             };
+            let param_sets = crate::commands::task_params::parse_param_sets(set)
+                .map_err(RunError::Usage)?;
             let use_affected = *affected || selectors::tokens_request_affected(tasks);
             if use_affected {
                 let requested = if tasks.is_empty() {
@@ -418,6 +422,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                     },
                     paths,
                     &report_options,
+                    param_sets,
                     runner,
                 )
             } else if *watch {
@@ -431,6 +436,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                     *keep_going,
                     options,
                     &report_options,
+                    param_sets,
                 )?;
                 watch::run(&request, runner).map_err(RunError::from)
             } else if tasks
@@ -452,6 +458,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                     *jobs,
                     *keep_going,
                     &report_options,
+                    param_sets,
                 )?;
                 task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
             } else {
@@ -476,6 +483,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                     *jobs,
                     *keep_going,
                     &report_options,
+                    param_sets,
                 )?;
                 task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
             }
@@ -895,6 +903,7 @@ fn dispatch_task_affected(
     sources: &affected::AffectedPathSources,
     paths: &[String],
     report_options: &TaskReportOptions,
+    param_sets: BTreeMap<String, String>,
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
     let selection = affected::select_for_flake(
@@ -922,6 +931,7 @@ fn dispatch_task_affected(
         jobs,
         keep_going,
         report_options,
+        param_sets,
     )?;
     task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
 }
@@ -1234,6 +1244,8 @@ fn task_request_in_shell<'a>(
         nix_flags,
         context_override: None,
         refresh_discovery: cli.refresh_discovery,
+        param_sets: BTreeMap::new(),
+        log_dir: cli.log_dir.clone(),
     })
 }
 
@@ -1481,6 +1493,7 @@ fn task_request<'a>(
     jobs: usize,
     keep_going: bool,
     report_options: &TaskReportOptions,
+    param_sets: BTreeMap<String, String>,
 ) -> Result<task::TaskRequest<'a>, RunError> {
     Ok(task::TaskRequest {
         flake_arg: cli.flake.as_deref(),
@@ -1500,6 +1513,8 @@ fn task_request<'a>(
         nix_flags,
         context_override: None,
         refresh_discovery: cli.refresh_discovery,
+        param_sets,
+        log_dir: cli.log_dir.clone(),
     })
 }
 
@@ -1716,6 +1731,7 @@ fn watch_task_request<'a>(
     keep_going: bool,
     options: watch::WatchOptions,
     report_options: &TaskReportOptions,
+    param_sets: BTreeMap<String, String>,
 ) -> Result<watch::WatchRequest<'a>, RunError> {
     let name = tasks
         .first()
@@ -1741,6 +1757,8 @@ fn watch_task_request<'a>(
             output_mode: cli.output,
             events_format: cli.events,
             reports,
+            param_sets,
+            log_dir: cli.log_dir.clone(),
         }),
         force_app: false,
         nix_flags,

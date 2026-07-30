@@ -1,5 +1,7 @@
 //! Clap-derived CLI definition.
 
+use std::path::PathBuf;
+
 use clap::{ArgAction, Parser, Subcommand};
 
 use nxr_completion::{CompleteTarget, Shell};
@@ -142,6 +144,10 @@ pub struct Cli {
     /// Emit machine-readable task execution events
     #[arg(long = "events", global = true, value_enum, value_name = "FORMAT")]
     pub events: Option<EventsFormat>,
+
+    /// Tee per-node stdout/stderr into PATH (`<node>.stdout` / `<node>.stderr`)
+    #[arg(long = "log-dir", global = true, value_name = "PATH")]
+    pub log_dir: Option<PathBuf>,
 
     /// Opt-in post-run report writers (`junit=PATH`, `sarif=PATH`, …)
     #[arg(long = "report", global = true, value_name = "KIND=PATH")]
@@ -461,6 +467,9 @@ pub enum Command {
         /// Write benchmark JSON stub to PATH after the run
         #[arg(long = "benchmark", value_name = "PATH")]
         benchmark: Option<String>,
+        /// Set a typed task parameter (`NAME=VALUE`, repeatable; fail-closed when required)
+        #[arg(long = "set", value_name = "NAME=VALUE")]
+        set: Vec<String>,
         /// Arguments forwarded to each root task's app only (MVP)
         #[arg(last = true, allow_hyphen_values = true)]
         args: Vec<String>,

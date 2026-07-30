@@ -555,6 +555,7 @@ pub fn explain_task(
         &nxr_core::EnvironmentPolicy::Inherit,
         &Default::default(),
         None,
+        &std::collections::BTreeMap::new(),
     )?;
     let node = prepared
         .get(&canonical)

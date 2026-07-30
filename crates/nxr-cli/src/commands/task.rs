@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use nxr_core::diagnostics::exit;
@@ -30,11 +31,13 @@ use crate::commands::secrets::{
     SpawnSecrets, load_runtime_secret_config, prepare_spawn_secrets, project_identity,
 };
 use crate::commands::store_exe::{ResolvedAppSpawn, resolve_app_spawn_with_prewarm};
+use crate::commands::task_params::resolve_plan_parameters;
 use crate::commands::trust;
 use crate::commands::workspace_cache::{
     explain_workspace_cache, save_workspace_cache, try_workspace_cache_restore,
 };
 use crate::flake::FlakeResolveError;
+use crate::log_dir::LogDirTee;
 use crate::output_task::{EventsFormat, TaskOutputMode, build_task_event_sink};
 use crate::reports::{ReportCollector, ReportPaths, ReportWriteError, write_all_reports};
 use crate::runner_output::RunnerOutput;
@@ -83,6 +86,10 @@ pub struct TaskRequest<'a> {
     pub context_override: Option<String>,
     /// Bypass nxr discovery cache for this invocation.
     pub refresh_discovery: bool,
+    /// Typed task parameter overrides from `--set name=value` (param name keys).
+    pub param_sets: BTreeMap<String, String>,
+    /// Tee per-node stdout/stderr under this directory when set.
+    pub log_dir: Option<PathBuf>,
 }
 
 /// Errors while planning or running a task.
@@ -250,6 +257,8 @@ pub struct PreparedTaskGeneration {
     pub canonical_roots: Vec<String>,
     /// Workspace snapshot retained for lazy node prepare (ADR-0158).
     pub snapshot: Option<WorkspaceSnapshot>,
+    /// Pre-resolved `NXR_PARAM_*` for this generation (`--set` / TTY / defaults).
+    pub param_env: BTreeMap<String, String>,
 }
 
 /// Like [`execute`], but polls `control` during the scheduler loop.
@@ -331,6 +340,7 @@ pub fn execute_with_control(
 
         let plan = build_execution_plan_roots(&document.tasks, &root_refs, failure_policy, None)?;
         validate_interactive_run(&plan, request)?;
+        let param_env = resolve_plan_parameters(&document, &plan, &request.param_sets)?;
         snapshot
             .validate_task_apps(&document)
             .map_err(PrepareError::NotFound)?;
@@ -366,6 +376,7 @@ pub fn execute_with_control(
                 &request.environment_policy,
                 request.nix_flags,
                 request.context_override.as_deref(),
+                &param_env,
             )?;
 
             if !dry_run && requires_project_trust(&prepared_nodes) {
@@ -384,6 +395,7 @@ pub fn execute_with_control(
             prepared_nodes,
             canonical_roots,
             snapshot: retained_snapshot,
+            param_env,
         };
         if let Some(cache) = cache {
             *cache = Some(bundle.clone());
@@ -397,6 +409,7 @@ pub fn execute_with_control(
         prepared_nodes,
         canonical_roots,
         snapshot: lazy_snapshot,
+        param_env,
     } = prepared_bundle;
 
     let failure_policy = if request.keep_going {
@@ -445,6 +458,7 @@ pub fn execute_with_control(
             request.nix_flags,
             request.context_override.as_deref(),
         )?
+        .with_resolved_parameter_env(param_env.clone())
     } else {
         TaskNodePreparer::from_prepared(prepared_nodes, Some(&document))
     };
@@ -458,7 +472,7 @@ pub fn execute_with_control(
             &mut stdout,
             &mut stderr,
         );
-        let mut sink = wrap_report_sink(inner, &request.reports);
+        let mut sink = wrap_run_sink(inner, &request.reports, request.log_dir.clone());
         sink.emit(Event::plan_created(
             plan.root.clone(),
             if plan.roots.is_empty() {
@@ -482,7 +496,7 @@ pub fn execute_with_control(
     } else {
         // Inherit stdio for interactivity / --output raw: do not hold stdout/stderr locks.
         let inner = nxr_task::NullSink;
-        let mut sink = wrap_report_sink(inner, &request.reports);
+        let mut sink = wrap_run_sink(inner, &request.reports, request.log_dir.clone());
         let result = run_plan(
             request,
             &plan,
@@ -497,10 +511,12 @@ pub fn execute_with_control(
     }
 }
 
-fn wrap_report_sink<S: EventSink>(
+fn wrap_run_sink<S: EventSink>(
     inner: S,
     reports: &ReportPaths,
-) -> RunEventDecorator<ReportCollector<S>> {
+    log_dir: Option<PathBuf>,
+) -> RunEventDecorator<ReportCollector<LogDirTee<S>>> {
+    let inner = LogDirTee::new(inner, log_dir);
     let inner = if reports.is_empty() {
         ReportCollector::new(inner, ReportPaths::default())
     } else {
@@ -509,11 +525,16 @@ fn wrap_report_sink<S: EventSink>(
     RunEventDecorator::new(inner)
 }
 
-fn report_sink_error<S>(sink: &RunEventDecorator<ReportCollector<S>>) -> Result<(), TaskError> {
+fn report_sink_error<S>(
+    sink: &RunEventDecorator<ReportCollector<LogDirTee<S>>>,
+) -> Result<(), TaskError> {
     if let Some(message) = sink.inner().write_error() {
         return Err(TaskError::Report(ReportWriteError::Serialize(
             message.to_owned(),
         )));
+    }
+    if let Some(message) = sink.inner().inner().write_error() {
+        return Err(TaskError::Io(io::Error::other(message.to_owned())));
     }
     Ok(())
 }
@@ -598,6 +619,10 @@ pub fn task_inherits_stdin(
 /// Whether any node in `plan` uses piped stdio under `request`.
 #[must_use]
 pub fn plan_uses_piped_stdio(plan: &ExecutionPlan, request: &TaskRequest<'_>) -> bool {
+    if request.log_dir.is_some() {
+        // Tee requires chunk events; interactive nodes still inherit (no tee).
+        return plan.nodes.iter().any(|node| !node.interactive);
+    }
     plan.nodes.iter().any(|node| {
         node_uses_piped_stdio(
             node.interactive,
@@ -973,12 +998,17 @@ fn run_plan(
         }
 
         for node_id in spawn_queue {
-            let pipe_stdio = node_uses_piped_stdio(
-                node_is_interactive(plan, &node_id),
-                request.jobs,
-                request.output_mode,
-                request.events_format,
-            );
+            let interactive = node_is_interactive(plan, &node_id);
+            let pipe_stdio = if request.log_dir.is_some() && !interactive {
+                true
+            } else {
+                node_uses_piped_stdio(
+                    interactive,
+                    request.jobs,
+                    request.output_mode,
+                    request.events_format,
+                )
+            };
             let compact = spawn_node(
                 preparer,
                 &node_id,
@@ -1658,6 +1688,8 @@ mod tests {
             nix_flags: &nix_flags,
             context_override: None,
             refresh_discovery: false,
+            param_sets: BTreeMap::new(),
+            log_dir: None,
         };
         assert!(plan_uses_piped_stdio(&plan, &request));
     }

@@ -8,7 +8,7 @@ V3-era ADRs (0201–0412) remain **Deferred** unless pulled forward by
 [ROADMAP.md](../ROADMAP.md). Active delivery follows that roadmap (through
 3.2.x shipped; next **3.3–3.4** scripting / process envs, then V4+ ideas).
 Execution-context design: [EXECUTION_CONTEXT.md](../EXECUTION_CONTEXT.md).
-V4+ ordering: [ideas/V4_EXECUTION_PROTOCOL.md](../ideas/V4_EXECUTION_PROTOCOL.md).
+V4+ ordering: [vision/V4_EXECUTION_PROTOCOL.md](../vision/V4_EXECUTION_PROTOCOL.md).
 
 An ADR is required when a decision:
 
@@ -168,7 +168,7 @@ workers stay Later / former “3.2”). Internal DAG: `docs/internal/dag-to-3.1.
 (gitignored).
 
 Shipped **3.4.0** (ADR-0169–0172). Next line: V4+ ordering in
-[ideas/V4_EXECUTION_PROTOCOL.md](../ideas/V4_EXECUTION_PROTOCOL.md).
+[vision/V4_EXECUTION_PROTOCOL.md](../vision/V4_EXECUTION_PROTOCOL.md).
 Internal implementation DAG: `docs/internal/workspace-scripting-dag.md`
 (gitignored).
 
@@ -183,7 +183,7 @@ Notes on ADR-0133–0142 (from the internal `nxr-next` plan; 2.6 re-audit at `v2
 
 ## 4. V3 monorepo and action ADRs (deferred)
 
-Parked with [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md). Not scheduled for the active 2.x roadmap.
+Parked with [vision/FUTURE_CONTROL_PLANE.md](../vision/FUTURE_CONTROL_PLANE.md). Not scheduled for the active 2.x roadmap.
 
 | ADR | Title | Status | Target |
 |---|---|---:|---:|
@@ -210,7 +210,7 @@ Parked with [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md). N
 
 ## 5. V3 worker and development-fabric ADRs (deferred)
 
-Parked with [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md). Not scheduled for the active 2.x roadmap.
+Parked with [vision/FUTURE_CONTROL_PLANE.md](../vision/FUTURE_CONTROL_PLANE.md). Not scheduled for the active 2.x roadmap.
 
 | ADR | Title | Status | Target |
 |---|---|---:|---:|
@@ -233,7 +233,7 @@ Parked with [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md). N
 
 ## 6. V3 platform and governance ADRs (deferred)
 
-Parked with [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md). Not scheduled for the active 2.x roadmap.
+Parked with [vision/FUTURE_CONTROL_PLANE.md](../vision/FUTURE_CONTROL_PLANE.md). Not scheduled for the active 2.x roadmap.
 
 | ADR | Title | Status | Target |
 |---|---|---:|---:|
@@ -262,9 +262,9 @@ The first implementation ADRs should be written in this order:
 6. ADR-0139 / ADR-0140 only when CI plan / remote placement is explicitly scheduled (still after 3.0–3.1 runner trustworthiness).
 7. Remaining V3 ADRs (0201–0412) only if a future control-plane effort is
    explicitly scheduled — prefer
-   [ideas/V4_EXECUTION_PROTOCOL.md](../ideas/V4_EXECUTION_PROTOCOL.md) for
+   [vision/V4_EXECUTION_PROTOCOL.md](../vision/V4_EXECUTION_PROTOCOL.md) for
    ordering; legacy prose in
-   [ideas/FUTURE_CONTROL_PLANE.md](../ideas/FUTURE_CONTROL_PLANE.md) and
+   [vision/FUTURE_CONTROL_PLANE.md](../vision/FUTURE_CONTROL_PLANE.md) and
    [EXECUTION_CONTEXT.md](../EXECUTION_CONTEXT.md).
 8. ADR-0169–0171 before freezing `nxr script` / file-backed apps / process-env
    snapshot CLI semantics.

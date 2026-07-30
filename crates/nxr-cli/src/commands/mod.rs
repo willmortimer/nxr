@@ -36,6 +36,7 @@ pub mod select;
 pub mod selectors;
 pub mod store_exe;
 pub mod task;
+pub mod task_params;
 pub mod trust;
 pub mod views;
 pub mod watch;

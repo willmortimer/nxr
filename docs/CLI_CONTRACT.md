@@ -145,9 +145,12 @@ V2 / upcoming orchestration options:
     --keep-going           Continue independent work
     --output <MODE>        live|grouped|failures|summary|raw
     --events <FORMAT>      jsonl
+    --log-dir <PATH>       Tee per-node stdout/stderr under PATH
     --watch                Watch and rerun/restart
     --debounce <DURATION>  Watch debounce
 ```
+
+Task-only: `task --set NAME=VALUE` (repeatable) for typed parameters.
 ## 5. Argument forwarding
 
 ### 5.1 Direct form
@@ -432,6 +435,8 @@ Dynamic completion must:
 ```bash
 nxr task ci
 nxr task ci --jobs 4
+nxr task deploy --set env=staging --set reason=ticket-123
+nxr --log-dir .nxr/logs/run --output live task ci -j 4
 nxr task --affected [--base REF | --working-tree | --all-changes REF | --path PATH…] [name…]
 nxr plan --affected [--base REF | --working-tree | --all-changes REF | --path PATH…] [name…]
 nxr graph ci
@@ -443,6 +448,10 @@ nxr watch task:ci
 Trailing arguments after the task name are forwarded to the **root task app only**
 (`argument_forwarding: root`). Dependency nodes always receive an empty argument
 list. Richer per-node forwarding is deferred.
+
+`task --set NAME=VALUE` (repeatable) supplies typed schema parameters (lookup:
+`--set` → `NXR_PARAM_*` → default → TTY prompt → fail-closed). Unknown names are
+errors. Global `--log-dir PATH` tees per-node stdout/stderr when stdio is piped.
 
 `--affected` uses the same path sources and strict policy as `nxr affected`
 (default strict). Without task names, roots are the union of all affected tasks;

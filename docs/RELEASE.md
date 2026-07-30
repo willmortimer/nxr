@@ -2,17 +2,46 @@
 
 Releases are driven by [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 A **minimal** quality gate runs on every push to `main` and on PRs via
-[`ci.yml`](../.github/workflows/ci.yml) (single `ubuntu-latest` / Nix latest job).
-Support-floor, Lix, and Darwin coverage runs on `v*` tags via
+[`ci.yml`](../.github/workflows/ci.yml) (single `ubuntu-latest` job, Determinate
+Nix **v3.21.8**). Support-floor, Lix, and Darwin coverage runs on `v*` tags via
 [`compat.yml`](../.github/workflows/compat.yml). The release workflow builds and
-publishes artifacts.
+publishes artifacts (portable + Nix-package), checksums, SBOMs, and **keyless
+Cosign** signatures for release blobs.
+
+## Tag from the flake (preferred)
+
+After Mac + Linux gates are green and `CHANGELOG.md` has a `## [X.Y.Z]` section
+matching `Cargo.toml`:
+
+```bash
+nix run .#ci-gate
+nix run .#ci-gate-linux
+
+# Dry-run: version sync, clean tree, print exact git commands
+nix run .#release
+# or: nxr task release          # runs host `ci` graph, then release dry-run
+
+# Create signed tag + push (prompts unless --yes)
+nix run .#release -- --execute
+# or: nxr task release -- --execute
+```
+
+Equivalent manual commands (what the app prints):
+
+```bash
+git tag -s "vX.Y.Z" -m "nxr X.Y.Z"
+git push origin "refs/tags/vX.Y.Z"
+```
+
+The tag must match the flake package version. Pushing `v*` starts `release.yml`
+and `compat.yml`.
 
 ## Triggers
 
 | Event | Behavior |
 |---|---|
 | Push / PR to `main` | Minimal `ci.yml` quality gate |
-| Push tag `v*` | `compat.yml` matrix + release build, checksums, SBOM, GitHub Release |
+| Push tag `v*` | `compat.yml` matrix + release build, Cosign, checksums, SBOM, GitHub Release |
 | `workflow_dispatch` (release) | Same build steps; uploads workflow artifacts. Skips GitHub Release unless **dry_run** is unchecked |
 | `workflow_dispatch` (compat) | Re-run the compatibility matrix without tagging |
 
@@ -29,6 +58,7 @@ For each supported flake system the workflow publishes **two** tarball classes:
 | `SHA256SUMS` | `sha256sum` lines for every tarball |
 | `nxr-cargo.cdx.json` | CycloneDX SBOM for the `nxr` CLI binary (`cargo-cyclonedx --describe binaries`) |
 | `nxr-syft.cdx.json` | CycloneDX SBOM from the built Nix package (`syft dir:result`) |
+| `*.sig` / `*.pem` | Keyless Cosign signature + certificate per signed blob |
 
 ### Nix-package archives are not portable
 
@@ -79,6 +109,17 @@ After downloading a tarball:
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 
+**Cosign** (keyless, GitHub Actions OIDC):
+
+```bash
+cosign verify-blob \
+  --certificate nxr-….tar.gz.pem \
+  --signature nxr-….tar.gz.sig \
+  --certificate-identity-regexp 'https://github.com/willmortimer/nxr/.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  nxr-….tar.gz
+```
+
 **Nix-package layout** (needs Nix store closure to execute `bin/nxr`):
 
 ```bash
@@ -106,11 +147,15 @@ The release workflow runs two smoke jobs:
    no `/nix/store` in `ldd` output, and runs `bin/nxr --version` **without**
    building the Nix package for that binary.
 
-## Signing gap
+## Signing
 
-Release artifacts are **not** cryptographically signed today. Checksums and SBOMs support integrity and supply-chain visibility but do not replace detached signatures or provenance attestations. Code signing, Sigstore/cosign, and SLSA provenance are tracked for a later release-engineering pass (see [adr/README.md](adr/README.md), ADR-0409).
+| Layer | Mechanism |
+|---|---|
+| Git tag | Operator `git tag -s` (SSH/GPG); `.#release -- --execute` |
+| Release blobs | Keyless Cosign in `release.yml` (`.sig` + `.pem` beside each asset) |
+| Broader provenance / promotion | Tracked in ADR-0409 / Phase 38 — not fully productized |
 
-## Local dry run
+## Local dry run (artifacts)
 
 From a flake checkout:
 

@@ -34,6 +34,9 @@ nxr <command> --help
     --log-format <FORMAT>  human|plain|json (runner stderr diagnostics)
     --no-color             Disable runner color
     --color <WHEN>         auto|always|never
+    --output <MODE>        live|grouped|failures|summary|raw (task mux)
+    --events <FORMAT>      jsonl
+    --log-dir <PATH>       Tee per-node stdout/stderr under PATH
 -h, --help                 Show help
 -V, --version              Show version
 ```
@@ -90,7 +93,7 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr inspect app <name>` | Single app details |
 | `nxr inspect task <name>` | Single task details |
 | `nxr inspect configuration <name>` | Single flake configuration (read-only metadata) |
-| `nxr task <name>… [args…]` | Run one or more task roots as a union DAG (shared deps run once); trailing args go to each **root** task app only |
+| `nxr task <name>… [--set NAME=VALUE]… [args…]` | Run union DAG; `--set` for typed params (fail-closed); trailing args → root apps |
 | `nxr task --affected [--base\|--working-tree\|--all-changes\|--path…] [name…]` | Run the union DAG of affected tasks (optional names intersect); empty set exits 0 |
 | `nxr graph <name>` | Print task plan (text) |
 | `nxr graph <name> --format dot` | Graphviz DOT digraph (does not invoke Graphviz) |

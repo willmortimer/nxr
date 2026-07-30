@@ -23,7 +23,7 @@ Do not contradict [docs/CONTRACT_SUMMARY.md](docs/CONTRACT_SUMMARY.md). In short
 Accepted foundational ADRs are listed in [docs/adr/README.md](docs/adr/README.md)
 (including audit absorb ADR-0143–0150).
 Active roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) (shipped through 3.4.0;
-next V4+ / [docs/ideas/V4_EXECUTION_PROTOCOL.md](docs/ideas/V4_EXECUTION_PROTOCOL.md)).
+next V4+ / [docs/vision/V4_EXECUTION_PROTOCOL.md](docs/vision/V4_EXECUTION_PROTOCOL.md)).
 
 ## Working agreements
 
@@ -52,4 +52,5 @@ Prefer these over ad-hoc cargo invocations in docs/CI:
 - `nix build .#nxr`
 - `nix run .#ci-gate` — host quality dogfood (toolchains + hermetic env)
 - `nix run .#ci-gate-linux` — **pre-push bar**: same gate on Linux via OrbStack/Docker (GHA OS parity)
+- `nix run .#release` — version sync + print/`--execute` signed `v*` tag (see docs/RELEASE.md)
 - `nix run .#fmt` / `.#lint` / `.#test` / `.#deny`

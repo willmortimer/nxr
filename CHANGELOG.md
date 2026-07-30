@@ -5,10 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.5.0] - 2026-07-30
+
+### Added
+
+- Task `--set NAME=VALUE` for typed parameters (lookup: CLI → `NXR_PARAM_*` →
+  default → TTY Select/Input/Confirm → fail-closed in CI).
+- Global `--log-dir PATH` tees per-node stdout/stderr; live parallel runs show a
+  compact node status line on stderr TTYs.
+- `nix run .#release` / `nxr task release` — version sync + clean-tree checks,
+  prints (or `--execute`s) `git tag -s` / push for the Cargo.toml SemVer.
+- OrbStack Linux dogfood: `nix run .#ci-gate-linux` (machine `nxr-ci-linux`).
+- Keyless Cosign signatures on GitHub Release blobs (`.sig` / `.pem`).
+- Operator patterns: [docs/PATTERNS.md](docs/PATTERNS.md) (decisions, watch,
+  promote boundaries). Vision docs live under `docs/vision/`; `docs/ideas/` is
+  gitignored scratch (like `docs/internal/`).
 
 ### Fixed
 
+- Linux process supervision: `/proc/<pid>/stat` starttime is field index 19, not
+  20 (`vsize`). The off-by-one made live processes look recycled → `stopped`
+  after `nxr up` on Linux only.
 - `nxr script` / live file-backed apps no longer cold-eval the task document
   unless `--context` is set, restoring the zero-Nix lean path for plain scripts.
 - `fixtures/configurations` evaluates on Linux `nix flake show` (set rootfs /
@@ -19,16 +36,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- CI: main/PR quality is a single `ubuntu-latest` / Nix latest job; Nix 2.18,
-  Lix, and macOS matrix moved to tag-triggered `compat.yml`.
+- Workspace and Nix package version **3.5.0**.
+- CI: main/PR quality is a single `ubuntu-latest` job; Nix 2.18, Lix, and macOS
+  matrix moved to tag-triggered `compat.yml`.
+- GHA pins Determinate Nix via `determinate-nix-action@v3.21.8` (compat `2.18`
+  cells keep `nix-installer-action@v22` + `nix-package-url`).
 - Local ≡ CI dogfood via `nix run .#ci-gate` (host) and `nix run .#ci-gate-linux`
-  (OrbStack machine `nxr-ci-linux` / Docker ubuntu + Determinate — pre-push GHA
-  OS parity); quality apps clear `NXR_DEV_SHELL` and isolate git config;
+  (OrbStack); quality apps clear `NXR_DEV_SHELL` and isolate git config;
   `configurations-fixture` nix check force-evals Linux NixOS assertions on Darwin
   too.
-- Linux process supervision: `/proc/<pid>/stat` starttime is field index 19, not
-  20 (`vsize`). The off-by-one made live processes look recycled → `stopped`
-  after `nxr up` on Linux only.
 
 ## [3.4.0] - 2026-07-28
 
@@ -67,7 +83,7 @@ and audit/HM polish in one minor.
   shipped; ADR-0130 superseded by ADR-0171.
 - Product positioning: flake-native orchestration schema that preserves standard
   Nix leaves (README / CONTRACT_SUMMARY)—not an absolute “never a task DSL.”
-- V4+ vision framed in [docs/ideas/V4_EXECUTION_PROTOCOL.md](docs/ideas/V4_EXECUTION_PROTOCOL.md);
+- V4+ vision framed in [docs/vision/V4_EXECUTION_PROTOCOL.md](docs/vision/V4_EXECUTION_PROTOCOL.md);
   legacy control-plane prose remains ideas-only.
 - PERFORMANCE: measured `services.nxrd` recommendation after local warm/cold
   checks (enable; keep `evalWorker` off).

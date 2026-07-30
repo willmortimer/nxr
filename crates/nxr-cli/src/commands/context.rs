@@ -240,6 +240,8 @@ fn run_with_context(
         nix_flags: request.nix_flags,
         context_override: Some(context_name.to_owned()),
         refresh_discovery: request.refresh_discovery,
+        param_sets: std::collections::BTreeMap::new(),
+        log_dir: None,
     };
     let _ = adapter;
     crate::commands::task::execute(&task_request, request.dry_run, request.json, runner)

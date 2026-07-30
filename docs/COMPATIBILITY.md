@@ -81,8 +81,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) §9 and ADR-0018 in [adr/README.md](adr/R
 ### CI Nix matrix
 
 Day-to-day quality ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) runs a
-**single** job on `ubuntu-latest` with Determinate Nix `latest` (`nix run .#ci-gate`
-dogfood, `nix flake check`, perf thresholds, fixture smokes).
+**single** job on `ubuntu-latest` with Determinate Nix **v3.21.8**
+(`determinate-nix-action` pin; `nix run .#ci-gate` dogfood, `nix flake check`,
+perf thresholds, fixture smokes).
 
 Local developers:
 
@@ -90,6 +91,7 @@ Local developers:
   prove Linux process/runtime ITs).
 - `nix run .#ci-gate-linux` — **pre-push bar**: same entrypoint inside
   OrbStack/Docker (`ubuntu` + Determinate Nix). See [CONTRIBUTING.md](CONTRIBUTING.md).
+- `nix run .#release` — tag helper after gates (see [RELEASE.md](RELEASE.md)).
 
 A green Darwin host gate is necessary but not sufficient for `main`.
 
@@ -98,8 +100,8 @@ runs on **`v*` tags** (and `workflow_dispatch`):
 
 | Matrix label | Install source | Runners |
 |---|---|---|
-| `latest` | Default Determinate Nix from `nix-installer-action` | ubuntu, macos |
-| `2.18` | Upstream Nix **2.18.9** via `nix-package-url` (support floor) | ubuntu, macos |
+| `latest` | Determinate Nix **v3.21.8** (`determinate-nix-action`) | ubuntu, macos |
+| `2.18` | Upstream Nix **2.18.9** via `nix-package-url` (`nix-installer-action@v22`) | ubuntu, macos |
 | `lix` | [Lix](https://lix.systems/) via `samueldr/lix-gha-installer-action` | ubuntu |
 
 Fixture smoke tests run the packaged `nix build .#nxr` binary, not `nix run` on the

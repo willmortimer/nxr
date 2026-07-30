@@ -24,6 +24,7 @@ OS class** as CI.
 ```bash
 nix run .#ci-gate         # Darwin/host: fmt → lint → test → deny
 nix run .#ci-gate-linux   # OrbStack Linux: identical entrypoint (GHA shape)
+nix run .#release         # dry-run tag helper (see docs/RELEASE.md)
 nix flake check -L        # hermetic derivation checks
 ```
 
@@ -84,4 +85,8 @@ The root README embeds a terminal GIF. How to regenerate it: [demo/README.md](de
 
 ## Status
 
-Workspace and Nix package are **2.3.0**. Do not push or tag from agent sessions unless a maintainer explicitly asks. A Ratatui-style dashboard remains long-term (roadmap Phase 35); do not add a TUI crate without an explicit decision.
+Workspace and Nix package track `Cargo.toml` (`3.4.0` as of this writing). Do
+not push or tag from agent sessions unless a maintainer explicitly asks. Use
+`nix run .#release` for the tag helper. A Ratatui-style dashboard remains
+long-term (roadmap Phase 35); do not add a TUI crate without an explicit
+decision.

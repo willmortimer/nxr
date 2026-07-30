@@ -33,14 +33,24 @@ pub enum ParameterError {
         name: String,
         message: String,
     },
-    /// A parameter has no default and was not provided in the caller environment.
+    /// A parameter has no default and was not provided via `--set`, env, or prompt.
     #[error(
-        "task {task}: required parameter {name} is unset (set {env_name} or declare a default)"
+        "task {task}: required parameter {name} is unset (pass --set {name}=…, set {env_name}, declare a default, or run interactively on a TTY)"
     )]
     Missing {
         task: String,
         name: String,
         env_name: String,
+    },
+    /// `--set` named a parameter that is not declared on any task in the plan.
+    #[error("unknown parameter --set {name} (not declared on any task in this plan)")]
+    UnknownSet { name: String },
+    /// Interactive prompt failed or was cancelled.
+    #[error("task {task}: parameter {name}: {message}")]
+    Prompt {
+        task: String,
+        name: String,
+        message: String,
     },
 }
 
@@ -75,6 +85,52 @@ pub fn resolve_task_parameter_env(
             .ok()
             .filter(|value| !value.is_empty())
     })
+}
+
+/// Resolve parameters with CLI `--set name=value` overrides (param name keys).
+///
+/// Lookup order: `cli_sets[name]` → caller env `NXR_PARAM_*` → schema default →
+/// optional `prompt` → [`ParameterError::Missing`].
+///
+/// # Errors
+///
+/// Returns [`ParameterError`] when a required parameter is unset or a value is invalid.
+pub fn resolve_task_parameter_env_layered(
+    task: &str,
+    parameters: &BTreeMap<String, TaskParameter>,
+    cli_sets: &BTreeMap<String, String>,
+    lookup_env: impl Fn(&str) -> Option<String>,
+    mut prompt: Option<&mut dyn FnMut(&str, &TaskParameter) -> Result<String, ParameterError>>,
+) -> Result<BTreeMap<String, String>, ParameterError> {
+    let mut env = BTreeMap::new();
+    for (name, definition) in parameters {
+        let env_name = parameter_env_name(name);
+        let raw = cli_sets
+            .get(name)
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .or_else(|| lookup_env(&env_name));
+        let value = match raw {
+            Some(value) if !value.is_empty() => value,
+            _ => match definition.default.as_ref() {
+                Some(default) => json_default_to_string(task, name, definition, default)?,
+                None => {
+                    if let Some(prompt) = prompt.as_mut() {
+                        prompt(name, definition)?
+                    } else {
+                        return Err(ParameterError::Missing {
+                            task: task.to_owned(),
+                            name: name.to_owned(),
+                            env_name,
+                        });
+                    }
+                }
+            },
+        };
+        let normalized = normalize_parameter_value(task, name, definition, &value)?;
+        env.insert(env_name, normalized);
+    }
+    Ok(env)
 }
 
 /// Normalized parameter values keyed by schema parameter name.
@@ -112,27 +168,7 @@ pub fn resolve_task_parameter_env_with(
     parameters: &BTreeMap<String, TaskParameter>,
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<BTreeMap<String, String>, ParameterError> {
-    let mut env = BTreeMap::new();
-    for (name, definition) in parameters {
-        let env_name = parameter_env_name(name);
-        let raw = lookup(&env_name);
-        let value = match raw {
-            Some(value) if !value.is_empty() => value,
-            _ => match definition.default.as_ref() {
-                Some(default) => json_default_to_string(task, name, definition, default)?,
-                None => {
-                    return Err(ParameterError::Missing {
-                        task: task.to_owned(),
-                        name: name.to_owned(),
-                        env_name,
-                    });
-                }
-            },
-        };
-        let normalized = normalize_parameter_value(task, name, definition, &value)?;
-        env.insert(env_name, normalized);
-    }
-    Ok(env)
+    resolve_task_parameter_env_layered(task, parameters, &BTreeMap::new(), lookup, None)
 }
 
 fn json_default_to_string(
@@ -382,6 +418,74 @@ mod tests {
         let err =
             resolve_task_parameter_env_with("demo", &sample_choice(), lookup).expect_err("invalid");
         assert!(matches!(err, ParameterError::Invalid { .. }));
+    }
+
+    #[test]
+    fn layered_prefers_cli_sets_over_env_and_default() {
+        let cli = BTreeMap::from([("mode".to_owned(), "slow".to_owned())]);
+        let lookup = |key: &str| {
+            if key == "NXR_PARAM_MODE" {
+                Some("fast".to_owned())
+            } else {
+                None
+            }
+        };
+        let env =
+            resolve_task_parameter_env_layered("demo", &sample_choice(), &cli, lookup, None)
+                .expect("cli");
+        assert_eq!(env.get("NXR_PARAM_MODE").map(String::as_str), Some("slow"));
+    }
+
+    #[test]
+    fn layered_prompt_fills_required_missing() {
+        let parameters = BTreeMap::from([(
+            "reason".to_owned(),
+            TaskParameter {
+                param_type: TaskParameterType::String,
+                default: None,
+                values: None,
+            },
+        )]);
+        let mut prompted = false;
+        let mut prompt = |name: &str, _: &TaskParameter| {
+            prompted = true;
+            assert_eq!(name, "reason");
+            Ok("deploy".to_owned())
+        };
+        let env = resolve_task_parameter_env_layered(
+            "demo",
+            &parameters,
+            &BTreeMap::new(),
+            |_| None,
+            Some(&mut prompt),
+        )
+        .expect("prompt");
+        assert!(prompted);
+        assert_eq!(
+            env.get("NXR_PARAM_REASON").map(String::as_str),
+            Some("deploy")
+        );
+    }
+
+    #[test]
+    fn layered_fail_closed_without_prompt() {
+        let parameters = BTreeMap::from([(
+            "reason".to_owned(),
+            TaskParameter {
+                param_type: TaskParameterType::String,
+                default: None,
+                values: None,
+            },
+        )]);
+        let err = resolve_task_parameter_env_layered(
+            "demo",
+            &parameters,
+            &BTreeMap::new(),
+            |_| None,
+            None,
+        )
+        .expect_err("missing");
+        assert!(matches!(err, ParameterError::Missing { .. }));
     }
 
     #[test]

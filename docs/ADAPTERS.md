@@ -127,7 +127,7 @@ The following are **out of scope** for this milestone:
 - daemon state or a persistent project database.
 
 Deferred design for full monorepo intelligence lives in
-[ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md) (Phase 18+).
+[vision/FUTURE_CONTROL_PLANE.md](vision/FUTURE_CONTROL_PLANE.md) (Phase 18+).
 
 ## 8. Testing the boundary
 

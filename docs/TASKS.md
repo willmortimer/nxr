@@ -305,7 +305,15 @@ task `shell` / `context` / `parameters` fields are present (override with
 (H3); `file` / `stdin`, Home Manager bindings, and full inherit-mode env policy
 remain later work (see [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md)). Typed
 `parameters` resolve at spawn into `NXR_PARAM_<NAME>` environment variables;
-plans and events list parameter names only (no values).
+plans and events list parameter names only (no values). CLI `--set name=value`
+overrides env/defaults; required parameters without a value fail closed in CI
+(TTY prompts when stdin/stderr are terminals). Branching that changes which
+leaves run belongs in a wizard app that then calls `nxr task …` — see
+[PATTERNS.md](PATTERNS.md).
+
+Live parallel runs can tee child logs with `--log-dir PATH` and show a compact
+node status line under `--output live` (same watch surface as Nix progress via
+`NXR_NIX_PROGRESS`).
 
 See [TASK_SCHEMA_V2.md](TASK_SCHEMA_V2.md) for the full spec, ADR-0135/0138
 cross-links, and compatibility notes.

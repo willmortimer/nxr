@@ -181,6 +181,13 @@
               ];
               aliases = [ "check" ];
             };
+
+            release = {
+              description = "Host CI gate then prepare/create the v* release tag";
+              app = "release";
+              category = "validation";
+              dependsOn = [ "ci" ];
+            };
           };
 
           packages = {
@@ -297,6 +304,25 @@
                 # writeShellApplication resets PATH; recover host Docker/OrbStack.
                 export PATH="/usr/local/bin:/opt/homebrew/bin:/bin:/usr/bin:$PATH"
                 exec ./scripts/ci-gate-linux.sh "$@"
+              '';
+            };
+
+            # Release tag helper. Do not clear git signing config — `git tag -s`
+            # needs the operator's SSH/GPG key (1Password agent, etc.).
+            release = nxrLib.mkRepoApp {
+              name = "nxr-release";
+              description = "Verify version sync and prepare/create signed v* tag";
+              runtimeInputs = [
+                pkgs.bash
+                pkgs.coreutils
+                pkgs.git
+                pkgs.gnugrep
+                pkgs.gnused
+                pkgs.gawk
+              ];
+              text = ''
+                unset NXR_DEV_SHELL || true
+                exec ./scripts/release.sh "$@"
               '';
             };
 

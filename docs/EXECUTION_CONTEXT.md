@@ -878,4 +878,4 @@ See [ROADMAP.md](ROADMAP.md) for the ordered release plan:
 | **Later** | Artifact restoration, task result caching, remote workspace, daemon/control plane |
 
 Speculative control-plane ideas beyond that remain in
-[ideas/FUTURE_CONTROL_PLANE.md](ideas/FUTURE_CONTROL_PLANE.md).
+[vision/FUTURE_CONTROL_PLANE.md](vision/FUTURE_CONTROL_PLANE.md).
