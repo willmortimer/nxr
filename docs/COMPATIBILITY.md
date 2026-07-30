@@ -82,8 +82,16 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) §9 and ADR-0018 in [adr/README.md](adr/R
 
 Day-to-day quality ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) runs a
 **single** job on `ubuntu-latest` with Determinate Nix `latest` (`nix run .#ci-gate`
-dogfood, `nix flake check`, perf thresholds, fixture smokes). Local developers
-use the same `nix run .#ci-gate` entrypoint ([CONTRIBUTING.md](CONTRIBUTING.md)).
+dogfood, `nix flake check`, perf thresholds, fixture smokes).
+
+Local developers:
+
+- `nix run .#ci-gate` — same task graph on the **host** (fast; Darwin cannot
+  prove Linux process/runtime ITs).
+- `nix run .#ci-gate-linux` — **pre-push bar**: same entrypoint inside
+  OrbStack/Docker (`ubuntu` + Determinate Nix). See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+A green Darwin host gate is necessary but not sufficient for `main`.
 
 Compatibility coverage ([`.github/workflows/compat.yml`](../.github/workflows/compat.yml))
 runs on **`v*` tags** (and `workflow_dispatch`):

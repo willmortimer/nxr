@@ -284,6 +284,22 @@
               '';
             };
 
+            # Pre-push bar on Darwin: same gate inside Linux + Determinate
+            # (OrbStack/Docker). Host `ci-gate` cannot catch Linux process ITs.
+            ci-gate-linux = nxrLib.mkRepoApp {
+              name = "nxr-ci-gate-linux";
+              description = "Run ci-gate on Linux via OrbStack/Docker (GHA parity)";
+              runtimeInputs = [
+                pkgs.bash
+                pkgs.coreutils
+              ];
+              text = ''
+                # writeShellApplication resets PATH; recover host Docker/OrbStack.
+                export PATH="/usr/local/bin:/opt/homebrew/bin:/bin:/usr/bin:$PATH"
+                exec ./scripts/ci-gate-linux.sh "$@"
+              '';
+            };
+
             ok = nxrLib.mkRepoApp {
               name = "nxr-ok";
               description = "No-op success (task graph sink)";

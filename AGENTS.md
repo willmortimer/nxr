@@ -50,5 +50,6 @@ docs/            Design contract and ADRs
 Prefer these over ad-hoc cargo invocations in docs/CI:
 
 - `nix build .#nxr`
-- `nix run .#ci-gate` — local ≡ GHA quality dogfood (do not treat host `cargo nextest` as CI parity)
+- `nix run .#ci-gate` — host quality dogfood (toolchains + hermetic env)
+- `nix run .#ci-gate-linux` — **pre-push bar**: same gate on Linux via OrbStack/Docker (GHA OS parity)
 - `nix run .#fmt` / `.#lint` / `.#test` / `.#deny`

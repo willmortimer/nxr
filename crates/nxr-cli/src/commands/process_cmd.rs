@@ -861,9 +861,20 @@ fn capture_pid_start_time(pid: u32) -> Option<u64> {
 #[cfg(target_os = "linux")]
 fn linux_pid_start_time(pid: u32) -> Option<u64> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_linux_stat_start_time(&stat)
+}
+
+/// Parse `starttime` from a `/proc/<pid>/stat` line.
+///
+/// After the `comm` field (parentheses), man proc(5) numbers fields from 3.
+/// `starttime` is field 22 → index 19 in the post-comm token list. Index 20 is
+/// `vsize`, which changes as the process maps memory and must not be used for
+/// PID-reuse identity (Linux-only false "stopped" after `nxr up`).
+#[cfg(any(test, target_os = "linux"))]
+fn parse_linux_stat_start_time(stat: &str) -> Option<u64> {
     let after_comm = stat.rsplit(')').next()?.trim();
     let fields: Vec<&str> = after_comm.split_whitespace().collect();
-    fields.get(20)?.parse().ok()
+    fields.get(19)?.parse().ok()
 }
 
 #[cfg(target_os = "macos")]
@@ -1018,8 +1029,9 @@ mod tests {
     use nxr_nix::OptionalNixFlags;
 
     use super::{
-        ProcessContext, RunningProcessRecord, probe_http, process_app_request, process_log_path,
-        resolve_targets, terminate_supervised_process, wait_for_readiness,
+        ProcessContext, RunningProcessRecord, parse_linux_stat_start_time, probe_http,
+        process_app_request, process_log_path, resolve_targets, terminate_supervised_process,
+        wait_for_readiness,
     };
     use crate::flake::FlakeSelection;
     use crate::shell_mode::ShellMode;
@@ -1245,5 +1257,16 @@ mod tests {
                 name: "a/b".to_owned()
             })
         );
+    }
+
+    #[test]
+    fn parse_linux_stat_start_time_uses_field_22_not_vsize() {
+        // Synthetic /proc/pid/stat: after `comm`, field 22 (0-based index 19) is
+        // starttime; index 20 is vsize (must not be treated as identity).
+        let mut tokens = vec!["R"; 50];
+        tokens[19] = "424242";
+        tokens[20] = "99999999";
+        let stat = format!("1234 (nix) {}", tokens.join(" "));
+        assert_eq!(parse_linux_stat_start_time(&stat), Some(424_242));
     }
 }

@@ -21,9 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - CI: main/PR quality is a single `ubuntu-latest` / Nix latest job; Nix 2.18,
   Lix, and macOS matrix moved to tag-triggered `compat.yml`.
-- Local ≡ CI dogfood via `nix run .#ci-gate` (same entrypoint as GHA); quality
-  apps clear `NXR_DEV_SHELL` and isolate git config; `configurations-fixture`
-  nix check force-evals Linux NixOS assertions on Darwin too.
+- Local ≡ CI dogfood via `nix run .#ci-gate` (host) and `nix run .#ci-gate-linux`
+  (OrbStack machine `nxr-ci-linux` / Docker ubuntu + Determinate — pre-push GHA
+  OS parity); quality apps clear `NXR_DEV_SHELL` and isolate git config;
+  `configurations-fixture` nix check force-evals Linux NixOS assertions on Darwin
+  too.
+- Linux process supervision: `/proc/<pid>/stat` starttime is field index 19, not
+  20 (`vsize`). The off-by-one made live processes look recycled → `stopped`
+  after `nxr up` on Linux only.
 
 ## [3.4.0] - 2026-07-28
 

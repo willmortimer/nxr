@@ -1,0 +1,32 @@
+# Linux dogfood image matching GitHub Actions shape:
+# ubuntu + Determinate Nix (flakes-capable), not nixpkgs' upstream nix.
+#
+# Build/run via scripts/ci-gate-linux.sh (OrbStack Docker on Darwin).
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    xz-utils \
+    build-essential \
+  && rm -rf /var/lib/apt/lists/*
+
+# Seed image /nix so runs without a volume still work. Named volumes overlay
+# /nix; entrypoint reinstalls into an empty volume once.
+RUN curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix \
+  | sh -s -- install linux \
+    --init none \
+    --no-confirm \
+    --extra-conf "sandbox = false" \
+    --extra-conf "experimental-features = nix-command flakes"
+
+COPY entrypoint.sh /usr/local/bin/nxr-ci-linux-entrypoint
+RUN chmod +x /usr/local/bin/nxr-ci-linux-entrypoint
+
+ENV PATH="/nix/var/nix/profiles/default/bin:${PATH}"
+WORKDIR /src
+ENTRYPOINT ["/usr/local/bin/nxr-ci-linux-entrypoint"]
+CMD ["nix", "run", ".#ci-gate", "-L"]

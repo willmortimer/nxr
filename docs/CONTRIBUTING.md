@@ -11,13 +11,20 @@ nix build .#packages.$(nix eval --raw --impure --expr 'builtins.currentSystem').
 
 ### Local ≡ CI quality gate
 
-Use the same Nix entrypoint GitHub Actions uses. Do **not** treat host
-`cargo nextest` / `cargo clippy` as CI parity — those inherit shell pollution
-(`NXR_DEV_SHELL`, git signing agents) and host toolchains.
+nxr's product claim is one inspectable CI graph (`nxr task ci`) that is the
+same locally and on GitHub Actions. That only holds if you run it on the **same
+OS class** as CI.
+
+| Command | What it proves | Pre-push? |
+|---|---|---|
+| `nix run .#ci-gate` | Toolchains + hermetic env on **this** host | Fast iteration |
+| `nix run .#ci-gate-linux` | Same gate on **Linux + Determinate** via OrbStack/Docker | **Yes — required before push to `main`** |
+| `nix flake check -L` | Sandboxed derivation checks | Yes (with Linux gate) |
 
 ```bash
-nix run .#ci-gate    # packaged nxr + task ci (fmt-check → lint/test/deny)
-nix flake check -L   # hermetic derivation checks (sandbox; skips Nix ITs)
+nix run .#ci-gate         # Darwin/host: fmt → lint → test → deny
+nix run .#ci-gate-linux   # OrbStack Linux: identical entrypoint (GHA shape)
+nix flake check -L        # hermetic derivation checks
 ```
 
 `ci-gate` clears `NXR_DEV_SHELL` and isolates git config so results match a
@@ -25,6 +32,18 @@ clean Actions runner. Quality flake apps (`test`, `lint`, `deny`, …) do the sa
 They deliberately **do not** pin `pkgs.nix` — discovery capability negotiation
 must use the same ambient flakes-capable Nix as GHA (Determinate). Pinning
 nixpkgs' `nix` flips cold discovery to `flake show` and breaks call-budget ITs.
+
+`ci-gate-linux` prefers OrbStack machine **`nxr-ci-linux`** (ubuntu 24.04 +
+Determinate Nix; created on first run). Falls back to Docker
+(`nix/ci/Dockerfile.linux`). Default platform for Docker is native
+(`linux/arm64` on Apple Silicon). For exact GHA arch:
+
+```bash
+NXR_CI_LINUX_PLATFORM=linux/amd64 NXR_CI_LINUX_BACKEND=docker nix run .#ci-gate-linux
+```
+
+Optiprox (or any remote Linux builder) is the escape hatch when OrbStack is
+unavailable — still invoke the same `nix run .#ci-gate` on that host.
 
 Individual apps (still hermetic via nixpkgs toolchains):
 
