@@ -42,8 +42,8 @@ fs2 = "0.4"
 notify = "6.1"
 globset = "0.4"
 mio = { version = "1", default-features = false, features = ["os-poll", "os-ext"] }
-ratatui = "0.29"
-crossterm = "0.28"
+ratatui = "0.30"
+crossterm = "0.29"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
