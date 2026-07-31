@@ -28,8 +28,9 @@ Usage: release [--execute] [--yes] [--skip-remote-check] [--skip-gates]
   (default)     Check repo state and print git tag/push commands.
   --execute     Create annotated/signed tag and push to origin.
                 Requires .nxr/release-gates/{host,linux}.<HEAD> stamps from:
-                  nix run .#ci-gate
-                  nix run .#ci-gate-linux
+                  nxr task ci
+                  nxr task ci-linux
+                (escape hatches: nix run .#ci-gate / .#ci-gate-linux)
   --yes         With --execute, skip the interactive confirmation.
   --skip-remote-check
                 Do not require origin/main containment / remote tag probe.
@@ -189,9 +190,9 @@ if [[ "$skip_remote_check" -eq 0 ]]; then
   fi
 fi
 
-# --- dogfood gate stamps ---
+# --- CI gate stamps ---
 echo
-echo "Local dogfood gate stamps (HEAD=$(git rev-parse --short HEAD)):"
+echo "Local CI gate stamps (HEAD=$(git rev-parse --short HEAD)):"
 "$gates_sh" status
 echo
 
@@ -207,13 +208,14 @@ printf '\n'
 if [[ "$execute" -eq 0 ]]; then
   echo
   echo "Dry-run only. Re-run with --execute after:"
-  echo "  nix run .#ci-gate"
-  echo "  nix run .#ci-gate-linux"
+  echo "  nxr task ci"
+  echo "  nxr task ci-linux"
+  echo "  # or: nxr task release   # runs both, then this app"
   exit 0
 fi
 
 if [[ "$skip_gates" -eq 1 ]]; then
-  echo "WARNING: --skip-gates set; tagging WITHOUT host+linux dogfood stamps" >&2
+  echo "WARNING: --skip-gates set; tagging WITHOUT host+linux CI gate stamps" >&2
 else
   "$gates_sh" require
 fi

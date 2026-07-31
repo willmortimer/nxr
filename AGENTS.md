@@ -22,7 +22,7 @@ Do not contradict [docs/CONTRACT_SUMMARY.md](docs/CONTRACT_SUMMARY.md). In short
 
 Accepted foundational ADRs are listed in [docs/adr/README.md](docs/adr/README.md)
 (including audit absorb ADR-0143–0150).
-Active roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) (shipped through 3.4.0;
+Active roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) (shipped through 3.5.x;
 next V4+ / [docs/vision/V4_EXECUTION_PROTOCOL.md](docs/vision/V4_EXECUTION_PROTOCOL.md)).
 
 ## Working agreements
@@ -31,6 +31,8 @@ next V4+ / [docs/vision/V4_EXECUTION_PROTOCOL.md](docs/vision/V4_EXECUTION_PROTO
 - Do not widen scope past stated non-goals in [docs/README.md](docs/README.md).
 - No secrets in logs, tests, or fixtures; follow [SECURITY.md](SECURITY.md) and docs security guidance.
 - Ask before changing public API/CLI vocabulary fixed in [docs/CLI_CONTRACT.md](docs/CLI_CONTRACT.md).
+- Prefer **`nxr task …`** for this repo’s quality/release graphs; flake apps
+  (`nix run .#…`) are escape hatches / bootstrap when `nxr` is not on PATH yet.
 
 ## Layout
 
@@ -45,12 +47,20 @@ xtask/           Repo maintenance binary
 docs/            Design contract and ADRs
 ```
 
-## Project flake apps
+## Project quality / release (nxr task DAG)
 
-Prefer these over ad-hoc cargo invocations in docs/CI:
+Prefer these over ad-hoc cargo or one-off `nix run` rituals:
+
+```text
+nxr task ci          # host: fmt-check → lint → test → deny → cli-ref (+ host stamp)
+nxr task ci-linux    # Linux OS parity via OrbStack/Docker (native on Linux)
+nxr task release     # dependsOn [ci, ci-linux], then tag helper (dry-run / --execute)
+```
+
+Escape hatches (same leaves, hermetic env wrappers):
 
 - `nix build .#nxr`
-- `nix run .#ci-gate` — host quality dogfood (toolchains + hermetic env)
-- `nix run .#ci-gate-linux` — **pre-push bar**: same gate on Linux via OrbStack/Docker (GHA OS parity)
-- `nix run .#release` — version sync + print/`--execute` signed `v*` tag (see docs/RELEASE.md)
-- `nix run .#fmt` / `.#lint` / `.#test` / `.#deny`
+- `nix run .#ci-gate` / `.#ci-gate-linux` / `.#release`
+- `nix run .#fmt` / `.#lint` / `.#test` / `.#deny` / `.#cli-ref` / `.#cli-ref-gen`
+
+See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) and [docs/RELEASE.md](docs/RELEASE.md).

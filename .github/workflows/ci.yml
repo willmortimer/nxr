@@ -34,8 +34,16 @@ jobs:
           echo "Packaged nxr: $nxr_bin"
           "$nxr_bin" --version
 
-      - name: Root CI plan (dogfood)
-        run: nix run .#ci-gate -L
+      - name: Root CI graph
+        env:
+          NXR: ${{ steps.nxr.outputs.bin }}
+        run: |
+          unset NXR_DEV_SHELL || true
+          export GIT_CONFIG_GLOBAL=/dev/null
+          export GIT_CONFIG_SYSTEM=/dev/null
+          "$NXR" ci plan --json >/dev/null
+          "$NXR" task ci --dry-run
+          "$NXR" task ci
 
       - name: Flake check (hermetic)
         run: nix flake check -L

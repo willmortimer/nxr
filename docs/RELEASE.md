@@ -10,24 +10,21 @@ Cosign** signatures for release blobs.
 
 ## Tag from the flake (preferred)
 
-**Fail-closed:** `nix run .#release -- --execute` refuses to tag unless both
-local dogfood stamps exist for `HEAD` (written by the gate apps):
+**Fail-closed:** `nxr task release -- --execute` (or `nix run .#release -- --execute`)
+refuses to tag unless both local CI gate stamps exist for `HEAD`:
 
 ```bash
-nix run .#ci-gate         # host: fmt-check → lint → test → deny (+ stamps host)
-nix run .#ci-gate-linux   # OrbStack/Docker Linux parity (+ stamps linux)
+nxr task ci              # host: fmt → lint → test → deny → cli-ref (+ stamps host)
+nxr task ci-linux        # Linux OS parity (+ stamps linux)
+# Or one graph: nxr task release   # dependsOn [ci, ci-linux], then dry-run
 ```
 
 Then, with `CHANGELOG.md` having a `## [X.Y.Z]` section matching `Cargo.toml`:
 
 ```bash
-# Dry-run: version sync, clean tree, print exact git commands + stamp status
-nix run .#release
-# or: nxr task release          # runs host `ci` graph, then release dry-run
-
-# Create signed tag + push (prompts unless --yes; requires gate stamps)
-nix run .#release -- --execute
-# or: nxr task release -- --execute
+nxr task release                    # runs ci + ci-linux, then release dry-run
+nxr task release -- --execute       # create signed tag + push (prompts unless --yes)
+# Escape hatch: nix run .#release -- --execute --yes
 ```
 
 Break-glass only: `--skip-gates` (loud warning). Not for normal releases.

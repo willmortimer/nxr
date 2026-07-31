@@ -5,13 +5,29 @@
 # Falls back to Docker (`nix/ci/Dockerfile.linux`) when OrbStack is unavailable.
 #
 # Usage:
+#   nxr task ci-linux
 #   ./scripts/ci-gate-linux.sh
 #   ./scripts/ci-gate-linux.sh -- nix run .#test -- process_up_worker
-#   NXR_CI_LINUX_BACKEND=docker ./scripts/ci-gate-linux.sh
+#   NXR_CI_LINUX_BACKEND=docker nxr task ci-linux
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
+
+# Already on Linux (e.g. GHA ubuntu): run the gate natively and stamp "linux".
+if [[ "$(uname -s)" == "Linux" ]]; then
+  if [[ $# -eq 0 ]]; then
+    set -- nix run .#ci-gate -L
+  elif [[ "${1:-}" == "--" ]]; then
+    shift
+  fi
+  export NXR_CI_LINUX=1
+  unset NXR_DEV_SHELL || true
+  export GIT_CONFIG_GLOBAL=/dev/null
+  export GIT_CONFIG_SYSTEM=/dev/null
+  "$@"
+  exec "$root/scripts/release-gates.sh" stamp linux
+fi
 
 machine="${NXR_CI_LINUX_MACHINE:-nxr-ci-linux}"
 backend="${NXR_CI_LINUX_BACKEND:-auto}"

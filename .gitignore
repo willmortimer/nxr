@@ -65,5 +65,5 @@ Thumbs.db
 # Speculative scratch. Tracked vision docs live in docs/vision/.
 /docs/ideas/
 
-# --- Release dogfood stamps (HEAD-keyed; written by ci-gate / ci-gate-linux) ---
+# --- Release gate stamps (HEAD-keyed; written by nxr task ci / ci-linux) ---
 .nxr/release-gates/

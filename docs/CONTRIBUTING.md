@@ -11,40 +11,49 @@ nix build .#packages.$(nix eval --raw --impure --expr 'builtins.currentSystem').
 
 ### Local ≡ CI quality gate
 
-nxr's product claim is one inspectable CI graph (`nxr task ci`) that is the
-same locally and on GitHub Actions. That only holds if you run it on the **same
-OS class** as CI.
+The product claim is one inspectable CI graph that is the same locally and on
+GitHub Actions. In **this** repo that graph is authored as `nxr.tasks` and run
+with `nxr task`:
 
 | Command | What it proves | Pre-push? |
 |---|---|---|
-| `nix run .#ci-gate` | Toolchains + hermetic env on **this** host | Fast iteration |
-| `nix run .#ci-gate-linux` | Same gate on **Linux + Determinate** via OrbStack/Docker | **Yes — required before push to `main`** |
-| `nix flake check -L` | Sandboxed derivation checks | Yes (with Linux gate) |
+| `nxr task ci` | Host graph: fmt-check → lint → test → deny → **cli-ref** | Fast iteration |
+| `nxr task ci-linux` | Same gate on **Linux + Determinate** (OrbStack/Docker; native when already on Linux) | **Yes — required before push to `main`** |
+| `nxr task release` | `dependsOn = [ci, ci-linux]` then signed-tag helper | Before cutting a `v*` tag |
+| `nix flake check -L` | Sandboxed derivation checks (includes hermetic `cli-ref`) | Yes (with Linux gate) |
+
+`cli-ref` is **fail-closed** on Clap help drift (`docs/CLI_GENERATED.md`). Do not
+auto-write in CI — regenerate when it fails:
 
 ```bash
-nix run .#ci-gate         # Darwin/host: fmt → lint → test → deny
-nix run .#ci-gate-linux   # OrbStack Linux: identical entrypoint (GHA shape)
-nix run .#release         # dry-run tag helper (see docs/RELEASE.md)
-nix flake check -L        # hermetic derivation checks
+cargo run -p xtask -- cli-ref    # or: nix run .#cli-ref-gen
 ```
 
-`ci-gate` clears `NXR_DEV_SHELL` and isolates git config so results match a
-clean Actions runner. Quality flake apps (`test`, `lint`, `deny`, …) do the same.
-They deliberately **do not** pin `pkgs.nix` — discovery capability negotiation
-must use the same ambient flakes-capable Nix as GHA (Determinate). Pinning
-nixpkgs' `nix` flips cold discovery to `flake show` and breaks call-budget ITs.
+```bash
+nxr task ci              # Darwin/host quality graph (+ host release stamp)
+nxr task ci-linux        # Linux OS parity (+ linux release stamp)
+nxr task release         # both gates, then release dry-run
+nxr task release -- --execute   # tag -s + push (requires gate stamps)
+nix flake check -L
+```
 
-`ci-gate-linux` prefers OrbStack machine **`nxr-ci-linux`** (ubuntu 24.04 +
+Quality flake apps clear `NXR_DEV_SHELL` and isolate git config so results match
+a clean Actions runner. They deliberately **do not** pin `pkgs.nix` — discovery
+capability negotiation must use the same ambient flakes-capable Nix as GHA
+(Determinate). Pinning nixpkgs' `nix` flips cold discovery to `flake show` and
+breaks call-budget ITs.
+
+`ci-linux` prefers OrbStack machine **`nxr-ci-linux`** (ubuntu 24.04 +
 Determinate Nix; created on first run). Falls back to Docker
 (`nix/ci/Dockerfile.linux`). Default platform for Docker is native
 (`linux/arm64` on Apple Silicon). For exact GHA arch:
 
 ```bash
-NXR_CI_LINUX_PLATFORM=linux/amd64 NXR_CI_LINUX_BACKEND=docker nix run .#ci-gate-linux
+NXR_CI_LINUX_PLATFORM=linux/amd64 NXR_CI_LINUX_BACKEND=docker nxr task ci-linux
 ```
 
-Optiprox (or any remote Linux builder) is the escape hatch when OrbStack is
-unavailable — still invoke the same `nix run .#ci-gate` on that host.
+Escape hatches when `nxr` is not on PATH yet: `nix run .#ci-gate`,
+`.#ci-gate-linux`, `.#release` (same underlying apps).
 
 Individual apps (still hermetic via nixpkgs toolchains):
 
@@ -59,34 +68,21 @@ nxr ci plan --json   # provider-neutral CI plan export
 Host Cargo is fine for fast iteration only:
 
 ```bash
-cargo test -p nxr-cli
-cargo run -p nxr-cli -- --flake fixtures/basic-apps list
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run --workspace
 ```
 
-## Fixtures
+Do not treat host Cargo as release-blocking; use `nxr task ci` / `ci-linux`.
 
-Integration fixtures live under [`fixtures/`](../fixtures/README.md) (`basic-apps`, `task-dag`, `parallel-group`, `named-dev-shells`, `shell-integration`, …). Prefer them for CLI and discovery smoke tests instead of inventing one-off flakes.
+## Docs and ADRs
 
-## Demo GIF
+- Start at [INDEX.md](INDEX.md).
+- Locked decisions: [CONTRACT_SUMMARY.md](CONTRACT_SUMMARY.md).
+- New design choices: add an ADR under `docs/adr/` (see [adr/README.md](adr/README.md)).
 
-The root README embeds a terminal GIF. How to regenerate it: [demo/README.md](demo/README.md).
+## Pull requests
 
-## Docs map (maintainers)
-
-| Doc | Purpose |
-|---|---|
-| [INDEX.md](INDEX.md) | Full documentation map |
-| [CONTRACT_SUMMARY.md](CONTRACT_SUMMARY.md) | Locked product decisions |
-| [ROADMAP.md](ROADMAP.md) | V1 → V3 delivery plan |
-| [COMPATIBILITY.md](COMPATIBILITY.md) | Schema freeze, platforms, extension points |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | System design |
-| [TECH_STACK_AND_REPO_SHAPE.md](TECH_STACK_AND_REPO_SHAPE.md) | Crates and layout |
-| [CHANGELOG.md](../CHANGELOG.md) | Release history |
-
-## Status
-
-Workspace and Nix package track `Cargo.toml` (`3.4.0` as of this writing). Do
-not push or tag from agent sessions unless a maintainer explicitly asks. Use
-`nix run .#release` for the tag helper. A Ratatui-style dashboard remains
-long-term (roadmap Phase 35); do not add a TUI crate without an explicit
-decision.
+- Keep diffs focused; update docs/tests with behavior changes.
+- Run `nxr task ci` and `nxr task ci-linux` before pushing to `main`.
+- No secrets in fixtures, logs, or commit messages.

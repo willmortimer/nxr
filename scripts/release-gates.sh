@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Stamp / require local release quality gates (host + Linux).
 #
-# Successful `nix run .#ci-gate` / `.#ci-gate-linux` write stamps keyed by
-# HEAD. `scripts/release.sh --execute` refuses to tag unless both stamps exist
-# for the current commit (unless `--skip-gates`).
+# Successful `nxr task ci` / `nxr task ci-linux` (or flake escape hatches
+# `.#ci-gate` / `.#ci-gate-linux`) write stamps keyed by HEAD.
+# `scripts/release.sh --execute` refuses to tag unless both stamps exist.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -64,9 +64,10 @@ case "$cmd" in
     done
     if [[ "$missing" -ne 0 ]]; then
       cat >&2 <<EOF
-error: --execute requires both local dogfood gates for this commit:
-  nix run .#ci-gate
-  nix run .#ci-gate-linux
+error: --execute requires both local CI gate stamps for this commit:
+  nxr task ci
+  nxr task ci-linux
+(or: nix run .#ci-gate && nix run .#ci-gate-linux)
 (or pass --skip-gates to break glass — not for normal releases)
 EOF
       exit 1

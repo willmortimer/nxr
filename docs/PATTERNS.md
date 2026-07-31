@@ -53,9 +53,9 @@ Full TUI / multiplexer panes are later (roadmap Phase 35); keep one renderer.
 
 ## Release / promote
 
-For **this** repo: [RELEASE.md](RELEASE.md) — `nix run .#ci-gate` /
-`.#ci-gate-linux`, then `nix run .#release` (dry-run) / `--execute` for signed
-`v*` tags; GitHub Release + keyless Cosign on blobs.
+For **this** repo: [RELEASE.md](RELEASE.md) — `nxr task ci` / `ci-linux`,
+then `nxr task release` (dry-run) / `-- --execute` for signed `v*` tags;
+GitHub Release + keyless Cosign on blobs.
 
 For **consumer** promote (digest deploy, Flux, Cosign verify): keep that in the
 deploy platform / Actions. nxr coordinates the build/test task graph and can

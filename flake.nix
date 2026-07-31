@@ -171,22 +171,40 @@
               dependsOn = [ "fmt-check" ];
             };
 
+            # Fail-closed on Clap help drift (same as checks.*.cli-ref).
+            # Regenerate locally: cargo run -p xtask -- cli-ref
+            cli-ref = {
+              description = "Verify docs/CLI_GENERATED.md matches Clap help";
+              app = "cli-ref";
+              dependsOn = [ "fmt-check" ];
+            };
+
             ci = {
-              description = "CI quality gate";
-              app = "ok";
+              description = "Host CI quality gate (fmt-check → lint → test → deny → cli-ref)";
+              app = "ci-stamp-host";
               category = "validation";
               dependsOn = [
                 "test"
                 "deny"
+                "cli-ref"
               ];
               aliases = [ "check" ];
             };
 
+            ci-linux = {
+              description = "Linux OS parity for the CI gate (OrbStack/Docker; native on Linux)";
+              app = "ci-gate-linux";
+              category = "validation";
+            };
+
             release = {
-              description = "Host CI gate then prepare/create the v* release tag";
+              description = "Prepare/create signed v* tag after host + Linux CI gates";
               app = "release";
               category = "validation";
-              dependsOn = [ "ci" ];
+              dependsOn = [
+                "ci"
+                "ci-linux"
+              ];
             };
           };
 
@@ -272,13 +290,49 @@
               '';
             };
 
-            # Single local ≡ GHA dogfood entrypoint (packaged nxr + task ci graph).
+            cli-ref = nxrLib.mkRepoApp {
+              name = "nxr-cli-ref";
+              description = "Fail if docs/CLI_GENERATED.md drifts from Clap help";
+              runtimeInputs = [
+                pkgs.cargo
+                pkgs.rustc
+                pkgs.diffutils
+                pkgs.coreutils
+              ];
+              text = ''
+                ${hermeticRunnerEnv}
+                generated="$(mktemp)"
+                trap 'rm -f "$generated"' EXIT
+                cargo run -p xtask --quiet -- cli-ref "$generated"
+                if ! diff -u docs/CLI_GENERATED.md "$generated"; then
+                  echo "docs/CLI_GENERATED.md is stale; regenerate with:" >&2
+                  echo "  cargo run -p xtask -- cli-ref" >&2
+                  echo "  # or: nix run .#cli-ref-gen" >&2
+                  exit 1
+                fi
+              '';
+            };
+
+            cli-ref-gen = nxrLib.mkRepoApp {
+              name = "nxr-cli-ref-gen";
+              description = "Regenerate docs/CLI_GENERATED.md from Clap help";
+              runtimeInputs = [
+                pkgs.cargo
+                pkgs.rustc
+              ];
+              text = ''
+                ${hermeticRunnerEnv}
+                exec cargo run -p xtask --quiet -- cli-ref "$@"
+              '';
+            };
+
+            # Local ≡ GHA quality entrypoint (packaged nxr + `nxr task ci` graph).
             # Do not add pkgs.nix: nested `nix run .#test` must see the same
             # ambient flakes-capable Nix as Actions (Determinate). Pinning
             # nixpkgs' nix flips discovery to flake-show and fails call-budget ITs.
             ci-gate = nxrLib.mkRepoApp {
               name = "nxr-ci-gate";
-              description = "Same quality dogfood as GitHub Actions (nxr task ci)";
+              description = "Hermetic wrapper: nxr ci plan + nxr task ci (escape hatch)";
               runtimeInputs = [
                 nxr
                 pkgs.git
@@ -287,19 +341,14 @@
                 ${hermeticRunnerEnv}
                 nxr ci plan --json >/dev/null
                 nxr task ci --dry-run
-                nxr task ci "$@"
-                # Linux dogfood runs this app too; only the host entrypoint stamps "host".
-                if [[ "''${NXR_CI_LINUX:-}" != "1" ]]; then
-                  exec ./scripts/release-gates.sh stamp host
-                fi
+                exec nxr task ci "$@"
               '';
             };
 
-            # Pre-push bar on Darwin: same gate inside Linux + Determinate
-            # (OrbStack/Docker). Host `ci-gate` cannot catch Linux process ITs.
+            # Pre-push Linux OS parity. Host `ci` cannot catch Linux process ITs.
             ci-gate-linux = nxrLib.mkRepoApp {
               name = "nxr-ci-gate-linux";
-              description = "Run ci-gate on Linux via OrbStack/Docker (GHA parity)";
+              description = "Run the CI gate on Linux via OrbStack/Docker (or natively on Linux)";
               runtimeInputs = [
                 pkgs.bash
                 pkgs.coreutils
@@ -308,6 +357,23 @@
                 # writeShellApplication resets PATH; recover host Docker/OrbStack.
                 export PATH="/usr/local/bin:/opt/homebrew/bin:/bin:/usr/bin:$PATH"
                 exec ./scripts/ci-gate-linux.sh "$@"
+              '';
+            };
+
+            # Stamp after the host `ci` DAG succeeds (skipped when NXR_CI_LINUX=1).
+            ci-stamp-host = nxrLib.mkRepoApp {
+              name = "nxr-ci-stamp-host";
+              description = "Record host CI gate stamp for release --execute";
+              runtimeInputs = [
+                pkgs.bash
+                pkgs.coreutils
+                pkgs.git
+              ];
+              text = ''
+                if [[ "''${NXR_CI_LINUX:-}" == "1" ]]; then
+                  exit 0
+                fi
+                exec ./scripts/release-gates.sh stamp host
               '';
             };
 

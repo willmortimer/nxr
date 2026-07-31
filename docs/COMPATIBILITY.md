@@ -82,16 +82,16 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) §9 and ADR-0018 in [adr/README.md](adr/R
 
 Day-to-day quality ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) runs a
 **single** job on `ubuntu-latest` with Determinate Nix **v3.21.8**
-(`determinate-nix-action` pin; `nix run .#ci-gate` dogfood, `nix flake check`,
+(`determinate-nix-action` pin; `nxr task ci`, `nix flake check`,
 perf thresholds, fixture smokes).
 
 Local developers:
 
-- `nix run .#ci-gate` — same task graph on the **host** (fast; Darwin cannot
+- `nxr task ci` — same task graph on the **host** (fast; Darwin cannot
   prove Linux process/runtime ITs).
-- `nix run .#ci-gate-linux` — **pre-push bar**: same entrypoint inside
+- `nxr task ci-linux` — **pre-push bar**: same entrypoint inside
   OrbStack/Docker (`ubuntu` + Determinate Nix). See [CONTRIBUTING.md](CONTRIBUTING.md).
-- `nix run .#release` — tag helper after gates (see [RELEASE.md](RELEASE.md)).
+- `nxr task release` — tag helper after gates (see [RELEASE.md](RELEASE.md)).
 
 A green Darwin host gate is necessary but not sufficient for `main`.
 

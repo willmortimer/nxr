@@ -56,8 +56,8 @@ Mise/Just-class UX without abandoning Nix leaves ([ADR-0148](adr/0148-automation
   (`NXR_MATRIX_*`)
 - Reports: JUnit + task SARIF shipped; **coverage and benchmark remain scaffold stubs**
   (empty valid documents until artifact collection exists)
-- ~~`nxr ci plan --json`~~; ~~dogfood one canonical local/CI graph~~ — **shipped**
-  (root flake `ci` task + GHA `nxr task ci`)
+- ~~`nxr ci plan --json`~~; ~~one canonical local/CI graph~~ — **shipped**
+  (root flake `ci` / `ci-linux` / `release` tasks + GHA `nxr task ci`)
 - ~~Generated CLI reference; golden example fixture~~
 
 ### 3.0 — Secure execution contexts — shipped as `v3.0.0`

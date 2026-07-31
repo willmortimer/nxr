@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Repo quality/release path is an nxr task DAG: `ci` (host), `ci-linux` (OrbStack
+  / Docker / native Linux), `release` depends on both. Prefer `nxr task …` over
+  `nix run .#ci-gate` rituals; GHA `ci.yml` runs packaged `nxr task ci`.
+- Host `ci` graph includes **`cli-ref`** (fail-closed on `docs/CLI_GENERATED.md`
+  drift); `nix run .#cli-ref-gen` regenerates. Regenerated CLI help for 3.5.x
+  flags (`script`, `--set`, `--log-dir`, `--context`).
+- Docs prefer “local ≡ CI” / self-hosted quality graph wording.
+
 ## [3.5.1] - 2026-07-30
 
 ### Fixed
@@ -18,8 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Workspace and Nix package version **3.5.1**.
 - `.#release --execute` **fail-closed** unless `.nxr/release-gates/{host,linux}.<HEAD>`
-  stamps exist (written by `.#ci-gate` / `.#ci-gate-linux`). `--skip-gates` is
-  break-glass only.
+  stamps exist (written by `nxr task ci` / `ci-linux`, or escape-hatch
+  `.#ci-gate` / `.#ci-gate-linux`). `--skip-gates` is break-glass only.
 
 ## [3.5.0] - 2026-07-30
 
@@ -31,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compact node status line on stderr TTYs.
 - `nix run .#release` / `nxr task release` — version sync + clean-tree checks,
   prints (or `--execute`s) `git tag -s` / push for the Cargo.toml SemVer.
-- OrbStack Linux dogfood: `nix run .#ci-gate-linux` (machine `nxr-ci-linux`).
+- OrbStack Linux CI gate: `nix run .#ci-gate-linux` (machine `nxr-ci-linux`).
 - Keyless Cosign signatures on GitHub Release blobs (`.sig` / `.pem`).
 - Operator patterns: [docs/PATTERNS.md](docs/PATTERNS.md) (decisions, watch,
   promote boundaries). Vision docs live under `docs/vision/`; `docs/ideas/` is
@@ -57,7 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matrix moved to tag-triggered `compat.yml`.
 - GHA pins Determinate Nix via `determinate-nix-action@v3.21.8` (compat `2.18`
   cells keep `nix-installer-action@v22` + `nix-package-url`).
-- Local ≡ CI dogfood via `nix run .#ci-gate` (host) and `nix run .#ci-gate-linux`
+- Local ≡ CI via `nix run .#ci-gate` (host) and `nix run .#ci-gate-linux`
   (OrbStack); quality apps clear `NXR_DEV_SHELL` and isolate git config;
   `configurations-fixture` nix check force-evals Linux NixOS assertions on Darwin
   too.
@@ -86,7 +98,7 @@ and audit/HM polish in one minor.
   (`NXR_MATRIX_*`); `__complete task-parameters` / `task-parameter-values`.
 - `nxr cache status|gc|invalidate` deepening for discovery, plan, and dev-env
   caches (disk ages + nxrd warm-layer counts).
-- Root flake `ci` task graph dogfood; CI runs `nxr ci plan --json` + `nxr task ci`.
+- Root flake `ci` task graph; CI runs `nxr ci plan --json` + `nxr task ci`.
 - Fixture `fixtures/workspace-scripts` + CLI coverage for script argv, convention
   names, bare-app non-collision, zero-Nix no-shell path, and live fast path.
 - Nom-style Nix progress for interactive `nxr build` / `check` / `shell`
@@ -95,7 +107,7 @@ and audit/HM polish in one minor.
 ### Changed
 
 - Workspace and Nix package version **3.4.0**.
-- Roadmap: **3.3** / **3.4** and leftover 2.8 params/matrix/CI dogfood marked
+- Roadmap: **3.3** / **3.4** and leftover 2.8 params/matrix/CI graph marked
   shipped; ADR-0130 superseded by ADR-0171.
 - Product positioning: flake-native orchestration schema that preserves standard
   Nix leaves (README / CONTRACT_SUMMARY)—not an absolute “never a task DSL.”

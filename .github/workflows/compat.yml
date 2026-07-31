@@ -72,7 +72,7 @@ jobs:
           echo "Packaged nxr: $nxr_bin"
           "$nxr_bin" --version
 
-      # Skip ubuntu/latest dogfood+perf here — ci.yml already covers that on main.
+      # Skip ubuntu/latest quality+perf here — ci.yml already covers that on main.
       # Compat focuses on floor Nix, Lix, and Darwin task-graph smoke.
       - name: CI task graph
         if: matrix.os != 'ubuntu-latest' || matrix.nix_label != 'latest'

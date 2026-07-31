@@ -18,6 +18,7 @@ Usage: nxr [OPTIONS] [COMMAND]
 Commands:
   list        List available flake apps (and tasks), or a specific output kind
   run         Run a flake app
+  script      Run a local workspace script (path or `.nxr/scripts/<name>`)
   build       Build a flake package (`nix build`)
   check       Build a flake check, or run `nix flake check` when omitted
   shell       Enter a development shell (`nix develop`)
@@ -110,6 +111,9 @@ Options:
       --unset-env <NAME>
           Remove a variable (repeatable)
 
+      --context <NAME>
+          Named execution context for script/task runs (schema v2)
+
   -q, --quiet...
           Suppress non-error nxr messages
 
@@ -149,6 +153,9 @@ Options:
 
           Possible values:
           - jsonl: One JSON-encoded [`Event`] per line
+
+      --log-dir <PATH>
+          Tee per-node stdout/stderr into PATH (`<node>.stdout` / `<node>.stderr`)
 
       --report <KIND=PATH>
           Opt-in post-run report writers (`junit=PATH`, `sarif=PATH`, …)
@@ -277,11 +284,17 @@ Options:
       --keep-env <NAME>
           Preserve variable in clean mode (repeatable)
 
+      --set <NAME=VALUE>
+          Set a typed task parameter (`NAME=VALUE`, repeatable; fail-closed when required)
+
       --set-env <KEY=VALUE>
           Set or replace a variable (`KEY=VALUE`, repeatable)
 
       --unset-env <NAME>
           Remove a variable (repeatable)
+
+      --context <NAME>
+          Named execution context for script/task runs (schema v2)
 
   -q, --quiet...
           Suppress non-error nxr messages
@@ -322,6 +335,9 @@ Options:
 
           Possible values:
           - jsonl: One JSON-encoded [`Event`] per line
+
+      --log-dir <PATH>
+          Tee per-node stdout/stderr into PATH (`<node>.stdout` / `<node>.stderr`)
 
       --report <KIND=PATH>
           Opt-in post-run report writers (`junit=PATH`, `sarif=PATH`, …)

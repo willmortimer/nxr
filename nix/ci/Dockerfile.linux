@@ -1,4 +1,4 @@
-# Linux dogfood image matching GitHub Actions shape:
+# Linux CI image matching GitHub Actions shape:
 # ubuntu + Determinate Nix (flakes-capable), not nixpkgs' upstream nix.
 #
 # Build/run via scripts/ci-gate-linux.sh (OrbStack Docker on Darwin).

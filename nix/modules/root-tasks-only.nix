@@ -1,4 +1,4 @@
-# Minimal flake-parts slice for nxr self-dogfood: `perSystem.nxr.tasks` authoring
+# Minimal flake-parts slice for nxr self-hosted quality tasks: `perSystem.nxr.tasks` authoring
 # and `flake.nxr.<system>` emission without schema/metadata/shell-integration wiring.
 {
   self,

@@ -118,12 +118,14 @@ Tasks coordinate apps; they do not replace them.
 
 ```bash
 nxr task ci
+nxr task ci-linux
 nxr task lint unit integration -j 8   # union DAG; shared deps run once
 nxr task ci --keep-going
 nxr --output grouped task ci
 nxr --output summary task ci
 nxr --output raw task dev             # single child inherits stdio
 nxr graph ci --format mermaid
+nxr graph release --format mermaid    # ci ∥ ci-linux → release
 ```
 
 Task fields worth knowing:
@@ -192,6 +194,18 @@ See [docs/APP_AUTHORING.md](docs/APP_AUTHORING.md) and [examples/mk-app](example
 
 Coming from `mise` / `just`? [docs/MIGRATE_FROM_MISE_JUST.md](docs/MIGRATE_FROM_MISE_JUST.md).
 
+## Developing this repository
+
+Quality and release use the same nxr task DAG locally and on Actions:
+
+```bash
+nxr task ci          # host: fmt-check → lint → test → deny → cli-ref
+nxr task ci-linux    # Linux OS parity (OrbStack/Docker; native on Linux)
+nxr task release     # dependsOn [ci, ci-linux], then tag helper
+```
+
+Details: [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md), [docs/RELEASE.md](docs/RELEASE.md).
+
 ## Documentation
 
 | Doc | For |
@@ -204,7 +218,7 @@ Coming from `mise` / `just`? [docs/MIGRATE_FROM_MISE_JUST.md](docs/MIGRATE_FROM_
 | [docs/MONOREPO_VIEWS.md](docs/MONOREPO_VIEWS.md) | Categories, namespaces, projects file |
 | [docs/DEV_ENV_INTEGRATION.md](docs/DEV_ENV_INTEGRATION.md) | Dev shells, direnv, shellIntegration |
 | [docs/EXECUTION_CONTEXT.md](docs/EXECUTION_CONTEXT.md) | Contexts, secrets, Home Manager; process MVP (preview) |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Shipped through 3.4.0; next V4+ / execution protocol ideas |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Shipped through 3.5.x; next V4+ / execution protocol ideas |
 | [docs/ADAPTERS.md](docs/ADAPTERS.md) | Read-only ecosystem graph boundary |
 | [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | Platforms and schema freeze |
 | [docs/RELEASE.md](docs/RELEASE.md) | Release artifacts, checksums, SBOM |
