@@ -109,7 +109,9 @@ impl WatchState {
                     entry.duration_ms = *duration_ms;
                 }
             }
-            Event::RunCompleted { success, run_id, .. } => {
+            Event::RunCompleted {
+                success, run_id, ..
+            } => {
                 self.run_id = run_id.clone();
                 self.run_complete = true;
                 self.success = Some(*success);

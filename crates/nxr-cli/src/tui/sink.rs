@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event as CrosstermEvent, KeyCode, KeyEventKind, KeyModifiers};
 use nxr_core::RunTargetKind;
 use nxr_task::{Event, EventSink};
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 
 use super::draw::draw_watch;
 use super::runtime::TerminalGuard;
@@ -146,7 +146,11 @@ impl TuiEventSink {
 
 impl EventSink for TuiEventSink {
     fn emit(&mut self, event: Event) {
-        if let Event::PlanCreated { run_id: Some(run_id), .. } = &event {
+        if let Event::PlanCreated {
+            run_id: Some(run_id),
+            ..
+        } = &event
+        {
             if let Err(error) = self.ensure_session(run_id) {
                 eprintln!("nxr: attach sidecar write failed: {error}");
             }

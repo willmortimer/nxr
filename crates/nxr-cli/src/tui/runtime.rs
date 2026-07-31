@@ -4,12 +4,12 @@ use std::io;
 use std::time::Duration;
 
 use crossterm::event::{self, Event as CrosstermEvent, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use crossterm::execute;
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 
 use super::draw::draw_watch;
 use super::session::{AttachSession, hydrate_log_tails};
@@ -41,11 +41,7 @@ impl Drop for TerminalGuard {
         }
         let _ = disable_raw_mode();
         let mut stdout = io::stdout();
-        let _ = execute!(
-            stdout,
-            event::DisableMouseCapture,
-            LeaveAlternateScreen
-        );
+        let _ = execute!(stdout, event::DisableMouseCapture, LeaveAlternateScreen);
     }
 }
 

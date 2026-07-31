@@ -44,11 +44,7 @@ pub fn run(run_id: Option<&str>, runner: RunnerOutput) -> Result<(), AttachError
 
     let session = resolve_attach_run(run_id)?;
     runner
-        .info(format!(
-            "attach {} ({})",
-            session.run_id,
-            session.target
-        ))
+        .info(format!("attach {} ({})", session.run_id, session.target))
         .map_err(AttachError::Io)?;
 
     let follow = matches!(session.status, crate::tui::AttachRunStatus::Running);

@@ -1,5 +1,6 @@
 //! Ratatui DAG watch and `nxr attach` replay.
 
+pub mod browser;
 mod draw;
 mod runtime;
 mod session;

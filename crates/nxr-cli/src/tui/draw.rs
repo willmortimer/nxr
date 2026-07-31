@@ -1,10 +1,10 @@
 //! Ratatui frame rendering for the DAG watch.
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
-use ratatui::Frame;
 
 use super::state::{NodePhase, WatchState};
 
@@ -25,10 +25,7 @@ pub fn draw_watch(frame: &mut Frame<'_>, state: &WatchState, title: &str) {
 }
 
 fn draw_header(frame: &mut Frame<'_>, area: Rect, state: &WatchState, title: &str) {
-    let run_id = state
-        .run_id
-        .as_deref()
-        .unwrap_or("-");
+    let run_id = state.run_id.as_deref().unwrap_or("-");
     let status = if state.run_complete {
         match state.success {
             Some(true) => "done (ok)",
@@ -39,12 +36,10 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, state: &WatchState, title: &st
         "running"
     };
     let header = format!("{title}  root={}  run={run_id}  {status}", state.root);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(Span::styled(
-            header,
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
+    let block = Block::default().borders(Borders::ALL).title(Span::styled(
+        header,
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
     frame.render_widget(block, area);
 }
 
@@ -82,12 +77,15 @@ fn draw_node_table(frame: &mut Frame<'_>, area: Rect, state: &WatchState) {
         })
         .collect();
 
-    let table = Table::new(rows, [
-        Constraint::Length(1),
-        Constraint::Min(10),
-        Constraint::Length(14),
-        Constraint::Length(10),
-    ])
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(1),
+            Constraint::Min(10),
+            Constraint::Length(14),
+            Constraint::Length(10),
+        ],
+    )
     .header(header)
     .block(Block::default().borders(Borders::ALL).title("nodes"));
 

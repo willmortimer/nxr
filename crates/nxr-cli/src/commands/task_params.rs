@@ -17,7 +17,10 @@ fn terminal_mux_active() -> bool {
     mux_active_from_env_os(std::env::var_os("TMUX"), std::env::var_os("ZELLIJ"))
 }
 
-fn mux_active_from_env_os(tmux: Option<std::ffi::OsString>, zellij: Option<std::ffi::OsString>) -> bool {
+fn mux_active_from_env_os(
+    tmux: Option<std::ffi::OsString>,
+    zellij: Option<std::ffi::OsString>,
+) -> bool {
     tmux.is_some() || zellij.is_some()
 }
 
