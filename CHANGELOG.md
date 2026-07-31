@@ -9,8 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Operator TUI contract ([ADR-0173](docs/adr/0173-operator-tui.md)): `--output tui`,
-  `nxr attach [RUN]`, `nxr ui` (lazygit-style apps/tasks/scripts browser).
+- Operator TUI watch ([ADR-0173](docs/adr/0173-operator-tui.md)): `--output tui` Ratatui
+  DAG watch (node table + log tail), non-TTY fallback to `live`, and `nxr attach [RUN]`
+  to reopen recorded runs from attach sidecars / `--log-dir`.
+- Operator TUI contract: `nxr ui` (lazygit-style apps/tasks/scripts browser) — CLI
+  vocabulary only; implementation tracked separately.
 
 ## [3.5.3] - 2026-07-31
 

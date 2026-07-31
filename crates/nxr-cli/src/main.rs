@@ -13,6 +13,7 @@ mod output_task;
 mod reports;
 mod runner_output;
 mod shell_mode;
+mod tui;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -30,7 +31,7 @@ use crate::cli::{
 };
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
-    affected, cache, ci, complete, completion, configurations, context, daemon, doctor,
+    affected, attach, cache, ci, complete, completion, configurations, context, daemon, doctor,
     doctor_builders, doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt, graph,
     history, init, inspect, inventory, list, manpage, migrate, nix_op, plan, process_cmd, run,
     script, select, selectors, task, trust, watch,
@@ -138,6 +139,8 @@ enum RunError {
     #[error(transparent)]
     History(#[from] history::HistoryError),
     #[error(transparent)]
+    Attach(#[from] attach::AttachError),
+    #[error(transparent)]
     Affected(#[from] affected::AffectedCommandError),
     #[error(transparent)]
     Ci(#[from] ci::CiPlanError),
@@ -183,6 +186,7 @@ impl RunError {
             Self::Cache(error) => error.exit_code(),
             Self::Daemon(error) => error.exit_code(),
             Self::History(error) => error.exit_code(),
+            Self::Attach(error) => error.exit_code(),
             Self::Affected(error) => error.exit_code(),
             Self::Ci(error) => error.exit_code(),
             Self::Selector(error) => error.exit_code(),
@@ -644,6 +648,10 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 history::clear(cli.json, runner)?;
                 Ok(exit::SUCCESS)
             }
+        },
+        Some(Command::Attach { run }) => {
+            attach::run(run.as_deref(), runner)?;
+            Ok(exit::SUCCESS)
         },
         Some(Command::Trust { action }) => match action {
             TrustSubcommand::Status => {

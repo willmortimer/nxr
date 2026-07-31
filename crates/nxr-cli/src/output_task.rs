@@ -22,6 +22,8 @@ pub enum TaskOutputMode {
     Failures,
     /// One-line status table per node (no multiplexed child logs).
     Summary,
+    /// Ratatui one-screen DAG watch (node table + selected log tail).
+    Tui,
     /// Single foreground child inherits stdio (no pipe multiplexing).
     ///
     /// Conflicts with `-j > 1` and `--events`; handled before the event sink.
@@ -29,13 +31,25 @@ pub enum TaskOutputMode {
 }
 
 impl TaskOutputMode {
-    /// Modes that require piped child stdio and a renderer.
+    /// Modes that require piped child stdio and the line-oriented renderer.
     #[must_use]
     pub const fn is_multiplexed(self) -> bool {
         matches!(
             self,
             Self::Live | Self::Grouped | Self::Failures | Self::Summary
         )
+    }
+
+    /// Ratatui DAG watch (`--output tui`).
+    #[must_use]
+    pub const fn is_tui(self) -> bool {
+        matches!(self, Self::Tui)
+    }
+
+    /// Modes that close stdin and require piped child stdio.
+    #[must_use]
+    pub const fn uses_piped_stdio(self) -> bool {
+        self.is_multiplexed() || self.is_tui()
     }
 }
 
@@ -462,14 +476,14 @@ impl EventSink for TaskOutputRenderer<'_> {
                 TaskOutputMode::Grouped | TaskOutputMode::Failures => {
                     self.ingest_buffered(true, &node, &payload);
                 }
-                TaskOutputMode::Raw | TaskOutputMode::Summary => {}
+                TaskOutputMode::Raw | TaskOutputMode::Summary | TaskOutputMode::Tui => {}
             },
             Event::StderrChunk { node, payload } => match self.mode {
                 TaskOutputMode::Live => self.ingest_live(false, &node, &payload),
                 TaskOutputMode::Grouped | TaskOutputMode::Failures => {
                     self.ingest_buffered(false, &node, &payload);
                 }
-                TaskOutputMode::Raw | TaskOutputMode::Summary => {}
+                TaskOutputMode::Raw | TaskOutputMode::Summary | TaskOutputMode::Tui => {}
             },
             Event::NodeExited {
                 node,
@@ -483,7 +497,8 @@ impl EventSink for TaskOutputRenderer<'_> {
                 }
 
                 let should_flush = match self.mode {
-                    TaskOutputMode::Live | TaskOutputMode::Raw | TaskOutputMode::Summary => false,
+                    TaskOutputMode::Live | TaskOutputMode::Raw | TaskOutputMode::Summary
+                    | TaskOutputMode::Tui => false,
                     TaskOutputMode::Grouped => true,
                     TaskOutputMode::Failures => node_failed(code),
                 };

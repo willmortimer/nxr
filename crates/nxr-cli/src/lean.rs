@@ -52,6 +52,7 @@ const RESERVED_SUBCOMMANDS: &[&str] = &[
     "cache",
     "daemon",
     "history",
+    "attach",
     "trust",
     "inventory",
     "up",
