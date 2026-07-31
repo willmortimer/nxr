@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consumer docs split: library-style root README, GitHub Wiki guides under
   [`wiki/`](wiki/), and VHS demos for tui / ui / deploy-wizard
   ([docs/demo/](docs/demo/)).
+- `--output tui` falls back to `live` under tmux/zellij (override with
+  `NXR_TUI=force`); mouse capture disabled so terminal text selection works.
+- `nxr attach` falls back to run-history summaries when no TUI sidecar exists.
+- `nxr ui` tab/catalog focus: Enter opens the catalog; Enter again runs.
+- Workspace script `.nxr/scripts/publish-wiki` for optional wiki sync.
 
 ## [3.5.3] - 2026-07-31
 

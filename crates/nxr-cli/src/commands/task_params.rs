@@ -13,7 +13,8 @@ use nxr_task::{
 };
 
 /// True when `TMUX` or `ZELLIJ` is set (terminal multiplexer session).
-fn terminal_mux_active() -> bool {
+#[must_use]
+pub fn mux_session_active() -> bool {
     mux_active_from_env_os(std::env::var_os("TMUX"), std::env::var_os("ZELLIJ"))
 }
 
@@ -36,7 +37,7 @@ fn parameter_prompts_interactive_tty(stdin_tty: bool, stderr_tty: bool) -> bool 
     if stdin_tty && stderr_tty {
         return true;
     }
-    if terminal_mux_active() {
+    if mux_session_active() {
         return false;
     }
     false

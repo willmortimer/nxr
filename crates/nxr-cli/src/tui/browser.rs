@@ -1,4 +1,8 @@
 //! Lazygit-style browser for apps, tasks, and workspace scripts.
+//!
+//! Focus starts on the **Tabs** bar. Enter opens the catalog for that tab;
+//! Enter in the catalog runs the selection. Mouse capture is left off so the
+//! terminal can select/copy text.
 
 use std::io;
 
@@ -55,6 +59,13 @@ impl BrowserTab {
     }
 }
 
+/// Which pane receives navigation keys.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrowserFocus {
+    Tabs,
+    Catalog,
+}
+
 /// Outcome of the interactive browser loop.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BrowserOutcome {
@@ -78,6 +89,7 @@ pub struct BrowserState {
     pub scripts: Vec<BrowserItem>,
     pub tab: BrowserTab,
     pub selected: usize,
+    pub focus: BrowserFocus,
 }
 
 impl BrowserState {
@@ -94,6 +106,7 @@ impl BrowserState {
             scripts: sanitize_items(scripts),
             tab: BrowserTab::Apps,
             selected: 0,
+            focus: BrowserFocus::Tabs,
         }
     }
 
@@ -135,6 +148,12 @@ impl BrowserState {
         let current = self.tab.index() as isize;
         let next = (current + delta).rem_euclid(BrowserTab::ALL.len() as isize);
         self.set_tab(BrowserTab::from_index(next as usize));
+    }
+
+    /// Enter the catalog for the current tab (does not launch).
+    pub fn enter_catalog(&mut self) {
+        self.focus = BrowserFocus::Catalog;
+        self.clamp_selection();
     }
 
     fn launch_selection(&self) -> Option<BrowserLaunch> {
@@ -197,25 +216,53 @@ fn poll_browser_input(state: &mut BrowserState) -> io::Result<Option<BrowserOutc
     }
 
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => return Ok(Some(BrowserOutcome::Quit)),
+        KeyCode::Char('q') => return Ok(Some(BrowserOutcome::Quit)),
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             return Ok(Some(BrowserOutcome::Quit));
         }
-        KeyCode::Up | KeyCode::Char('k') => state.move_selection(-1),
-        KeyCode::Down | KeyCode::Char('j') => state.move_selection(1),
-        KeyCode::Tab => state.next_tab(1),
-        KeyCode::BackTab => state.next_tab(-1),
-        KeyCode::Char('1') => state.set_tab(BrowserTab::Apps),
-        KeyCode::Char('2') => state.set_tab(BrowserTab::Tasks),
-        KeyCode::Char('3') => state.set_tab(BrowserTab::Scripts),
-        KeyCode::Left | KeyCode::Char('h') => state.next_tab(-1),
-        KeyCode::Right | KeyCode::Char('l') => state.next_tab(1),
-        KeyCode::Enter => {
-            if let Some(launch) = state.launch_selection() {
-                return Ok(Some(BrowserOutcome::Launch(launch)));
-            }
+        KeyCode::Esc => match state.focus {
+            BrowserFocus::Catalog => state.focus = BrowserFocus::Tabs,
+            BrowserFocus::Tabs => return Ok(Some(BrowserOutcome::Quit)),
+        },
+        KeyCode::Char('1') => {
+            state.set_tab(BrowserTab::Apps);
+            state.focus = BrowserFocus::Tabs;
         }
-        _ => {}
+        KeyCode::Char('2') => {
+            state.set_tab(BrowserTab::Tasks);
+            state.focus = BrowserFocus::Tabs;
+        }
+        KeyCode::Char('3') => {
+            state.set_tab(BrowserTab::Scripts);
+            state.focus = BrowserFocus::Tabs;
+        }
+        KeyCode::Tab => match state.focus {
+            BrowserFocus::Tabs => state.enter_catalog(),
+            BrowserFocus::Catalog => state.focus = BrowserFocus::Tabs,
+        },
+        KeyCode::BackTab => {
+            state.focus = BrowserFocus::Tabs;
+            state.next_tab(-1);
+        }
+        other => match state.focus {
+            BrowserFocus::Tabs => match other {
+                KeyCode::Left | KeyCode::Char('h') => state.next_tab(-1),
+                KeyCode::Right | KeyCode::Char('l') => state.next_tab(1),
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Enter => state.enter_catalog(),
+                _ => {}
+            },
+            BrowserFocus::Catalog => match other {
+                KeyCode::Up | KeyCode::Char('k') => state.move_selection(-1),
+                KeyCode::Down | KeyCode::Char('j') => state.move_selection(1),
+                KeyCode::Left | KeyCode::Char('h') => state.focus = BrowserFocus::Tabs,
+                KeyCode::Enter => {
+                    if let Some(launch) = state.launch_selection() {
+                        return Ok(Some(BrowserOutcome::Launch(launch)));
+                    }
+                }
+                _ => {}
+            },
+        },
     }
     Ok(None)
 }
@@ -246,10 +293,16 @@ fn draw_tabs(frame: &mut Frame<'_>, area: Rect, state: &BrowserState) {
             Line::from(format!("{} ({count})", tab.label()))
         })
         .to_vec();
+    let focused = matches!(state.focus, BrowserFocus::Tabs);
+    let title = if focused { "nxr ui · tabs" } else { "nxr ui" };
     let tabs = Tabs::new(titles)
         .block(Block::default().borders(Borders::ALL).title(Span::styled(
-            "nxr ui",
-            Style::default().add_modifier(Modifier::BOLD),
+            title,
+            if focused {
+                Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                Style::default().add_modifier(Modifier::BOLD)
+            },
         )))
         .select(state.tab.index())
         .highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED));
@@ -257,13 +310,28 @@ fn draw_tabs(frame: &mut Frame<'_>, area: Rect, state: &BrowserState) {
 }
 
 fn draw_list(frame: &mut Frame<'_>, area: Rect, state: &BrowserState, list_state: &mut ListState) {
+    let focused = matches!(state.focus, BrowserFocus::Catalog);
+    let title = if focused {
+        format!("{} · catalog", state.tab.label())
+    } else {
+        state.tab.label().to_owned()
+    };
+    let block = Block::default().borders(Borders::ALL).title(Span::styled(
+        title,
+        if focused {
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            Style::default()
+        },
+    ));
+
     let items = state.items_for_tab();
     if items.is_empty() {
         let empty = Paragraph::new(format!(
             "No {} discovered.",
             state.tab.label().to_lowercase()
         ))
-        .block(Block::default().borders(Borders::ALL).title("Catalog"));
+        .block(block);
         frame.render_widget(empty, area);
         return;
     }
@@ -283,15 +351,29 @@ fn draw_list(frame: &mut Frame<'_>, area: Rect, state: &BrowserState, list_state
         })
         .collect();
 
-    let list = List::new(rows).block(Block::default().borders(Borders::ALL).title("Catalog"));
+    let highlight = if focused {
+        Style::default().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::default().add_modifier(Modifier::DIM)
+    };
+    let list = List::new(rows)
+        .block(block)
+        .highlight_style(highlight)
+        .highlight_symbol(if focused { "> " } else { "  " });
     frame.render_stateful_widget(list, area, list_state);
 }
 
 fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &BrowserState) {
-    let hint = if state.items_for_tab().is_empty() {
-        "Tab/←/→ switch pane · q/Esc quit"
-    } else {
-        "↑/↓ navigate · Tab/←/→ switch pane · Enter run · q/Esc quit"
+    let hint = match state.focus {
+        BrowserFocus::Tabs => {
+            "←/→ tab · Enter/↓ open catalog · 1/2/3 jump · q quit · mouse select/copy ok"
+        }
+        BrowserFocus::Catalog if state.items_for_tab().is_empty() => {
+            "Esc/← back to tabs · q quit · mouse select/copy ok"
+        }
+        BrowserFocus::Catalog => {
+            "↑/↓ navigate · Enter run · Esc/← tabs · q quit · mouse select/copy ok"
+        }
     };
     let footer = Paragraph::new(hint);
     frame.render_widget(footer, area);
@@ -308,6 +390,7 @@ mod tests {
             std::iter::empty::<(String, Option<String>)>(),
             std::iter::empty(),
         );
+        state.enter_catalog();
         state.move_selection(5);
         assert_eq!(state.selected, 1);
         state.move_selection(-10);
@@ -327,6 +410,18 @@ mod tests {
         state.selected = 5;
         state.set_tab(BrowserTab::Apps);
         assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn enter_catalog_does_not_launch() {
+        let mut state = BrowserState::from_catalog(
+            [("app".to_owned(), None)],
+            std::iter::empty::<(String, Option<String>)>(),
+            std::iter::empty(),
+        );
+        assert_eq!(state.focus, BrowserFocus::Tabs);
+        state.enter_catalog();
+        assert_eq!(state.focus, BrowserFocus::Catalog);
     }
 
     #[test]

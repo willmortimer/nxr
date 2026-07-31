@@ -121,20 +121,17 @@ impl TuiEventSink {
         loop {
             self.poll_navigation()?;
             self.redraw()?;
-            if event::poll(Duration::from_millis(80))? {
-                if let CrosstermEvent::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press
-                        && matches!(
-                            key.code,
-                            KeyCode::Char('q')
-                                | KeyCode::Esc
-                                | KeyCode::Char('c')
-                                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        )
-                    {
-                        break;
-                    }
-                }
+            if event::poll(Duration::from_millis(80))?
+                && let CrosstermEvent::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+                && matches!(
+                    key.code,
+                    KeyCode::Char('q')
+                        | KeyCode::Esc
+                        | KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL)
+                )
+            {
+                break;
             }
         }
         if let Some(session) = &mut self.session {
@@ -150,10 +147,9 @@ impl EventSink for TuiEventSink {
             run_id: Some(run_id),
             ..
         } = &event
+            && let Err(error) = self.ensure_session(run_id)
         {
-            if let Err(error) = self.ensure_session(run_id) {
-                eprintln!("nxr: attach sidecar write failed: {error}");
-            }
+            eprintln!("nxr: attach sidecar write failed: {error}");
         }
 
         self.state.apply(&event);
@@ -167,10 +163,10 @@ impl EventSink for TuiEventSink {
 
         if matches!(event, Event::RunCompleted { .. }) {
             self.finished = true;
-            if let Err(error) = self.wait_for_quit() {
-                if error.kind() != io::ErrorKind::Interrupted {
-                    eprintln!("nxr: tui watch failed: {error}");
-                }
+            if let Err(error) = self.wait_for_quit()
+                && error.kind() != io::ErrorKind::Interrupted
+            {
+                eprintln!("nxr: tui watch failed: {error}");
             }
             self.terminal = None;
             self.ratatui = None;

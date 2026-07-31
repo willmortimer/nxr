@@ -23,13 +23,16 @@ pub struct TerminalGuard {
 impl TerminalGuard {
     /// Enter the alternate screen and raw mode.
     ///
+    /// Mouse capture is intentionally **not** enabled so the host terminal can
+    /// select and copy text (tmux/zellij scrollback / OSC 52 remain available).
+    ///
     /// # Errors
     ///
     /// Returns [`io::Error`] when the terminal cannot be configured.
     pub fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, event::EnableMouseCapture)?;
+        execute!(stdout, EnterAlternateScreen)?;
         Ok(Self { active: true })
     }
 }
@@ -41,7 +44,7 @@ impl Drop for TerminalGuard {
         }
         let _ = disable_raw_mode();
         let mut stdout = io::stdout();
-        let _ = execute!(stdout, event::DisableMouseCapture, LeaveAlternateScreen);
+        let _ = execute!(stdout, LeaveAlternateScreen);
     }
 }
 
@@ -101,14 +104,15 @@ fn user_requested_quit() -> io::Result<bool> {
     if !event::poll(Duration::from_millis(0))? {
         return Ok(false);
     }
-    if let CrosstermEvent::Key(key) = event::read()? {
-        if key.kind == KeyEventKind::Press {
-            return Ok(matches!(
-                key.code,
-                KeyCode::Char('q') | KeyCode::Esc
-                    | KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL)
-            ));
-        }
+    if let CrosstermEvent::Key(key) = event::read()?
+        && key.kind == KeyEventKind::Press
+    {
+        return Ok(matches!(
+            key.code,
+            KeyCode::Char('q')
+                | KeyCode::Esc
+                | KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL)
+        ));
     }
     Ok(false)
 }

@@ -471,7 +471,7 @@ pub fn execute_with_control(
 
     if pipe_stdio {
         let target = format_task_roots(&canonical_roots);
-        let result = if matches!(effective_output, Some(TaskOutputMode::Tui)) {
+        if matches!(effective_output, Some(TaskOutputMode::Tui)) {
             let inner = TuiEventSink::new(
                 nxr_core::RunTargetKind::Task,
                 target,
@@ -534,8 +534,7 @@ pub fn execute_with_control(
                 let _ = sink.inner().maybe_emit_on_exit(*code);
             }
             result
-        };
-        result
+        }
     } else {
         // Inherit stdio for interactivity / --output raw: do not hold stdout/stderr locks.
         let inner = nxr_task::NullSink;

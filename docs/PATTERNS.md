@@ -48,19 +48,22 @@ One renderer ([ADR-0173](adr/0173-operator-tui.md)); do not ship competing UIs:
 |---|---|
 | Per-node log tee | `--log-dir PATH` → `PATH/<node>.stdout` / `.stderr` |
 | Parallel status line | `--output live` (default for `-j > 1` on non-TUI) |
-| DAG watch panel | `--output tui` (falls back to `live` when not a TTY) |
-| Re-open a run | `nxr attach [RUN]` |
-| Browse + run | `nxr ui` → Enter: app via `nxr <app>`, task via `--output tui`, script via `nxr script` |
+| DAG watch panel | `--output tui` (falls back to `live` when not a TTY, or under tmux/zellij unless `NXR_TUI=force`) |
+| Re-open a run | `nxr attach [RUN]` (TUI sidecars first; else history summary) |
+| Browse + run | `nxr ui` → focus tabs with ←/→, Enter opens catalog, Enter again runs |
+| Wiki publish (this repo) | `nxr script publish-wiki` (optional; not on `release`) |
 | Nix noise | `NXR_NIX_PROGRESS=auto\|builtin\|nom\|off` ([ADR-0172](adr/0172-nix-progress-formatter.md)) |
 
 ```bash
 nxr --log-dir .nxr/logs/run-1 --output tui task ci -j 4
 nxr attach
 nxr ui
+nxr script publish-wiki
 ```
 
-Zellij/tmux pane layouts are companion docs only; the TUI is the in-process
-watch surface.
+Mouse selection/copy works in the TUI (mouse capture is off). Under tmux/zellij,
+`--output tui` falls back to `live` by default; set `NXR_TUI=force` to keep the
+alternate-screen watch.
 
 ### Multiplexer clipboard (OSC 52)
 

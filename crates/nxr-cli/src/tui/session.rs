@@ -5,7 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nxr_core::RunTargetKind;
+use nxr_core::{RunSummary, RunTargetKind, list_runs};
 use serde::{Deserialize, Serialize};
 
 use super::state::{NodePhase, WatchState};
@@ -13,6 +13,7 @@ use super::state::{NodePhase, WatchState};
 const SIDECAR_FILENAME: &str = "nxr-run.json";
 const ATTACH_RUNS_DIR: &str = "attach-runs";
 const SIDECAR_SCHEMA_VERSION: u32 = 1;
+const HISTORY_RUN_PREFIX: &str = "hist-";
 
 /// Persisted node snapshot for attach replay.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -41,6 +42,9 @@ pub struct AttachSession {
     /// Absolute path to the sidecar file (not serialized).
     #[serde(skip)]
     pub sidecar_path: PathBuf,
+    /// True when this session was synthesized from run history (no TUI sidecar).
+    #[serde(skip)]
+    pub from_history: bool,
 }
 
 /// Whether the recorded run is still active.
@@ -54,7 +58,7 @@ pub enum AttachRunStatus {
 /// Errors resolving or reading attach sessions.
 #[derive(Debug, thiserror::Error)]
 pub enum AttachSessionError {
-    #[error("no attachable runs found")]
+    #[error("no attachable runs found (run with --output tui, or check nxr history)")]
     NotFound,
     #[error("attach run not found: {run_id}")]
     UnknownRun { run_id: String },
@@ -87,6 +91,7 @@ impl AttachSession {
             success: None,
             nodes: Vec::new(),
             sidecar_path: attach_runs_dir().join(format!("{run_id}.json")),
+            from_history: false,
         };
         session.save()?;
         if let Some(dir) = log_dir {
@@ -136,6 +141,14 @@ impl AttachSession {
             root: self.target.clone(),
             run_complete: matches!(self.status, AttachRunStatus::Completed),
             success: self.success,
+            diagnostic: if self.from_history {
+                Some(
+                    "history summary (no TUI sidecar / log-dir); re-run with --output tui for full attach"
+                        .to_owned(),
+                )
+            } else {
+                None
+            },
             ..WatchState::default()
         };
         for node in &self.nodes {
@@ -163,12 +176,40 @@ impl AttachSession {
     }
 }
 
-/// List attachable sessions, newest first.
+/// List attachable sessions, newest first (TUI sidecars, then history fallbacks).
 ///
 /// # Errors
 ///
-/// Returns [`AttachSessionError`] when sidecars cannot be read.
+/// Returns [`AttachSessionError`] when sidecars or history cannot be read.
 pub fn list_attachable_runs() -> Result<Vec<AttachSession>, AttachSessionError> {
+    let mut sessions = list_sidecar_sessions()?;
+    let sidecar_ids: std::collections::BTreeSet<String> = sessions
+        .iter()
+        .map(|session| session.run_id.clone())
+        .collect();
+
+    for summary in list_runs()?.into_iter().rev() {
+        let session = session_from_history(&summary);
+        if sidecar_ids.contains(&session.run_id) {
+            continue;
+        }
+        // Prefer sidecars that match the same target+timestamp window when present.
+        if sessions.iter().any(|existing| {
+            !existing.from_history
+                && existing.target == session.target
+                && existing.target_kind == session.target_kind
+                && existing.recorded_at.abs_diff(session.recorded_at) <= 2
+        }) {
+            continue;
+        }
+        sessions.push(session);
+    }
+
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.recorded_at));
+    Ok(sessions)
+}
+
+fn list_sidecar_sessions() -> Result<Vec<AttachSession>, AttachSessionError> {
     let mut sessions = Vec::new();
     let dir = attach_runs_dir();
     if dir.is_dir() {
@@ -180,15 +221,46 @@ pub fn list_attachable_runs() -> Result<Vec<AttachSession>, AttachSessionError> 
             }
             if let Ok(mut session) = read_sidecar(&path) {
                 session.sidecar_path = path;
+                session.from_history = false;
                 sessions.push(session);
             }
         }
     }
-    sessions.sort_by_key(|session| std::cmp::Reverse(session.recorded_at));
     Ok(sessions)
 }
 
+fn session_from_history(summary: &RunSummary) -> AttachSession {
+    let run_id = history_run_id(summary);
+    let success = summary.exit_code == 0;
+    let phase = if success { "ok" } else { "failed" };
+    AttachSession {
+        schema_version: SIDECAR_SCHEMA_VERSION,
+        run_id: run_id.clone(),
+        recorded_at: summary.recorded_at,
+        target_kind: summary.target_kind,
+        target: summary.target.clone(),
+        log_dir: None,
+        status: AttachRunStatus::Completed,
+        success: Some(success),
+        nodes: vec![AttachNodeRecord {
+            id: summary.target.clone(),
+            phase: phase.to_owned(),
+            duration_ms: Some(summary.duration_ms),
+        }],
+        sidecar_path: PathBuf::from(format!("history:{run_id}")),
+        from_history: true,
+    }
+}
+
+fn history_run_id(summary: &RunSummary) -> String {
+    let safe_target = sanitize_node_name(&summary.target);
+    format!("{HISTORY_RUN_PREFIX}{}-{safe_target}", summary.recorded_at)
+}
+
 /// Resolve a run id or the most recent attachable session.
+///
+/// Prefers TUI attach sidecars; falls back to [`nxr_core::list_runs`] history
+/// summaries (synthetic `hist-<epoch>-<target>` ids) when no sidecar exists.
 ///
 /// # Errors
 ///
@@ -205,6 +277,12 @@ pub fn resolve_attach_run(run_id: Option<&str>) -> Result<AttachSession, AttachS
             .ok_or_else(|| AttachSessionError::UnknownRun {
                 run_id: run_id.to_owned(),
             })
+    } else if let Some(sidecar) = sessions
+        .iter()
+        .find(|session| !session.from_history)
+        .cloned()
+    {
+        Ok(sidecar)
     } else {
         sessions
             .into_iter()
@@ -252,6 +330,7 @@ fn read_sidecar(path: &Path) -> Result<AttachSession, AttachSessionError> {
         )));
     }
     session.sidecar_path = path.to_path_buf();
+    session.from_history = false;
     Ok(session)
 }
 
@@ -324,6 +403,7 @@ pub(crate) fn set_test_attach_runs_dir(path: Option<PathBuf>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nxr_core::DiscoveryCacheOutcome;
     use tempfile::TempDir;
 
     #[test]
@@ -337,6 +417,7 @@ mod tests {
 
         let resolved = resolve_attach_run(None).expect("resolve");
         assert_eq!(resolved.run_id, "run-test1");
+        assert!(!resolved.from_history);
 
         set_test_attach_runs_dir(None);
     }
@@ -349,6 +430,44 @@ mod tests {
 
         let error = resolve_attach_run(Some("run-missing")).expect_err("missing");
         assert!(matches!(error, AttachSessionError::UnknownRun { .. }));
+
+        set_test_attach_runs_dir(None);
+    }
+
+    #[test]
+    fn history_fallback_builds_synthetic_session() {
+        let summary = RunSummary {
+            recorded_at: 1_700_000_000,
+            target_kind: RunTargetKind::Task,
+            target: "fmt-check".to_owned(),
+            flake: Some(".".to_owned()),
+            exit_code: 0,
+            duration_ms: 42,
+            discovery_cache: DiscoveryCacheOutcome::NotApplicable,
+            discovery_miss_reasons: Vec::new(),
+        };
+        let session = session_from_history(&summary);
+        assert!(session.from_history);
+        assert_eq!(
+            session.run_id,
+            format!("{HISTORY_RUN_PREFIX}1700000000-fmt-check")
+        );
+        assert_eq!(session.target, "fmt-check");
+        assert_eq!(session.nodes.len(), 1);
+        assert_eq!(session.success, Some(true));
+        assert!(session.to_watch_state().diagnostic.is_some());
+    }
+
+    #[test]
+    fn sidecar_preferred_over_history_when_resolving_default() {
+        let temp = TempDir::new().expect("tempdir");
+        set_test_attach_runs_dir(Some(temp.path().to_path_buf()));
+        AttachSession::write_running("run-sidecar", RunTargetKind::Task, "ci", None)
+            .expect("write");
+
+        let resolved = resolve_attach_run(None).expect("resolve");
+        assert_eq!(resolved.run_id, "run-sidecar");
+        assert!(!resolved.from_history);
 
         set_test_attach_runs_dir(None);
     }

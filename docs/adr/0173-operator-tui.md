@@ -44,13 +44,15 @@ protocol.
 
 1. **`--output tui`** — Ratatui one-screen DAG watch (node table + selected log
    tail). Composes with `--log-dir` tees. On non-TTY (or incompatible
-   multiplex), **fall back to `--output live`** with a stderr notice (not a hard
-   fail).
-2. **`nxr attach [RUN]`** — Reopen the TUI for a run id from history / log-dir
-   artifacts; omit RUN → most recent attachable run; fail closed if nothing
-   exists.
+   multiplex such as tmux/zellij), **fall back to `--output live`** with a
+   stderr notice (not a hard fail). Override mux fallback with `NXR_TUI=force`.
+   Mouse capture stays off so terminals can select/copy text.
+2. **`nxr attach [RUN]`** — Reopen the TUI for a run id from TUI sidecars /
+   log-dir artifacts, else a run-history summary; omit RUN → most recent
+   attachable run; fail closed if nothing exists.
 3. **`nxr ui`** — Lazygit-style browser of apps, tasks, and workspace scripts;
-   Enter runs the selection with `--output tui` (scripts via `nxr script`).
+   tab focus then catalog focus; Enter runs the selection with `--output tui`
+   for tasks (scripts via `nxr script`).
 4. Events remain the sole feed for live TUI state; no parallel presentation
    protocol in this ADR.
 5. Branching remains wizard apps + parameters (`--set` / TTY); no schema `when`.
@@ -66,6 +68,7 @@ See [CLI_CONTRACT.md](../CLI_CONTRACT.md):
 Kill-switches / related env (implementation):
 
 - `NXR_OSC52=off` — disable OSC 52 failure clipboard (separate polish)
+- `NXR_TUI=off|force` — disable TUI or keep it under tmux/zellij
 - Existing `NXR_NIX_PROGRESS` unchanged for `build`/`check`/`shell`
 
 ## Consequences

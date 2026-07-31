@@ -67,3 +67,6 @@ Thumbs.db
 
 # --- Release gate stamps (HEAD-keyed; written by nxr task ci / ci-linux) ---
 .nxr/release-gates/
+# --- Local TUI attach sidecars / log tees (not source) ---
+.nxr/attach-runs/
+.nxr/logs/

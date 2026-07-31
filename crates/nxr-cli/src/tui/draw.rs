@@ -138,9 +138,9 @@ fn draw_log_tail(frame: &mut Frame<'_>, area: Rect, state: &WatchState) {
 
 fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &WatchState) {
     let hint = if state.run_complete {
-        "q quit  ↑/↓ select"
+        "q quit  ↑/↓ select  mouse select/copy ok"
     } else {
-        "↑/↓ select  q quit when done"
+        "↑/↓ select  q quit when done  mouse select/copy ok"
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
