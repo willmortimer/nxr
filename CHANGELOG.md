@@ -7,14 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.2] - 2026-07-31
+
+### Fixed
+
+- Stale `docs/CLI_GENERATED.md` that failed hermetic `checks.*.cli-ref` / GHA
+  `nix flake check` after the 3.5.1 tag.
+
 ### Changed
 
+- Workspace and Nix package version **3.5.2**.
 - Repo quality/release path is an nxr task DAG: `ci` (host), `ci-linux` (OrbStack
   / Docker / native Linux), `release` depends on both. Prefer `nxr task …` over
   `nix run .#ci-gate` rituals; GHA `ci.yml` runs packaged `nxr task ci`.
 - Host `ci` graph includes **`cli-ref`** (fail-closed on `docs/CLI_GENERATED.md`
-  drift); `nix run .#cli-ref-gen` regenerates. Regenerated CLI help for 3.5.x
-  flags (`script`, `--set`, `--log-dir`, `--context`).
+  drift); `nix run .#cli-ref-gen` regenerates.
 - Docs prefer “local ≡ CI” / self-hosted quality graph wording.
 
 ## [3.5.1] - 2026-07-30
