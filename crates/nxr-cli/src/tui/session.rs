@@ -206,7 +206,10 @@ pub fn resolve_attach_run(run_id: Option<&str>) -> Result<AttachSession, AttachS
                 run_id: run_id.to_owned(),
             })
     } else {
-        sessions.into_iter().next().ok_or(AttachSessionError::NotFound)
+        sessions
+            .into_iter()
+            .next()
+            .ok_or(AttachSessionError::NotFound)
     }
 }
 
@@ -215,7 +218,10 @@ pub fn resolve_attach_run(run_id: Option<&str>) -> Result<AttachSession, AttachS
 /// # Errors
 ///
 /// Returns [`AttachSessionError`] on log-dir read failures.
-pub fn hydrate_log_tails(session: &AttachSession, state: &mut WatchState) -> Result<(), AttachSessionError> {
+pub fn hydrate_log_tails(
+    session: &AttachSession,
+    state: &mut WatchState,
+) -> Result<(), AttachSessionError> {
     let Some(log_dir) = &session.log_dir else {
         return Ok(());
     };
@@ -249,7 +255,10 @@ fn read_sidecar(path: &Path) -> Result<AttachSession, AttachSessionError> {
     Ok(session)
 }
 
-fn write_log_dir_sidecar(log_dir: &Path, session: &AttachSession) -> Result<(), AttachSessionError> {
+fn write_log_dir_sidecar(
+    log_dir: &Path,
+    session: &AttachSession,
+) -> Result<(), AttachSessionError> {
     fs::create_dir_all(log_dir)?;
     let path = log_dir.join(SIDECAR_FILENAME);
     let rendered = serde_json::to_string_pretty(session)
@@ -322,13 +331,8 @@ mod tests {
         let temp = TempDir::new().expect("tempdir");
         set_test_attach_runs_dir(Some(temp.path().to_path_buf()));
 
-        let session = AttachSession::write_running(
-            "run-test1",
-            RunTargetKind::Task,
-            "ci",
-            None,
-        )
-        .expect("write");
+        let session = AttachSession::write_running("run-test1", RunTargetKind::Task, "ci", None)
+            .expect("write");
         assert_eq!(session.run_id, "run-test1");
 
         let resolved = resolve_attach_run(None).expect("resolve");

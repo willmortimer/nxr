@@ -35,14 +35,16 @@ use crate::commands::{
     affected, attach, cache, ci, complete, completion, configurations, context, daemon, doctor,
     doctor_builders, doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt, graph,
     history, init, inspect, inventory, list, manpage, migrate, nix_op, plan, process_cmd, run,
-    script, select, selectors, task, trust, watch,
+    script, select, selectors, task, trust, ui, watch,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
 use crate::nix_flags::nix_flags_from_cli;
 use crate::output_options::OutputOptions;
+use crate::output_task::TaskOutputMode;
 use crate::reports::{ReportKind, ReportPaths, parse_report_spec};
 use crate::runner_output::RunnerOutput;
+use crate::tui::browser::BrowserLaunch;
 
 fn main() {
     if let Some(result) = lean::try_run() {
@@ -142,6 +144,8 @@ enum RunError {
     #[error(transparent)]
     Attach(#[from] attach::AttachError),
     #[error(transparent)]
+    Ui(#[from] ui::UiError),
+    #[error(transparent)]
     Affected(#[from] affected::AffectedCommandError),
     #[error(transparent)]
     Ci(#[from] ci::CiPlanError),
@@ -188,6 +192,7 @@ impl RunError {
             Self::Daemon(error) => error.exit_code(),
             Self::History(error) => error.exit_code(),
             Self::Attach(error) => error.exit_code(),
+            Self::Ui(error) => error.exit_code(),
             Self::Affected(error) => error.exit_code(),
             Self::Ci(error) => error.exit_code(),
             Self::Selector(error) => error.exit_code(),
@@ -653,7 +658,20 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
         Some(Command::Attach { run }) => {
             attach::run(run.as_deref(), runner)?;
             Ok(exit::SUCCESS)
-        },
+        }
+        Some(Command::Ui) => {
+            let launch = ui::run_interactive(
+                cli.flake.as_deref(),
+                cli.nix.as_deref(),
+                cli.refresh_discovery,
+                &nix_flags,
+                runner,
+            )?;
+            if let Some(selection) = launch {
+                return dispatch_ui_selection(cli, &nix_flags, selection, runner);
+            }
+            Ok(exit::SUCCESS)
+        }
         Some(Command::Trust { action }) => match action {
             TrustSubcommand::Status => {
                 trust::status(cli.flake.as_deref(), cli.json, runner)?;
@@ -1637,6 +1655,42 @@ fn dispatch_explain(
     };
     explain::run(&request, cli.json, runner)?;
     Ok(exit::SUCCESS)
+}
+
+fn dispatch_ui_selection(
+    cli: &Cli,
+    nix_flags: &nxr_nix::OptionalNixFlags,
+    selection: BrowserLaunch,
+    runner: RunnerOutput,
+) -> Result<i32, RunError> {
+    match selection {
+        BrowserLaunch::App(app) => {
+            let request = app_request(cli, nix_flags, &app, &[])?;
+            run::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+        }
+        BrowserLaunch::Task(task) => {
+            let report_options = TaskReportOptions::default();
+            let request = task_request(
+                cli,
+                nix_flags,
+                vec![task],
+                &[],
+                1,
+                false,
+                &report_options,
+                BTreeMap::new(),
+            )?;
+            let request = task::TaskRequest {
+                output_mode: Some(TaskOutputMode::Tui),
+                ..request
+            };
+            task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+        }
+        BrowserLaunch::Script(path_or_name) => {
+            let request = script_request(cli, nix_flags, &path_or_name, &[])?;
+            script::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+        }
+    }
 }
 
 fn dispatch_external(

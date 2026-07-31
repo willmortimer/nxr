@@ -35,6 +35,7 @@ Commands:
   daemon      Optional local cache/coordination daemon (`nxrd`)
   history     Show recent run summaries persisted under XDG state
   attach      Reopen the TUI watch for a recorded run
+  ui          Browse apps, tasks, and workspace scripts; Enter runs the selection
   affected    Report apps and tasks likely affected by changed paths
   fmt         Format Nix sources via `nix fmt` / the flake formatter
   envrc       Generate direnv `.envrc` content (`use flake` / `use flake .#<shell>`)

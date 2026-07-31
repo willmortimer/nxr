@@ -50,7 +50,7 @@ One renderer ([ADR-0173](adr/0173-operator-tui.md)); do not ship competing UIs:
 | Parallel status line | `--output live` (default for `-j > 1` on non-TUI) |
 | DAG watch panel | `--output tui` (falls back to `live` when not a TTY) |
 | Re-open a run | `nxr attach [RUN]` |
-| Browse + run | `nxr ui` → Enter launches with `--output tui` |
+| Browse + run | `nxr ui` → Enter: app via `nxr <app>`, task via `--output tui`, script via `nxr script` |
 | Nix noise | `NXR_NIX_PROGRESS=auto\|builtin\|nom\|off` ([ADR-0172](adr/0172-nix-progress-formatter.md)) |
 
 ```bash

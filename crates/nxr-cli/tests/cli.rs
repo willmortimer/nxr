@@ -89,6 +89,18 @@ fn complete_apps_cache_hit_avoids_nix() {
 }
 
 #[test]
+fn ui_without_tty_is_usage_error() {
+    cargo_bin_cmd!("nxr")
+        .arg("ui")
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "ui requires an interactive terminal",
+        ));
+}
+
+#[test]
 fn select_without_tty_is_usage_error() {
     cargo_bin_cmd!("nxr")
         .arg("select")
@@ -3327,7 +3339,12 @@ fn task_choice_required_param_fail_closed_without_set() {
 
     cargo_bin_cmd!("nxr")
         .current_dir(repo_root())
-        .args(["--flake", "fixtures/task-params", "task", "param-choice-required"])
+        .args([
+            "--flake",
+            "fixtures/task-params",
+            "task",
+            "param-choice-required",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("required parameter tier"));
@@ -3367,7 +3384,9 @@ fn deploy_wizard_scripted_staging_branch() {
         .assert()
         .success()
         .stdout(predicate::str::contains("wizard:target=deploy-staging"))
-        .stdout(predicate::str::contains("wizard:invoke=nxr task deploy-staging"));
+        .stdout(predicate::str::contains(
+            "wizard:invoke=nxr task deploy-staging",
+        ));
 }
 
 #[test]

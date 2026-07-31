@@ -1759,7 +1759,11 @@ mod tests {
             param_sets: BTreeMap::new(),
             log_dir: None,
         };
-        assert!(plan_uses_piped_stdio(&plan, &request, effective_output_mode(&request)));
+        assert!(plan_uses_piped_stdio(
+            &plan,
+            &request,
+            effective_output_mode(&request)
+        ));
     }
 
     /// Mirrors the task run loop when multiple ready nodes are cache hits in one

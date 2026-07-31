@@ -523,6 +523,8 @@ pub enum Command {
         #[arg(value_name = "RUN")]
         run: Option<String>,
     },
+    /// Browse apps, tasks, and workspace scripts; Enter runs the selection
+    Ui,
     /// Report apps and tasks likely affected by changed paths
     Affected {
         /// Collect changed paths from `git diff --name-only <base>...HEAD`

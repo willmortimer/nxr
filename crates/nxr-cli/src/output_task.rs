@@ -497,7 +497,9 @@ impl EventSink for TaskOutputRenderer<'_> {
                 }
 
                 let should_flush = match self.mode {
-                    TaskOutputMode::Live | TaskOutputMode::Raw | TaskOutputMode::Summary
+                    TaskOutputMode::Live
+                    | TaskOutputMode::Raw
+                    | TaskOutputMode::Summary
                     | TaskOutputMode::Tui => false,
                     TaskOutputMode::Grouped => true,
                     TaskOutputMode::Failures => node_failed(code),

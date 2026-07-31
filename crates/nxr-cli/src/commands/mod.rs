@@ -1,7 +1,7 @@
 //! CLI subcommands.
 
-pub mod attach;
 pub mod affected;
+pub mod attach;
 pub mod cache;
 pub mod ci;
 pub mod common;
@@ -39,6 +39,7 @@ pub mod store_exe;
 pub mod task;
 pub mod task_params;
 pub mod trust;
+pub mod ui;
 pub mod views;
 pub mod watch;
 pub mod workspace_cache;
