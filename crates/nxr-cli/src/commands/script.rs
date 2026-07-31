@@ -30,6 +30,7 @@ use crate::commands::secrets::{
 };
 use crate::commands::trust;
 use crate::flake::{FlakeResolveError, FlakeSelection, resolve_flake};
+use crate::osc52::maybe_emit_app_failure_clipboard;
 use crate::runner_output::RunnerOutput;
 use crate::shell_mode::{ShellMode, active_dev_shell, resolve_effective_shell};
 
@@ -154,6 +155,8 @@ pub fn execute(
         None,
         false,
     );
+
+    maybe_emit_app_failure_clipboard(prepared.script_path.as_str(), code);
 
     Ok(code)
 }

@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deploy-prod` tasks (decision-flow demo; see [PATTERNS.md](docs/PATTERNS.md)).
 - CLI typed-parameter prompts: tmux/zellij-aware degrade when stdin/stderr are
   not both TTYs (use `--set` / `NXR_PARAM_*` in CI and piped sessions).
+- OSC 52 failure clipboard on task/app run failure (TTY only): compact sanitized
+  summary of failed node names and exit/status labels; disable with
+  `NXR_OSC52=off` ([docs/PATTERNS.md](docs/PATTERNS.md)).
 
 ## [3.5.3] - 2026-07-31
 

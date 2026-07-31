@@ -38,6 +38,7 @@ use crate::commands::workspace_cache::{
 };
 use crate::flake::FlakeResolveError;
 use crate::log_dir::LogDirTee;
+use crate::osc52::Osc52Collector;
 use crate::output_task::{EventsFormat, TaskOutputMode, build_task_event_sink};
 use crate::reports::{ReportCollector, ReportPaths, ReportWriteError, write_all_reports};
 use crate::runner_output::RunnerOutput;
@@ -492,6 +493,9 @@ pub fn execute_with_control(
             watch_prewarm,
         );
         report_sink_error(&sink)?;
+        if let Ok(code) = &result {
+            let _ = sink.inner().maybe_emit_on_exit(*code);
+        }
         result
     } else {
         // Inherit stdio for interactivity / --output raw: do not hold stdout/stderr locks.
@@ -507,6 +511,9 @@ pub fn execute_with_control(
             watch_prewarm,
         );
         report_sink_error(&sink)?;
+        if let Ok(code) = &result {
+            let _ = sink.inner().maybe_emit_on_exit(*code);
+        }
         result
     }
 }
@@ -515,25 +522,26 @@ fn wrap_run_sink<S: EventSink>(
     inner: S,
     reports: &ReportPaths,
     log_dir: Option<PathBuf>,
-) -> RunEventDecorator<ReportCollector<LogDirTee<S>>> {
+) -> RunEventDecorator<Osc52Collector<ReportCollector<LogDirTee<S>>>> {
     let inner = LogDirTee::new(inner, log_dir);
     let inner = if reports.is_empty() {
         ReportCollector::new(inner, ReportPaths::default())
     } else {
         ReportCollector::new(inner, reports.clone())
     };
+    let inner = Osc52Collector::new(inner);
     RunEventDecorator::new(inner)
 }
 
 fn report_sink_error<S>(
-    sink: &RunEventDecorator<ReportCollector<LogDirTee<S>>>,
+    sink: &RunEventDecorator<Osc52Collector<ReportCollector<LogDirTee<S>>>>,
 ) -> Result<(), TaskError> {
-    if let Some(message) = sink.inner().write_error() {
+    if let Some(message) = sink.inner().inner().write_error() {
         return Err(TaskError::Report(ReportWriteError::Serialize(
             message.to_owned(),
         )));
     }
-    if let Some(message) = sink.inner().inner().write_error() {
+    if let Some(message) = sink.inner().inner().inner().write_error() {
         return Err(TaskError::Io(io::Error::other(message.to_owned())));
     }
     Ok(())
