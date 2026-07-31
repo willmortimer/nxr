@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Operator TUI contract ([ADR-0173](docs/adr/0173-operator-tui.md)): `--output tui`,
   `nxr attach [RUN]`, `nxr ui` (lazygit-style apps/tasks/scripts browser).
+- `fixtures/deploy-wizard`: wizard flake app branching to `deploy-staging` /
+  `deploy-prod` tasks (decision-flow demo; see [PATTERNS.md](docs/PATTERNS.md)).
+- CLI typed-parameter prompts: tmux/zellij-aware degrade when stdin/stderr are
+  not both TTYs (use `--set` / `NXR_PARAM_*` in CI and piped sessions).
 
 ## [3.5.3] - 2026-07-31
 
