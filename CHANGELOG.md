@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Operator TUI contract ([ADR-0173](docs/adr/0173-operator-tui.md)): `--output tui`,
   `nxr attach [RUN]`, `nxr ui` (lazygit-style apps/tasks/scripts browser).
+- OSC 52 failure clipboard on task/app run failure (TTY only): compact sanitized
+  summary of failed node names and exit/status labels; disable with
+  `NXR_OSC52=off` ([docs/PATTERNS.md](docs/PATTERNS.md)).
 
 ## [3.5.3] - 2026-07-31
 

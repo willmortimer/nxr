@@ -7,6 +7,7 @@ mod flake;
 mod lean;
 mod log_dir;
 mod nix_flags;
+mod osc52;
 mod output;
 mod output_options;
 mod output_task;

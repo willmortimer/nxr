@@ -8,6 +8,7 @@ publish.workspace = true
 description = "Shared models, schemas, and diagnostics for nxr"
 
 [dependencies]
+base64 = { workspace = true }
 blake3 = { workspace = true }
 camino = { workspace = true }
 directories = { workspace = true }

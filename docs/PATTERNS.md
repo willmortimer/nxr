@@ -56,6 +56,23 @@ nxr ui
 
 Zellij/tmux pane layouts are companion docs only; the TUI is the in-process
 watch surface.
+
+### Multiplexer clipboard (OSC 52)
+
+When a **task** or **app** run fails on a TTY, nxr emits an OSC 52 sequence so
+terminals and multiplexers (tmux, zellij) can copy a compact failure digest to
+the system clipboard. The payload lists failed node names and exit/status labels
+only — never secret values (sanitized via the same path as terminal output).
+
+```text
+nxr failed
+lint exit 1
+gate cancelled
+```
+
+Disable with `NXR_OSC52=off` (also `0`, `false`, `no`). No emission in CI /
+non-TTY contexts. Complements scrollback sizing in tmux/zellij; does not replace
+the in-process TUI watch surface.
 ## Release / promote
 
 For **this** repo: [RELEASE.md](RELEASE.md) — `nxr task ci` / `ci-linux`,
