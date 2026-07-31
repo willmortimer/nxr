@@ -116,6 +116,7 @@ pub fn store_exe_paths_usable(
                 Some(info) if info.registered => store_exe_path_usable(program),
                 _ => false,
             },
+            // Query / unrecognized JSON shape: filesystem probe (ADR-0167).
             Err(_) => store_exe_path_usable(program),
         }
     } else {
@@ -178,10 +179,15 @@ fn parse_path_info_json(
 ) -> Result<HashMap<String, StorePathInfo>, NixError> {
     let value: JsonValue =
         serde_json::from_slice(stdout).map_err(|source| NixError::InvalidJson { source })?;
+    // Nix ≥ ~2.19 / Determinate: map keyed by store path.
+    // Nix 2.18 / older Lix: JSON array of `{ "path", "valid"?, "references"? }`.
+    // Some builds wrap as `{ "version", "info": <map|array> }` (NixOS/nix#9242+).
+    let payload = value.get("info").unwrap_or(&value);
+    let by_path = path_info_entries(payload)?;
     let mut out = HashMap::new();
     for path in requested {
-        let entry = value.get(path);
-        let registered = entry.is_some_and(|entry| !entry.is_null());
+        let entry = by_path.get(path.as_str());
+        let registered = entry.is_some_and(|entry| entry_registered(entry));
         let references = if registered {
             entry
                 .and_then(|entry| entry.get("references"))
@@ -206,6 +212,40 @@ fn parse_path_info_json(
         );
     }
     Ok(out)
+}
+
+fn path_info_entries(payload: &JsonValue) -> Result<HashMap<&str, &JsonValue>, NixError> {
+    match payload {
+        JsonValue::Object(map) => Ok(map
+            .iter()
+            .map(|(key, value)| (key.as_str(), value))
+            .collect()),
+        JsonValue::Array(items) => {
+            let mut out = HashMap::new();
+            for item in items {
+                let Some(path) = item.get("path").and_then(JsonValue::as_str) else {
+                    continue;
+                };
+                out.insert(path, item);
+            }
+            Ok(out)
+        }
+        _ => Err(NixError::InvalidJson {
+            source: serde_json::from_str::<JsonValue>("not-json")
+                .expect_err("literal must fail JSON parse"),
+        }),
+    }
+}
+
+fn entry_registered(entry: &JsonValue) -> bool {
+    if entry.is_null() {
+        return false;
+    }
+    match entry.get("valid") {
+        Some(JsonValue::Bool(valid)) => *valid,
+        Some(_) => true,
+        None => true,
+    }
 }
 
 fn run_nix_with_cwd(
@@ -282,6 +322,61 @@ mod tests {
         let missing = parsed.get("/nix/store/missing").expect("missing");
         assert!(!missing.registered);
         assert!(missing.references.is_empty());
+    }
+
+    #[test]
+    fn parse_path_info_json_accepts_legacy_array_shape() {
+        // Nix 2.18 / pre-#9242: array of path objects (not a map keyed by path).
+        let json = r#"[
+            {
+                "path": "/nix/store/abc-hello",
+                "narSize": 42,
+                "references": ["/nix/store/def-dep"],
+                "valid": true
+            }
+        ]"#;
+        let paths = vec![
+            "/nix/store/abc-hello".to_owned(),
+            "/nix/store/missing".to_owned(),
+        ];
+        let parsed = parse_path_info_json(json.as_bytes(), &paths).expect("parse");
+        let hello = parsed.get("/nix/store/abc-hello").expect("hello");
+        assert!(hello.registered);
+        assert_eq!(hello.references, vec!["/nix/store/def-dep".to_owned()]);
+        assert!(
+            !parsed
+                .get("/nix/store/missing")
+                .expect("missing")
+                .registered
+        );
+    }
+
+    #[test]
+    fn parse_path_info_json_accepts_versioned_info_envelope() {
+        let json = r#"{
+            "version": 2,
+            "info": {
+                "/nix/store/abc-hello": {
+                    "references": [],
+                    "narSize": 1
+                }
+            }
+        }"#;
+        let paths = vec!["/nix/store/abc-hello".to_owned()];
+        let parsed = parse_path_info_json(json.as_bytes(), &paths).expect("parse");
+        assert!(
+            parsed
+                .get("/nix/store/abc-hello")
+                .expect("hello")
+                .registered
+        );
+    }
+
+    #[test]
+    fn parse_path_info_json_rejects_unknown_payload_shape() {
+        let err = parse_path_info_json(b"\"surprise\"", &["/nix/store/x".to_owned()])
+            .expect_err("unknown shape");
+        assert!(matches!(err, crate::NixError::InvalidJson { .. }));
     }
 
     #[test]

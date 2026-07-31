@@ -587,7 +587,8 @@ pub(crate) struct ColdWorkspaceDiscovery {
 ///
 /// Preference order:
 /// 1. Optional `nxrMetadata.<system>` (one targeted eval) when enabled
-/// 2. Coalesced `{ inventory, nxr }` eval when Determinate (or forced)
+/// 2. Coalesced `{ inventory, nxr }` eval (Determinate preferred; also
+///    best-effort on Compatibility / LazyTrees — falls back on error)
 /// 3. Classic `flake show` + optional task `eval`
 pub(crate) fn cold_discover_workspace(
     nix: &NixAdapter,

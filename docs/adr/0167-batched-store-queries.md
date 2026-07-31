@@ -27,10 +27,16 @@ added eligibility flags. Per-path Nix subprocesses are unnecessary when
    capability cache without forcing refresh.
 3. **Kill-switch:** `NXR_STORE_QUERIES=fs` (also `off`, `compat`, `compatibility`,
    `0`, `false`, `no`) forces filesystem-only checks — no `path-info` spawns.
-4. **Fallback:** on Nix failure, invalid JSON, or disabled batching, retain
-   today's `store_exe_path_usable` / `Path::exists` behavior. Store-exe miss
-   paths (`nix eval` / `nix build` / `nix run`) unchanged.
-5. Wire into **`resolve_app_spawn`** (CLI) and **`realise_flake_app_program`**
+4. **Fallback:** on Nix failure, invalid JSON, **unrecognized `path-info`
+   JSON shape**, or disabled batching, retain today's `store_exe_path_usable` /
+   `Path::exists` behavior. Store-exe miss paths (`nix eval` / `nix build` /
+   `nix run`) unchanged.
+5. **JSON shapes:** parse both modern map-keyed `path-info --json` (Nix ≥ ~2.19 /
+   Determinate) and the legacy **array** of `{ "path", "valid"?, … }` objects
+   (Nix 2.18 / older Lix). Optional `{ "version", "info": … }` envelopes are
+   accepted. Mis-parsing the array as a map previously marked valid paths
+   unregistered and forced `nix run` fallback on the support floor.
+6. Wire into **`resolve_app_spawn`** (CLI) and **`realise_flake_app_program`**
    (`nxr-nix`). Do not add an eval worker (Wave 8c).
 
 ## Validation

@@ -19,12 +19,13 @@ tasks. Capability-cache config probes were unused for strategy selection.
    - **`CoalescedParallelEval`** when Determinate parallel eval is available
      (or `NXR_FORCE_COALESCED_DISCOVERY` is set).
    - **`LazyTreesCompatible`** when lazy trees are enabled, or unconfigured on
-     Determinate (metadata-oriented separate evals; coalesced not selected).
-   - **`Compatibility`** for upstream/Lix and explicit
-     `NXR_EVAL_STRATEGY=compatibility` kill-switch.
-2. Cold workspace discovery (`cold_discover_workspace`) consults the plan before
-   choosing coalesced vs `flake show` + separate evals; failures still fall back
-   to compatibility with a stderr notice.
+     Determinate (label only; coalesced still attempted).
+   - **`Compatibility`** for upstream/Lix (label) and explicit
+     `NXR_EVAL_STRATEGY=compatibility` kill-switch (skips coalesce).
+2. Cold workspace discovery (`cold_discover_workspace`) attempts coalesced
+   discovery whenever not kill-switched — including Compatibility / LazyTrees
+   hosts — then falls back to `flake show` + separate evals on miss/error.
+   Strategy labels remain informative for `cache explain`.
 3. `nxr cache explain` reports `discovery_eval_strategy` alongside
    `coalesced_discovery_available`.
 4. Reserve hooks (no implementation in 8a):

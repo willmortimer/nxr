@@ -25,7 +25,9 @@ pub enum DiscoveryEvalStrategy {
     CoalescedParallelEval,
     /// Metadata-oriented separate evals when lazy trees are enabled or assumed.
     LazyTreesCompatible,
-    /// Upstream/Lix compatibility: `flake show` plus targeted evals.
+    /// Upstream/Lix compatibility label: prefer coalesce when possible, else
+    /// `flake show` plus targeted evals (coalesce is best-effort; kill-switch
+    /// `NXR_EVAL_STRATEGY=compatibility` skips it).
     Compatibility,
 }
 
@@ -94,7 +96,10 @@ pub(crate) fn plan_discovery_eval_with_overrides(
     let distribution = distribution_from_version_banner(version_banner);
     let features = probe_performance_features(&distribution, config_json);
     let strategy = select_strategy(&distribution, &features);
-    let use_coalesced_discovery = strategy == DiscoveryEvalStrategy::CoalescedParallelEval;
+    // Coalesced discovery is portable (`nix eval --json --expr`); try it on
+    // Compatibility / LazyTrees hosts too and fall back to flake-show on error.
+    // Determinate still selects CoalescedParallelEval as the labeled strategy.
+    let use_coalesced_discovery = true;
     let batched_store_queries = batched_store_queries_from(&features);
 
     DiscoveryEvalPlan {
@@ -180,7 +185,8 @@ mod tests {
     fn upstream_selects_compatibility_without_lazy_trees() {
         let plan = plan_discovery_eval(UPSTREAM_BANNER, None, false);
         assert_eq!(plan.strategy, DiscoveryEvalStrategy::Compatibility);
-        assert!(!plan.use_coalesced_discovery);
+        // Best-effort coalesce on floor Nix; flake-show remains the fallback.
+        assert!(plan.use_coalesced_discovery);
         assert!(!plan.eval_worker_eligible);
     }
 
@@ -189,7 +195,7 @@ mod tests {
         let config = r#"{"lazy-trees": {"value": true}}"#;
         let plan = plan_discovery_eval(UPSTREAM_BANNER, Some(config), false);
         assert_eq!(plan.strategy, DiscoveryEvalStrategy::LazyTreesCompatible);
-        assert!(!plan.use_coalesced_discovery);
+        assert!(plan.use_coalesced_discovery);
         assert!(plan.batched_store_queries);
     }
 

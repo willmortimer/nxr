@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.3] - 2026-07-31
+
+### Fixed
+
+- Support-floor Nix **2.18** / **Lix**: parse legacy array-shaped
+  `nix path-info --json` so store-exe no longer false-negatives and falls back
+  to `nix run` (compat `warm_store_exe_skips_nix_run`).
+- Attempt coalesced cold discovery on Compatibility hosts (not only Determinate);
+  `flake show` remains the fallback. Fixes unprefixed watch flake-show budgets
+  on the floor matrix.
+
+### Changed
+
+- Workspace and Nix package version **3.5.3**.
+
 ## [3.5.2] - 2026-07-31
 
 ### Fixed
