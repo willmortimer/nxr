@@ -42,6 +42,7 @@ use crate::osc52::Osc52Collector;
 use crate::output_task::{EventsFormat, TaskOutputMode, build_task_event_sink};
 use crate::reports::{ReportCollector, ReportPaths, ReportWriteError, write_all_reports};
 use crate::runner_output::RunnerOutput;
+use crate::tui::TuiEventSink;
 
 /// Grace window for Ctrl-C / fail-fast shutdown of in-flight children.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
@@ -421,14 +422,17 @@ pub fn execute_with_control(
 
     // Parallel runs without an explicit --output still need a labeled renderer so
     // piped child stdout is not discarded by NullSink.
-    let effective_output = request.output_mode.or(if request.jobs > 1 {
-        Some(TaskOutputMode::Live)
-    } else {
-        None
-    });
+    let mut stderr = io::stderr().lock();
+    let effective_output = crate::tui::resolve_task_output_mode(request.output_mode, &mut stderr)
+        .or(if request.jobs > 1 {
+            Some(TaskOutputMode::Live)
+        } else {
+            None
+        });
+    drop(stderr);
 
     let waves = parallel_ready_waves(&plan, request.jobs);
-    let pipe_stdio = plan_uses_piped_stdio(&plan, request);
+    let pipe_stdio = plan_uses_piped_stdio(&plan, request, effective_output);
     log_task_plan_verbose(
         &format_task_roots(&canonical_roots),
         &plan,
@@ -436,6 +440,7 @@ pub fn execute_with_control(
         failure_policy,
         &waves,
         runner,
+        effective_output,
     )?;
 
     if dry_run {
@@ -465,37 +470,71 @@ pub fn execute_with_control(
     };
 
     if pipe_stdio {
-        let mut stdout = io::stdout().lock();
-        let mut stderr = io::stderr().lock();
-        let inner = build_task_event_sink(
-            effective_output,
-            request.events_format,
-            &mut stdout,
-            &mut stderr,
-        );
-        let mut sink = wrap_run_sink(inner, &request.reports, request.log_dir.clone());
-        sink.emit(Event::plan_created(
-            plan.root.clone(),
-            if plan.roots.is_empty() {
-                None
-            } else {
-                Some(plan.roots.clone())
-            },
-            plan.nodes.len(),
-        ));
-        let result = run_plan(
-            request,
-            &plan,
-            &mut preparer,
-            &mut sink,
-            runner,
-            control,
-            watch_prewarm,
-        );
-        report_sink_error(&sink)?;
-        if let Ok(code) = &result {
-            let _ = sink.inner().maybe_emit_on_exit(*code);
-        }
+        let target = format_task_roots(&canonical_roots);
+        let result = if matches!(effective_output, Some(TaskOutputMode::Tui)) {
+            let inner = TuiEventSink::new(
+                nxr_core::RunTargetKind::Task,
+                target,
+                request.log_dir.clone(),
+            );
+            let mut sink = wrap_run_sink(inner, &request.reports, request.log_dir.clone());
+            sink.emit(Event::plan_created(
+                plan.root.clone(),
+                if plan.roots.is_empty() {
+                    None
+                } else {
+                    Some(plan.roots.clone())
+                },
+                plan.nodes.len(),
+            ));
+            let result = run_plan(
+                request,
+                &plan,
+                &mut preparer,
+                &mut sink,
+                runner,
+                control,
+                watch_prewarm,
+            );
+            report_sink_error(&sink)?;
+            if let Ok(code) = &result {
+                let _ = sink.inner().maybe_emit_on_exit(*code);
+            }
+            result
+        } else {
+            let mut stdout = io::stdout().lock();
+            let mut stderr = io::stderr().lock();
+            let inner = build_task_event_sink(
+                effective_output,
+                request.events_format,
+                &mut stdout,
+                &mut stderr,
+            );
+            let mut sink = wrap_run_sink(inner, &request.reports, request.log_dir.clone());
+            sink.emit(Event::plan_created(
+                plan.root.clone(),
+                if plan.roots.is_empty() {
+                    None
+                } else {
+                    Some(plan.roots.clone())
+                },
+                plan.nodes.len(),
+            ));
+            let result = run_plan(
+                request,
+                &plan,
+                &mut preparer,
+                &mut sink,
+                runner,
+                control,
+                watch_prewarm,
+            );
+            report_sink_error(&sink)?;
+            if let Ok(code) = &result {
+                let _ = sink.inner().maybe_emit_on_exit(*code);
+            }
+            result
+        };
         result
     } else {
         // Inherit stdio for interactivity / --output raw: do not hold stdout/stderr locks.
@@ -554,11 +593,22 @@ fn validate_interactive_run(
 ) -> Result<(), TaskError> {
     if plan.has_interactive_nodes()
         && (request.events_format.is_some()
-            || matches!(request.output_mode, Some(mode) if mode.is_multiplexed()))
+            || matches!(
+                request.output_mode,
+                Some(mode) if mode.uses_piped_stdio()
+            ))
     {
         return Err(TaskError::InteractiveConflictsWithMultiplex);
     }
     Ok(())
+}
+
+fn effective_output_mode(request: &TaskRequest<'_>) -> Option<TaskOutputMode> {
+    crate::tui::resolved_output_mode(request.output_mode).or(if request.jobs > 1 {
+        Some(TaskOutputMode::Live)
+    } else {
+        None
+    })
 }
 
 fn log_task_plan_verbose(
@@ -568,8 +618,9 @@ fn log_task_plan_verbose(
     failure_policy: FailurePolicy,
     waves: &[Vec<String>],
     runner: RunnerOutput,
+    effective_output: Option<TaskOutputMode>,
 ) -> Result<(), TaskError> {
-    let pipe_stdio = plan_uses_piped_stdio(plan, request);
+    let pipe_stdio = plan_uses_piped_stdio(plan, request, effective_output);
     let stdin_label = if plan.has_interactive_nodes() {
         "inherit (interactive)"
     } else if pipe_stdio {
@@ -626,7 +677,11 @@ pub fn task_inherits_stdin(
 
 /// Whether any node in `plan` uses piped stdio under `request`.
 #[must_use]
-pub fn plan_uses_piped_stdio(plan: &ExecutionPlan, request: &TaskRequest<'_>) -> bool {
+pub fn plan_uses_piped_stdio(
+    plan: &ExecutionPlan,
+    request: &TaskRequest<'_>,
+    effective_output: Option<TaskOutputMode>,
+) -> bool {
     if request.log_dir.is_some() {
         // Tee requires chunk events; interactive nodes still inherit (no tee).
         return plan.nodes.iter().any(|node| !node.interactive);
@@ -635,7 +690,7 @@ pub fn plan_uses_piped_stdio(plan: &ExecutionPlan, request: &TaskRequest<'_>) ->
         node_uses_piped_stdio(
             node.interactive,
             request.jobs,
-            request.output_mode,
+            effective_output,
             request.events_format,
         )
     })
@@ -666,7 +721,7 @@ fn dry_run_execute(
     let mut stdout = io::stdout().lock();
     let stdin_label = if plan.has_interactive_nodes() {
         "inherit (interactive)"
-    } else if plan_uses_piped_stdio(plan, request) {
+    } else if plan_uses_piped_stdio(plan, request, effective_output_mode(request)) {
         "null"
     } else {
         "inherit"
@@ -1013,7 +1068,7 @@ fn run_plan(
                 node_uses_piped_stdio(
                     interactive,
                     request.jobs,
-                    request.output_mode,
+                    effective_output_mode(request),
                     request.events_format,
                 )
             };
@@ -1530,8 +1585,8 @@ fn format_wave_summary(waves: &[Vec<String>]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_wave_summary, node_uses_piped_stdio, parallel_ready_waves, plan_exit_code,
-        plan_uses_piped_stdio, resolve_prepared_task_spawn, task_inherits_stdin,
+        effective_output_mode, format_wave_summary, node_uses_piped_stdio, parallel_ready_waves,
+        plan_exit_code, plan_uses_piped_stdio, resolve_prepared_task_spawn, task_inherits_stdin,
     };
     use crate::commands::common::{NodePrepStage, PreparedTaskNode};
     use crate::output_task::{EventsFormat, TaskOutputMode};
@@ -1611,6 +1666,11 @@ mod tests {
     #[test]
     fn parallel_jobs_closes_stdin() {
         assert!(!task_inherits_stdin(2, None, None));
+    }
+
+    #[test]
+    fn tui_output_closes_stdin() {
+        assert!(!task_inherits_stdin(1, Some(TaskOutputMode::Tui), None));
     }
 
     #[test]
@@ -1699,7 +1759,7 @@ mod tests {
             param_sets: BTreeMap::new(),
             log_dir: None,
         };
-        assert!(plan_uses_piped_stdio(&plan, &request));
+        assert!(plan_uses_piped_stdio(&plan, &request, effective_output_mode(&request)));
     }
 
     /// Mirrors the task run loop when multiple ready nodes are cache hits in one

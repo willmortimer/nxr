@@ -1,5 +1,6 @@
 //! CLI subcommands.
 
+pub mod attach;
 pub mod affected;
 pub mod cache;
 pub mod ci;
