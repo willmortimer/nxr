@@ -85,15 +85,13 @@ impl TuiEventSink {
                 match key.code {
                     KeyCode::Up | KeyCode::Char('k') => self.state.move_selection(-1),
                     KeyCode::Down | KeyCode::Char('j') => self.state.move_selection(1),
-                    KeyCode::Char('q') | KeyCode::Esc => {
-                        if self.finished {
-                            return Err(io::Error::new(io::ErrorKind::Interrupted, "tui quit"));
-                        }
+                    KeyCode::Char('q') | KeyCode::Esc if self.finished => {
+                        return Err(io::Error::new(io::ErrorKind::Interrupted, "tui quit"));
                     }
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        if self.finished {
-                            return Err(io::Error::new(io::ErrorKind::Interrupted, "tui quit"));
-                        }
+                    KeyCode::Char('c')
+                        if key.modifiers.contains(KeyModifiers::CONTROL) && self.finished =>
+                    {
+                        return Err(io::Error::new(io::ErrorKind::Interrupted, "tui quit"));
                     }
                     _ => {}
                 }
