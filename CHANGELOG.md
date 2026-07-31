@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Operator TUI contract ([ADR-0173](docs/adr/0173-operator-tui.md)): `--output tui`,
+  `nxr attach [RUN]`, `nxr ui` (lazygit-style apps/tasks/scripts browser).
+
 ## [3.5.3] - 2026-07-31
 
 ### Fixed

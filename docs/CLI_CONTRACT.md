@@ -35,6 +35,8 @@ nxr watch task:<name>
 nxr ci plan [--json]
 nxr graph <task>
 nxr script <path-or-name> [--] [args...]
+nxr attach [RUN]
+nxr ui
 ```
 
 V1 implements the app-oriented subset. V2 activates task-oriented commands. Flake output commands (`list` filters, `build`, `check`, `shell`) map to native Nix operations without inventing a second authority.
@@ -43,6 +45,15 @@ Reserved `script` ([ADR-0169](adr/0169-workspace-script-execution.md)): run a lo
 workspace script (exact path or `.nxr/scripts/<name>`). Does **not** participate
 in bare `nxr <name>` resolution. Local checkout only. Optional `--context <name>`
 applies schema v2 execution contexts (environment, secrets, confirm) like tasks.
+
+Reserved `attach` / `ui` ([ADR-0173](adr/0173-operator-tui.md)):
+
+- `nxr attach [RUN]` — reopen the TUI watch for a history/log-dir run (omit RUN
+  for the most recent attachable run; fail closed if none).
+- `nxr ui` — lazygit-style browser of apps, tasks, and workspace scripts; Enter
+  runs the selection with `--output tui` (scripts via `nxr script`).
+
+Neither participates in bare `nxr <name>` resolution.
 
 ## 2. Name resolution
 
@@ -259,15 +270,29 @@ are not corrupted.
 --output grouped    Buffer per node; flush on exit
 --output failures   Buffer per node; emit only on nonzero exit
 --output raw        Single-job foreground child inherits stdio (no pipe mux)
+--output summary    Per-node status/duration table after the run
+--output tui        Ratatui one-screen DAG watch (node table + log tail)
 ```
 
 `--output raw` requires `-j 1` and cannot be combined with `--events`. It
 bypasses line-oriented event conversion so binary and interactive child I/O
-pass through unchanged. Multiplexed modes (`live` / `grouped` / `failures`)
-close caller stdin for supervised children.
+pass through unchanged. Multiplexed modes (`live` / `grouped` / `failures` /
+`tui`) close caller stdin for supervised children.
 
 `--output summary` prints a per-node status/duration table (shipped in 2.4).
 
+`--output tui` ([ADR-0173](adr/0173-operator-tui.md)) renders a live DAG watch
+from the task event stream and composes with `--log-dir`. When stderr/stdout
+are not TTYs (CI), nxr **falls back to `live`** and prints a stderr notice.
+`nxr attach` reuses the same renderer for a completed or in-progress run
+recorded under history / `--log-dir`.
+
+```bash
+nxr --output tui --log-dir .nxr/logs/run task ci -j 4
+nxr attach
+nxr attach <run-id>
+nxr ui
+```
 ## 8. App listing contract
 
 Human:
@@ -437,6 +462,7 @@ nxr task ci
 nxr task ci --jobs 4
 nxr task deploy --set env=staging --set reason=ticket-123
 nxr --log-dir .nxr/logs/run --output live task ci -j 4
+nxr --log-dir .nxr/logs/run --output tui task ci -j 4
 nxr task --affected [--base REF | --working-tree | --all-changes REF | --path PATH…] [name…]
 nxr plan --affected [--base REF | --working-tree | --all-changes REF | --path PATH…] [name…]
 nxr graph ci

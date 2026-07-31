@@ -37,20 +37,25 @@ The wizard owns branching; leaves remain `nix run`-compatible apps.
 
 ## One watch UX
 
-Compose later; do not ship three UIs. Today:
+One renderer ([ADR-0173](adr/0173-operator-tui.md)); do not ship competing UIs:
 
 | Piece | Flag / behavior |
 |---|---|
 | Per-node log tee | `--log-dir PATH` → `PATH/<node>.stdout` / `.stderr` |
-| Parallel status | `--output live` (default for `-j > 1`) compact stderr status line |
+| Parallel status line | `--output live` (default for `-j > 1` on non-TUI) |
+| DAG watch panel | `--output tui` (falls back to `live` when not a TTY) |
+| Re-open a run | `nxr attach [RUN]` |
+| Browse + run | `nxr ui` → Enter launches with `--output tui` |
 | Nix noise | `NXR_NIX_PROGRESS=auto\|builtin\|nom\|off` ([ADR-0172](adr/0172-nix-progress-formatter.md)) |
 
 ```bash
-nxr --log-dir .nxr/logs/run-1 --output live task ci -j 4
+nxr --log-dir .nxr/logs/run-1 --output tui task ci -j 4
+nxr attach
+nxr ui
 ```
 
-Full TUI / multiplexer panes are later (roadmap Phase 35); keep one renderer.
-
+Zellij/tmux pane layouts are companion docs only; the TUI is the in-process
+watch surface.
 ## Release / promote
 
 For **this** repo: [RELEASE.md](RELEASE.md) — `nxr task ci` / `ci-linux`,
