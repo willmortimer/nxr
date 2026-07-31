@@ -2,16 +2,18 @@
 
 Ergonomic command plane for **standard Nix flake outputs**.
 
-`nxr test` is the pleasant form of `nix run .#test`. Flake apps remain the
-canonical leaf operations. `nxr` adds discovery, composition, diagnostics,
-structured plans, supervision, shell integration, and a flake-native
-orchestration schema (tasks, parameters, matrices, contexts, processes)—while
-preserving standard Nix leaves and `nix run` as the escape hatch. It is not a
-toolchain manager or a parallel implementation of Nix.
+`nxr test` is the pleasant form of `nix run .#test`. Flake apps stay the
+canonical leaf operations; `nix run` remains the escape hatch. `nxr` adds
+discovery, task DAGs, diagnostics, shell integration, and an operator TUI—
+without becoming a second toolchain or a parallel Nix.
 
 <p align="center">
   <img src="docs/demo/nxr.gif" alt="nxr demo: list, run, inspect, graph, parallel tasks, shell, and watch" width="980" />
 </p>
+
+**Consumer guides** live on the
+[GitHub Wiki](https://github.com/willmortimer/nxr/wiki). This README is the
+landing page; `docs/` is for contributors, ADRs, and the design contract.
 
 ## Install
 
@@ -20,49 +22,32 @@ nix profile install github:willmortimer/nxr#nxr
 # or: nix shell github:willmortimer/nxr#nxr
 ```
 
-Pre-built release tarballs (Nix-package layout vs portable cargo binary) are
-documented in [docs/RELEASE.md](docs/RELEASE.md).
+Pre-built release tarballs: [docs/RELEASE.md](docs/RELEASE.md).
+Step-by-step: [Wiki · Install](https://github.com/willmortimer/nxr/wiki/Install).
 
-For flake-parts projects, enable session-local completion and PATH wiring
-(no duplicated package wiring required when the flake input is named `nxr`):
+Flake-parts (session completion + PATH; optional schemas):
 
 ```nix
 imports = [ inputs.nxr.flakeModules.default ];
 
 perSystem.nxr = {
   shellIntegration.enable = true;
-  # optional: shellIntegration.devShells = [ "default" "backend" ];
-  # optional: schema.enable = false;  # skip exportedSchemas.nxr
   tasks.ci = { app = "ci"; };
 };
 ```
-
-The module also exports `exportedSchemas.nxr` (disable with `nxr.schema.enable = false`).
-On Determinate Nix with a `flake-schemas` input, schemas merge automatically when
-`nxr.schema.mergeIntoSchemas` is left at its default. Runtime task documents remain
-`nxr.<system>` via ordinary `nix eval` on upstream Nix and Lix.
 
 Details: [docs/DEV_ENV_INTEGRATION.md](docs/DEV_ENV_INTEGRATION.md),
 [docs/TASKS.md](docs/TASKS.md#flake-schema-export-exportedschemasnxr).
 
 ## Quick start
 
-From any directory under a flake:
-
 ```bash
 nxr list                  # apps (+ tasks when present)
-nxr list packages         # packages.<system>.*
-nxr list checks
-nxr list shells
-nxr build                 # ≈ nix build .
-nxr check fmt             # ≈ nix build .#checks.<system>.fmt
-nxr shell                 # ≈ nix develop
-nxr test                  # ≈ nix run .#test  (fast path; no flake show)
-nxr select                # fuzzy picker
-nxr plan test --json      # exact Nix argv + cwd / env / shell policy
-nxr explain test          # why this app/task, cache key, capabilities, argv
-nxr doctor --all          # environment + workspace findings
-nxr doctor determinate    # Determinate Nix diagnostics (N/A on upstream/Lix)
+nxr test                  # ≈ nix run .#test
+nxr task ci -j 8          # inspectable DAG; same graph locally and in CI
+nxr ui                    # Apps / Tasks / Scripts browser (TTY)
+nxr task ci --output tui  # Ratatui DAG watch
+nxr attach                # reopen the last attachable TUI run
 ```
 
 Inline flake + app (like `nix run`):
@@ -72,131 +57,79 @@ nxr ./path/to/flake#hello
 nxr --flake ./path/to/flake hello
 ```
 
+## Operator TUI
+
+| Command | What it does |
+|---|---|
+| `nxr ui` | Lazygit-style browser; Enter runs apps / `task --output tui` / scripts |
+| `nxr … --output tui` | One-screen DAG watch (node table + log tail); non-TTY falls back to `live` |
+| `nxr attach [RUN]` | Reopen a recorded watch (omit `RUN` → most recent; fail closed if none) |
+
+More: [Wiki · Interactive TUI](https://github.com/willmortimer/nxr/wiki/Interactive-TUI),
+[ADR-0173](docs/adr/0173-operator-tui.md). Demo GIFs:
+[tui](docs/demo/nxr-tui.gif) · [ui](docs/demo/nxr-ui.gif) ·
+[wizard](docs/demo/nxr-wizard.gif).
+
+Decision-style flows stay **wizard flake apps → `nxr task …`** (no schema
+`when`). See [fixtures/deploy-wizard](fixtures/deploy-wizard/) and
+[Wiki · Tasks and DAGs](https://github.com/willmortimer/nxr/wiki/Tasks-and-DAGs).
+
 ## Everyday commands
 
 | Command | What it does |
 |---|---|
 | `nxr` / `nxr list` | List apps (and tasks) |
-| `nxr list apps\|checks\|packages\|shells\|tasks` | List one catalog |
-| `nxr list --category <name>` | Filter apps/tasks by category |
-| `nxr list --namespace <name>` | Filter via optional `nxr.projects.json` |
-| `nxr build [name]` | `nix build` for a package |
-| `nxr check [name]` | Build a check, or `nix flake check` |
-| `nxr shell [name]` | Interactive `nix develop` |
 | `nxr <app> [args…]` | Run a flake app (apps only — not tasks) |
-| `nxr run <app> [-- args…]` | Explicit run form |
-| `nxr script <path\|name> [-- args…]` | Local workspace script (`.nxr/scripts/` or path) |
-| `nxr task <name>… [-j N]` | Run one or more task roots (union DAG; shared deps once) |
+| `nxr task <name>… [-j N]` | Run task roots (union DAG; shared deps once) |
+| `nxr script <path\|name>` | Local workspace script (`.nxr/scripts/` or path) |
 | `nxr graph <name>` | Print the plan (`--format text\|mermaid\|dot`) |
 | `nxr watch <name>` | Kill + rerun on flake-root changes |
-| `nxr plan <name>` | App plan, or task `ExecutionPlan` if not an app |
-| `nxr explain <name>` | Full resolution + exact Nix invocation |
-| `nxr affected [PATH…]` | Conservative path→app/task analysis (`--json` for CI) |
-| `nxr inspect` / `doctor` | Overview and diagnostics |
-| `nxr doctor determinate` | Determinate Nix distribution / nixd / lazy-tree findings |
-| `nxr cache clear\|status\|explain` | Discovery, capability, and workspace CAS cache |
-| `nxr init <template>` | Scaffold a minimal nxr flake |
-| `nxr migrate justfile\|mise` | Suggest `perSystem.nxr.*` from Just/mise (never runs recipes) |
-| `nxr ci plan [--json]` | Export a provider-neutral CI execution plan |
-| `nxr context list\|inspect\|run` | Named execution contexts |
-| `nxr trust status\|add\|revoke` | Project trust for secret/confirm-gated tasks |
-| `nxr inventory [--role]` | List schema-described flake inventory outputs |
-| `nxr history list\|clear` | Recent run summaries (XDG state) |
-| `nxr up\|status\|logs\|down` | Supervised long-running processes (preview) |
-| `nxr completion zsh` | Shell completion script |
+| `nxr plan` / `explain` | Exact Nix argv, cwd, cache key, capabilities |
+| `nxr doctor --all` | Environment + workspace findings |
+| `nxr affected …` | Conservative path→app/task analysis for CI |
+| `nxr ci plan [--json]` | Provider-neutral CI execution plan |
+| `nxr migrate justfile\|mise` | Suggest `perSystem.nxr.*` (never runs recipes) |
 
-Useful globals: `--flake`, `--cwd` / `--root`, `--shell <name>`,
-`--shell-mode smart|always|never`, `--clean-env`, `--refresh-discovery`,
-`--offline`, `--nix-arg`, `--output live|grouped|failures|summary|raw`, `--events jsonl`.
+Useful globals: `--flake`, `--cwd` / `--root`, `--shell` / `--shell-mode`,
+`--output live|grouped|failures|summary|raw|tui`, `--events jsonl`.
 
-Full index: [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md).
+Full CLI index: [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md).
 
-### Tasks
-
-Declare orchestration with `nxr.flakeModules.default` (`perSystem.nxr.tasks`).
-Tasks coordinate apps; they do not replace them.
+### Tasks and CI ≡ local
 
 ```bash
 nxr task ci
-nxr task ci-linux
-nxr task lint unit integration -j 8   # union DAG; shared deps run once
-nxr task ci --keep-going
-nxr --output grouped task ci
-nxr --output summary task ci
-nxr --output raw task dev             # single child inherits stdio
-nxr graph ci --format mermaid
-nxr graph release --format mermaid    # ci ∥ ci-linux → release
+nxr task lint unit integration -j 8
+nxr graph release --format mermaid
+nxr ci plan --json
 ```
 
-Task fields worth knowing:
+Guide: [Wiki · Tasks and DAGs](https://github.com/willmortimer/nxr/wiki/Tasks-and-DAGs),
+[docs/TASKS.md](docs/TASKS.md).
+CI/release walkthrough:
+[Wiki · CI and Release](https://github.com/willmortimer/nxr/wiki/CI-and-Release).
 
-- `workingDirectory` — `invocation` | `flake-root` | relative path (CLI `--cwd`/`--root` win)
-- `interactive = true` — exclusive TTY node; conflicts with multiplexed `--output` / `--events`
-- `paths` — optional roots for `nxr affected`
-- `timeout` / `terminationGracePeriod` — per-task wall-clock limits (e.g. `10m`, `5s`)
-- `category` / aliases — listing and resolution helpers
-
-Explicit commands (`task`, `graph`, `inspect task`, `watch`, task-side `plan`,
-`explain task`) resolve **aliases**. Bare `nxr <name>` stays **app-only**.
-
-Guide: [docs/TASKS.md](docs/TASKS.md).
-
-### Dev shells
+### Coming from mise / just
 
 ```bash
-nxr --shell backend test              # wrap unless already in backend
-nxr --shell-mode always --shell backend test
-nxr --shell-mode never test
+nxr migrate mise
+nxr migrate justfile
 ```
 
-Smart mode reads `NXR_DEV_SHELL` from shell integration and skips redundant
-`nix develop` nesting.
+[Wiki · Migrations](https://github.com/willmortimer/nxr/wiki/Migrations) ·
+[docs/MIGRATE_FROM_MISE_JUST.md](docs/MIGRATE_FROM_MISE_JUST.md).
 
-### Watch
+## Documentation map
 
-```bash
-nxr watch test
-nxr watch ci --include 'src/**' --exclude '**/*.md' --clear
-nxr run test --watch
-nxr task ci --watch
-nxr task lint unit --watch -j 4       # multi-root union + scheduler options
-```
+| Audience | Where |
+|---|---|
+| **Users** | [GitHub Wiki](https://github.com/willmortimer/nxr/wiki) (Install, Tasks, TUI, CI, Migrations) |
+| **Contributors / agents** | [docs/INDEX.md](docs/INDEX.md), [CONTRACT_SUMMARY](docs/CONTRACT_SUMMARY.md), [ADRs](docs/adr/README.md) |
+| **This repo** | [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md), [docs/RELEASE.md](docs/RELEASE.md) |
 
-Built-in ignores: `.git`, `target`, `result*`, `/nix/store`. Source-only edits
-reuse the cached workspace snapshot and prepared plan (no rediscovery); changes
-to `flake.nix` / `*.nix` / `flake.lock` / declared `discoveryInputs` rebuild
-metadata. Ctrl-C stops the watcher and shuts down the current generation.
-
-### Monorepo views and affected
-
-```bash
-nxr list --category ci
-nxr list --namespace web
-nxr inspect --namespace api
-nxr affected shared/lib.txt --json
-nxr affected --base origin/main
-nxr task --affected --path shared/lib.txt
-nxr plan --affected --base origin/main --json
-```
-
-Optional `nxr.projects.json` is **view-only**—flake apps remain the operation
-authority. See [docs/MONOREPO_VIEWS.md](docs/MONOREPO_VIEWS.md) and
-[docs/ADAPTERS.md](docs/ADAPTERS.md).
-
-### Author flake apps
-
-Prefer self-contained apps so `nxr` / `nix run` work outside a dirty shell:
-
-- `mkApp` / `mkScriptApp` — shell-backed apps
-- `mkPackageApp` — wrap an existing package binary
-
-See [docs/APP_AUTHORING.md](docs/APP_AUTHORING.md) and [examples/mk-app](examples/mk-app/).
-
-Coming from `mise` / `just`? [docs/MIGRATE_FROM_MISE_JUST.md](docs/MIGRATE_FROM_MISE_JUST.md).
+Wiki source markdown (publish with `./scripts/publish-wiki.sh`): [`wiki/`](wiki/).
 
 ## Developing this repository
-
-Quality and release use the same nxr task DAG locally and on Actions:
 
 ```bash
 nxr task ci          # host: fmt-check → lint → test → deny → cli-ref
@@ -204,38 +137,15 @@ nxr task ci-linux    # Linux OS parity (OrbStack/Docker; native on Linux)
 nxr task release     # dependsOn [ci, ci-linux], then tag helper
 ```
 
-Details: [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md), [docs/RELEASE.md](docs/RELEASE.md).
-
-## Documentation
-
-| Doc | For |
-|---|---|
-| [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) | Commands and flags |
-| [docs/APP_AUTHORING.md](docs/APP_AUTHORING.md) | Writing robust flake apps |
-| [docs/TASKS.md](docs/TASKS.md) | Task graphs, aliases, schema export |
-| [docs/TASK_SCHEMA_V2.md](docs/TASK_SCHEMA_V2.md) | Schema v2 matrix (contexts shipped; workspace cache experimental) |
-| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Nix call budgets, caches, release timing harness |
-| [docs/MONOREPO_VIEWS.md](docs/MONOREPO_VIEWS.md) | Categories, namespaces, projects file |
-| [docs/DEV_ENV_INTEGRATION.md](docs/DEV_ENV_INTEGRATION.md) | Dev shells, direnv, shellIntegration |
-| [docs/EXECUTION_CONTEXT.md](docs/EXECUTION_CONTEXT.md) | Contexts, secrets, Home Manager; process MVP (preview) |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Shipped through 3.5.x; next V4+ / execution protocol ideas |
-| [docs/ADAPTERS.md](docs/ADAPTERS.md) | Read-only ecosystem graph boundary |
-| [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | Platforms and schema freeze |
-| [docs/RELEASE.md](docs/RELEASE.md) | Release artifacts, checksums, SBOM |
-| [docs/INDEX.md](docs/INDEX.md) | Full documentation map |
-| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | Working on this repository |
-
 ## License
 
 MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**3.4.0** (tagged) — workspace scripts + file-backed apps (3.3), materialized
-process environments + one-shell DAG (3.4), typed parameters/matrices, cache
-deepening, nom-style Nix progress, Home Manager `initContent` / `nxrd`
-hardening, and audit fixes (opt-in env cache, action-key digests, lazy
-one-shell preflight). Workspace CAS/actions remain **experimental**; process MVP
-**preview**. See [docs/ROADMAP.md](docs/ROADMAP.md).
+**3.5.3** (tagged) — floor-Nix discovery/store-exe fixes; workspace scripts,
+materialized process envs, typed parameters/matrices, nom-style Nix progress.
+**Unreleased** on `sprint/operator-ergonomics`: `--output tui`, `nxr attach`,
+`nxr ui`, OSC 52 failure clipboard, deploy-wizard fixture.
 
-History: [CHANGELOG.md](CHANGELOG.md).
+History: [CHANGELOG.md](CHANGELOG.md) · roadmap: [docs/ROADMAP.md](docs/ROADMAP.md).

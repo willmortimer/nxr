@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OSC 52 failure clipboard on task/app run failure (TTY only): compact sanitized
   summary of failed node names and exit/status labels; disable with
   `NXR_OSC52=off` ([docs/PATTERNS.md](docs/PATTERNS.md)).
+- Consumer docs split: library-style root README, GitHub Wiki guides under
+  [`wiki/`](wiki/), and VHS demos for tui / ui / deploy-wizard
+  ([docs/demo/](docs/demo/)).
 
 ## [3.5.3] - 2026-07-31
 
