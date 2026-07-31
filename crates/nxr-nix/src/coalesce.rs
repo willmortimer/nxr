@@ -191,25 +191,23 @@ impl CoalescedDiscovery {
 #[cfg(test)]
 mod tests {
     use super::{
-        FORCE_COALESCED_DISCOVERY_ENV, coalesced_discovery_args, coalesced_discovery_available,
-        coalesced_discovery_expr, discover_coalesced,
+        coalesced_discovery_args, coalesced_discovery_available, coalesced_discovery_expr,
+        discover_coalesced,
     };
     use crate::OptionalNixFlags;
     use crate::determinate::distribution_from_version_banner;
 
     #[test]
-    fn coalesced_available_for_determinate_only() {
+    fn coalesced_available_for_determinate() {
         assert!(coalesced_discovery_available(
             "nix (Determinate Nix 3.21.7) 2.34.8\n"
         ));
     }
 
     #[test]
-    fn coalesced_unavailable_for_upstream_without_force_env() {
-        if std::env::var_os(FORCE_COALESCED_DISCOVERY_ENV).is_some() {
-            return;
-        }
-        assert!(!coalesced_discovery_available("nix (Nix) 2.34.7\n"));
+    fn coalesced_available_for_upstream_best_effort() {
+        // Compatibility hosts attempt coalesce; flake-show remains the fallback.
+        assert!(coalesced_discovery_available("nix (Nix) 2.34.7\n"));
     }
 
     #[test]
