@@ -34,6 +34,8 @@ Commands:
   cache       Manage nxr discovery cache
   daemon      Optional local cache/coordination daemon (`nxrd`)
   history     Show recent run summaries persisted under XDG state
+  attach      Reopen the TUI watch for a recorded run
+  ui          Browse apps, tasks, and workspace scripts; Enter runs the selection
   affected    Report apps and tasks likely affected by changed paths
   fmt         Format Nix sources via `nix fmt` / the flake formatter
   envrc       Generate direnv `.envrc` content (`use flake` / `use flake .#<shell>`)
@@ -146,6 +148,7 @@ Options:
           - grouped:  Buffer stdout/stderr per node; flush when the node exits
           - failures: Buffer per node; emit buffered output only on nonzero [`Event::NodeExited`]
           - summary:  One-line status table per node (no multiplexed child logs)
+          - tui:      Ratatui one-screen DAG watch (node table + selected log tail)
           - raw:      Single foreground child inherits stdio (no pipe multiplexing)
 
       --events <FORMAT>
@@ -328,6 +331,7 @@ Options:
           - grouped:  Buffer stdout/stderr per node; flush when the node exits
           - failures: Buffer per node; emit buffered output only on nonzero [`Event::NodeExited`]
           - summary:  One-line status table per node (no multiplexed child logs)
+          - tui:      Ratatui one-screen DAG watch (node table + selected log tail)
           - raw:      Single foreground child inherits stdio (no pipe multiplexing)
 
       --events <FORMAT>

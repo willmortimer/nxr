@@ -128,6 +128,7 @@ Rejected   considered and explicitly not chosen
 | ADR-0170 | File-backed `nxr.apps` and live-workspace fast path | Accepted (Wave A) | 3.3 |
 | ADR-0171 | Materialized process-compatible development environments | Accepted | 3.4.0 |
 | ADR-0172 | Nom-style Nix progress for interactive build ops | Accepted | 3.4.0 |
+| ADR-0173 | Operator TUI watch, attach, and browser | Accepted | Unreleased |
 
 Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0144-auto-schema-v2.md`](0144-auto-schema-v2.md),
@@ -161,6 +162,7 @@ Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0170-file-backed-apps.md`](0170-file-backed-apps.md),
 [`0171-materialized-dev-environments.md`](0171-materialized-dev-environments.md),
 [`0172-nix-progress-formatter.md`](0172-nix-progress-formatter.md).
+[`0173-operator-tui.md`](0173-operator-tui.md).
 
 Audit absorb (2026-07, post-`a040e50`): remaps active delivery to
 **2.7.1 → 2.8 → 3.0 → 3.1** (process workflows remain in 3.1 MVP; distributed

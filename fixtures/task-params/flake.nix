@@ -63,6 +63,21 @@
               };
             };
           };
+          param-choice-required = {
+            description = "Required choice parameter (no default)";
+            app = "echo-params";
+            dependsOn = [ ];
+            hidden = false;
+            parameters = {
+              tier = {
+                type = "choice";
+                values = [
+                  "staging"
+                  "production"
+                ];
+              };
+            };
+          };
         };
       };
     in
@@ -74,7 +89,7 @@
         in
         {
           echo-params = mkApp pkgs "fixture-echo-params" "Echo NXR_PARAM_*" ''
-            echo "mode=''${NXR_PARAM_MODE:-unset} label=''${NXR_PARAM_LABEL:-unset} reason=''${NXR_PARAM_REASON:-unset}"
+            echo "mode=''${NXR_PARAM_MODE:-unset} label=''${NXR_PARAM_LABEL:-unset} reason=''${NXR_PARAM_REASON:-unset} tier=''${NXR_PARAM_TIER:-unset}"
           '';
         }
       );

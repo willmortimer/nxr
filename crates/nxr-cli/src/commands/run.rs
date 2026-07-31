@@ -12,6 +12,7 @@ use crate::commands::history;
 use crate::commands::plan::{PlanRenderError, write_plan};
 use crate::commands::script::{self, LiveFastPathOutcome, resolve_live_file_backed_app};
 use crate::commands::store_exe::resolve_app_spawn;
+use crate::osc52::maybe_emit_app_failure_clipboard;
 use crate::runner_output::RunnerOutput;
 
 /// Errors while running an app.
@@ -88,6 +89,7 @@ pub fn execute(
             None,
             false,
         );
+        maybe_emit_app_failure_clipboard(request.app, code);
         return Ok(code);
     }
 
@@ -152,6 +154,8 @@ pub fn execute(
         None,
         false,
     );
+
+    maybe_emit_app_failure_clipboard(request.app, code);
 
     Ok(code)
 }

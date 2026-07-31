@@ -517,6 +517,14 @@ pub enum Command {
         #[command(subcommand)]
         action: Option<HistorySubcommand>,
     },
+    /// Reopen the TUI watch for a recorded run
+    Attach {
+        /// Run id (omit for most recent attachable run)
+        #[arg(value_name = "RUN")]
+        run: Option<String>,
+    },
+    /// Browse apps, tasks, and workspace scripts; Enter runs the selection
+    Ui,
     /// Report apps and tasks likely affected by changed paths
     Affected {
         /// Collect changed paths from `git diff --name-only <base>...HEAD`

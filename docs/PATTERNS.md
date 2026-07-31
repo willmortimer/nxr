@@ -24,10 +24,15 @@ Plans and events still list **parameter names only** (never values).
 ### Branching: wizard app → `nxr task …`
 
 Prefer an interactive flake app that collects decisions, then execs a concrete
-task graph, over a second DSL:
+task graph, over a second DSL. See [`fixtures/deploy-wizard/`](../../fixtures/deploy-wizard/)
+for a minimal wizard that branches to `deploy-staging` / `deploy-prod` tasks.
 
 ```bash
 # apps.deploy-wizard prompts (TTY), then:
+nxr deploy-wizard
+# scripted / CI (fixture env overrides):
+NXR_FIXTURE_WIZARD_ENV=staging nxr --flake fixtures/deploy-wizard deploy-wizard
+# production path via tasks:
 nxr task deploy-staging
 # or
 nxr task deploy-prod --set reason=…
@@ -37,20 +42,42 @@ The wizard owns branching; leaves remain `nix run`-compatible apps.
 
 ## One watch UX
 
-Compose later; do not ship three UIs. Today:
+One renderer ([ADR-0173](adr/0173-operator-tui.md)); do not ship competing UIs:
 
 | Piece | Flag / behavior |
 |---|---|
 | Per-node log tee | `--log-dir PATH` → `PATH/<node>.stdout` / `.stderr` |
-| Parallel status | `--output live` (default for `-j > 1`) compact stderr status line |
+| Parallel status line | `--output live` (default for `-j > 1` on non-TUI) |
+| DAG watch panel | `--output tui` (falls back to `live` when not a TTY) |
+| Re-open a run | `nxr attach [RUN]` |
+| Browse + run | `nxr ui` → Enter: app via `nxr <app>`, task via `--output tui`, script via `nxr script` |
 | Nix noise | `NXR_NIX_PROGRESS=auto\|builtin\|nom\|off` ([ADR-0172](adr/0172-nix-progress-formatter.md)) |
 
 ```bash
-nxr --log-dir .nxr/logs/run-1 --output live task ci -j 4
+nxr --log-dir .nxr/logs/run-1 --output tui task ci -j 4
+nxr attach
+nxr ui
 ```
 
-Full TUI / multiplexer panes are later (roadmap Phase 35); keep one renderer.
+Zellij/tmux pane layouts are companion docs only; the TUI is the in-process
+watch surface.
 
+### Multiplexer clipboard (OSC 52)
+
+When a **task** or **app** run fails on a TTY, nxr emits an OSC 52 sequence so
+terminals and multiplexers (tmux, zellij) can copy a compact failure digest to
+the system clipboard. The payload lists failed node names and exit/status labels
+only — never secret values (sanitized via the same path as terminal output).
+
+```text
+nxr failed
+lint exit 1
+gate cancelled
+```
+
+Disable with `NXR_OSC52=off` (also `0`, `false`, `no`). No emission in CI /
+non-TTY contexts. Complements scrollback sizing in tmux/zellij; does not replace
+the in-process TUI watch surface.
 ## Release / promote
 
 For **this** repo: [RELEASE.md](RELEASE.md) — `nxr task ci` / `ci-linux`,

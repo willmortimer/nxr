@@ -89,6 +89,18 @@ fn complete_apps_cache_hit_avoids_nix() {
 }
 
 #[test]
+fn ui_without_tty_is_usage_error() {
+    cargo_bin_cmd!("nxr")
+        .arg("ui")
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "ui requires an interactive terminal",
+        ));
+}
+
+#[test]
 fn select_without_tty_is_usage_error() {
     cargo_bin_cmd!("nxr")
         .arg("select")
@@ -3302,6 +3314,131 @@ fn task_required_param_accepts_set() {
         .assert()
         .success()
         .stdout(predicate::str::contains("reason=deploy"));
+}
+
+#[test]
+fn task_param_demo_uses_defaults_without_set() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args(["--flake", "fixtures/task-params", "task", "param-demo"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("mode=fast"))
+        .stdout(predicate::str::contains("label=fixture"));
+}
+
+#[test]
+fn task_choice_required_param_fail_closed_without_set() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/task-params",
+            "task",
+            "param-choice-required",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("required parameter tier"));
+}
+
+#[test]
+fn task_choice_required_param_accepts_set() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/task-params",
+            "task",
+            "--set",
+            "tier=staging",
+            "param-choice-required",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("tier=staging"));
+}
+
+#[test]
+fn deploy_wizard_scripted_staging_branch() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .env("NXR_FIXTURE_WIZARD_ENV", "staging")
+        .args(["--flake", "fixtures/deploy-wizard", "deploy-wizard"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wizard:target=deploy-staging"))
+        .stdout(predicate::str::contains(
+            "wizard:invoke=nxr task deploy-staging",
+        ));
+}
+
+#[test]
+fn deploy_wizard_scripted_production_branch() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .env("NXR_FIXTURE_WIZARD_ENV", "production")
+        .env("NXR_FIXTURE_WIZARD_REASON", "ticket-42")
+        .args(["--flake", "fixtures/deploy-wizard", "deploy-wizard"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wizard:target=deploy-prod"))
+        .stdout(predicate::str::contains("wizard:reason=ticket-42"));
+}
+
+#[test]
+fn deploy_prod_task_fail_closed_without_reason() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args(["--flake", "fixtures/deploy-wizard", "task", "deploy-prod"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("required parameter reason"));
+}
+
+#[test]
+fn deploy_prod_task_accepts_set_reason() {
+    let Some(()) = require_nix() else {
+        return;
+    };
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(repo_root())
+        .args([
+            "--flake",
+            "fixtures/deploy-wizard",
+            "task",
+            "--set",
+            "reason=release",
+            "deploy-prod",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reason=release"));
 }
 
 #[test]

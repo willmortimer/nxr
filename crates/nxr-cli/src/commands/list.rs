@@ -507,6 +507,60 @@ fn discover_workspace_soft_tasks(
     )
 }
 
+/// Apps and tasks discovered for interactive browsers (`nxr ui`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CatalogEntries {
+    pub apps: Vec<App>,
+    pub tasks: BTreeMap<String, TaskDefinition>,
+}
+
+/// Discover apps and tasks using the same path as default `nxr list`.
+///
+/// # Errors
+///
+/// Returns [`ListError`] when flake resolution or discovery fails.
+pub fn discover_catalog(
+    flake_arg: Option<&str>,
+    nix_override: Option<&str>,
+    refresh_discovery: bool,
+    nix_flags: &OptionalNixFlags,
+    runner: RunnerOutput,
+) -> Result<CatalogEntries, ListError> {
+    let invocation_cwd = current_invocation_directory()?;
+    let flake = resolve_flake(flake_arg, &invocation_cwd)?;
+    let adapter = build_adapter(nix_override)?;
+    let view_filter = ViewFilter::resolve(
+        flake
+            .local_root
+            .as_deref()
+            .map(camino::Utf8Path::as_std_path),
+        None,
+        None,
+    )?;
+
+    runner
+        .info(format!("discovering apps for {}", flake.display))
+        .map_err(ListError::Io)?;
+
+    let workspace = discover_workspace_soft_tasks(&flake, &adapter, refresh_discovery, nix_flags)?;
+    let task_doc = workspace
+        .tasks
+        .unwrap_or_else(|| TaskDocument::new(BTreeMap::new()));
+    let apps = view_filter.filter_apps(&workspace.apps, &task_doc);
+    let tasks = view_filter.filter_tasks(&task_doc);
+
+    runner
+        .verbose(format!(
+            "found {} app(s) and {} task(s) for system {}",
+            apps.len(),
+            tasks.len(),
+            adapter.system
+        ))
+        .map_err(ListError::Io)?;
+
+    Ok(CatalogEntries { apps, tasks })
+}
+
 #[derive(Serialize)]
 struct ListEnvelope {
     #[serde(flatten)]

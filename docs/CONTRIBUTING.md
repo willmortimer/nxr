@@ -1,6 +1,10 @@
 # Contributing to nxr
 
-This page is for people working **on** the `nxr` repository. Consumers of `nxr` in their own flakes should start at the [root README](../README.md).
+This page is for people working **on** the `nxr` repository. Consumers of `nxr`
+in their own flakes should start at the [root README](../README.md) and the
+[GitHub Wiki](https://github.com/willmortimer/nxr/wiki) (source markdown in
+[`wiki/`](../wiki/); publish with [`scripts/publish-wiki.sh`](../scripts/publish-wiki.sh)).
+Agents and design work stay in [`docs/`](INDEX.md).
 
 ## Develop in this repo
 

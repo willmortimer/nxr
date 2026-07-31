@@ -1,4 +1,7 @@
 //! CLI `--set` / TTY resolution for typed task parameters.
+//!
+//! Interactive prompts use dialoguer list/input widgets (not fullscreen fuzzy
+//! pickers) so tmux/zellij sessions avoid alternate-screen conflicts.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, IsTerminal, Write};
@@ -8,6 +11,36 @@ use nxr_task::{
     ExecutionPlan, ParameterError, TaskDocument, TaskParameter, TaskParameterType,
     expand_matrix_tasks, parameter_env_name, resolve_task_parameter_env_layered,
 };
+
+/// True when `TMUX` or `ZELLIJ` is set (terminal multiplexer session).
+fn terminal_mux_active() -> bool {
+    mux_active_from_env_os(std::env::var_os("TMUX"), std::env::var_os("ZELLIJ"))
+}
+
+fn mux_active_from_env_os(
+    tmux: Option<std::ffi::OsString>,
+    zellij: Option<std::ffi::OsString>,
+) -> bool {
+    tmux.is_some() || zellij.is_some()
+}
+
+/// Whether CLI may run dialoguer prompts for typed parameters.
+///
+/// Requires stdin and stderr TTYs. Inside tmux/zellij without both, degrades to
+/// fail-closed `--set` / `NXR_PARAM_*` / defaults (no hung reads).
+fn parameter_prompts_interactive() -> bool {
+    parameter_prompts_interactive_tty(io::stdin().is_terminal(), io::stderr().is_terminal())
+}
+
+fn parameter_prompts_interactive_tty(stdin_tty: bool, stderr_tty: bool) -> bool {
+    if stdin_tty && stderr_tty {
+        return true;
+    }
+    if terminal_mux_active() {
+        return false;
+    }
+    false
+}
 
 /// Parse a single `--set name=value` argument.
 ///
@@ -90,7 +123,7 @@ pub fn resolve_plan_parameters(
         return Ok(merged);
     }
 
-    let interactive = io::stdin().is_terminal() && io::stderr().is_terminal();
+    let interactive = parameter_prompts_interactive();
 
     for (task_id, definition) in tasks_with_params {
         let task_id_for_prompt = task_id.clone();
@@ -138,6 +171,7 @@ fn prompt_parameter(
                     name: name.to_owned(),
                     message: "choice parameter has no values".to_owned(),
                 })?;
+            // List-style Select (not fuzzy/fullscreen) for tmux/zellij compatibility.
             let selection = Select::new()
                 .with_prompt(&prompt)
                 .items(values)
@@ -217,5 +251,26 @@ mod tests {
     #[test]
     fn parse_param_set_rejects_missing_equals() {
         assert!(parse_param_set("reason").is_err());
+    }
+
+    #[test]
+    fn terminal_mux_active_from_env() {
+        assert!(mux_active_from_env_os(
+            Some(std::ffi::OsString::from("/tmp/tmux")),
+            None,
+        ));
+        assert!(mux_active_from_env_os(
+            None,
+            Some(std::ffi::OsString::from("1")),
+        ));
+        assert!(!mux_active_from_env_os(None, None));
+    }
+
+    #[test]
+    fn parameter_prompts_require_both_ttys() {
+        assert!(parameter_prompts_interactive_tty(true, true));
+        assert!(!parameter_prompts_interactive_tty(true, false));
+        assert!(!parameter_prompts_interactive_tty(false, true));
+        assert!(!parameter_prompts_interactive_tty(false, false));
     }
 }
