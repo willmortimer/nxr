@@ -24,10 +24,15 @@ Plans and events still list **parameter names only** (never values).
 ### Branching: wizard app → `nxr task …`
 
 Prefer an interactive flake app that collects decisions, then execs a concrete
-task graph, over a second DSL:
+task graph, over a second DSL. See [`fixtures/deploy-wizard/`](../../fixtures/deploy-wizard/)
+for a minimal wizard that branches to `deploy-staging` / `deploy-prod` tasks.
 
 ```bash
 # apps.deploy-wizard prompts (TTY), then:
+nxr deploy-wizard
+# scripted / CI (fixture env overrides):
+NXR_FIXTURE_WIZARD_ENV=staging nxr --flake fixtures/deploy-wizard deploy-wizard
+# production path via tasks:
 nxr task deploy-staging
 # or
 nxr task deploy-prod --set reason=…
