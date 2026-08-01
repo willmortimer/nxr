@@ -22,7 +22,7 @@ let
     db-urls = ["https://github.com/RustSec/advisory-db"]
 
     [licenses]
-    allow = ["MIT", "Apache-2.0", "Unicode-3.0", "MPL-2.0", "ISC", "CC0-1.0", "BSD-2-Clause"]
+    allow = ["MIT", "Apache-2.0", "Unicode-3.0", "MPL-2.0", "ISC", "CC0-1.0", "BSD-2-Clause", "Zlib"]
     confidence-threshold = 0.8
 
     [bans]

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Allow `Zlib` in the Nix `deny-ci` license list (matches root `deny.toml`) so
+  GitHub `ci.yml` quality passes with ratatui 0.30.
+
 ## [3.6.0] - 2026-08-01
 
 ### Added
