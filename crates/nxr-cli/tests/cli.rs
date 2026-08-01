@@ -3206,9 +3206,13 @@ fn watch_app_prefix_runs_named_app() {
         .spawn()
         .expect("spawn watch");
     let stdout = child.stdout.take().expect("stdout");
+    let stderr = child.stderr.take().expect("stderr");
     let rx = start_watch_stdout_reader(stdout);
+    let _stderr_rx = start_watch_stderr_drain(stderr);
     let mut output = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(45);
+    // Match sibling watch deadlines: cold `nix run` under parallel nextest
+    // often exceeds 45s, and an undrained stderr pipe can deadlock sooner.
+    let deadline = Instant::now() + Duration::from_secs(90);
     wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 1, deadline);
     let _ = child.kill();
     let _ = child.wait();
@@ -4430,7 +4434,6 @@ fn doctor_all_does_not_double_capability_probes() {
 
 #[test]
 fn watch_app_does_not_double_workspace_init_on_first_generation() {
-    use std::io::Read;
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
@@ -4459,32 +4462,13 @@ fn watch_app_does_not_double_workspace_init_on_first_generation() {
         .spawn()
         .expect("spawn watch");
 
-    let mut stdout = child.stdout.take().expect("stdout pipe");
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let stdout = child.stdout.take().expect("stdout pipe");
+    let stderr = child.stderr.take().expect("stderr pipe");
+    let _stderr_rx = start_watch_stderr_drain(stderr);
+    let rx = start_watch_stdout_reader(stdout);
+    let deadline = Instant::now() + Duration::from_secs(90);
     let mut output = Vec::new();
-    let mut buf = [0_u8; 256];
-    loop {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            panic!(
-                "watch timed out before first generation; output={}",
-                String::from_utf8_lossy(&output)
-            );
-        }
-        match stdout.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                output.extend_from_slice(&buf[..n]);
-                if String::from_utf8_lossy(&output).contains("hello from basic-apps") {
-                    break;
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(error) => panic!("read watch stdout: {error}"),
-        }
-    }
+    wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 1, deadline);
 
     let _ = child.kill();
     let _ = child.wait();
@@ -4510,7 +4494,6 @@ fn watch_app_does_not_double_workspace_init_on_first_generation() {
 
 #[test]
 fn watch_unprefixed_app_skips_task_eval_on_first_generation() {
-    use std::io::Read;
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
@@ -4540,32 +4523,13 @@ fn watch_unprefixed_app_skips_task_eval_on_first_generation() {
         .spawn()
         .expect("spawn watch");
 
-    let mut stdout = child.stdout.take().expect("stdout pipe");
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let stdout = child.stdout.take().expect("stdout pipe");
+    let stderr = child.stderr.take().expect("stderr pipe");
+    let _stderr_rx = start_watch_stderr_drain(stderr);
+    let rx = start_watch_stdout_reader(stdout);
+    let deadline = Instant::now() + Duration::from_secs(90);
     let mut output = Vec::new();
-    let mut buf = [0_u8; 256];
-    loop {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            panic!(
-                "watch timed out before first generation; output={}",
-                String::from_utf8_lossy(&output)
-            );
-        }
-        match stdout.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                output.extend_from_slice(&buf[..n]);
-                if String::from_utf8_lossy(&output).contains("hello from basic-apps") {
-                    break;
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(error) => panic!("read watch stdout: {error}"),
-        }
-    }
+    wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 1, deadline);
 
     let _ = child.kill();
     let _ = child.wait();
@@ -4617,7 +4581,9 @@ fn watch_unprefixed_prefers_task_when_app_and_task_share_name() {
         .expect("spawn watch");
 
     let stdout = child.stdout.take().expect("stdout pipe");
+    let stderr = child.stderr.take().expect("stderr pipe");
     let rx = start_watch_stdout_reader(stdout);
+    let _stderr_rx = start_watch_stderr_drain(stderr);
     let mut output = Vec::new();
     // Per-stage deadlines: under parallel nextest, cold `nix run` for the DAG
     // can burn most of a single shared window on the first node alone.
