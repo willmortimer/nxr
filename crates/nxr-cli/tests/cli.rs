@@ -3210,9 +3210,7 @@ fn watch_app_prefix_runs_named_app() {
     let rx = start_watch_stdout_reader(stdout);
     let _stderr_rx = start_watch_stderr_drain(stderr);
     let mut output = Vec::new();
-    // Match sibling watch deadlines: cold `nix run` under parallel nextest
-    // often exceeds 45s, and an undrained stderr pipe can deadlock sooner.
-    let deadline = Instant::now() + Duration::from_secs(90);
+    let deadline = Instant::now() + Duration::from_secs(WATCH_GENERATION_SECS);
     wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 1, deadline);
     let _ = child.kill();
     let _ = child.wait();
@@ -4466,7 +4464,7 @@ fn watch_app_does_not_double_workspace_init_on_first_generation() {
     let stderr = child.stderr.take().expect("stderr pipe");
     let _stderr_rx = start_watch_stderr_drain(stderr);
     let rx = start_watch_stdout_reader(stdout);
-    let deadline = Instant::now() + Duration::from_secs(90);
+    let deadline = Instant::now() + Duration::from_secs(WATCH_GENERATION_SECS);
     let mut output = Vec::new();
     wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 1, deadline);
 
@@ -4527,7 +4525,7 @@ fn watch_unprefixed_app_skips_task_eval_on_first_generation() {
     let stderr = child.stderr.take().expect("stderr pipe");
     let _stderr_rx = start_watch_stderr_drain(stderr);
     let rx = start_watch_stdout_reader(stdout);
-    let deadline = Instant::now() + Duration::from_secs(90);
+    let deadline = Instant::now() + Duration::from_secs(WATCH_GENERATION_SECS);
     let mut output = Vec::new();
     wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 1, deadline);
 
@@ -4592,21 +4590,21 @@ fn watch_unprefixed_prefers_task_when_app_and_task_share_name() {
         &mut output,
         "fmt",
         1,
-        Instant::now() + Duration::from_secs(90),
+        Instant::now() + Duration::from_secs(WATCH_GENERATION_SECS),
     );
     wait_for_watch_occurrences(
         &rx,
         &mut output,
         "test",
         1,
-        Instant::now() + Duration::from_secs(90),
+        Instant::now() + Duration::from_secs(WATCH_GENERATION_SECS),
     );
     wait_for_watch_occurrences(
         &rx,
         &mut output,
         "ci",
         1,
-        Instant::now() + Duration::from_secs(90),
+        Instant::now() + Duration::from_secs(WATCH_GENERATION_SECS),
     );
 
     let _ = child.kill();
@@ -4648,6 +4646,10 @@ fn start_watch_stderr_drain(
 ) -> std::sync::mpsc::Receiver<Vec<u8>> {
     start_watch_stdout_reader(stderr)
 }
+
+/// Per-generation wait for watch CLI tests. Cold `nix run` under parallel
+/// nextest on a loaded host routinely exceeds 90s (observed ~86s warm).
+const WATCH_GENERATION_SECS: u64 = 180;
 
 fn wait_for_watch_occurrences(
     rx: &std::sync::mpsc::Receiver<Vec<u8>>,
@@ -4777,7 +4779,7 @@ fn watch_source_restart_skips_discovery_nix_calls() {
     let rx = start_watch_stdout_reader(stdout);
     let stderr_rx = start_watch_stderr_drain(stderr);
     let mut output = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(90);
+    let deadline = Instant::now() + Duration::from_secs(WATCH_GENERATION_SECS);
     wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 1, deadline);
 
     std::fs::write(&counter.log, "").expect("reset log");
@@ -4789,7 +4791,7 @@ fn watch_source_restart_skips_discovery_nix_calls() {
     std::fs::write(&trigger, b"touch-1").expect("write trigger");
     std::thread::sleep(Duration::from_millis(100));
     std::fs::write(&trigger, b"touch-2").expect("modify trigger");
-    let second_deadline = Instant::now() + Duration::from_secs(90);
+    let second_deadline = Instant::now() + Duration::from_secs(WATCH_GENERATION_SECS);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         wait_for_watch_occurrences(
             &rx,
@@ -4860,7 +4862,7 @@ fn watch_metadata_restart_rediscovers_apps() {
     let rx = start_watch_stdout_reader(stdout);
     let _stderr_rx = start_watch_stderr_drain(stderr);
     let mut output = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(90);
+    let deadline = Instant::now() + Duration::from_secs(WATCH_GENERATION_SECS);
     wait_for_watch_occurrences(&rx, &mut output, "hello from basic-apps", 1, deadline);
 
     std::fs::write(&counter.log, "").expect("reset log");
@@ -4869,7 +4871,7 @@ fn watch_metadata_restart_rediscovers_apps() {
     edited.push(b'\n');
     std::fs::write(&flake_path, &edited).expect("touch flake.nix");
 
-    let second_deadline = Instant::now() + Duration::from_secs(90);
+    let second_deadline = Instant::now() + Duration::from_secs(WATCH_GENERATION_SECS);
     wait_for_watch_occurrences(
         &rx,
         &mut output,
