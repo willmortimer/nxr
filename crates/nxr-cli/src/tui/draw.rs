@@ -13,7 +13,7 @@ pub fn draw_watch(frame: &mut Frame<'_>, state: &WatchState, title: &str) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(4),
             Constraint::Min(6),
             Constraint::Length(1),
         ])
@@ -35,12 +35,40 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, state: &WatchState, title: &st
     } else {
         "running"
     };
-    let header = format!("{title}  root={}  run={run_id}  {status}", state.root);
-    let block = Block::default().borders(Borders::ALL).title(Span::styled(
-        header,
-        Style::default().add_modifier(Modifier::BOLD),
+    let counts = state.phase_counts();
+    let follow = if state.auto_follow {
+        "follow on"
+    } else {
+        "follow off"
+    };
+    let line1 = Line::from(vec![
+        Span::styled(
+            format!("root={}  ", state.root),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!("run={run_id}  ")),
+        Span::styled(
+            status,
+            if state.run_complete {
+                match state.success {
+                    Some(true) => Style::default().fg(Color::Green),
+                    Some(false) => Style::default().fg(Color::Red),
+                    None => Style::default(),
+                }
+            } else {
+                Style::default().fg(Color::Cyan)
+            },
+        ),
+    ]);
+    let line2 = Line::from(format!(
+        "● {}  ✓ {}  ✗ {}  ○ {}  ·  {follow}",
+        counts.running, counts.ok, counts.failed, counts.queued
     ));
-    frame.render_widget(block, area);
+    let paragraph =
+        Paragraph::new(vec![line1, line2]).block(Block::default().borders(Borders::ALL).title(
+            Span::styled(title, Style::default().add_modifier(Modifier::BOLD)),
+        ));
+    frame.render_widget(paragraph, area);
 }
 
 fn draw_body(frame: &mut Frame<'_>, area: Rect, state: &WatchState) {
@@ -64,7 +92,7 @@ fn draw_node_table(frame: &mut Frame<'_>, area: Rect, state: &WatchState) {
             let entry = state.nodes.get(node).expect("ordered node");
             let marker = if index == state.selected { ">" } else { " " };
             let duration = entry
-                .duration_ms
+                .display_duration_ms()
                 .map(|ms| nxr_task::format_duration(std::time::Duration::from_millis(ms)))
                 .unwrap_or_else(|| "-".to_owned());
             Row::new(vec![
@@ -100,6 +128,7 @@ fn draw_log_tail(frame: &mut Frame<'_>, area: Rect, state: &WatchState) {
         .map(|node| (node.stdout_tail.as_str(), node.stderr_tail.as_str()))
         .unwrap_or(("", ""));
 
+    let max_lines = area.height.saturating_sub(2).max(1) as usize;
     let mut lines: Vec<Line<'_>> = Vec::new();
     if let Some(message) = &state.diagnostic {
         lines.push(Line::from(Span::styled(
@@ -112,7 +141,11 @@ fn draw_log_tail(frame: &mut Frame<'_>, area: Rect, state: &WatchState) {
             "--- stdout ---",
             Style::default().add_modifier(Modifier::BOLD),
         )));
-        lines.extend(tail_lines(stdout).into_iter().map(Line::from));
+        lines.extend(
+            visible_tail_lines(stdout, max_lines)
+                .into_iter()
+                .map(Line::from),
+        );
     }
     if !stderr.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -120,13 +153,15 @@ fn draw_log_tail(frame: &mut Frame<'_>, area: Rect, state: &WatchState) {
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )));
         lines.extend(
-            tail_lines(stderr)
+            visible_tail_lines(stderr, max_lines)
                 .into_iter()
                 .map(|line| Line::from(vec![Span::styled(line, Style::default().fg(Color::Red))])),
         );
     }
     if lines.is_empty() {
         lines.push(Line::from("(no output yet)"));
+    } else if lines.len() > max_lines {
+        lines = lines.split_off(lines.len() - max_lines);
     }
 
     let block = Block::default()
@@ -138,9 +173,9 @@ fn draw_log_tail(frame: &mut Frame<'_>, area: Rect, state: &WatchState) {
 
 fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &WatchState) {
     let hint = if state.run_complete {
-        "q quit  ↑/↓ select  mouse select/copy ok"
+        "q quit  ↑/↓ select  f follow  mouse select/copy ok"
     } else {
-        "↑/↓ select  q quit when done  mouse select/copy ok"
+        "↑/↓ select  f follow running  q quit when done  mouse select/copy ok"
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -151,8 +186,16 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &WatchState) {
     );
 }
 
-fn tail_lines(text: &str) -> Vec<String> {
-    text.lines().map(str::to_owned).collect()
+fn visible_tail_lines(text: &str, max: usize) -> Vec<String> {
+    if max == 0 {
+        return Vec::new();
+    }
+    let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    if lines.len() <= max {
+        lines
+    } else {
+        lines[lines.len() - max..].to_vec()
+    }
 }
 
 fn phase_style(phase: NodePhase) -> Style {

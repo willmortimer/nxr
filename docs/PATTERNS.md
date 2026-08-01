@@ -51,6 +51,7 @@ One renderer ([ADR-0173](adr/0173-operator-tui.md)); do not ship competing UIs:
 | DAG watch panel | `--output tui` (falls back to `live` when not a TTY, or under tmux/zellij unless `NXR_TUI=force`) |
 | Re-open a run | `nxr attach [RUN]` (TUI sidecars first; else history summary) |
 | Browse + run | `nxr ui` → focus tabs with ←/→, Enter opens catalog, Enter again runs |
+| Follow running | TUI auto-follows newly started nodes; ↑/↓ pauses follow; `f` resumes |
 | Wiki publish (this repo) | `nxr script publish-wiki` (optional; not on `release`) |
 | Nix noise | `NXR_NIX_PROGRESS=auto\|builtin\|nom\|off` ([ADR-0172](adr/0172-nix-progress-formatter.md)) |
 

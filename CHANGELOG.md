@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `nxr attach` falls back to run-history summaries when no TUI sidecar exists.
 - `nxr ui` tab/catalog focus: Enter opens the catalog; Enter again runs.
 - Workspace script `.nxr/scripts/publish-wiki` for optional wiki sync.
+- TUI watch polish: filled header with phase counts, auto-follow running
+  nodes (`f` re-enables), live elapsed durations, viewport-clipped log tail.
 - Bump `ratatui` to 0.30 (drops unmaintained `paste`) and allow Zlib for
   `foldhash` in `deny.toml`.
 

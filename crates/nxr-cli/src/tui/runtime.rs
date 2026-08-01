@@ -90,6 +90,7 @@ fn poll_navigation(state: &mut WatchState) -> io::Result<()> {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                 KeyCode::Up | KeyCode::Char('k') => state.move_selection(-1),
                 KeyCode::Down | KeyCode::Char('j') => state.move_selection(1),
+                KeyCode::Char('f') => state.enable_follow_running(),
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     return Ok(());
                 }

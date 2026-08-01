@@ -1,6 +1,7 @@
 //! In-memory DAG watch state driven by task events or attach replay.
 
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use nxr_core::sanitize::sanitize_terminal_text;
 use nxr_task::{Event, NodeOutcome, OutputPayload};
@@ -54,12 +55,26 @@ impl NodePhase {
 pub struct NodeState {
     pub phase: NodePhase,
     pub duration_ms: Option<u64>,
+    /// Wall-clock start for live elapsed display while [`NodePhase::Running`].
+    pub started_at: Option<Instant>,
     pub stdout_tail: String,
     pub stderr_tail: String,
 }
 
+impl NodeState {
+    /// Final duration if known, else live elapsed while running.
+    #[must_use]
+    pub fn display_duration_ms(&self) -> Option<u64> {
+        if let Some(ms) = self.duration_ms {
+            return Some(ms);
+        }
+        self.started_at
+            .map(|started| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX))
+    }
+}
+
 /// One-screen DAG watch model.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct WatchState {
     pub run_id: Option<String>,
     pub root: String,
@@ -69,6 +84,24 @@ pub struct WatchState {
     pub run_complete: bool,
     pub success: Option<bool>,
     pub diagnostic: Option<String>,
+    /// When true, selection jumps to each newly started node.
+    pub auto_follow: bool,
+}
+
+impl Default for WatchState {
+    fn default() -> Self {
+        Self {
+            run_id: None,
+            root: String::new(),
+            node_order: Vec::new(),
+            nodes: BTreeMap::new(),
+            selected: 0,
+            run_complete: false,
+            success: None,
+            diagnostic: None,
+            auto_follow: true,
+        }
+    }
 }
 
 impl WatchState {
@@ -86,6 +119,13 @@ impl WatchState {
             Event::NodeStarted { node, .. } => {
                 self.ensure_node(node);
                 self.set_phase(node, NodePhase::Running);
+                if let Some(entry) = self.nodes.get_mut(node) {
+                    entry.started_at = Some(Instant::now());
+                    entry.duration_ms = None;
+                }
+                if self.auto_follow {
+                    self.select_node(node);
+                }
             }
             Event::StdoutChunk { node, payload } => {
                 self.ensure_node(node);
@@ -107,6 +147,7 @@ impl WatchState {
                 self.set_phase(node, phase);
                 if let Some(entry) = self.nodes.get_mut(node) {
                     entry.duration_ms = *duration_ms;
+                    entry.started_at = None;
                 }
             }
             Event::RunCompleted {
@@ -128,8 +169,9 @@ impl WatchState {
         self.node_order.get(self.selected).map(String::as_str)
     }
 
-    /// Move selection up/down, wrapping at ends.
+    /// Move selection up/down, wrapping at ends (disables auto-follow).
     pub fn move_selection(&mut self, delta: isize) {
+        self.auto_follow = false;
         if self.node_order.is_empty() {
             return;
         }
@@ -137,6 +179,52 @@ impl WatchState {
         let current = isize::try_from(self.selected).unwrap_or(0);
         let next = (current + delta).rem_euclid(len);
         self.selected = usize::try_from(next).unwrap_or(0);
+    }
+
+    /// Re-enable auto-follow and jump to the latest running node (else stay).
+    pub fn enable_follow_running(&mut self) {
+        self.auto_follow = true;
+        if let Some(node) = self.latest_running_node().map(str::to_owned) {
+            self.select_node(&node);
+        }
+    }
+
+    /// Count nodes in each terminal/running phase for the header.
+    #[must_use]
+    pub fn phase_counts(&self) -> PhaseCounts {
+        let mut counts = PhaseCounts::default();
+        for entry in self.nodes.values() {
+            match entry.phase {
+                NodePhase::Queued => counts.queued += 1,
+                NodePhase::Running => counts.running += 1,
+                NodePhase::Succeeded => counts.ok += 1,
+                NodePhase::Failed | NodePhase::TimedOut => counts.failed += 1,
+                NodePhase::Skipped | NodePhase::Cancelled => counts.other += 1,
+            }
+        }
+        counts
+    }
+
+    fn latest_running_node(&self) -> Option<&str> {
+        self.node_order
+            .iter()
+            .filter_map(|id| {
+                let node = self.nodes.get(id)?;
+                if node.phase == NodePhase::Running {
+                    Some((id.as_str(), node.started_at))
+                } else {
+                    None
+                }
+            })
+            .max_by_key(|(_, started)| *started)
+            .map(|(id, _)| id)
+    }
+
+    fn select_node(&mut self, node: &str) {
+        let safe = sanitize_terminal_text(node);
+        if let Some(index) = self.node_order.iter().position(|id| id == &safe) {
+            self.selected = index;
+        }
     }
 
     fn ensure_node(&mut self, node: &str) {
@@ -168,6 +256,16 @@ impl WatchState {
         tail.push_str(&text);
         trim_tail(tail);
     }
+}
+
+/// Aggregated node phase counts for the header strip.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PhaseCounts {
+    pub queued: usize,
+    pub running: usize,
+    pub ok: usize,
+    pub failed: usize,
+    pub other: usize,
 }
 
 fn node_phase_from_exit(code: Option<i32>, status: Option<NodeOutcome>) -> NodePhase {
@@ -252,7 +350,51 @@ mod tests {
         state.selected = 1;
         state.move_selection(1);
         assert_eq!(state.selected, 0);
+        assert!(!state.auto_follow);
         state.move_selection(-1);
         assert_eq!(state.selected, 1);
+    }
+
+    #[test]
+    fn auto_follow_selects_started_node() {
+        let mut state = WatchState::default();
+        state.apply(&Event::node_queued("a"));
+        state.apply(&Event::node_queued("b"));
+        assert!(state.auto_follow);
+        state.apply(&Event::node_started("b"));
+        assert_eq!(state.selected_node(), Some("b"));
+        assert!(state.nodes.get("b").expect("b").started_at.is_some());
+    }
+
+    #[test]
+    fn manual_selection_disables_follow() {
+        let mut state = WatchState::default();
+        state.apply(&Event::node_queued("a"));
+        state.apply(&Event::node_queued("b"));
+        state.apply(&Event::node_started("b"));
+        assert_eq!(state.selected_node(), Some("b"));
+        state.move_selection(-1);
+        assert!(!state.auto_follow);
+        assert_eq!(state.selected_node(), Some("a"));
+        state.apply(&Event::node_started("a"));
+        // Follow is off: staying on a even though a also started.
+        assert_eq!(state.selected_node(), Some("a"));
+        state.enable_follow_running();
+        assert!(state.auto_follow);
+        // Latest running in reverse order is a (started last among remaining).
+        assert_eq!(state.selected_node(), Some("a"));
+    }
+
+    #[test]
+    fn display_duration_uses_final_or_live() {
+        let mut entry = NodeState {
+            phase: NodePhase::Running,
+            started_at: Some(Instant::now()),
+            ..NodeState::default()
+        };
+        assert!(entry.display_duration_ms().is_some());
+        entry.duration_ms = Some(1_500);
+        entry.started_at = None;
+        assert_eq!(entry.display_duration_ms(), Some(1_500));
     }
 }

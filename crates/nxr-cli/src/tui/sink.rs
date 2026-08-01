@@ -85,6 +85,7 @@ impl TuiEventSink {
                 match key.code {
                     KeyCode::Up | KeyCode::Char('k') => self.state.move_selection(-1),
                     KeyCode::Down | KeyCode::Char('j') => self.state.move_selection(1),
+                    KeyCode::Char('f') => self.state.enable_follow_running(),
                     KeyCode::Char('q') | KeyCode::Esc if self.finished => {
                         return Err(io::Error::new(io::ErrorKind::Interrupted, "tui quit"));
                     }
@@ -122,14 +123,18 @@ impl TuiEventSink {
             if event::poll(Duration::from_millis(80))?
                 && let CrosstermEvent::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
-                && matches!(
-                    key.code,
-                    KeyCode::Char('q')
-                        | KeyCode::Esc
-                        | KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL)
-                )
             {
-                break;
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('c')
+                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        break;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => self.state.move_selection(-1),
+                    KeyCode::Down | KeyCode::Char('j') => self.state.move_selection(1),
+                    KeyCode::Char('f') => self.state.enable_follow_running(),
+                    _ => {}
+                }
             }
         }
         if let Some(session) = &mut self.session {
