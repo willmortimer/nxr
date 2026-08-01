@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-08-01
+
 ### Added
 
 - Operator TUI watch ([ADR-0173](docs/adr/0173-operator-tui.md)): `--output tui` Ratatui
@@ -26,15 +28,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consumer docs split: library-style root README, GitHub Wiki guides under
   [`wiki/`](wiki/), and VHS demos for tui / ui / deploy-wizard
   ([docs/demo/](docs/demo/)).
+- Workspace script `.nxr/scripts/publish-wiki` for optional wiki sync.
+
+### Changed
+
 - `--output tui` falls back to `live` under tmux/zellij (override with
   `NXR_TUI=force`); mouse capture disabled so terminal text selection works.
 - `nxr attach` falls back to run-history summaries when no TUI sidecar exists.
 - `nxr ui` tab/catalog focus: Enter opens the catalog; Enter again runs.
-- Workspace script `.nxr/scripts/publish-wiki` for optional wiki sync.
 - TUI watch polish: filled header with phase counts, auto-follow running
   nodes (`f` re-enables), live elapsed durations, viewport-clipped log tail.
 - Bump `ratatui` to 0.30 (drops unmaintained `paste`) and allow Zlib for
   `foldhash` in `deny.toml`.
+- Workspace and Nix package version **3.6.0**.
 
 ## [3.5.3] - 2026-07-31
 

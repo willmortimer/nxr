@@ -25,7 +25,8 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 | **V3.0** | Secure execution contexts | Env policy, trust, secret bindings/delivery, `nxr context` — `v3.0.0`. |
 | **V3.1** | Workspace actions + process MVP | Local CAS, resources, `up`/`status`/`logs`/`down`, inventory, history, coalesced discovery — `v3.1.0`–`v3.1.4`. Cache safety ([#1](https://github.com/willmortimer/nxr/issues/1), [#2](https://github.com/willmortimer/nxr/issues/2)) shipped in **v3.1.4**. |
 | **V3.2** | Local orchestration performance | Plan/store-exe caches, digests/Merkle, optional `nxrd`, lazy prep, watch fast path, lean CLI, I/O batching, Determinate eval strategy, optional `nxrMetadata` — `v3.2.0`–`v3.2.1` (ADR-0151–0168). |
-| **V3.5** | Operator ergonomics MVP | `--set` + TTY params, `--log-dir` + live status, release path / Cosign — `v3.5.0`. |
+| **V3.5** | Operator ergonomics MVP | `--set` + TTY params, `--log-dir` + live status, release path / Cosign — `v3.5.0`–`v3.5.3`. |
+| **V3.6** | Operator TUI | `--output tui`, `nxr attach`, `nxr ui`, OSC 52, wiki/demos — `v3.6.0` (ADR-0173). |
 | **V3.3–3.4** | Workspace scripting + materialized envs | Scripts/file-backed apps, print-dev-env snapshots, one-shell DAG, params/matrix, nom-style progress — `v3.4.0` (ADR-0169–0172). |
 
 ## Active roadmap

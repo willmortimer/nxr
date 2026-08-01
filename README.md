@@ -143,9 +143,8 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**3.5.3** (tagged) — floor-Nix discovery/store-exe fixes; workspace scripts,
-materialized process envs, typed parameters/matrices, nom-style Nix progress.
-**Unreleased** on `sprint/operator-ergonomics`: `--output tui`, `nxr attach`,
-`nxr ui`, OSC 52 failure clipboard, deploy-wizard fixture.
+**3.6.0** (tagged) — operator TUI (`--output tui`, `nxr attach`, `nxr ui`), OSC 52
+failure clipboard, deploy-wizard fixture, wiki/consumer docs split; builds on
+3.5.x floor-Nix and ergonomics foundations.
 
 History: [CHANGELOG.md](CHANGELOG.md) · roadmap: [docs/ROADMAP.md](docs/ROADMAP.md).
