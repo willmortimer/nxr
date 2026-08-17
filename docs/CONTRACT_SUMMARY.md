@@ -26,6 +26,7 @@ Expanded design: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).
 | SOPS / sops-nix / SecretSpec | Secret encryption, storage, and provisioning |
 | Home Manager | User-level installation, global configuration, shell hooks, trust policy |
 | **nxr** | Target discovery, execution contexts, DAGs, environment policy, runtime secret delivery, process supervision |
+| NixPlane (sibling) | Fleet PhysicalHosts/Facets, Profile Assignments, realization, activation; never an NXR subsystem ([NIXPLANE.md](NIXPLANE.md), [ADR-0174](adr/0174-nixplane-fleet-state-boundary.md)) |
 
 ## Ecosystem synthesis
 
@@ -160,3 +161,9 @@ Native tools cache incremental work.
 ## Compatibility guarantee
 
 A project using `nxr` remains operable through standard Nix commands.
+
+## NixPlane (sibling fabric)
+
+NixPlane owns fleet desired state (Profile Assignment → Realization). NXR may
+orchestrate NixPlane leaves as ordinary flake apps/tasks and must not store
+those Assignments. See [NIXPLANE.md](NIXPLANE.md).

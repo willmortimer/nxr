@@ -129,6 +129,7 @@ Rejected   considered and explicitly not chosen
 | ADR-0171 | Materialized process-compatible development environments | Accepted | 3.4.0 |
 | ADR-0172 | Nom-style Nix progress for interactive build ops | Accepted | 3.4.0 |
 | ADR-0173 | Operator TUI watch, attach, and browser | Accepted | Unreleased |
+| ADR-0174 | NixPlane owns fleet desired state; NXR remains the operator DAG | Accepted | n/a |
 
 Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0144-auto-schema-v2.md`](0144-auto-schema-v2.md),
@@ -163,6 +164,7 @@ Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0171-materialized-dev-environments.md`](0171-materialized-dev-environments.md),
 [`0172-nix-progress-formatter.md`](0172-nix-progress-formatter.md).
 [`0173-operator-tui.md`](0173-operator-tui.md).
+[`0174-nixplane-fleet-state-boundary.md`](0174-nixplane-fleet-state-boundary.md).
 
 Audit absorb (2026-07, post-`a040e50`): remaps active delivery to
 **2.7.1 → 2.8 → 3.0 → 3.1** (process workflows remain in 3.1 MVP; distributed

@@ -39,6 +39,7 @@ Product and architecture contract for `nxr`. Prefer these docs over inventing st
 | [DEV_ENV_INTEGRATION.md](DEV_ENV_INTEGRATION.md) | Dev shells, direnv, DevPod, containers |
 | [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) | Execution contexts, secret delivery, Home Manager, processes |
 | [ECOSYSTEM_SYNTHESIS.md](ECOSYSTEM_SYNTHESIS.md) | Adjacent-tool inheritance and boundaries |
+| [NIXPLANE.md](NIXPLANE.md) | Boundary with the NixPlane fabric (sibling product) |
 | [ADAPTERS.md](ADAPTERS.md) | Read-only ecosystem graph adapter boundary (non-authority) |
 
 ## Architecture decisions
@@ -63,3 +64,4 @@ From [CONTRACT_SUMMARY.md](CONTRACT_SUMMARY.md):
 9. Projects using `nxr` remain operable through standard Nix commands.
 10. Layer ownership: flakes / direnv / devenv / SOPS / Home Manager / nxr each keep their boundary ([EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md)).
 11. Secret values never appear in plans, events, or public metadata; execution-affecting schema fields must not be silently ignored.
+12. NixPlane is a sibling fabric; `nxr` never stores fleet Profile Assignments ([NIXPLANE.md](NIXPLANE.md)).

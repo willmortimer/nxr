@@ -370,6 +370,7 @@ Comparable monorepo and CI capability to the strongest dedicated platforms, but 
 - a container or VM runtime;
 - a Kubernetes / infrastructure state engine;
 - a host activator (`nixos-rebuild` / `darwin-rebuild` / `home-manager switch`);
+- a fleet desired-state database (that is NixPlane Hub; [NIXPLANE.md](NIXPLANE.md));
 - a task DSL so powerful that apps become incidental.
 
 The system wins only if it makes the way Nix developers already work more coherent.

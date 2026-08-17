@@ -19,6 +19,7 @@ Do not contradict [docs/CONTRACT_SUMMARY.md](docs/CONTRACT_SUMMARY.md). In short
 - Version machine-readable schemas; sanitize untrusted metadata for terminals.
 - nxr is an execution-context layer—not a replacement for direnv, devenv, Home Manager, or secret stores ([docs/EXECUTION_CONTEXT.md](docs/EXECUTION_CONTEXT.md)).
 - Secret values never appear in plans/events; execution-affecting schema fields must not be silently ignored (schema v2).
+- NixPlane is a sibling fabric, not an NXR subsystem. NXR never stores fleet Profile Assignments ([docs/NIXPLANE.md](docs/NIXPLANE.md), [ADR-0174](docs/adr/0174-nixplane-fleet-state-boundary.md)).
 
 Accepted foundational ADRs are listed in [docs/adr/README.md](docs/adr/README.md)
 (including audit absorb ADR-0143–0150).
