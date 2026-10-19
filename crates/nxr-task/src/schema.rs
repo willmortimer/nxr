@@ -387,6 +387,9 @@ pub struct TaskDefinition {
     pub depends_on: Vec<String>,
 
     /// Flake app leaf name (`apps.<system>.<name>`).
+    ///
+    /// Planning desugars this into [`nxr_core::Operation::FlakeApp`]. The field
+    /// stays required. Optional `.nxr/workflows.toml` graphs are a separate file.
     pub app: String,
 
     #[serde(

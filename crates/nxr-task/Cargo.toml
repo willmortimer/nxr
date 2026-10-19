@@ -13,6 +13,7 @@ camino = { workspace = true }
 globset = { workspace = true }
 nxr-core = { path = "../nxr-core" }
 serde = { workspace = true }
+toml = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }

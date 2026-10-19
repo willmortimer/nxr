@@ -1,0 +1,16 @@
+# Optional operation graph. Executor references only; no copied build scripts.
+schema_version = 1
+
+[tasks.prep]
+platform = "unix"
+executor = { native = ["/bin/echo", "prep"] }
+
+[tasks.mid]
+platform = "unix"
+depends_on = ["prep"]
+executor = { native = ["/bin/echo", "mid"] }
+
+[tasks.finish]
+platform = "unix"
+depends_on = ["mid"]
+executor = { native = ["/bin/echo", "finish"] }

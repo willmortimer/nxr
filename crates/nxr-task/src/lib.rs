@@ -4,6 +4,8 @@
 //! - [`graph`] — dependency DAG construction and text/Mermaid/DOT rendering
 //! - [`planner`] — deterministic serial topological plans
 //! - [`plan_exec`] — versioned [`ExecutionPlan`] envelope
+//! - [`workflows`] — optional `.nxr/workflows.toml` operation graph
+//! - [`execute`] — operation dispatch (native argv, nix availability, winbuild)
 //! - [`events`] — typed execution event bus (`Event` / [`EventSink`])
 //! - [`scheduler`] — ready-queue scheduler with job limit ([`Scheduler`])
 
@@ -11,6 +13,7 @@ pub mod action_key;
 pub mod context;
 pub mod duration;
 pub mod events;
+pub mod execute;
 pub mod graph;
 pub mod matrix;
 pub mod memory;
@@ -25,6 +28,7 @@ pub mod scheduler;
 pub mod schema;
 pub mod secrets;
 pub mod selectors;
+pub mod workflows;
 
 pub use action_key::{WorkspaceCachePlan, WorkspaceCachePlanOptions, build_workspace_cache_plan};
 pub use context::{
@@ -38,6 +42,10 @@ pub use duration::{format_duration, parse_duration};
 pub use events::{
     ChunkEncoding, Event, EventSink, NodeOutcome, NullSink, OutputPayload, RecordingSink,
     RunOutcome, event_kind,
+};
+pub use execute::{
+    ExecContext, ExecuteError, ExecutorName, OperationResult, OperationRun, UNAVAILABLE_EXECUTOR,
+    execute_operation, run_operation_plan,
 };
 pub use graph::{GraphError, TaskGraph, render_dot, render_mermaid, render_text};
 pub use matrix::{
@@ -85,4 +93,9 @@ pub use selectors::{
     APP_PREFIX, CATEGORY_PREFIX, CHANGED_SELECTOR, ListSelectorResolution, ParsedSelector,
     SelectorError, TASK_PREFIX, TaskTargetResolution, parse_selector, resolve_list_selector,
     resolve_task_targets,
+};
+pub use workflows::{
+    WORKFLOWS_RELATIVE_PATH, WORKFLOWS_SCHEMA_VERSION, WorkflowDocument, WorkflowError,
+    WorkflowPlanMode, WorkflowPlatform, WorkflowTask, load_workflow_document,
+    plan_workflow_document, plan_workflows, workflow_mode_from_selector, workflow_path,
 };

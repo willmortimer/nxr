@@ -1,6 +1,7 @@
 //! Pure ready-queue scheduler over an [`ExecutionPlan`].
 //!
-//! The scheduler does not spawn processes. Callers drive it by:
+//! The scheduler does not spawn processes and does not read operation
+//! payloads. Callers drive it by:
 //! 1. constructing a [`Scheduler`] from a plan and a job limit;
 //! 2. calling [`Scheduler::schedule_ready`] to obtain nodes to start;
 //! 3. reporting each exit via [`Scheduler::on_exit`], then scheduling again.

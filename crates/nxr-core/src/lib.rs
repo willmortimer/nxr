@@ -15,6 +15,7 @@ pub mod incremental_digest;
 pub mod log_broker;
 pub mod merkle_index;
 pub mod model;
+pub mod operation;
 pub mod osc52;
 pub mod perf;
 pub mod plan;
@@ -92,6 +93,7 @@ pub use merkle_index::{
     merkle_index_enabled, merkle_index_status, touched_directories,
 };
 pub use model::{App, AppList, FlakeOutput, FlakeRef, ListApp, OutputList};
+pub use operation::Operation;
 pub use osc52::{
     FailureLine, OSC52_ENV, emit_failure_clipboard, format_failure_summary,
     maybe_emit_failure_clipboard, osc52_clipboard_sequence, osc52_enabled,

@@ -77,8 +77,80 @@
           "type": "boolean",
           "default": false,
           "description": "When true, the scheduler runs this node exclusively (stdin/terminal inherited; no concurrent peers)."
+        },
+        "operation": {
+          "description": "Additive desugared operation. Omitted on plans produced before this field. Flake tasks use kind flake_app. The scheduler ignores it.",
+          "$ref": "#/$defs/operation"
+        },
+        "platform": {
+          "description": "Optional workflow platform. Omitted for flake-task plans.",
+          "type": "string",
+          "enum": ["any", "unix", "windows"]
         }
       }
+    },
+    "operation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "name"],
+          "properties": {
+            "kind": { "const": "flake_app" },
+            "name": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "installable"],
+          "properties": {
+            "kind": { "const": "nix_build" },
+            "installable": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "argv"],
+          "properties": {
+            "kind": { "const": "native_command" },
+            "argv": {
+              "type": "array",
+              "items": { "type": "string" },
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "path"],
+          "properties": {
+            "kind": { "const": "workspace_script" },
+            "path": { "type": "string" },
+            "interpreter": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "task_id"],
+          "properties": {
+            "kind": { "const": "win_build_task" },
+            "task_id": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "target"],
+          "properties": {
+            "kind": { "const": "remote" },
+            "target": { "type": "string" }
+          }
+        }
+      ]
     }
   }
 }

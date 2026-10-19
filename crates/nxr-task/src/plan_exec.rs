@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use nxr_core::Operation;
+
 use crate::events::{Event, EventSink};
 use crate::graph::TaskGraph;
 use crate::matrix::{expand_matrix_roots, expand_matrix_tasks};
@@ -76,6 +78,16 @@ pub struct PlanNode {
     /// Soft CPU/memory reservations and named exclusivity locks.
     #[serde(default, skip_serializing_if = "NodeResources::is_empty")]
     pub resources: NodeResources,
+    /// Desugared operation. Absent on plans written before this field existed.
+    ///
+    /// Flake tasks set [`Operation::FlakeApp`] from the required `app` string.
+    /// The scheduler does not read this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<Operation>,
+    /// Workflow platform (`unix`, `windows`, or `any`) when the node came from
+    /// `.nxr/workflows.toml`. Omitted for flake-task plans.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
 }
 
 /// Versioned, immutable execution plan for a chosen root.
@@ -188,6 +200,8 @@ pub fn build_execution_plan_roots(
                     .as_ref()
                     .map(NodeResources::from_task_resources)
                     .unwrap_or_default(),
+                operation: Some(Operation::from_task_app(&definition.app)),
+                platform: None,
             })
         })
         .collect();
@@ -263,6 +277,7 @@ mod tests {
     use crate::events::{RecordingSink, event_kind};
     use crate::planner::plan_serial;
     use crate::schema::TaskDefinition;
+    use nxr_core::Operation;
 
     fn task(deps: &[&str]) -> TaskDefinition {
         let mut def = TaskDefinition::new("app");
@@ -305,6 +320,13 @@ mod tests {
 
         let d = plan.nodes.iter().find(|n| n.id == "d").expect("d");
         assert_eq!(d.depends_on, vec!["b".to_owned(), "c".to_owned()]);
+        assert_eq!(
+            d.operation,
+            Some(Operation::FlakeApp {
+                name: "app".to_owned()
+            })
+        );
+        assert!(d.platform.is_none());
     }
 
     #[test]
@@ -346,9 +368,26 @@ mod tests {
         assert_eq!(encoded["failure_policy"], "keep_going");
         assert_eq!(encoded["argument_forwarding"], "root");
         assert!(encoded["nodes"][3].get("dependsOn").is_some());
+        assert_eq!(encoded["nodes"][0]["operation"]["kind"], "flake_app");
+        assert_eq!(encoded["nodes"][0]["operation"]["name"], "app");
+        assert!(encoded["nodes"][0].get("platform").is_none());
 
         let decoded: ExecutionPlan = serde_json::from_value(encoded).expect("deserialize");
         assert_eq!(decoded, plan);
+    }
+
+    #[test]
+    fn plan_node_without_operation_still_deserializes() {
+        let json = serde_json::json!({
+            "schema_version": 1,
+            "root": "a",
+            "failure_policy": "fail_fast",
+            "nodes": [{ "id": "a" }],
+            "serial_order": ["a"]
+        });
+        let plan: ExecutionPlan = serde_json::from_value(json).expect("deserialize");
+        assert!(plan.nodes[0].operation.is_none());
+        assert!(plan.nodes[0].platform.is_none());
     }
 
     #[test]
