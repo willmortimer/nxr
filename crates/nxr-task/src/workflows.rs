@@ -133,7 +133,14 @@ pub fn platform_matches_host(platform: &str) -> bool {
 
 /// Why `node` must not run on this host, if it must be skipped.
 #[must_use]
-pub fn host_skip_reason(platform: Option<&str>, architecture: Option<&str>) -> Option<String> {
+pub fn host_skip_reason(
+    platform: Option<&str>,
+    architecture: Option<&str>,
+    remote: bool,
+) -> Option<String> {
+    if remote {
+        return None;
+    }
     if let Some(platform) = platform
         && !platform_matches_host(platform)
     {
@@ -491,13 +498,14 @@ fn operation_from_executor(
         executor.flake.is_some(),
         executor.native.is_some(),
         executor.winbuild.is_some(),
+        executor.remote.is_some(),
     ]
     .into_iter()
     .filter(|set| *set)
     .count();
     if selected != 1 {
         return Err(format!(
-            "task `{task}` executor must set exactly one of flake, native, or winbuild"
+            "task `{task}` executor must set exactly one of flake, native, winbuild, or remote"
         ));
     }
     if let Some(app) = executor.flake {
@@ -515,6 +523,30 @@ fn operation_from_executor(
     if let Some(task_id) = executor.winbuild {
         validate_token(&format!("task `{task}` winbuild task id"), &task_id)?;
         return Ok(Operation::WinBuildTask { task_id });
+    }
+    if let Some(remote) = executor.remote {
+        validate_token(&format!("task `{task}` remote target"), &remote.target)?;
+        validate_token(&format!("task `{task}` remote task"), &remote.task)?;
+        if remote.source_url.is_empty() || remote.source_url.chars().any(char::is_whitespace) {
+            return Err(format!("task `{task}` remote source_url is required"));
+        }
+        if !is_sha256_digest(&remote.lock_digest) {
+            return Err(format!(
+                "task `{task}` remote lock_digest must be sha256 and 64 hex characters"
+            ));
+        }
+        if !is_git_revision(&remote.source_revision) {
+            return Err(format!(
+                "task `{task}` remote source_revision must be 40 or 64 lowercase hex characters"
+            ));
+        }
+        return Ok(Operation::Remote {
+            target: remote.target,
+            task: remote.task,
+            source_url: remote.source_url,
+            source_revision: remote.source_revision,
+            lock_digest: remote.lock_digest,
+        });
     }
     Err(format!("task `{task}` executor is missing"))
 }
@@ -606,6 +638,20 @@ fn validate_token(label: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn is_sha256_digest(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return false;
+    };
+    hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_git_revision(value: &str) -> bool {
+    matches!(value.len(), 40 | 64)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WorkflowFile {
@@ -643,6 +689,18 @@ struct WorkflowExecutorFile {
     native: Option<Vec<String>>,
     #[serde(default)]
     winbuild: Option<String>,
+    #[serde(default)]
+    remote: Option<WorkflowRemoteFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowRemoteFile {
+    target: String,
+    task: String,
+    source_url: String,
+    source_revision: String,
+    lock_digest: String,
 }
 
 #[cfg(test)]
@@ -654,7 +712,7 @@ mod tests {
 
     use super::*;
     use crate::events::{RecordingSink, event_kind};
-    use crate::execute::{ExecContext, run_operation_plan};
+    use crate::execute::{ExecContext, run_operation_plan, run_operation_plan_callbacks};
 
     fn parse(text: &str) -> WorkflowDocument {
         parse_workflow_str(text, "workflows.toml").expect("parse workflows")
@@ -1084,6 +1142,57 @@ executor = { native = ["/bin/echo", "ran-windows"] }
                 event,
                 Event::Diagnostic { message } if message.contains("platform `windows`")
             )
+        }));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn windows_remote_leaf_runs_on_the_selected_worker() {
+        let document = parse(
+            r#"
+schema_version = 1
+
+[tasks.win]
+platform = "windows"
+executor = { remote = { target = "windows-pc", task = "fixture", source_url = "https://example.invalid/repo.git", source_revision = "0123456789abcdef0123456789abcdef01234567", lock_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }
+"#,
+        );
+        let plan = plan_workflow_document(
+            &document,
+            &WorkflowPlanMode::Explicit {
+                root: Some("win".to_owned()),
+            },
+            FailurePolicy::FailFast,
+            None,
+        )
+        .expect("plan");
+        assert!(matches!(
+            plan.nodes[0].operation,
+            Some(Operation::Remote { ref target, .. }) if target == "windows-pc"
+        ));
+        let ctx = ExecContext::isolated("");
+        let mut sink = RecordingSink::new();
+        let run = run_operation_plan_callbacks(
+            &plan,
+            &ctx,
+            1,
+            Some(&mut sink),
+            None,
+            Some(&mut |_operation, _ctx| {
+                Ok(crate::execute::OperationResult::Exited {
+                    code: 0,
+                    stdout:
+                        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+                            .to_owned(),
+                    stderr: String::new(),
+                })
+            }),
+        )
+        .expect("run");
+        assert_eq!(run.exit_code, 0);
+        assert_eq!(run.order, vec!["win".to_owned()]);
+        assert!(!sink.events().iter().any(|event| {
+            matches!(event, Event::Diagnostic { message } if message.contains("does not match host"))
         }));
     }
 }

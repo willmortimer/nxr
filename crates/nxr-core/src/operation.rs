@@ -28,8 +28,18 @@ pub enum Operation {
     },
     /// Windows build-task id. This variant does not start WSL.
     WinBuildTask { task_id: String },
-    /// Remote executor reference. Phase 1.1 does not dial it.
-    Remote { target: String },
+    /// Placement for a worker reached through Hub. The CLI dials it.
+    Remote {
+        target: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        task: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        source_url: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        source_revision: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        lock_digest: String,
+    },
 }
 
 impl Operation {
@@ -99,6 +109,10 @@ mod tests {
         assert!(
             !Operation::Remote {
                 target: "builder".to_owned(),
+                task: String::new(),
+                source_url: String::new(),
+                source_revision: String::new(),
+                lock_digest: String::new(),
             }
             .requires_nix()
         );

@@ -6,10 +6,10 @@
 use std::io::{self, Write};
 use std::process::{Command, Stdio};
 
-use nxr_core::Operation;
 use nxr_core::diagnostics::exit;
+use nxr_core::{EnvironmentPolicy, Operation};
 use nxr_task::events::{Event, EventSink, NodeOutcome, OutputPayload};
-use nxr_task::execute::{ExecContext, ExecuteError, OperationResult, run_operation_plan_with};
+use nxr_task::execute::{ExecContext, ExecuteError, OperationResult, run_operation_plan_callbacks};
 use nxr_task::plan_exec::{ExecutionPlan, FailurePolicy};
 use nxr_task::workflows::{
     WorkflowError as PlanError, WorkflowPlanMode, find_workflow_root, load_workflow_document,
@@ -112,12 +112,13 @@ pub fn execute_mode(
     }
     let mut sink = StdioSink;
     let ctx = execution_context(&root, nix);
-    let run = run_operation_plan_with(
+    let run = run_operation_plan_callbacks(
         &plan,
         &ctx,
         jobs.max(1),
         Some(&mut sink),
         Some(&mut nix_run),
+        Some(&mut remote_run),
     )
     .map_err(map_execute)?;
     Ok(run.exit_code)
@@ -172,6 +173,48 @@ fn print_plan(plan: &ExecutionPlan, json: bool) -> Result<(), WorkflowError> {
     Ok(())
 }
 
+fn remote_run(operation: &Operation, _ctx: &ExecContext) -> Result<OperationResult, ExecuteError> {
+    let Operation::Remote {
+        target,
+        task,
+        source_url,
+        source_revision,
+        lock_digest,
+    } = operation
+    else {
+        return Err(ExecuteError::UnavailableExecutor {
+            executor: nxr_task::execute::ExecutorName::Remote,
+            detail: "remote executor is not available".to_owned(),
+        });
+    };
+    let mut command = Command::new("nixplane");
+    command.args([
+        "native-build",
+        "run",
+        "--target",
+        target,
+        "--task",
+        task,
+        "--source-url",
+        source_url,
+        "--source-revision",
+        source_revision,
+        "--lock-digest",
+        lock_digest,
+    ]);
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    let output = command.output().map_err(|error| ExecuteError::Spawn {
+        detail: format!("failed to spawn nixplane native-build: {error}"),
+    })?;
+    Ok(OperationResult::Exited {
+        code: output.status.code().unwrap_or(exit::CHILD_FAILED),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
 fn nix_run(operation: &Operation, ctx: &ExecContext) -> Result<OperationResult, ExecuteError> {
     let Operation::FlakeApp { name } = operation else {
         return Err(ExecuteError::NixNotInvoked {
@@ -181,8 +224,7 @@ fn nix_run(operation: &Operation, ctx: &ExecContext) -> Result<OperationResult, 
     let program = ctx.nix_override.clone().unwrap_or_else(|| "nix".to_owned());
     let mut command = Command::new(&program);
     command.arg("run").arg(format!(".#{name}"));
-    command.env_clear();
-    command.env("PATH", &ctx.path);
+    EnvironmentPolicy::Inherit.apply(&mut command);
     for (key, value) in &ctx.env {
         command.env(key, value);
     }

@@ -207,7 +207,7 @@ pub fn execute_operation(
         Operation::FlakeApp { .. }
         | Operation::NixBuild { .. }
         | Operation::WorkspaceScript { .. } => execute_nix_backed(ctx),
-        Operation::Remote { target } => Err(ExecuteError::unavailable(
+        Operation::Remote { target, .. } => Err(ExecuteError::unavailable(
             ExecutorName::Remote,
             format!("remote executor `{target}` is not available"),
         )),
@@ -244,8 +244,26 @@ pub fn run_operation_plan_with(
     plan: &ExecutionPlan,
     ctx: &ExecContext,
     jobs: usize,
+    sink: Option<&mut dyn EventSink>,
+    nix: Option<&mut dyn FnMut(&Operation, &ExecContext) -> Result<OperationResult, ExecuteError>>,
+) -> Result<OperationRun, ExecuteError> {
+    run_operation_plan_callbacks(plan, ctx, jobs, sink, nix, None)
+}
+
+/// Same as [`run_operation_plan_with`], and remote leaves go to `remote`.
+///
+/// # Errors
+///
+/// Returns [`ExecuteError`] from scheduling, native spawn, `nix`, or `remote`.
+pub fn run_operation_plan_callbacks(
+    plan: &ExecutionPlan,
+    ctx: &ExecContext,
+    jobs: usize,
     mut sink: Option<&mut dyn EventSink>,
     mut nix: Option<
+        &mut dyn FnMut(&Operation, &ExecContext) -> Result<OperationResult, ExecuteError>,
+    >,
+    mut remote: Option<
         &mut dyn FnMut(&Operation, &ExecContext) -> Result<OperationResult, ExecuteError>,
     >,
 ) -> Result<OperationRun, ExecuteError> {
@@ -270,9 +288,11 @@ pub fn run_operation_plan_with(
                 .ok_or_else(|| ExecuteError::Scheduler {
                     detail: format!("scheduler started unknown node `{id}`"),
                 })?;
-            if let Some(reason) =
-                host_skip_reason(node.platform.as_deref(), node.architecture.as_deref())
-            {
+            if let Some(reason) = host_skip_reason(
+                node.platform.as_deref(),
+                node.architecture.as_deref(),
+                matches!(node.operation, Some(Operation::Remote { .. })),
+            ) {
                 emit(
                     sink.as_mut(),
                     Event::Diagnostic {
@@ -297,12 +317,22 @@ pub fn run_operation_plan_with(
             let node_ctx = context_for_node(ctx, node);
             emit(sink.as_mut(), Event::node_queued(id.clone()));
             emit(sink.as_mut(), Event::node_started(id.clone()));
-            let executed = match execute_operation(operation, &node_ctx) {
-                Ok(OperationResult::NixPresent { program }) => match nix.as_mut() {
+            let executed = if matches!(operation, Operation::Remote { .. }) {
+                match remote.as_mut() {
                     Some(dispatch) => dispatch(operation, &node_ctx),
-                    None => Err(ExecuteError::NixNotInvoked { program }),
-                },
-                other => other,
+                    None => Err(ExecuteError::unavailable(
+                        ExecutorName::Remote,
+                        "remote executor is not available".to_owned(),
+                    )),
+                }
+            } else {
+                match execute_operation(operation, &node_ctx) {
+                    Ok(OperationResult::NixPresent { program }) => match nix.as_mut() {
+                        Some(dispatch) => dispatch(operation, &node_ctx),
+                        None => Err(ExecuteError::NixNotInvoked { program }),
+                    },
+                    other => other,
+                }
             };
             match executed {
                 Ok(OperationResult::Exited {
@@ -666,6 +696,10 @@ mod tests {
     fn remote_is_unavailable_without_dialing() {
         let operation = Operation::Remote {
             target: "builder".to_owned(),
+            task: String::new(),
+            source_url: String::new(),
+            source_revision: String::new(),
+            lock_digest: String::new(),
         };
         let error = execute_operation(&operation, &ExecContext::isolated("")).expect_err("remote");
         assert_eq!(error.code(), UNAVAILABLE_EXECUTOR);
