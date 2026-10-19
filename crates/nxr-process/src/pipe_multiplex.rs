@@ -391,6 +391,15 @@ mod fallback {
         join: Option<thread::JoinHandle<()>>,
     }
 
+    impl std::fmt::Debug for ReaderThread {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("ReaderThread")
+                .field("alive", &self.join.is_some())
+                .finish()
+        }
+    }
+
     impl ReaderThread {
         fn spawn(
             node: u32,
