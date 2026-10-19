@@ -42,4 +42,5 @@ pub mod trust;
 pub mod ui;
 pub mod views;
 pub mod watch;
+pub mod workflow;
 pub mod workspace_cache;

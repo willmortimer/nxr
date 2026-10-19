@@ -632,6 +632,11 @@ pub enum Command {
         #[arg(long = "follow")]
         follow: bool,
     },
+    /// Plan and run an optional `.nxr/workflows.toml` graph
+    Workflow {
+        #[command(subcommand)]
+        action: WorkflowSubcommand,
+    },
     /// Stop supervised process nodes
     Down {
         /// Process names (all running when omitted)
@@ -641,6 +646,29 @@ pub enum Command {
     /// Bare `nxr <app> [args…]` form (reserved names win first)
     #[command(external_subcommand)]
     External(Vec<String>),
+}
+
+/// `nxr workflow` subcommands.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum WorkflowSubcommand {
+    /// List tasks in `.nxr/workflows.toml`
+    List,
+    /// Print the execution plan for one task, or the whole graph when omitted
+    Plan {
+        /// Task name. Omit to plan every task.
+        name: Option<String>,
+    },
+    /// Run one workflow task and its dependencies
+    Run {
+        /// Task name
+        name: String,
+        /// Maximum parallel task nodes
+        #[arg(short = 'j', long = "jobs", default_value_t = 1, value_name = "N")]
+        jobs: usize,
+        /// Continue independent work after a failure
+        #[arg(long = "keep-going")]
+        keep_going: bool,
+    },
 }
 
 /// `nxr context` subcommands.

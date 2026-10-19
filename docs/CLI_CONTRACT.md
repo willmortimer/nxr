@@ -458,6 +458,11 @@ Dynamic completion must:
 ## 12. V2 task command contract
 
 ```bash
+nxr workflow list
+nxr workflow plan <task>
+nxr workflow run <task> [--jobs N] [--keep-going]
+nxr task workflow
+nxr task workflow:<task>
 nxr task ci
 nxr task ci --jobs 4
 nxr task deploy --set env=staging --set reason=ticket-123
@@ -470,6 +475,14 @@ nxr watch dev
 nxr watch app:dev
 nxr watch task:ci
 ```
+
+`nxr workflow` reads the optional `.nxr/workflows.toml` graph. `nxr task workflow`
+and `nxr task workflow:<task>` use that same planner. A bare task name still
+resolves through the flake task document and does not consult the workflow file.
+`workflow plan` prints the graph, including Windows-only leaves, and does not
+execute them. `workflow run` skips a leaf whose platform or architecture does
+not match the host and says why. Flake executors run through `nix run`. Native
+and winbuild executors do not look up Nix or WSL.
 
 Trailing arguments after the task name are forwarded to the **root task app only**
 (`argument_forwarding: root`). Dependency nodes always receive an empty argument

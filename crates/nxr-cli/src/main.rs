@@ -35,7 +35,7 @@ use crate::commands::{
     affected, attach, cache, ci, complete, completion, configurations, context, daemon, doctor,
     doctor_builders, doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt, graph,
     history, init, inspect, inventory, list, manpage, migrate, nix_op, plan, process_cmd, run,
-    script, select, selectors, task, trust, ui, watch,
+    script, select, selectors, task, trust, ui, watch, workflow,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -159,6 +159,8 @@ enum RunError {
     Inventory(#[from] inventory::InventoryError),
     #[error(transparent)]
     Process(#[from] process_cmd::ProcessError),
+    #[error(transparent)]
+    Workflow(#[from] workflow::WorkflowError),
 }
 
 impl RunError {
@@ -200,6 +202,7 @@ impl RunError {
             Self::Trust(error) => error.exit_code(),
             Self::Inventory(error) => error.exit_code(),
             Self::Process(error) => error.exit_code(),
+            Self::Workflow(error) => error.exit_code(),
             Self::MissingAppName | Self::Usage(_) | Self::FlakeAppRef(_) => exit::USAGE,
         }
     }
@@ -451,6 +454,27 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 watch::run(&request, runner).map_err(RunError::from)
             } else if tasks
                 .iter()
+                .any(|token| nxr_task::workflows::workflow_mode_from_selector(token).is_some())
+            {
+                if tasks.len() != 1 || *watch || use_affected {
+                    return Err(RunError::Usage(
+                        "a workflow selector must be the only task and cannot use --watch or --affected"
+                            .to_owned(),
+                    ));
+                }
+                let mode = nxr_task::workflows::workflow_mode_from_selector(&tasks[0])
+                    .expect("selector checked above");
+                workflow::execute_mode(
+                    &mode,
+                    *jobs,
+                    *keep_going,
+                    cli.nix.as_deref(),
+                    cli.dry_run,
+                    cli.json,
+                )
+                .map_err(RunError::from)
+            } else if tasks
+                .iter()
                 .all(|token| !selectors::token_is_selector(token))
             {
                 // Bare task names/aliases: resolve inside task::execute so unknown
@@ -517,6 +541,10 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             args,
             runner,
         ),
+        Some(Command::Workflow { action }) => {
+            workflow::execute(action, cli.nix.as_deref(), cli.dry_run, cli.json)
+                .map_err(RunError::from)
+        }
         Some(Command::External(tokens)) => dispatch_external(cli, &nix_flags, tokens, runner),
         Some(Command::Completion { shell }) => {
             completion::run(*shell)?;

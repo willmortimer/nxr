@@ -7108,3 +7108,39 @@ fn daemon_log_broker_append_subscribe_round_trip() {
         .status();
     let _ = child.wait();
 }
+
+#[test]
+fn workflow_run_executes_native_graph_without_nix() {
+    let root = tempfile::tempdir().expect("workflow root");
+    std::fs::create_dir(root.path().join(".nxr")).expect("nxr dir");
+    std::fs::write(
+        root.path().join(".nxr/workflows.toml"),
+        r#"
+schema_version = 1
+
+[tasks.prep]
+executor = { native = ["/bin/echo", "prep"] }
+
+[tasks.finish]
+depends_on = ["prep"]
+executor = { native = ["/bin/echo", "finish"] }
+"#,
+    )
+    .expect("workflow file");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(root.path())
+        .env("NXR_NIX", "/definitely/missing/nix")
+        .args(["workflow", "run", "finish"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("prep"))
+        .stdout(predicate::str::contains("finish"));
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(root.path())
+        .args(["task", "workflow:finish"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("finish"));
+}

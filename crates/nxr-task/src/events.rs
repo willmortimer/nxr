@@ -335,6 +335,26 @@ impl Event {
         }
     }
 
+    /// [`Event::NodeExited`] with a structured outcome and optional reason.
+    #[must_use]
+    pub fn node_finished(
+        node: impl Into<String>,
+        code: Option<i32>,
+        status: NodeOutcome,
+        reason: Option<String>,
+    ) -> Self {
+        Self::NodeExited {
+            node: node.into(),
+            code,
+            status: Some(status),
+            duration_ms: None,
+            started_at: None,
+            finished_at: None,
+            reason,
+            seq: None,
+        }
+    }
+
     /// [`Event::NodeExited`] without optional outcome metadata.
     #[must_use]
     pub fn node_exited(node: impl Into<String>, code: Option<i32>) -> Self {

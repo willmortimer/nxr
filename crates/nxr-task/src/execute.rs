@@ -9,16 +9,19 @@
 //! Windows Job Objects are not implemented. Native argv uses
 //! [`std::process::Command`] directly.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use nxr_core::Operation;
 use nxr_core::diagnostics::exit;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::events::{Event, EventSink, OutputPayload};
-use crate::plan_exec::ExecutionPlan;
+use crate::events::{Event, EventSink, NodeOutcome, OutputPayload};
+use crate::plan_exec::{ExecutionPlan, PlanNode};
 use crate::scheduler::{Scheduler, SchedulerError};
+use crate::workflows::host_skip_reason;
 
 /// Machine-readable code for a missing executor. Not a new process exit status.
 pub const UNAVAILABLE_EXECUTOR: &str = "unavailable-executor";
@@ -77,6 +80,8 @@ pub struct ExecContext {
     pub nix_override: Option<String>,
     /// Working directory for native and winbuild children.
     pub cwd: Option<PathBuf>,
+    /// Extra environment variables. `PATH` still comes from [`Self::path`].
+    pub env: BTreeMap<String, String>,
 }
 
 impl ExecContext {
@@ -87,6 +92,7 @@ impl ExecContext {
             path: path.into(),
             nix_override: None,
             cwd: None,
+            env: BTreeMap::new(),
         }
     }
 }
@@ -221,7 +227,27 @@ pub fn run_operation_plan(
     plan: &ExecutionPlan,
     ctx: &ExecContext,
     jobs: usize,
+    sink: Option<&mut dyn EventSink>,
+) -> Result<OperationRun, ExecuteError> {
+    run_operation_plan_with(plan, ctx, jobs, sink, None)
+}
+
+/// Same as [`run_operation_plan`], but flake, nix-build, and workspace-script
+/// nodes are handed to `nix` instead of stopping at [`ExecuteError::NixNotInvoked`].
+///
+/// `nix` receives the operation after a Nix executable has already been found.
+///
+/// # Errors
+///
+/// Returns [`ExecuteError`] from scheduling, native spawn, or `nix`.
+pub fn run_operation_plan_with(
+    plan: &ExecutionPlan,
+    ctx: &ExecContext,
+    jobs: usize,
     mut sink: Option<&mut dyn EventSink>,
+    mut nix: Option<
+        &mut dyn FnMut(&Operation, &ExecContext) -> Result<OperationResult, ExecuteError>,
+    >,
 ) -> Result<OperationRun, ExecuteError> {
     let mut scheduler = Scheduler::new(plan, jobs)?;
     let mut order = Vec::new();
@@ -244,13 +270,43 @@ pub fn run_operation_plan(
                 .ok_or_else(|| ExecuteError::Scheduler {
                     detail: format!("scheduler started unknown node `{id}`"),
                 })?;
+            if let Some(reason) =
+                host_skip_reason(node.platform.as_deref(), node.architecture.as_deref())
+            {
+                emit(
+                    sink.as_mut(),
+                    Event::Diagnostic {
+                        message: format!("skipped `{id}`: {reason}"),
+                    },
+                );
+                scheduler.on_exit(&id, exit::SUCCESS)?;
+                emit(
+                    sink.as_mut(),
+                    Event::node_finished(
+                        id,
+                        Some(exit::SUCCESS),
+                        NodeOutcome::Skipped,
+                        Some(reason),
+                    ),
+                );
+                continue;
+            }
             let Some(operation) = node.operation.as_ref() else {
                 return Err(ExecuteError::MissingOperation { node: id });
             };
+            let node_ctx = context_for_node(ctx, node);
+            emit(sink.as_mut(), Event::node_queued(id.clone()));
             emit(sink.as_mut(), Event::node_started(id.clone()));
-            match execute_operation(operation, ctx) {
+            let executed = match execute_operation(operation, &node_ctx) {
+                Ok(OperationResult::NixPresent { program }) => match nix.as_mut() {
+                    Some(dispatch) => dispatch(operation, &node_ctx),
+                    None => Err(ExecuteError::NixNotInvoked { program }),
+                },
+                other => other,
+            };
+            match executed {
                 Ok(OperationResult::Exited {
-                    code,
+                    mut code,
                     stdout: node_stdout,
                     stderr,
                 }) => {
@@ -275,19 +331,44 @@ pub fn run_operation_plan(
                             },
                         );
                     }
+                    if code == 0
+                        && let Err(detail) = record_artifacts(node, &node_ctx, &id, sink.as_mut())
+                    {
+                        code = exit::CHILD_FAILED;
+                        emit(sink.as_mut(), Event::Diagnostic { message: detail });
+                    }
                     if code != 0 && first_failure.is_none() {
                         first_failure = Some(code);
                     }
                     order.push(id.clone());
                     scheduler.on_exit(&id, code)?;
-                    emit(sink.as_mut(), Event::node_exited(id, Some(code)));
+                    let status = if code == 0 {
+                        NodeOutcome::Succeeded
+                    } else {
+                        NodeOutcome::Failed
+                    };
+                    emit(
+                        sink.as_mut(),
+                        Event::node_finished(id, Some(code), status, None),
+                    );
                 }
                 Ok(OperationResult::NixPresent { program }) => {
-                    emit(sink.as_mut(), Event::node_exited(id.clone(), None));
+                    emit(
+                        sink.as_mut(),
+                        Event::node_finished(id.clone(), None, NodeOutcome::Failed, None),
+                    );
                     return Err(ExecuteError::NixNotInvoked { program });
                 }
                 Err(error) => {
-                    emit(sink.as_mut(), Event::node_exited(id, None));
+                    emit(
+                        sink.as_mut(),
+                        Event::node_finished(
+                            id,
+                            None,
+                            NodeOutcome::Failed,
+                            Some(error.to_string()),
+                        ),
+                    );
                     return Err(error);
                 }
             }
@@ -301,6 +382,50 @@ pub fn run_operation_plan(
         order,
         stdout,
     })
+}
+
+fn context_for_node(base: &ExecContext, node: &PlanNode) -> ExecContext {
+    let mut env = base.env.clone();
+    env.extend(node.environment.clone());
+    let cwd = match (&node.working_directory, &base.cwd) {
+        (Some(relative), Some(root)) => Some(root.join(relative)),
+        (Some(relative), None) => Some(PathBuf::from(relative)),
+        (None, cwd) => cwd.clone(),
+    };
+    ExecContext {
+        path: base.path.clone(),
+        nix_override: base.nix_override.clone(),
+        cwd,
+        env,
+    }
+}
+
+fn record_artifacts(
+    node: &PlanNode,
+    ctx: &ExecContext,
+    id: &str,
+    mut sink: Option<&mut &mut dyn EventSink>,
+) -> Result<(), String> {
+    for artifact in &node.artifacts {
+        let path = match &ctx.cwd {
+            Some(cwd) => cwd.join(artifact),
+            None => PathBuf::from(artifact),
+        };
+        let bytes = std::fs::read(&path).map_err(|_| {
+            format!(
+                "artifact `{artifact}` for `{id}` is missing at {}",
+                path.display()
+            )
+        })?;
+        let digest = Sha256::digest(&bytes);
+        let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+        if let Some(inner) = &mut sink {
+            inner.emit(Event::Diagnostic {
+                message: format!("artifact {artifact} sha256:{hex}"),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn emit(sink: Option<&mut &mut dyn EventSink>, event: Event) {
@@ -395,6 +520,9 @@ fn spawn_argv(
     command.args(args);
     command.env_clear();
     command.env("PATH", &ctx.path);
+    for (key, value) in &ctx.env {
+        command.env(key, value);
+    }
     if let Some(cwd) = &ctx.cwd {
         command.current_dir(cwd);
     }
@@ -477,6 +605,7 @@ mod tests {
                 .to_string(),
             nix_override: Some("/definitely/missing/nix".to_owned()),
             cwd: None,
+            env: BTreeMap::new(),
         };
         let error = run_operation_plan(&plan, &ctx, 1, None).expect_err("nix missing");
         assert_eq!(error.code(), UNAVAILABLE_EXECUTOR);
@@ -496,6 +625,7 @@ mod tests {
                 .to_string(),
             nix_override: Some("/definitely/missing/nix".to_owned()),
             cwd: None,
+            env: BTreeMap::new(),
         };
         let error = execute_operation(&operation, &ctx).expect_err("winbuild missing");
         assert_eq!(error.code(), UNAVAILABLE_EXECUTOR);
@@ -524,6 +654,7 @@ mod tests {
             path: trap_dir.path().display().to_string(),
             nix_override: Some("/definitely/missing/nix".to_owned()),
             cwd: None,
+            env: BTreeMap::new(),
         };
         let error = execute_operation(&operation, &ctx).expect_err("winbuild missing");
         assert_eq!(error.code(), UNAVAILABLE_EXECUTOR);

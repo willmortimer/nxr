@@ -84,10 +84,22 @@ pub struct PlanNode {
     /// The scheduler does not read this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<Operation>,
-    /// Workflow platform (`unix`, `windows`, or `any`) when the node came from
-    /// `.nxr/workflows.toml`. Omitted for flake-task plans.
+    /// Workflow platform (`any`, `unix`, `macos`, `linux`, or `windows`).
+    /// Omitted for flake-task plans.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
+    /// Required CPU architecture (`x86_64`, `aarch64`, …). Omitted when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub architecture: Option<String>,
+    /// Process environment applied to this node on top of the runner context.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment: BTreeMap<String, String>,
+    /// Directory relative to the workflow root. Omitted to use the runner cwd.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<String>,
+    /// Files hashed after a successful native or winbuild node.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<String>,
 }
 
 /// Versioned, immutable execution plan for a chosen root.
@@ -202,6 +214,10 @@ pub fn build_execution_plan_roots(
                     .unwrap_or_default(),
                 operation: Some(Operation::from_task_app(&definition.app)),
                 platform: None,
+                architecture: None,
+                environment: BTreeMap::new(),
+                working_directory: None,
+                artifacts: Vec::new(),
             })
         })
         .collect();

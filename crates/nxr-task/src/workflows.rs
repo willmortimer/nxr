@@ -12,7 +12,7 @@
 //! schema_version = 1
 //!
 //! [tasks.prep]
-//! platform = "unix" # any | unix | windows; default any
+//! platform = "unix" # any | unix | macos | linux | windows; default any
 //! depends_on = [] # alias: dependsOn
 //! executor = { native = ["/bin/echo", "prep"] }
 //!
@@ -42,7 +42,7 @@ use crate::graph::{GraphError, TaskGraph};
 use crate::plan_exec::{ArgumentForwarding, ExecutionPlan, FailurePolicy, PlanNode};
 use crate::planner::plan_serial_union;
 use crate::resources::NodeResources;
-use crate::schema::TaskDefinition;
+use crate::schema::{TaskDefinition, TaskResources};
 
 /// Supported major version for `.nxr/workflows.toml`.
 pub const WORKFLOWS_SCHEMA_VERSION: u32 = 1;
@@ -67,8 +67,12 @@ pub enum WorkflowPlatform {
     /// No platform constraint.
     #[default]
     Any,
-    /// Unix-like host.
+    /// Unix-like host (`macos` and `linux` both match).
     Unix,
+    /// macOS host.
+    Macos,
+    /// Linux host.
+    Linux,
     /// Windows host.
     Windows,
 }
@@ -78,6 +82,8 @@ impl WorkflowPlatform {
         match raw {
             "any" => Some(Self::Any),
             "unix" => Some(Self::Unix),
+            "macos" => Some(Self::Macos),
+            "linux" => Some(Self::Linux),
             "windows" => Some(Self::Windows),
             _ => None,
         }
@@ -89,9 +95,62 @@ impl WorkflowPlatform {
         match self {
             Self::Any => None,
             Self::Unix => Some("unix".to_owned()),
+            Self::Macos => Some("macos".to_owned()),
+            Self::Linux => Some("linux".to_owned()),
             Self::Windows => Some("windows".to_owned()),
         }
     }
+}
+
+/// Platform label of the process running this binary.
+#[must_use]
+pub fn host_platform_label() -> &'static str {
+    if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "unix"
+    }
+}
+
+/// Whether a plan-node platform label may run on this host.
+///
+/// `unix` matches macOS and Linux. An unknown label does not match.
+#[must_use]
+pub fn platform_matches_host(platform: &str) -> bool {
+    match platform {
+        "any" => true,
+        "unix" => !cfg!(windows),
+        "macos" => cfg!(target_os = "macos"),
+        "linux" => cfg!(target_os = "linux"),
+        "windows" => cfg!(windows),
+        _ => false,
+    }
+}
+
+/// Why `node` must not run on this host, if it must be skipped.
+#[must_use]
+pub fn host_skip_reason(platform: Option<&str>, architecture: Option<&str>) -> Option<String> {
+    if let Some(platform) = platform
+        && !platform_matches_host(platform)
+    {
+        return Some(format!(
+            "platform `{platform}` does not match host `{}`",
+            host_platform_label()
+        ));
+    }
+    if let Some(architecture) = architecture
+        && architecture != std::env::consts::ARCH
+    {
+        return Some(format!(
+            "architecture `{architecture}` does not match host `{}`",
+            std::env::consts::ARCH
+        ));
+    }
+    None
 }
 
 /// One named workflow task after executor desugaring.
@@ -99,6 +158,11 @@ impl WorkflowPlatform {
 pub struct WorkflowTask {
     pub depends_on: Vec<String>,
     pub platform: WorkflowPlatform,
+    pub architecture: Option<String>,
+    pub resources: NodeResources,
+    pub environment: BTreeMap<String, String>,
+    pub working_directory: Option<String>,
+    pub artifacts: Vec<String>,
     pub operation: Operation,
 }
 
@@ -272,9 +336,13 @@ pub fn plan_workflow_document(
                     .map(<[String]>::to_vec)
                     .unwrap_or_default(),
                 interactive: false,
-                resources: NodeResources::default(),
+                resources: task.resources.clone(),
                 operation: Some(task.operation.clone()),
                 platform: task.platform.as_plan_label(),
+                architecture: task.architecture.clone(),
+                environment: task.environment.clone(),
+                working_directory: task.working_directory.clone(),
+                artifacts: task.artifacts.clone(),
             })
         })
         .collect();
@@ -288,7 +356,7 @@ pub fn plan_workflow_document(
     } else {
         Vec::new()
     };
-    let waves = serial_order.iter().cloned().map(|id| vec![id]).collect();
+    let waves = dependency_waves(&nodes);
 
     let plan = ExecutionPlan {
         schema_version: ExecutionPlan::SCHEMA_VERSION,
@@ -354,20 +422,45 @@ fn parse_workflow_str(text: &str, path: &str) -> Result<WorkflowDocument, Workfl
             None => WorkflowPlatform::Any,
             Some(raw) => WorkflowPlatform::parse(raw).ok_or_else(|| WorkflowError::Invalid {
                 path: path.to_owned(),
-                message: format!("task `{name}` platform `{raw}` is not any, unix, or windows"),
+                message: format!(
+                    "task `{name}` platform `{raw}` is not any, unix, macos, linux, or windows"
+                ),
             })?,
         };
+        if let Some(architecture) = task.architecture.as_deref() {
+            validate_token(&format!("task `{name}` architecture"), architecture).map_err(
+                |message| WorkflowError::Invalid {
+                    path: path.to_owned(),
+                    message,
+                },
+            )?;
+        }
+        validate_relative_paths(&name, task.working_directory.as_deref(), &task.artifacts)
+            .map_err(|message| WorkflowError::Invalid {
+                path: path.to_owned(),
+                message,
+            })?;
         let operation = operation_from_executor(&name, task.executor).map_err(|message| {
             WorkflowError::Invalid {
                 path: path.to_owned(),
                 message,
             }
         })?;
+        let resources = task
+            .resources
+            .as_ref()
+            .map(NodeResources::from_task_resources)
+            .unwrap_or_default();
         tasks.insert(
             name,
             WorkflowTask {
                 depends_on: task.depends_on,
                 platform,
+                architecture: task.architecture,
+                resources,
+                environment: task.env,
+                working_directory: task.working_directory,
+                artifacts: task.artifacts,
                 operation,
             },
         );
@@ -426,6 +519,86 @@ fn operation_from_executor(
     Err(format!("task `{task}` executor is missing"))
 }
 
+fn validate_relative_paths(
+    task: &str,
+    working_directory: Option<&str>,
+    artifacts: &[String],
+) -> Result<(), String> {
+    if let Some(directory) = working_directory {
+        reject_escaping_path(&format!("task `{task}` working_directory"), directory)?;
+    }
+    for artifact in artifacts {
+        reject_escaping_path(&format!("task `{task}` artifact"), artifact)?;
+    }
+    Ok(())
+}
+
+fn reject_escaping_path(label: &str, value: &str) -> Result<(), String> {
+    let path = Path::new(value);
+    if value.is_empty() || path.is_absolute() || value.contains("..") || value.contains('\\') {
+        return Err(format!(
+            "{label} must be a relative path inside the workflow root"
+        ));
+    }
+    Ok(())
+}
+
+/// Group nodes that share no unfinished dependency into the same wave.
+fn dependency_waves(nodes: &[PlanNode]) -> Vec<Vec<String>> {
+    let mut indegree: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut dependents: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for node in nodes {
+        indegree.insert(node.id.as_str(), node.depends_on.len());
+        for dependency in &node.depends_on {
+            dependents
+                .entry(dependency.as_str())
+                .or_default()
+                .push(node.id.as_str());
+        }
+    }
+
+    let mut waves = Vec::new();
+    let mut remaining = nodes.len();
+    while remaining > 0 {
+        let mut wave: Vec<String> = indegree
+            .iter()
+            .filter(|(_, degree)| **degree == 0)
+            .map(|(id, _)| (*id).to_owned())
+            .collect();
+        wave.sort();
+        if wave.is_empty() {
+            break;
+        }
+        for id in &wave {
+            indegree.remove(id.as_str());
+            remaining -= 1;
+            if let Some(children) = dependents.get(id.as_str()) {
+                for child in children {
+                    if let Some(degree) = indegree.get_mut(child) {
+                        *degree = degree.saturating_sub(1);
+                    }
+                }
+            }
+        }
+        waves.push(wave);
+    }
+    waves
+}
+
+/// Walk upward from `start` until `.nxr/workflows.toml` exists.
+#[must_use]
+pub fn find_workflow_root(start: &Path) -> Option<PathBuf> {
+    let mut current = start.to_path_buf();
+    loop {
+        if workflow_path(&current).is_file() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
 fn validate_token(label: &str, value: &str) -> Result<(), String> {
     if value.is_empty() || value.chars().any(char::is_whitespace) {
         return Err(format!("{label} must be a single token"));
@@ -448,6 +621,16 @@ struct WorkflowTaskFile {
     depends_on: Vec<String>,
     #[serde(default)]
     platform: Option<String>,
+    #[serde(default)]
+    architecture: Option<String>,
+    #[serde(default)]
+    resources: Option<TaskResources>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    #[serde(default)]
+    working_directory: Option<String>,
+    #[serde(default)]
+    artifacts: Vec<String>,
     executor: WorkflowExecutorFile,
 }
 
@@ -550,7 +733,7 @@ executor = { flake = "fmt", native = ["/bin/echo", "prep"] }
 schema_version = 1
 
 [tasks.prep]
-platform = "macos"
+platform = "plan9"
 executor = { native = ["/bin/echo", "prep"] }
 "#;
         let error = parse_workflow_str(platform, "workflows.toml").expect_err("platform");
@@ -662,6 +845,7 @@ executor = { native = ["/bin/true"] }
                 path: trap_dir.path().display().to_string(),
                 nix_override: Some("/definitely/missing/nix".to_owned()),
                 cwd: None,
+                env: BTreeMap::new(),
             };
             let mut run_sink = RecordingSink::new();
             let run = run_operation_plan(&plan, &ctx, 1, Some(&mut run_sink)).expect("run native");
@@ -678,7 +862,12 @@ executor = { native = ["/bin/true"] }
                 assert!(
                     matches!(
                         kind,
-                        "node_started" | "stdout_chunk" | "node_exited" | "run_completed"
+                        "node_queued"
+                            | "node_started"
+                            | "stdout_chunk"
+                            | "node_exited"
+                            | "run_completed"
+                            | "diagnostic"
                     ),
                     "unexpected event {kind}"
                 );
@@ -737,5 +926,164 @@ executor = { native = ["/bin/true"] }
         )
         .expect_err("unknown root");
         assert_eq!(error.exit_code(), exit::NOT_FOUND);
+    }
+
+    #[test]
+    fn independent_tasks_share_a_wave_and_keep_resource_locks() {
+        let document = parse(
+            r#"
+schema_version = 1
+
+[tasks.left]
+platform = "macos"
+architecture = "aarch64"
+executor = { native = ["/bin/echo", "left"] }
+
+[tasks.left.resources]
+exclusive = ["cargo-target"]
+
+[tasks.right]
+platform = "linux"
+executor = { native = ["/bin/echo", "right"] }
+"#,
+        );
+        let plan = plan_workflow_document(
+            &document,
+            &WorkflowPlanMode::Explicit { root: None },
+            FailurePolicy::FailFast,
+            None,
+        )
+        .expect("plan");
+        assert_eq!(plan.waves.len(), 1);
+        assert_eq!(plan.waves[0], vec!["left".to_owned(), "right".to_owned()]);
+        let left = plan.nodes.iter().find(|node| node.id == "left").unwrap();
+        assert_eq!(left.resources.exclusive, vec!["cargo-target".to_owned()]);
+        assert_eq!(left.platform.as_deref(), Some("macos"));
+        assert_eq!(left.architecture.as_deref(), Some("aarch64"));
+        assert_eq!(
+            plan.nodes
+                .iter()
+                .find(|node| node.id == "right")
+                .unwrap()
+                .platform
+                .as_deref(),
+            Some("linux")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_dependency_does_not_start_its_dependent() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::create_dir(root.path().join(".nxr")).expect("nxr dir");
+        std::fs::write(
+            root.path().join(".nxr/workflows.toml"),
+            r#"
+schema_version = 1
+
+[tasks.bad]
+executor = { native = ["/bin/sh", "-c", "exit 7"] }
+
+[tasks.next]
+depends_on = ["bad"]
+executor = { native = ["/bin/echo", "should-not-run"] }
+"#,
+        )
+        .expect("write workflow");
+        let plan = plan_workflows(
+            root.path(),
+            WorkflowPlanMode::Explicit {
+                root: Some("next".to_owned()),
+            },
+            FailurePolicy::FailFast,
+            None,
+        )
+        .expect("plan")
+        .expect("present");
+        let ctx = ExecContext::isolated("");
+        let run = run_operation_plan(&plan, &ctx, 2, None).expect("run");
+        assert_eq!(run.exit_code, 7);
+        assert_eq!(run.order, vec!["bad".to_owned()]);
+        assert!(!run.stdout.contains("should-not-run"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_task_receives_directory_environment_and_artifact_hash() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::create_dir(root.path().join("work")).expect("work");
+        let document = parse(
+            r#"
+schema_version = 1
+
+[tasks.write]
+working_directory = "work"
+artifacts = ["out.txt"]
+executor = { native = ["/bin/sh", "-c", "printf '%s' \"$NXR_WF_PROBE\" > out.txt"] }
+
+[tasks.write.env]
+NXR_WF_PROBE = "from-env"
+"#,
+        );
+        let plan = plan_workflow_document(
+            &document,
+            &WorkflowPlanMode::Explicit {
+                root: Some("write".to_owned()),
+            },
+            FailurePolicy::FailFast,
+            None,
+        )
+        .expect("plan");
+        let mut sink = RecordingSink::new();
+        let ctx = ExecContext {
+            path: std::env::var("PATH").unwrap_or_default(),
+            nix_override: None,
+            cwd: Some(root.path().to_path_buf()),
+            env: BTreeMap::new(),
+        };
+        let run = run_operation_plan(&plan, &ctx, 1, Some(&mut sink)).expect("run");
+        assert_eq!(run.exit_code, 0);
+        let body = std::fs::read_to_string(root.path().join("work/out.txt")).expect("artifact");
+        assert_eq!(body, "from-env");
+        let hashed = sink.events().iter().any(|event| {
+            matches!(event, Event::Diagnostic { message } if message.starts_with("artifact out.txt sha256:"))
+        });
+        assert!(hashed, "artifact digest was not recorded");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn windows_leaf_is_planned_and_skipped() {
+        let document = parse(
+            r#"
+schema_version = 1
+
+[tasks.win]
+platform = "windows"
+executor = { native = ["/bin/echo", "ran-windows"] }
+"#,
+        );
+        let mut sink = RecordingSink::new();
+        let plan = plan_workflow_document(
+            &document,
+            &WorkflowPlanMode::Explicit {
+                root: Some("win".to_owned()),
+            },
+            FailurePolicy::FailFast,
+            Some(&mut sink),
+        )
+        .expect("plan");
+        assert_eq!(plan.nodes.len(), 1);
+        let ctx = ExecContext::isolated("");
+        let mut run_sink = RecordingSink::new();
+        let run = run_operation_plan(&plan, &ctx, 1, Some(&mut run_sink)).expect("run");
+        assert_eq!(run.exit_code, 0);
+        assert!(run.order.is_empty());
+        assert!(run_sink.events().iter().any(|event| {
+            matches!(
+                event,
+                Event::Diagnostic { message } if message.contains("platform `windows`")
+            )
+        }));
     }
 }

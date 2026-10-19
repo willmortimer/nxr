@@ -49,6 +49,7 @@ Commands:
   up          Start long-running process nodes
   status      Show supervised process status
   logs        Tail logs for a supervised process
+  workflow    Plan and run an optional `.nxr/workflows.toml` graph
   down        Stop supervised process nodes
 
 Options:
