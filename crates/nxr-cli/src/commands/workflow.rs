@@ -281,12 +281,12 @@ fn stream_pipe(
         let Ok(line) = line else {
             break;
         };
-        if capture_job && let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
-            if let Some(id) = value.get("job_id").and_then(|item| item.as_str())
-                && let Ok(mut slot) = job_id.lock()
-            {
-                *slot = Some(id.to_owned());
-            }
+        if capture_job
+            && let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
+            && let Some(id) = value.get("job_id").and_then(|item| item.as_str())
+            && let Ok(mut slot) = job_id.lock()
+        {
+            *slot = Some(id.to_owned());
         }
         let _ = writeln!(sink, "{line}");
         captured.push_str(&line);
