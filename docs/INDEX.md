@@ -34,6 +34,7 @@ Product and architecture contract for `nxr`. Prefer these docs over inventing st
 | [APP_AUTHORING.md](APP_AUTHORING.md) | Conventions for robust flake apps |
 | [TASKS.md](TASKS.md) | Declaring tasks and the `nxr.<system>` discovery attr |
 | [TASK_SCHEMA_V2.md](TASK_SCHEMA_V2.md) | Draft task schema v2 (inputs, outputs, cache, resources) |
+| [plans/2026-09-03-compiler-cache-and-cargo-graph.md](plans/2026-09-03-compiler-cache-and-cargo-graph.md) | Lattice demand: `compilerCache`, cargo `cohort`, cargo-metadata affected |
 | [MONOREPO_VIEWS.md](MONOREPO_VIEWS.md) | Category/namespace filters; optional non-authoritative projects file |
 | [MIGRATE_FROM_MISE_JUST.md](MIGRATE_FROM_MISE_JUST.md) | How-to: move from mise/just/aliases to flake apps |
 | [DEV_ENV_INTEGRATION.md](DEV_ENV_INTEGRATION.md) | Dev shells, direnv, DevPod, containers |
