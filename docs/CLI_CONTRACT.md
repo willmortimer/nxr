@@ -461,6 +461,7 @@ Dynamic completion must:
 nxr workflow list
 nxr workflow plan <task>
 nxr workflow run <task> [--jobs N] [--keep-going]
+nxr workflow attach --job-id ID [--after-sequence N]
 nxr task workflow
 nxr task workflow:<task>
 nxr task ci

@@ -203,7 +203,7 @@ pub fn execute_operation(
 ) -> Result<OperationResult, ExecuteError> {
     match operation {
         Operation::NativeCommand { argv } => execute_native(argv, ctx),
-        Operation::WinBuildTask { task_id } => execute_winbuild(task_id, ctx),
+        Operation::WinBuildTask { task_id, manifest } => execute_winbuild(task_id, manifest, ctx),
         Operation::FlakeApp { .. }
         | Operation::NixBuild { .. }
         | Operation::WorkspaceScript { .. } => execute_nix_backed(ctx),
@@ -474,7 +474,11 @@ fn execute_native(argv: &[String], ctx: &ExecContext) -> Result<OperationResult,
     spawn_argv(&resolved, &argv[1..], ctx)
 }
 
-fn execute_winbuild(task_id: &str, ctx: &ExecContext) -> Result<OperationResult, ExecuteError> {
+fn execute_winbuild(
+    task_id: &str,
+    manifest: &str,
+    ctx: &ExecContext,
+) -> Result<OperationResult, ExecuteError> {
     // Search only for winbuild. Do not look up or spawn wsl.
     let Some(program) = find_program(&ctx.path, "winbuild") else {
         return Err(ExecuteError::unavailable(
@@ -482,7 +486,93 @@ fn execute_winbuild(task_id: &str, ctx: &ExecContext) -> Result<OperationResult,
             "winbuild executable not found on PATH",
         ));
     };
-    spawn_argv(&program, &[task_id.to_owned()], ctx)
+    let manifest_path = resolve_manifest(ctx.cwd.as_deref(), manifest)?;
+    let result = spawn_argv(
+        &program,
+        &[
+            "run".to_owned(),
+            task_id.to_owned(),
+            "--file".to_owned(),
+            manifest_path,
+            "--json".to_owned(),
+        ],
+        ctx,
+    )?;
+    Ok(normalize_winbuild_output(result))
+}
+
+/// Resolve a workspace-relative WinBuild manifest. `.` and an empty value mean
+/// `.winbuild.json` beside the selected workspace.
+fn resolve_manifest(cwd: Option<&Path>, manifest: &str) -> Result<String, ExecuteError> {
+    let relative = if manifest.is_empty() {
+        ".winbuild.json"
+    } else {
+        manifest
+    };
+    if Path::new(relative).is_absolute() || relative.split(['/', '\\']).any(|part| part == "..") {
+        return Err(ExecuteError::Invalid {
+            detail: format!("winbuild manifest `{relative}` escapes the workspace"),
+        });
+    }
+    let base = cwd.unwrap_or_else(|| Path::new("."));
+    Ok(base.join(relative).display().to_string())
+}
+
+/// Split WinBuild `--json` NDJSON into stdout and stderr text.
+///
+/// `started` and `finished` stay on stdout so the terminal event is recorded.
+/// `output` follows its `stream`. Lines that are not JSON stay on stdout.
+fn normalize_winbuild_output(result: OperationResult) -> OperationResult {
+    let OperationResult::Exited {
+        code,
+        stdout,
+        stderr,
+    } = result
+    else {
+        return result;
+    };
+    let mut out = String::new();
+    let mut err = stderr;
+    for line in stdout.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        };
+        match value.get("event").and_then(|item| item.as_str()) {
+            Some("output") => {
+                let text = value
+                    .get("text")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or("");
+                let stream = value.get("stream").and_then(|item| item.as_str());
+                if stream == Some("stderr") {
+                    err.push_str(text);
+                    if !text.ends_with('\n') {
+                        err.push('\n');
+                    }
+                } else {
+                    out.push_str(text);
+                    if !text.ends_with('\n') {
+                        out.push('\n');
+                    }
+                }
+            }
+            Some("started" | "finished" | "progress") => {
+                out.push_str(line);
+                out.push('\n');
+            }
+            _ => {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    OperationResult::Exited {
+        code,
+        stdout: out,
+        stderr: err,
+    }
 }
 
 fn execute_nix_backed(ctx: &ExecContext) -> Result<OperationResult, ExecuteError> {
@@ -646,6 +736,7 @@ mod tests {
     fn winbuild_without_binary_is_unavailable_executor() {
         let operation = Operation::WinBuildTask {
             task_id: "link-release".to_owned(),
+            manifest: ".winbuild.json".to_owned(),
         };
         let ctx = ExecContext {
             path: tempfile::tempdir()
@@ -679,6 +770,7 @@ mod tests {
         write_trap(trap_dir.path(), "nix", &nix_marker);
         let operation = Operation::WinBuildTask {
             task_id: "link-release".to_owned(),
+            manifest: ".winbuild.json".to_owned(),
         };
         let ctx = ExecContext {
             path: trap_dir.path().display().to_string(),
@@ -700,6 +792,10 @@ mod tests {
             source_url: String::new(),
             source_revision: String::new(),
             lock_digest: String::new(),
+            source_ref: String::new(),
+            lock_file: String::new(),
+            build_root: String::new(),
+            manifest: String::new(),
         };
         let error = execute_operation(&operation, &ExecContext::isolated("")).expect_err("remote");
         assert_eq!(error.code(), UNAVAILABLE_EXECUTOR);

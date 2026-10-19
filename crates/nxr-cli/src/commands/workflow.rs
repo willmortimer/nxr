@@ -13,7 +13,7 @@ use nxr_task::execute::{ExecContext, ExecuteError, OperationResult, run_operatio
 use nxr_task::plan_exec::{ExecutionPlan, FailurePolicy};
 use nxr_task::workflows::{
     WorkflowError as PlanError, WorkflowPlanMode, find_workflow_root, load_workflow_document,
-    plan_workflows,
+    plan_workflows, resolve_plan_pins,
 };
 
 use crate::cli::WorkflowSubcommand;
@@ -77,6 +77,10 @@ pub fn execute(
             };
             execute_mode(&mode, *jobs, *keep_going, nix, dry_run, json)
         }
+        WorkflowSubcommand::Attach {
+            job_id,
+            after_sequence,
+        } => attach_native_build(job_id, *after_sequence),
     }
 }
 
@@ -100,14 +104,22 @@ pub fn execute_mode(
         FailurePolicy::FailFast
     };
     let plan = plan_workflows(&root, mode.clone(), policy, None).map_err(map_plan)?;
-    let Some(plan) = plan else {
+    let Some(mut plan) = plan else {
         return Err(WorkflowError::new(
             exit::NOT_FOUND,
             "workflow file is not present",
         ));
     };
+    let manifests = resolve_plan_pins(&root, &mut plan)
+        .map_err(|error| WorkflowError::new(exit::USAGE, error))?;
     if dry_run {
         print_plan(&plan, json)?;
+        if !manifests.is_empty() {
+            let text = serde_json::to_string_pretty(&manifests).map_err(|error| {
+                WorkflowError::new(exit::PROCESS_SUPERVISION, error.to_string())
+            })?;
+            println!("{text}");
+        }
         return Ok(exit::SUCCESS);
     }
     let mut sink = StdioSink;
@@ -180,6 +192,9 @@ fn remote_run(operation: &Operation, _ctx: &ExecContext) -> Result<OperationResu
         source_url,
         source_revision,
         lock_digest,
+        build_root,
+        manifest,
+        ..
     } = operation
     else {
         return Err(ExecuteError::UnavailableExecutor {
@@ -202,17 +217,102 @@ fn remote_run(operation: &Operation, _ctx: &ExecContext) -> Result<OperationResu
         "--lock-digest",
         lock_digest,
     ]);
+    if !build_root.is_empty() {
+        command.args(["--build-root", build_root]);
+    }
+    if !manifest.is_empty() {
+        command.args(["--manifest", manifest]);
+    }
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
-    let output = command.output().map_err(|error| ExecuteError::Spawn {
+    let mut child = command.spawn().map_err(|error| ExecuteError::Spawn {
         detail: format!("failed to spawn nixplane native-build: {error}"),
     })?;
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let job_id = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let stderr_job = std::sync::Arc::clone(&job_id);
+    let stderr_thread =
+        std::thread::spawn(move || stream_pipe(stderr_pipe, &mut io::stderr(), true, &stderr_job));
+    let stdout_thread = std::thread::spawn(move || {
+        stream_pipe(
+            stdout_pipe,
+            &mut io::stdout(),
+            false,
+            &std::sync::Arc::new(std::sync::Mutex::new(None)),
+        )
+    });
+    let status = child.wait().map_err(|error| ExecuteError::Spawn {
+        detail: format!("failed to wait for nixplane native-build: {error}"),
+    })?;
+    let stderr = stderr_thread.join().unwrap_or_default();
+    let stdout = stdout_thread.join().unwrap_or_default();
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if status.signal().is_some()
+            && let Some(job) = job_id.lock().ok().and_then(|guard| guard.clone())
+        {
+            let _ = Command::new("nixplane")
+                .args(["native-build", "cancel", "--job-id", &job])
+                .status();
+        }
+    }
     Ok(OperationResult::Exited {
-        code: output.status.code().unwrap_or(exit::CHILD_FAILED),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        code: status.code().unwrap_or(exit::CHILD_FAILED),
+        stdout,
+        stderr,
     })
+}
+
+fn stream_pipe(
+    pipe: Option<impl std::io::Read>,
+    sink: &mut impl Write,
+    capture_job: bool,
+    job_id: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
+) -> String {
+    let Some(pipe) = pipe else {
+        return String::new();
+    };
+    let mut captured = String::new();
+    let reader = std::io::BufReader::new(pipe);
+    for line in std::io::BufRead::lines(reader) {
+        let Ok(line) = line else {
+            break;
+        };
+        if capture_job && let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
+            if let Some(id) = value.get("job_id").and_then(|item| item.as_str())
+                && let Ok(mut slot) = job_id.lock()
+            {
+                *slot = Some(id.to_owned());
+            }
+        }
+        let _ = writeln!(sink, "{line}");
+        captured.push_str(&line);
+        captured.push('\n');
+    }
+    captured
+}
+
+fn attach_native_build(job_id: &str, after_sequence: u64) -> Result<i32, WorkflowError> {
+    let status = Command::new("nixplane")
+        .args([
+            "native-build",
+            "attach",
+            "--job-id",
+            job_id,
+            "--after-sequence",
+            &after_sequence.to_string(),
+        ])
+        .status()
+        .map_err(|error| {
+            WorkflowError::new(
+                exit::PROCESS_SUPERVISION,
+                format!("failed to spawn nixplane native-build attach: {error}"),
+            )
+        })?;
+    Ok(status.code().unwrap_or(exit::CHILD_FAILED))
 }
 
 fn nix_run(operation: &Operation, ctx: &ExecContext) -> Result<OperationResult, ExecuteError> {
@@ -262,6 +362,9 @@ impl EventSink for StdioSink {
             }
             Event::StdoutChunk { payload, .. } => {
                 let _ = io::stdout().write_all(payload_bytes(&payload));
+            }
+            Event::StderrChunk { payload, .. } => {
+                let _ = io::stderr().write_all(payload_bytes(&payload));
             }
             Event::NodeExited {
                 node,

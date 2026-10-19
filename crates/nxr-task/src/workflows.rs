@@ -520,9 +520,17 @@ fn operation_from_executor(
         }
         return Ok(Operation::NativeCommand { argv });
     }
-    if let Some(task_id) = executor.winbuild {
+    if let Some(winbuild) = executor.winbuild {
+        let (task_id, manifest) = match winbuild {
+            WorkflowWinbuildFile::Id(task_id) => (task_id, ".winbuild.json".to_owned()),
+            WorkflowWinbuildFile::Spec { task, manifest } => (
+                task,
+                manifest.unwrap_or_else(|| ".winbuild.json".to_owned()),
+            ),
+        };
         validate_token(&format!("task `{task}` winbuild task id"), &task_id)?;
-        return Ok(Operation::WinBuildTask { task_id });
+        reject_escaping_path(&format!("task `{task}` winbuild manifest"), &manifest)?;
+        return Ok(Operation::WinBuildTask { task_id, manifest });
     }
     if let Some(remote) = executor.remote {
         validate_token(&format!("task `{task}` remote target"), &remote.target)?;
@@ -530,15 +538,52 @@ fn operation_from_executor(
         if remote.source_url.is_empty() || remote.source_url.chars().any(char::is_whitespace) {
             return Err(format!("task `{task}` remote source_url is required"));
         }
-        if !is_sha256_digest(&remote.lock_digest) {
+        let release_revision = !remote.source_revision.is_empty();
+        let release_lock = !remote.lock_digest.is_empty();
+        if release_revision && !remote.source_ref.is_empty() {
             return Err(format!(
-                "task `{task}` remote lock_digest must be sha256 and 64 hex characters"
+                "task `{task}` remote sets source_revision and source_ref"
             ));
         }
-        if !is_git_revision(&remote.source_revision) {
+        if release_lock && !remote.lock_file.is_empty() {
             return Err(format!(
-                "task `{task}` remote source_revision must be 40 or 64 lowercase hex characters"
+                "task `{task}` remote sets lock_digest and lock_file"
             ));
+        }
+        if release_revision {
+            if !is_git_revision(&remote.source_revision) {
+                return Err(format!(
+                    "task `{task}` remote source_revision must be 40 or 64 lowercase hex characters"
+                ));
+            }
+        } else if remote.source_ref.is_empty()
+            || remote.source_ref.chars().any(char::is_whitespace)
+            || remote.source_ref.contains("..")
+        {
+            return Err(format!(
+                "task `{task}` remote requires source_revision or source_ref"
+            ));
+        }
+        if release_lock {
+            if !is_sha256_digest(&remote.lock_digest) {
+                return Err(format!(
+                    "task `{task}` remote lock_digest must be sha256 and 64 hex characters"
+                ));
+            }
+        } else {
+            reject_escaping_path(
+                &format!("task `{task}` remote lock_file"),
+                &remote.lock_file,
+            )?;
+        }
+        if !remote.build_root.is_empty() {
+            reject_escaping_path(
+                &format!("task `{task}` remote build_root"),
+                &remote.build_root,
+            )?;
+        }
+        if !remote.manifest.is_empty() {
+            reject_escaping_path(&format!("task `{task}` remote manifest"), &remote.manifest)?;
         }
         return Ok(Operation::Remote {
             target: remote.target,
@@ -546,6 +591,10 @@ fn operation_from_executor(
             source_url: remote.source_url,
             source_revision: remote.source_revision,
             lock_digest: remote.lock_digest,
+            source_ref: remote.source_ref,
+            lock_file: remote.lock_file,
+            build_root: remote.build_root,
+            manifest: remote.manifest,
         });
     }
     Err(format!("task `{task}` executor is missing"))
@@ -652,6 +701,135 @@ fn is_git_revision(value: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
+/// Fill development remote pins from the coordinator checkout.
+///
+/// `source_ref` becomes one commit. `lock_file` becomes that file's WinNix
+/// digest, or the sha256 of its bytes when the document has no digest field.
+/// The workflow file is not rewritten. Submodule gitlinks are read from the
+/// resolved commit and are not resolved again on the worker.
+///
+/// # Errors
+///
+/// Returns an error when git cannot resolve `source_ref` or the lock file is
+/// missing.
+pub fn resolve_plan_pins(
+    root: &Path,
+    plan: &mut crate::plan_exec::ExecutionPlan,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut manifests = Vec::new();
+    for node in &mut plan.nodes {
+        let Some(Operation::Remote {
+            target,
+            task,
+            source_url,
+            source_revision,
+            lock_digest,
+            source_ref,
+            lock_file,
+            build_root,
+            manifest,
+        }) = node.operation.clone()
+        else {
+            continue;
+        };
+        let revision = if source_revision.is_empty() {
+            git_commit(root, &source_ref)?
+        } else {
+            source_revision.clone()
+        };
+        let digest = if lock_digest.is_empty() {
+            lock_digest_from_file(root, &lock_file)?
+        } else {
+            lock_digest.clone()
+        };
+        let submodules = submodule_gitlinks(root, &revision).unwrap_or_default();
+        node.operation = Some(Operation::Remote {
+            target: target.clone(),
+            task: task.clone(),
+            source_url: source_url.clone(),
+            source_revision: revision.clone(),
+            lock_digest: digest.clone(),
+            source_ref: String::new(),
+            lock_file: String::new(),
+            build_root: build_root.clone(),
+            manifest: manifest.clone(),
+        });
+        manifests.push(serde_json::json!({
+            "task": node.id,
+            "target": target,
+            "winbuild_task": task,
+            "source_url": source_url,
+            "source_revision": revision,
+            "submodules": submodules,
+            "lock_digest": digest,
+            "build_root": build_root,
+            "manifest": manifest,
+        }));
+    }
+    Ok(manifests)
+}
+
+fn git_commit(root: &Path, reference: &str) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--verify", &format!("{reference}^{{commit}}")])
+        .output()
+        .map_err(|error| format!("git rev-parse: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git could not resolve `{reference}`: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let revision = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if !is_git_revision(&revision) {
+        return Err(format!("git resolved `{reference}` to `{revision}`"));
+    }
+    Ok(revision)
+}
+
+fn submodule_gitlinks(root: &Path, revision: &str) -> Result<Vec<String>, String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-tree", "-r", revision])
+        .output()
+        .map_err(|error| format!("git ls-tree: {error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut links = Vec::new();
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        let mode = parts.next().unwrap_or("");
+        let kind = parts.next().unwrap_or("");
+        let sha = parts.next().unwrap_or("");
+        let path = line.split('\t').nth(1).unwrap_or("");
+        if mode == "160000" && kind == "commit" && !path.is_empty() {
+            links.push(format!("{path} {sha}"));
+        }
+    }
+    Ok(links)
+}
+
+fn lock_digest_from_file(root: &Path, relative: &str) -> Result<String, String> {
+    reject_escaping_path("lock file", relative)?;
+    let path = root.join(relative);
+    let bytes = fs::read(&path).map_err(|error| format!("read lock file: {error}"))?;
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+        && let Some(digest) = value.get("digest").and_then(|item| item.as_str())
+        && is_sha256_digest(digest)
+    {
+        return Ok(digest.to_owned());
+    }
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(&bytes);
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(format!("sha256:{hex}"))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WorkflowFile {
@@ -688,9 +866,20 @@ struct WorkflowExecutorFile {
     #[serde(default)]
     native: Option<Vec<String>>,
     #[serde(default)]
-    winbuild: Option<String>,
+    winbuild: Option<WorkflowWinbuildFile>,
     #[serde(default)]
     remote: Option<WorkflowRemoteFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum WorkflowWinbuildFile {
+    Id(String),
+    Spec {
+        task: String,
+        #[serde(default)]
+        manifest: Option<String>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -699,8 +888,18 @@ struct WorkflowRemoteFile {
     target: String,
     task: String,
     source_url: String,
+    #[serde(default)]
     source_revision: String,
+    #[serde(default)]
     lock_digest: String,
+    #[serde(default)]
+    source_ref: String,
+    #[serde(default)]
+    lock_file: String,
+    #[serde(default)]
+    build_root: String,
+    #[serde(default)]
+    manifest: String,
 }
 
 #[cfg(test)]
@@ -823,7 +1022,8 @@ executor = { winbuild = "link-release" }
         assert_eq!(
             plan.nodes[0].operation,
             Some(Operation::WinBuildTask {
-                task_id: "link-release".to_owned()
+                task_id: "link-release".to_owned(),
+                manifest: ".winbuild.json".to_owned(),
             })
         );
     }
@@ -1194,5 +1394,114 @@ executor = { remote = { target = "windows-pc", task = "fixture", source_url = "h
         assert!(!sink.events().iter().any(|event| {
             matches!(event, Event::Diagnostic { message } if message.contains("does not match host"))
         }));
+    }
+
+    #[test]
+    fn build_root_must_stay_inside_the_checkout() {
+        let escaped = r#"
+schema_version = 1
+
+[tasks.win]
+executor = { remote = { target = "windows-pc", task = "fixture", source_url = "https://example.invalid/repo.git", source_revision = "0123456789abcdef0123456789abcdef01234567", lock_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", build_root = "../outside" } }
+"#;
+        let error = parse_workflow_str(escaped, "workflows.toml").expect_err("escape");
+        assert!(error.to_string().contains("build_root"));
+
+        let document = parse(
+            r#"
+schema_version = 1
+
+[tasks.win]
+executor = { remote = { target = "windows-pc", task = "build-sidecar", source_url = "https://example.invalid/ecosystem.git", source_revision = "0123456789abcdef0123456789abcdef01234567", lock_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", build_root = "lattice", manifest = "lattice/.winbuild.json" } }
+"#,
+        );
+        let plan = plan_workflow_document(
+            &document,
+            &WorkflowPlanMode::Explicit {
+                root: Some("win".to_owned()),
+            },
+            FailurePolicy::FailFast,
+            None,
+        )
+        .expect("plan");
+        match &plan.nodes[0].operation {
+            Some(Operation::Remote {
+                build_root,
+                manifest,
+                ..
+            }) => {
+                assert_eq!(build_root, "lattice");
+                assert_eq!(manifest, "lattice/.winbuild.json");
+            }
+            other => panic!("expected remote operation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn development_plan_resolves_one_commit_and_lock_digest() {
+        let root = tempfile::tempdir().expect("repo");
+        let repo = root.path();
+        git(repo, &["init"]);
+        git(repo, &["config", "user.email", "test@example.com"]);
+        git(repo, &["config", "user.name", "Test"]);
+        std::fs::write(repo.join("README"), "pin\n").unwrap();
+        git(repo, &["add", "README"]);
+        git(repo, &["commit", "-m", "pin"]);
+        let digest = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        std::fs::write(
+            repo.join("windows.lock.json"),
+            format!(r#"{{"digest":"{digest}"}}"#),
+        )
+        .unwrap();
+        std::fs::create_dir(repo.join(".nxr")).unwrap();
+        let workflow = r#"
+schema_version = 1
+
+[tasks.win]
+executor = { remote = { target = "windows-pc", task = "fixture", source_url = "https://example.invalid/repo.git", source_ref = "HEAD", lock_file = "windows.lock.json", build_root = "lattice", manifest = "lattice/.winbuild.json" } }
+"#;
+        std::fs::write(repo.join(".nxr/workflows.toml"), workflow).unwrap();
+        let document = load_workflow_document(repo)
+            .expect("load")
+            .expect("document");
+        let mut plan = plan_workflow_document(
+            &document,
+            &WorkflowPlanMode::Explicit {
+                root: Some("win".to_owned()),
+            },
+            FailurePolicy::FailFast,
+            None,
+        )
+        .expect("plan");
+        let manifests = resolve_plan_pins(repo, &mut plan).expect("resolve");
+        let head = git_commit(repo, "HEAD").expect("head");
+        assert_eq!(manifests[0]["source_revision"], head);
+        assert_eq!(manifests[0]["lock_digest"], digest);
+        assert_eq!(manifests[0]["build_root"], "lattice");
+        let saved = std::fs::read_to_string(repo.join(".nxr/workflows.toml")).unwrap();
+        assert_eq!(saved, workflow);
+        match &plan.nodes[0].operation {
+            Some(Operation::Remote {
+                source_revision,
+                source_ref,
+                lock_digest,
+                ..
+            }) => {
+                assert_eq!(source_revision, &head);
+                assert!(source_ref.is_empty());
+                assert_eq!(lock_digest, digest);
+            }
+            other => panic!("expected resolved remote, got {other:?}"),
+        }
+    }
+
+    fn git(repo: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .status()
+            .expect("git");
+        assert!(status.success(), "git {args:?}");
     }
 }

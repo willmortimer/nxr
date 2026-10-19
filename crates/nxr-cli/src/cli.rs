@@ -669,6 +669,15 @@ pub enum WorkflowSubcommand {
         #[arg(long = "keep-going")]
         keep_going: bool,
     },
+    /// Reattach to a native build that is already on the Hub.
+    Attach {
+        /// Hub job id.
+        #[arg(long)]
+        job_id: String,
+        /// Return events after this sequence.
+        #[arg(long, default_value_t = 0)]
+        after_sequence: u64,
+    },
 }
 
 /// `nxr context` subcommands.

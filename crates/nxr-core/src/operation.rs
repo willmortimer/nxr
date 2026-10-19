@@ -27,8 +27,19 @@ pub enum Operation {
         interpreter: Option<String>,
     },
     /// Windows build-task id. This variant does not start WSL.
-    WinBuildTask { task_id: String },
+    ///
+    /// `manifest` is relative to the selected workspace and defaults to
+    /// `.winbuild.json`.
+    WinBuildTask {
+        task_id: String,
+        #[serde(default = "default_winbuild_manifest")]
+        manifest: String,
+    },
     /// Placement for a worker reached through Hub. The CLI dials it.
+    ///
+    /// A development task may leave `source_revision` and `lock_digest` empty
+    /// until the coordinator resolves `source_ref` and `lock_file`. The worker
+    /// receives only the resolved commit and digest.
     Remote {
         target: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -39,7 +50,19 @@ pub enum Operation {
         source_revision: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         lock_digest: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        source_ref: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        lock_file: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        build_root: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        manifest: String,
     },
+}
+
+fn default_winbuild_manifest() -> String {
+    ".winbuild.json".to_owned()
 }
 
 impl Operation {
@@ -103,6 +126,7 @@ mod tests {
         assert!(
             !Operation::WinBuildTask {
                 task_id: "link".to_owned(),
+                manifest: ".winbuild.json".to_owned(),
             }
             .requires_nix()
         );
@@ -113,6 +137,10 @@ mod tests {
                 source_url: String::new(),
                 source_revision: String::new(),
                 lock_digest: String::new(),
+                source_ref: String::new(),
+                lock_file: String::new(),
+                build_root: String::new(),
+                manifest: String::new(),
             }
             .requires_nix()
         );

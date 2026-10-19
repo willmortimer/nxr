@@ -7144,3 +7144,56 @@ executor = { native = ["/bin/echo", "finish"] }
         .success()
         .stdout(predicate::str::contains("finish"));
 }
+
+#[cfg(unix)]
+#[test]
+fn workflow_run_invokes_winbuild_with_the_manifest() {
+    let root = tempfile::tempdir().expect("workflow root");
+    std::fs::create_dir(root.path().join(".nxr")).expect("nxr dir");
+    std::fs::write(
+        root.path().join(".winbuild.json"),
+        r#"{"version":1,"tasks":{"fixture":{"script":"scripts/hello.ps1"}}}"#,
+    )
+    .unwrap();
+    let bin = root.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let argv = root.path().join("argv.txt");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s\\n' '{{\"event\":\"started\"}}'\nprintf '%s\\n' '{{\"event\":\"output\",\"stream\":\"stdout\",\"text\":\"hello\"}}'\nprintf '%s\\n' '{{\"event\":\"output\",\"stream\":\"stderr\",\"text\":\"warn\"}}'\nprintf '%s\\n' '{{\"event\":\"finished\",\"exitCode\":0}}'\n",
+        argv.display()
+    );
+    let program = bin.join("winbuild");
+    std::fs::write(&program, script).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        root.path().join(".nxr/workflows.toml"),
+        r#"
+schema_version = 1
+
+[tasks.fixture]
+executor = { winbuild = "fixture" }
+"#,
+    )
+    .unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    cargo_bin_cmd!("nxr")
+        .current_dir(root.path())
+        .env("PATH", path)
+        .args(["workflow", "run", "fixture"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello"))
+        .stdout(predicate::str::contains("\"event\":\"finished\""))
+        .stderr(predicate::str::contains("warn"));
+    let recorded = std::fs::read_to_string(&argv).expect("argv");
+    assert!(recorded.contains("run"), "{recorded}");
+    assert!(recorded.contains("fixture"), "{recorded}");
+    assert!(recorded.contains("--file"), "{recorded}");
+    assert!(recorded.contains(".winbuild.json"), "{recorded}");
+    assert!(recorded.contains("--json"), "{recorded}");
+}
