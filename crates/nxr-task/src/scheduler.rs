@@ -996,6 +996,32 @@ mod tests {
     }
 
     #[test]
+    fn jobs_pool_of_one_rejects_a_four_cpu_task() {
+        let mut tasks = BTreeMap::new();
+        let mut heavy = task(&[]);
+        heavy.resources = Some(crate::schema::TaskResources {
+            cpu: Some(4),
+            memory: None,
+            io: None,
+            network: None,
+            exclusive: Vec::new(),
+        });
+        tasks.insert("heavy".to_owned(), heavy);
+        let plan = build_execution_plan_roots(&tasks, &["heavy"], FailurePolicy::FailFast, None)
+            .expect("plan");
+
+        let err = Scheduler::new(&plan, 1).expect_err("oversized cpu");
+        assert_eq!(
+            err,
+            SchedulerError::UnschedulableCpu {
+                task: "heavy".to_owned(),
+                requested_cpu: 4,
+                available_cpu: 1,
+            }
+        );
+    }
+
+    #[test]
     fn rejects_cpu_request_exceeding_jobs_pool() {
         let mut tasks = BTreeMap::new();
         let mut heavy = task(&[]);
