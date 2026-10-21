@@ -50,8 +50,10 @@ pub enum PlanPrepareKind {
 /// Callers compute these with existing discovery / lock / Nix identity helpers.
 /// Values are digests or paths — never secret contents.
 ///
-/// `source_identity` is the git HEAD+porcelain digest for the flake root (ADR-0153
-/// source invalidation). Absent when the tree is not a git checkout.
+/// `source_identity` is a git HEAD+porcelain digest for the flake root (ADR-0153
+/// source invalidation). Prepared plans scope that porcelain to `.nix` files,
+/// `flake.lock`, and discovery inputs. Store-exe passes the full-tree status.
+/// Absent when the tree is not a git checkout.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PlanCacheSharedFingerprints {
     pub nix_tree_fingerprint: String,

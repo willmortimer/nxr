@@ -363,7 +363,7 @@ Discovery cache **schema v5** (incremental fingerprint index) invalidates on:
   Nix tree; hashed on store/load without a second eval on warm hits)
 - **TTL backstop**: default 24h (`NXR_CACHE_TTL_SECS`; `0` disables)
 
-Built-in ignores cover `.git`, `result`, `target`, and similar trees. Set `NXR_CACHE_FINGERPRINT_IGNORE` to a colon-separated list of globs to skip huge vendored `.nix` trees. Remote flakes are never cached.
+Built-in ignores cover `.git`, `result`, `target`, and similar trees. Root directories named `wt-*` are skipped unless `flake.nix` references that relative path. `NXR_FINGERPRINT_FULL_WALK=1` restores the full walk. Set `NXR_CACHE_FINGERPRINT_IGNORE` to a colon-separated list of globs to skip huge vendored `.nix` trees. Git checkouts enumerate `.nix` candidates from the index when that set matches the walk; `NXR_NIX_TREE_GIT_INDEX=off` keeps the recursive walk. Remote flakes are never cached.
 
 Capability cache (schema **v4** as of 2.7.1) invalidates on Nix executable identity (canonical path + device/inode + size + mtime) **and** an environment digest that includes `NIX_CONFIG` / path lists **plus config-file identity** (size/mtime/ctime/content hash for known conf files — [ADR-0145](adr/0145-capability-config-files.md)), with `nix config show --json` as a store-time / miss backstop and a 7-day TTL (`NXR_CAPABILITY_CACHE_TTL_SECS`; `0` disables). Warm hits with a matching environment digest skip all capability probes. When the binary layer is warm but the environment digest changed, only config is re-probed. Set `NXR_CAPABILITY_CACHE=off` to bypass. `nxr cache clear` removes capability entries alongside discovery cache.
 
@@ -455,22 +455,42 @@ ignores (`.git`, `node_modules`, `target`, `result`, `.direnv`, `.cache`), that
 checkout is about 143,000 files and 16,700 directories, of which about 65 are
 `.nix`. A directory walk of that tree is the same order of magnitude as warm
 list. `git status --porcelain -- .` in that checkout was about 156 ms;
-`git rev-parse HEAD` was about 11 ms. Plan preparation runs the fingerprint
-walk and that git status.
+`git rev-parse HEAD` was about 11 ms. Plan preparation used to run the
+fingerprint walk and that full git status.
 
-Untracked `wt-*` trees are inside the walk. Skipping them in a standalone walk
-dropped it from about 770 ms to about 410 ms. They are not the whole cost.
+Root `wt-*` directories are now omitted unless `flake.nix` references them.
+Git checkouts use `git ls-files` for `.nix` candidates when that set matches
+the walk, including checked-out gitlinks. A gitignored directory outside the
+built-in ignores still selects the walk, because the fingerprint hashes `.nix`
+files there and Nix would not copy them. This checkout has those directories
+(`.pnpm-store`, `.venv`, `.claude`, `.next`, `dist`), and `.claude` worktrees
+contain `flake.nix`, so listing still walks. Prepared plans no longer status
+the whole tree; store-exe and `includeGitState` still do.
 
-This is acceptable for occasional release commands and too slow for an
-interactive command palette. Do not optimize it ahead of SYS-5. Re-measure
-with:
+Re-measured on 2026-10-20 with `scripts/perf/measure-ecosystem.sh` (5 warm
+runs). Before is nix-built v3.7.0. After is a release build of this change.
+
+| | warm `nxr -q list` p50 | warm `nxr plan ok` p50 | `nix_spawns` |
+| --- | ---: | ---: | ---: |
+| v3.7.0 | 469.7 ms | 637.1 ms | 0 |
+| this change | 458.7 ms | 493.8 ms | 0 |
+
+List `bytes_hashed` stayed 0. The last plan run still hashed about 10 KiB with
+`plan_cache_hits` 1, the same shape as v3.7.0. Provisional targets (list under
+200 ms, plan under 250 ms) are not met. The remaining list cost is the
+recursive walk forced by those gitignored directories. The synthetic Git-index
+fixture is
+`fingerprint::tests::synthetic_large_tree_uses_the_git_index_and_skips_warm_rereads`.
+
+Re-measure with:
 
 ```bash
 ./scripts/perf/measure-ecosystem.sh
 # NXR_PERF_ECOSYSTEM=/path/to/lattice-ecosystem NXR_BIN=/path/to/nxr
 ```
 
-Keep `fixtures/basic-apps` as the enforced CI fixture.
+Keep `fixtures/basic-apps` as the enforced CI fixture. Do not retune
+`scripts/perf/ci-thresholds.json` from these numbers.
 
 The script prefers `nix build .#nxr` and falls back to `cargo build -p nxr-cli --release`. It isolates cache homes, times cold/warm `list` and warm `plan` over `NXR_PERF_RUNS` (default 5), and prints per-run wall times plus **p50**. Compare p50 across commits; use p95/max to spot filesystem or Nix daemon outliers.
 
@@ -486,7 +506,9 @@ CI hosted-runner ceilings (see `scripts/perf/ci-thresholds.json`) are intentiona
 
 High-file-count fingerprint warm paths (index reuse, no rewrite) are asserted by
 `cargo test -p nxr-completion --lib fingerprint::tests::synthetic_monorepo_warm_fingerprint_scales`
-or `./scripts/perf/measure-fingerprint.sh`.
+or `./scripts/perf/measure-fingerprint.sh`. Git-index enumeration on a tree of
+tracked non-`.nix` files is asserted by
+`fingerprint::tests::synthetic_large_tree_uses_the_git_index_and_skips_warm_rereads`.
 
 ## Lean CLI startup + shell fast path (Wave 6)
 

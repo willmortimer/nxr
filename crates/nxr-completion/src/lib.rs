@@ -20,6 +20,9 @@ pub use dynamic::{
     task_parameter_value_candidates, write_app_candidates, write_task_parameter_candidates,
     write_task_parameter_value_candidates,
 };
-pub use fingerprint::{FINGERPRINT_IGNORE_ENV, discovery_inputs_fingerprint, nix_tree_fingerprint};
+pub use fingerprint::{
+    FINGERPRINT_FULL_WALK_ENV, FINGERPRINT_IGNORE_ENV, NIX_TREE_GIT_INDEX_ENV,
+    discovery_inputs_fingerprint, nix_tree_fingerprint,
+};
 pub use generate::generate_script;
 pub use shell::Shell;

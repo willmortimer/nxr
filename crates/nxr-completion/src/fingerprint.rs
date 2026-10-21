@@ -1,10 +1,19 @@
 //! Recursive `.nix` tree fingerprint for discovery cache invalidation.
+//!
+//! Git checkouts enumerate candidate `.nix` paths from the index when that set
+//! can be proved equal to the recursive walk. Independent root `wt-*` trees are
+//! skipped unless `flake.nix` references them. `NXR_FINGERPRINT_FULL_WALK=1`
+//! restores the full walk, including those trees.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::time::SystemTime;
+
+#[cfg(test)]
+use std::cell::Cell;
 
 use blake3::{Hash, Hasher};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -19,6 +28,17 @@ use nxr_core::{normalize_repo_relative_path, validate_repo_relative_path};
 /// Use this to skip huge vendored `.nix` trees that rarely affect discovery.
 pub const FINGERPRINT_IGNORE_ENV: &str = "NXR_CACHE_FINGERPRINT_IGNORE";
 
+/// When set to `1`, `true`, `yes`, or `on`, fingerprint the full tree.
+///
+/// This includes independent root `wt-*` directories and does not consult Git.
+pub const FINGERPRINT_FULL_WALK_ENV: &str = "NXR_FINGERPRINT_FULL_WALK";
+
+/// When set to `0`, `false`, `no`, or `off`, do not enumerate `.nix` paths from Git.
+///
+/// The recursive walk remains the candidate source. Independent `wt-*` trees are
+/// still skipped unless [`FINGERPRINT_FULL_WALK_ENV`] is set.
+pub const NIX_TREE_GIT_INDEX_ENV: &str = "NXR_NIX_TREE_GIT_INDEX";
+
 /// When set to a positive integer, re-read every indexed file after that many seconds
 /// even when metadata matches (backstop for same-mtime rewrites).
 pub const FINGERPRINT_FORCE_REHASH_ENV: &str = "NXR_FINGERPRINT_FORCE_REHASH_SECS";
@@ -26,7 +46,11 @@ pub const FINGERPRINT_FORCE_REHASH_ENV: &str = "NXR_FINGERPRINT_FORCE_REHASH_SEC
 const FINGERPRINT_INDEX_SCHEMA_VERSION: u32 = 2;
 const DISCOVERY_INPUTS_INDEX_SCHEMA_VERSION: u32 = 2;
 const LEGACY_FINGERPRINT_INDEX_SCHEMA_VERSION: u32 = 1;
-const BUILTIN_IGNORE_POLICY_VERSION: &str = "v1";
+const BUILTIN_IGNORE_POLICY_VERSION: &str = "v2";
+const GIT_MODE_SYMLINK: u32 = 0o120000;
+const GIT_MODE_GITLINK: u32 = 0o160000;
+const SCAN_GIT: u8 = 1;
+const SCAN_WALK: u8 = 2;
 /// Sentinel content hash for a declared discovery input that is absent on disk.
 const MISSING_INPUT_CONTENT_HASH: &str =
     "000000000000000000000000000000000000000000000000000000006d697373";
@@ -34,11 +58,14 @@ const MISSING_INPUT_CONTENT_HASH: &str =
 /// Content digest of all `.nix` files under `flake_root` (hex-encoded BLAKE3).
 ///
 /// Built-in directory ignores match common Nix/Rust artifacts (`.git`, `result`,
-/// `target`, …). Additional subtrees may be excluded via [`FINGERPRINT_IGNORE_ENV`].
+/// `target`, …). Root directories named `wt-*` are also skipped unless `flake.nix`
+/// references that relative path, or [`FINGERPRINT_FULL_WALK_ENV`] is set.
+/// Additional subtrees may be excluded via [`FINGERPRINT_IGNORE_ENV`].
 /// `flake.lock` content is included when present. Non-`.nix` sources are not hashed
 /// here; declare extras via `perSystem.nxr.discoveryInputs`.
 ///
 /// Uses a persisted per-file index so unchanged files are not re-read on warm paths.
+/// Git checkouts take candidate paths from the index when that set matches this walk.
 ///
 /// # Errors
 ///
@@ -53,8 +80,16 @@ pub(crate) fn nix_tree_fingerprint_with_ignore(
     flake_root: &Utf8Path,
     extra_ignore: &GlobSet,
 ) -> io::Result<String> {
+    nix_tree_fingerprint_scanning(flake_root, extra_ignore, production_scan_mode())
+}
+
+fn nix_tree_fingerprint_scanning(
+    flake_root: &Utf8Path,
+    extra_ignore: &GlobSet,
+    scan: ScanMode,
+) -> io::Result<String> {
     let root = canonical_flake_root(flake_root);
-    let ignore_policy_hash = ignore_policy_hash(extra_ignore);
+    let ignore_policy_hash = ignore_policy_hash(extra_ignore, scan == ScanMode::FullWalk);
     let index_path = fingerprint_index_path(&root);
 
     let loaded = match index_path.as_ref() {
@@ -62,8 +97,13 @@ pub(crate) fn nix_tree_fingerprint_with_ignore(
         None => None,
     };
 
-    let (fingerprint, index) =
-        compute_workspace_fingerprint(&root, extra_ignore, &ignore_policy_hash, loaded.as_ref())?;
+    let (fingerprint, index) = compute_workspace_fingerprint(
+        &root,
+        extra_ignore,
+        &ignore_policy_hash,
+        loaded.as_ref(),
+        scan,
+    )?;
 
     if let Some(path) = index_path {
         // Skip rewrite when the warm path produced an identical index.
@@ -194,6 +234,7 @@ fn compute_workspace_fingerprint(
     extra_ignore: &GlobSet,
     ignore_policy_hash: &str,
     loaded: Option<&WorkspaceFingerprintIndex>,
+    scan: ScanMode,
 ) -> io::Result<(String, WorkspaceFingerprintIndex)> {
     let compatible = loaded.filter(|index| index_is_compatible(index, root, ignore_policy_hash));
     let force_rehash = compatible.is_some_and(|index| should_force_rehash(index.last_rehash_ns));
@@ -201,8 +242,7 @@ fn compute_workspace_fingerprint(
     let last_rehash_ns = resolve_last_rehash_ns(prior, force_rehash);
 
     let mut entries = BTreeMap::new();
-    let mut nix_paths = Vec::new();
-    walk_nix_files(root, root, extra_ignore, &mut nix_paths)?;
+    let nix_paths = collect_nix_paths(root, extra_ignore, scan)?;
 
     for relative in nix_paths {
         let absolute = root.join(&relative);
@@ -499,13 +539,15 @@ fn ctime_matches(stored: Option<u128>, current: Option<u128>) -> bool {
     }
 }
 
-fn ignore_policy_hash(extra_ignore: &GlobSet) -> String {
+fn ignore_policy_hash(extra_ignore: &GlobSet, full_walk: bool) -> String {
     let mut hasher = Hasher::new();
     hasher.update(BUILTIN_IGNORE_POLICY_VERSION.as_bytes());
     hasher.update(&[0]);
     if let Some(raw) = std::env::var_os(FINGERPRINT_IGNORE_ENV) {
         hasher.update(raw.as_encoded_bytes());
     }
+    hasher.update(&[0]);
+    hasher.update(&[u8::from(full_walk)]);
     hasher.update(&[0]);
     hasher.update(&u8::from(extra_ignore.is_empty()).to_le_bytes());
     // GlobSet does not expose its patterns; env + emptiness still invalidates policy changes.
@@ -764,6 +806,7 @@ thread_local! {
         const { std::sync::atomic::AtomicUsize::new(0) };
     static INDEX_STORES: std::sync::atomic::AtomicUsize =
         const { std::sync::atomic::AtomicUsize::new(0) };
+    static NIX_SCAN: Cell<u8> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -834,10 +877,413 @@ fn canonical_flake_root(path: &Utf8Path) -> Utf8PathBuf {
         .unwrap_or_else(|_| path.to_path_buf())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScanMode {
+    /// Git index when it matches the walk, otherwise the walk.
+    Auto,
+    /// Recursive walk, still skipping independent `wt-*` trees.
+    Walk,
+    /// Recursive walk including independent `wt-*` trees.
+    FullWalk,
+}
+
+struct WalkFilter<'a> {
+    extra_ignore: &'a GlobSet,
+    full_walk: bool,
+    flake_nix: &'a str,
+}
+
+enum GitCollect {
+    Done,
+    Fallback,
+}
+
+fn production_scan_mode() -> ScanMode {
+    if env_is_truthy(FINGERPRINT_FULL_WALK_ENV) {
+        ScanMode::FullWalk
+    } else if env_flag_enabled(NIX_TREE_GIT_INDEX_ENV, true) {
+        ScanMode::Auto
+    } else {
+        ScanMode::Walk
+    }
+}
+
+fn env_is_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .is_some_and(|value| parse_truthy(value.trim()))
+}
+
+fn parse_truthy(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn env_flag_enabled(name: &str, default_on: bool) -> bool {
+    match std::env::var(name) {
+        Ok(value) => parse_enabled_flag(value.trim(), default_on),
+        Err(_) => default_on,
+    }
+}
+
+fn parse_enabled_flag(value: &str, default_on: bool) -> bool {
+    if value.is_empty() {
+        return default_on;
+    }
+    !matches!(
+        value.to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
+fn record_nix_scan(kind: u8) {
+    #[cfg(test)]
+    NIX_SCAN.with(|cell| cell.set(kind));
+    #[cfg(not(test))]
+    let _ = kind;
+}
+
+#[cfg(test)]
+fn recorded_nix_scan() -> u8 {
+    NIX_SCAN.with(|cell| cell.get())
+}
+
+fn collect_nix_paths(
+    root: &Utf8Path,
+    extra_ignore: &GlobSet,
+    scan: ScanMode,
+) -> io::Result<Vec<String>> {
+    let flake_nix = read_flake_nix_text(root)?;
+    let filter = WalkFilter {
+        extra_ignore,
+        full_walk: scan == ScanMode::FullWalk,
+        flake_nix: &flake_nix,
+    };
+    let mut entries = Vec::new();
+    match scan {
+        ScanMode::Auto => match git_nix_candidates(root, &filter)? {
+            Some(paths) => {
+                record_nix_scan(SCAN_GIT);
+                entries = paths;
+            }
+            None => {
+                record_nix_scan(SCAN_WALK);
+                walk_nix_files(root, root, &filter, &mut entries)?;
+            }
+        },
+        ScanMode::Walk | ScanMode::FullWalk => {
+            record_nix_scan(SCAN_WALK);
+            walk_nix_files(root, root, &filter, &mut entries)?;
+        }
+    }
+    entries.sort();
+    entries.dedup();
+    Ok(entries)
+}
+
+fn read_flake_nix_text(root: &Utf8Path) -> io::Result<String> {
+    match fs::read_to_string(root.join("flake.nix")) {
+        Ok(text) => Ok(text),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(error),
+    }
+}
+
+fn git_nix_candidates(root: &Utf8Path, filter: &WalkFilter<'_>) -> io::Result<Option<Vec<String>>> {
+    let mut visiting = HashSet::new();
+    let mut paths = Vec::new();
+    match append_git_nix_candidates(root, root, "", filter, &mut visiting, &mut paths)? {
+        GitCollect::Done => {
+            paths.sort();
+            paths.dedup();
+            Ok(Some(paths))
+        }
+        GitCollect::Fallback => Ok(None),
+    }
+}
+
+fn append_git_nix_candidates(
+    root: &Utf8Path,
+    dir: &Utf8Path,
+    prefix: &str,
+    filter: &WalkFilter<'_>,
+    visiting: &mut HashSet<PathBuf>,
+    paths: &mut Vec<String>,
+) -> io::Result<GitCollect> {
+    let canonical = dir
+        .canonicalize_utf8()
+        .map(|path| path.into_std_path_buf())
+        .unwrap_or_else(|_| dir.as_std_path().to_path_buf());
+    if !visiting.insert(canonical) {
+        return Ok(GitCollect::Fallback);
+    }
+
+    let Some(inside) = git_stdout(dir, &["rev-parse", "--is-inside-work-tree"])? else {
+        return Ok(GitCollect::Fallback);
+    };
+    if std::str::from_utf8(&inside)
+        .ok()
+        .is_none_or(|text| text.trim() != "true")
+    {
+        return Ok(GitCollect::Fallback);
+    }
+
+    let Some(ignored) = git_stdout(
+        dir,
+        &[
+            "ls-files",
+            "-z",
+            "-o",
+            "-i",
+            "--directory",
+            "--exclude-standard",
+            "--",
+            ".",
+        ],
+    )?
+    else {
+        return Ok(GitCollect::Fallback);
+    };
+    if ignored_tree_is_ambiguous(root, prefix, &ignored, filter)? {
+        return Ok(GitCollect::Fallback);
+    }
+
+    let Some(stage) = git_stdout(dir, &["ls-files", "-z", "--stage", "--", "."])? else {
+        return Ok(GitCollect::Fallback);
+    };
+    let Some(untracked) = git_stdout(
+        dir,
+        &[
+            "ls-files",
+            "-z",
+            "-o",
+            "--directory",
+            "--exclude-standard",
+            "--",
+            ".",
+        ],
+    )?
+    else {
+        return Ok(GitCollect::Fallback);
+    };
+
+    let mut gitlinks = Vec::new();
+    if !append_stage_nix(root, prefix, &stage, filter, &mut gitlinks, paths)? {
+        return Ok(GitCollect::Fallback);
+    }
+    if !append_worktree_nix(root, prefix, &untracked, filter, paths, true)? {
+        return Ok(GitCollect::Fallback);
+    }
+    if !append_worktree_nix(root, prefix, &ignored, filter, paths, false)? {
+        return Ok(GitCollect::Fallback);
+    }
+
+    for link in gitlinks {
+        let child = dir.join(&link);
+        if !child.exists() {
+            continue;
+        }
+        let child_prefix = match repo_relative(root, &child) {
+            Some(relative) => relative,
+            None => return Ok(GitCollect::Fallback),
+        };
+        match append_git_nix_candidates(root, &child, &child_prefix, filter, visiting, paths)? {
+            GitCollect::Done => {}
+            GitCollect::Fallback => return Ok(GitCollect::Fallback),
+        }
+    }
+    Ok(GitCollect::Done)
+}
+
+fn ignored_tree_is_ambiguous(
+    root: &Utf8Path,
+    prefix: &str,
+    ignored: &[u8],
+    filter: &WalkFilter<'_>,
+) -> io::Result<bool> {
+    for record in nul_records(ignored) {
+        let Ok(raw) = std::str::from_utf8(record) else {
+            return Ok(true);
+        };
+        let Some(relative) = prefixed_repo_path(prefix, raw) else {
+            return Ok(true);
+        };
+        let absolute = root.join(&relative);
+        let directory = raw.ends_with('/')
+            || fs::symlink_metadata(&absolute)
+                .is_ok_and(|meta| !meta.file_type().is_symlink() && meta.is_dir());
+        if directory && !should_ignore(root, &absolute, filter) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn append_stage_nix(
+    root: &Utf8Path,
+    prefix: &str,
+    stage: &[u8],
+    filter: &WalkFilter<'_>,
+    gitlinks: &mut Vec<String>,
+    paths: &mut Vec<String>,
+) -> io::Result<bool> {
+    for record in nul_records(stage) {
+        let Some(entry) = parse_stage_record(record) else {
+            return Ok(false);
+        };
+        if entry.stage == 0 && entry.mode == GIT_MODE_GITLINK {
+            gitlinks.push(entry.path);
+            continue;
+        }
+        if entry.stage == 0 && entry.mode == GIT_MODE_SYMLINK {
+            continue;
+        }
+        if !is_nix_name(&entry.path) {
+            continue;
+        }
+        let Some(relative) = prefixed_repo_path(prefix, &entry.path) else {
+            return Ok(false);
+        };
+        let absolute = root.join(&relative);
+        if should_ignore(root, &absolute, filter) {
+            continue;
+        }
+        push_regular_nix_file(&absolute, &relative, paths)?;
+    }
+    Ok(true)
+}
+
+fn append_worktree_nix(
+    root: &Utf8Path,
+    prefix: &str,
+    listing: &[u8],
+    filter: &WalkFilter<'_>,
+    paths: &mut Vec<String>,
+    walk_directories: bool,
+) -> io::Result<bool> {
+    for record in nul_records(listing) {
+        let Ok(raw) = std::str::from_utf8(record) else {
+            return Ok(false);
+        };
+        let Some(relative) = prefixed_repo_path(prefix, raw) else {
+            return Ok(false);
+        };
+        let absolute = root.join(&relative);
+        if should_ignore(root, &absolute, filter) {
+            continue;
+        }
+        let metadata = match fs::symlink_metadata(&absolute) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            if walk_directories {
+                walk_nix_files(root, &absolute, filter, paths)?;
+            }
+            continue;
+        }
+        if metadata.is_file() && is_nix_name(raw) {
+            paths.push(relative);
+        }
+    }
+    Ok(true)
+}
+
+fn push_regular_nix_file(
+    absolute: &Utf8Path,
+    relative: &str,
+    paths: &mut Vec<String>,
+) -> io::Result<()> {
+    match fs::symlink_metadata(absolute) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Ok(()),
+        Ok(metadata) if metadata.is_file() => {
+            paths.push(relative.to_owned());
+            Ok(())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn parse_stage_record(record: &[u8]) -> Option<StageRecord> {
+    let tab = record.iter().position(|byte| *byte == b'\t')?;
+    let meta = std::str::from_utf8(&record[..tab]).ok()?;
+    let path = std::str::from_utf8(&record[tab + 1..]).ok()?.to_owned();
+    if path.is_empty() || relative_escapes(&path) {
+        return None;
+    }
+    let mut parts = meta.split_whitespace();
+    let mode = u32::from_str_radix(parts.next()?, 8).ok()?;
+    let _oid = parts.next()?;
+    let stage = parts.next()?.parse().ok()?;
+    Some(StageRecord { mode, stage, path })
+}
+
+struct StageRecord {
+    mode: u32,
+    stage: u8,
+    path: String,
+}
+
+fn prefixed_repo_path(prefix: &str, raw: &str) -> Option<String> {
+    let relative = raw.trim_end_matches('/');
+    if relative.is_empty() || relative_escapes(relative) {
+        return None;
+    }
+    let joined = if prefix.is_empty() {
+        relative.to_owned()
+    } else {
+        format!("{prefix}/{relative}")
+    };
+    if relative_escapes(&joined) {
+        None
+    } else {
+        Some(joined)
+    }
+}
+
+fn repo_relative(root: &Utf8Path, path: &Utf8Path) -> Option<String> {
+    path.strip_prefix(root)
+        .ok()
+        .map(|relative| relative.as_str().to_owned())
+        .filter(|relative| !relative.is_empty() && !relative_escapes(relative))
+}
+
+fn nul_records(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    bytes
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+}
+
+fn git_stdout(dir: &Utf8Path, args: &[&str]) -> io::Result<Option<Vec<u8>>> {
+    let output = match Command::new("git")
+        .arg("-C")
+        .arg(dir.as_str())
+        .args(args)
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if output.status.success() {
+        Ok(Some(output.stdout))
+    } else {
+        Ok(None)
+    }
+}
+
 fn walk_nix_files(
     root: &Utf8Path,
     dir: &Utf8Path,
-    extra_ignore: &GlobSet,
+    filter: &WalkFilter<'_>,
     entries: &mut Vec<String>,
 ) -> io::Result<()> {
     let mut stack = vec![dir.to_path_buf()];
@@ -850,7 +1296,7 @@ fn walk_nix_files(
                 continue;
             };
 
-            if should_ignore(root, utf8_path, extra_ignore) {
+            if should_ignore(root, utf8_path, filter) {
                 continue;
             }
 
@@ -879,14 +1325,68 @@ fn is_nix_file(path: &Utf8Path) -> bool {
     path.extension().is_some_and(|ext| ext == "nix")
 }
 
-fn should_ignore(root: &Utf8Path, path: &Utf8Path, extra_ignore: &GlobSet) -> bool {
+fn should_ignore(root: &Utf8Path, path: &Utf8Path, filter: &WalkFilter<'_>) -> bool {
     if is_builtin_ignored(path) {
+        return true;
+    }
+    if !filter.full_walk && is_independent_worktree(root, path, filter.flake_nix) {
         return true;
     }
 
     let relative = path.strip_prefix(root).unwrap_or(path);
     let relative = relative_for_glob(relative.as_str());
-    extra_ignore.is_match(relative)
+    filter.extra_ignore.is_match(relative)
+}
+
+fn is_independent_worktree(root: &Utf8Path, path: &Utf8Path, flake_nix: &str) -> bool {
+    use camino::Utf8Component;
+
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+    let mut components = relative.components();
+    let Some(Utf8Component::Normal(name)) = components.next() else {
+        return false;
+    };
+    if !name.starts_with("wt-") {
+        return false;
+    }
+    let nested = components.next().is_some();
+    if !nested {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            _ => return false,
+        }
+    }
+    !flake_references_worktree(flake_nix, name)
+}
+
+fn flake_references_worktree(flake_nix: &str, name: &str) -> bool {
+    for needle in [format!("./{name}"), format!("path:./{name}")] {
+        let mut rest = flake_nix;
+        while let Some(index) = rest.find(&needle) {
+            let after = index + needle.len();
+            let boundary = rest[after..]
+                .chars()
+                .next()
+                .is_none_or(|ch| !is_path_name_char(ch));
+            if boundary {
+                return true;
+            }
+            rest = &rest[index + needle.len()..];
+        }
+    }
+    false
+}
+
+fn is_path_name_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')
+}
+
+fn is_nix_name(path: &str) -> bool {
+    Utf8Path::new(path.trim_end_matches('/'))
+        .extension()
+        .is_some_and(|ext| ext == "nix")
 }
 
 fn is_builtin_ignored(path: &Utf8Path) -> bool {
@@ -918,11 +1418,16 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use std::process::Command;
+
+    use globset::{Glob, GlobSet, GlobSetBuilder};
+
     use super::{
-        discovery_inputs_fingerprint, nix_tree_fingerprint, nix_tree_fingerprint_with_ignore,
-        reset_file_read_counter, reset_index_store_counter, set_test_fingerprint_index_root,
+        SCAN_GIT, SCAN_WALK, ScanMode, discovery_inputs_fingerprint, flake_references_worktree,
+        nix_tree_fingerprint, nix_tree_fingerprint_scanning, nix_tree_fingerprint_with_ignore,
+        parse_enabled_flag, parse_truthy, recorded_nix_scan, reset_file_read_counter,
+        reset_index_store_counter, set_test_fingerprint_index_root,
     };
-    use globset::{Glob, GlobSetBuilder};
 
     fn utf8_root(temp: &TempDir) -> camino::Utf8PathBuf {
         camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path")
@@ -1371,5 +1876,300 @@ mod tests {
                 "ctime mismatch should re-read the file even when mtime matches"
             );
         });
+    }
+
+    #[test]
+    fn flag_parsers_accept_the_documented_spellings() {
+        assert!(parse_truthy("1"));
+        assert!(parse_truthy("TRUE"));
+        assert!(!parse_truthy("0"));
+        assert!(!parse_truthy(""));
+        assert!(!parse_enabled_flag("off", true));
+        assert!(parse_enabled_flag("", true));
+        assert!(!parse_enabled_flag("", false));
+    }
+
+    #[test]
+    fn worktree_reference_requires_a_path_boundary() {
+        assert!(flake_references_worktree(
+            "inputs.x.url = ./wt-demo;",
+            "wt-demo"
+        ));
+        assert!(flake_references_worktree(
+            "inputs.x.url = path:./wt-demo;",
+            "wt-demo"
+        ));
+        assert!(!flake_references_worktree(
+            "inputs.x.url = ./wt-demo-extra;",
+            "wt-demo"
+        ));
+        assert!(!flake_references_worktree(
+            "description = \"wt-demo\";",
+            "wt-demo"
+        ));
+    }
+
+    #[test]
+    fn independent_worktree_is_omitted_until_flake_nix_references_it() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            fs::create_dir_all(root.join("wt-demo")).expect("mkdir");
+            fs::write(root.join("flake.nix"), "{ outputs = {}; }\n").expect("flake");
+            fs::write(root.join("wt-demo/a.nix"), "1\n").expect("worktree nix");
+
+            reset_file_read_counter();
+            let skipped = nix_tree_fingerprint(&root).expect("skip worktree");
+            assert_eq!(reset_file_read_counter(), 1);
+
+            let included =
+                nix_tree_fingerprint_scanning(&root, &GlobSet::empty(), ScanMode::FullWalk)
+                    .expect("full walk");
+            assert_ne!(skipped, included);
+
+            fs::write(root.join("flake.nix"), "{ inputs.x.url = ./wt-demo; }\n").expect("refer");
+            reset_file_read_counter();
+            let referenced = nix_tree_fingerprint(&root).expect("referenced worktree");
+            assert_eq!(reset_file_read_counter(), 2);
+            assert_ne!(skipped, referenced);
+        });
+    }
+
+    #[test]
+    fn git_index_matches_walk_for_untracked_add_delete_and_rename() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            init_repo(&root);
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            fs::create_dir_all(root.join("nix")).expect("mkdir");
+            fs::write(root.join("nix/a.nix"), "a\n").expect("tracked");
+            fs::write(root.join("nix/extra.nix"), "extra\n").expect("untracked");
+            run_git(&root, &["add", "flake.nix", "nix/a.nix"]);
+            run_git(&root, &["commit", "-m", "init"]);
+
+            assert_scans_match(&root);
+
+            run_git(&root, &["add", "nix/extra.nix"]);
+            assert_scans_match(&root);
+
+            fs::remove_file(root.join("nix/a.nix")).expect("delete");
+            assert_scans_match(&root);
+
+            run_git(&root, &["mv", "nix/extra.nix", "nix/renamed.nix"]);
+            assert_scans_match(&root);
+            fs::write(root.join("nix/renamed.nix"), "renamed\n").expect("edit");
+            let edited = nix_tree_fingerprint(&root).expect("edited");
+            let walked = nix_tree_fingerprint_scanning(&root, &GlobSet::empty(), ScanMode::Walk)
+                .expect("walk");
+            assert_eq!(edited, walked);
+        });
+    }
+
+    #[test]
+    fn git_index_skips_symlink_directories_and_falls_back_for_ignored_dirs() {
+        let temp = TempDir::new().expect("tempdir");
+        let outside = TempDir::new().expect("outside");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            init_repo(&root);
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            fs::write(outside.path().join("hidden.nix"), "1\n").expect("hidden");
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(outside.path(), root.join("link")).expect("symlink");
+            run_git(&root, &["add", "flake.nix"]);
+            run_git(&root, &["commit", "-m", "init"]);
+
+            reset_file_read_counter();
+            let fingerprint = nix_tree_fingerprint(&root).expect("fingerprint");
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
+            #[cfg(unix)]
+            {
+                assert_eq!(reset_file_read_counter(), 1, "symlink target is not hashed");
+                let walked =
+                    nix_tree_fingerprint_scanning(&root, &GlobSet::empty(), ScanMode::Walk)
+                        .expect("walk");
+                assert_eq!(fingerprint, walked);
+            }
+            #[cfg(not(unix))]
+            let _ = fingerprint;
+
+            fs::create_dir_all(root.join("secret")).expect("mkdir");
+            fs::write(root.join("secret/a.nix"), "secret\n").expect("ignored nix");
+            fs::write(root.join(".gitignore"), "secret/\n").expect("gitignore");
+            run_git(&root, &["add", ".gitignore"]);
+            run_git(&root, &["commit", "-m", "ignore"]);
+            let ignored = nix_tree_fingerprint(&root).expect("ignored dir");
+            assert_eq!(recorded_nix_scan(), SCAN_WALK);
+            let ignored_walk =
+                nix_tree_fingerprint_scanning(&root, &GlobSet::empty(), ScanMode::Walk)
+                    .expect("walk ignored");
+            assert_eq!(ignored, ignored_walk);
+        });
+    }
+
+    #[test]
+    fn git_index_includes_checked_out_gitlinks_and_walks_when_uninitialized() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        let nested = root.join("nested");
+        with_fingerprint_index_dir(&temp, || {
+            fs::create_dir_all(&nested).expect("mkdir");
+            init_repo(&nested);
+            fs::write(nested.join("flake.nix"), "{ nested = true; }\n").expect("nested flake");
+            run_git(&nested, &["add", "flake.nix"]);
+            run_git(&nested, &["commit", "-m", "nested"]);
+
+            init_repo(&root);
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            run_git(&root, &["add", "flake.nix", "nested"]);
+            run_git(&root, &["commit", "-m", "parent"]);
+            assert_scans_match(&root);
+
+            fs::remove_dir_all(nested.join(".git")).expect("uninitialize");
+            let fallback = nix_tree_fingerprint(&root).expect("fallback");
+            assert_eq!(recorded_nix_scan(), SCAN_WALK);
+            let walked = nix_tree_fingerprint_scanning(&root, &GlobSet::empty(), ScanMode::Walk)
+                .expect("walk");
+            assert_eq!(fallback, walked);
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_worktree_nix_file_does_not_change_the_main_checkout() {
+        let main = TempDir::new().expect("main");
+        let linked_parent = TempDir::new().expect("linked parent");
+        let root = utf8_root(&main);
+        let link = camino::Utf8PathBuf::from_path_buf(linked_parent.path().join("tree"))
+            .expect("utf8 worktree");
+        with_fingerprint_index_dir(&main, || {
+            init_repo(&root);
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            run_git(&root, &["add", "flake.nix"]);
+            run_git(&root, &["commit", "-m", "init"]);
+            let before = nix_tree_fingerprint(&root).expect("before");
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
+
+            run_git(&root, &["worktree", "add", "-b", "feature", link.as_str()]);
+            fs::write(link.join("only.nix"), "only\n").expect("worktree file");
+            let main_after = nix_tree_fingerprint(&root).expect("main after");
+            assert_eq!(before, main_after);
+
+            set_test_fingerprint_index_root(None);
+            let link_index = linked_parent.path().join("fingerprint-index");
+            fs::create_dir_all(&link_index).expect("link index");
+            set_test_fingerprint_index_root(Some(link_index));
+            let linked_fingerprint = nix_tree_fingerprint(&link).expect("linked");
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
+            let linked_walk =
+                nix_tree_fingerprint_scanning(&link, &GlobSet::empty(), ScanMode::Walk)
+                    .expect("linked walk");
+            assert_eq!(linked_fingerprint, linked_walk);
+            assert_ne!(main_after, linked_fingerprint);
+        });
+    }
+
+    #[test]
+    fn discovery_input_outside_the_nix_set_still_changes_its_fingerprint() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            init_repo(&root);
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            fs::write(root.join("notes.txt"), "notes\n").expect("notes");
+            run_git(&root, &["add", "flake.nix"]);
+            run_git(&root, &["commit", "-m", "init"]);
+
+            reset_file_read_counter();
+            let _ = nix_tree_fingerprint(&root).expect("nix tree");
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
+            assert_eq!(reset_file_read_counter(), 1);
+
+            let without = discovery_inputs_fingerprint(&root, &[]).expect("without");
+            let with_notes =
+                discovery_inputs_fingerprint(&root, &["notes.txt".to_owned()]).expect("with");
+            assert_ne!(without, with_notes);
+            let outside = discovery_inputs_fingerprint(&root, &["../outside".to_owned()]);
+            assert!(outside.is_err(), "parent traversal is rejected");
+        });
+    }
+
+    #[test]
+    fn synthetic_large_tree_uses_the_git_index_and_skips_warm_rereads() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            init_repo(&root);
+            fs::write(root.join("flake.nix"), "{ outputs = {}; }\n").expect("flake");
+            fs::create_dir_all(root.join("bulk")).expect("bulk");
+            fs::create_dir_all(root.join("pkgs")).expect("pkgs");
+            for index in 0..2_000 {
+                fs::write(
+                    root.join(format!("bulk/f{index}.txt")),
+                    format!("{index}\n"),
+                )
+                .expect("txt");
+            }
+            for index in 0..10 {
+                fs::write(
+                    root.join(format!("pkgs/p{index}.nix")),
+                    format!("{index}\n"),
+                )
+                .expect("nix");
+            }
+            run_git(&root, &["add", "."]);
+            run_git(&root, &["commit", "-m", "init"]);
+
+            reset_file_read_counter();
+            reset_index_store_counter();
+            let cold = nix_tree_fingerprint(&root).expect("cold");
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
+            assert_eq!(reset_file_read_counter(), 11);
+            assert_eq!(reset_index_store_counter(), 1);
+
+            reset_file_read_counter();
+            reset_index_store_counter();
+            let warm = nix_tree_fingerprint(&root).expect("warm");
+            assert_eq!(cold, warm);
+            assert_eq!(reset_file_read_counter(), 0);
+            assert_eq!(reset_index_store_counter(), 0);
+
+            let walked = nix_tree_fingerprint_scanning(&root, &GlobSet::empty(), ScanMode::Walk)
+                .expect("walk");
+            assert_eq!(cold, walked);
+        });
+    }
+
+    fn assert_scans_match(root: &camino::Utf8Path) {
+        let git = nix_tree_fingerprint(root).expect("git fingerprint");
+        assert_eq!(recorded_nix_scan(), SCAN_GIT);
+        let walked =
+            nix_tree_fingerprint_scanning(root, &GlobSet::empty(), ScanMode::Walk).expect("walk");
+        assert_eq!(git, walked);
+    }
+
+    fn init_repo(root: &camino::Utf8Path) {
+        run_git(root, &["init"]);
+        run_git(root, &["config", "user.email", "test@example.com"]);
+        run_git(root, &["config", "user.name", "test"]);
+    }
+
+    fn run_git(root: &camino::Utf8Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "tag.gpgsign=false",
+                "-C",
+                root.as_str(),
+            ])
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .status()
+            .expect("git");
+        assert!(status.success(), "git {args:?}");
     }
 }

@@ -21,7 +21,7 @@ use nxr_core::{
     App, EnvironmentPolicy, Plan, PlanCacheKeyMaterial, PlanCacheSharedFingerprints, PlanCommand,
     PlanKind, PlanPrepareKind, PlanSecretRef, RunDigestCache, daemon_plan_entry,
     daemon_plan_to_hit, digest_environment_policy, digest_nix_flags, flake_lock_digest,
-    git_source_identity, lookup_prepared_plan, plan_cache_enabled, plan_cache_key_digest,
+    git_plan_source_identity, lookup_prepared_plan, plan_cache_enabled, plan_cache_key_digest,
     record_node_prepared, record_plan_cache_hit, record_plan_cache_miss,
     record_spawn_plan_cancelled, record_spawn_plan_prepared, store_prepared_plan, try_once,
     workspace_cache_enabled,
@@ -3159,7 +3159,7 @@ fn shared_fingerprints(
         Ok(value) => value,
         Err(_) => return Ok(None),
     };
-    let source_identity = git_source_identity(local_root)
+    let source_identity = git_plan_source_identity(local_root, &discovery_inputs)
         .ok()
         .flatten()
         .map(|identity| identity.digest);
