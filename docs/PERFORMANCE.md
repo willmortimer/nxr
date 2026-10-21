@@ -487,14 +487,18 @@ not references. Prepared plans no longer status the whole tree; store-exe and
 `includeGitState` still do.
 
 Re-measured with `scripts/perf/measure-ecosystem.sh` (5 warm runs). v3.7.0 is
-the nix-built release binary. The later rows are cargo release builds.
+the nix-built release binary. The later rows are cargo release builds. The
+script prints **p50** and **p95** wall times; it always exits 0 on slow runs.
+Only `fixtures/basic-apps` plus `scripts/perf/ci-thresholds.json` (via
+`measure-release.sh --enforce`) are CI gates.
 
-| | warm `nxr -q list` p50 | warm `nxr plan ok` p50 | `nix_spawns` |
-| --- | ---: | ---: | ---: |
-| v3.7.0 (2026-10-20) | 469.7 ms | 637.1 ms | 0 |
-| index when equal to the walk (2026-10-20) | 458.7 ms | 493.8 ms | 0 |
-| Git-visible sources (2026-10-21) | 56.7 ms | 90.4 ms | 0 |
-| `017ebd4` remeasure (2026-10-21) | 55.6 ms | 93.0 ms | 0 |
+| | warm `nxr -q list` p50 | p95 | warm `nxr plan ok` p50 | p95 | `nix_spawns` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| v3.7.0 (2026-10-20) | 469.7 ms | — | 637.1 ms | — | 0 |
+| index when equal to the walk (2026-10-20) | 458.7 ms | — | 493.8 ms | — | 0 |
+| Git-visible sources (2026-10-21) | 56.7 ms | — | 90.4 ms | — | 0 |
+| `017ebd4` remeasure (2026-10-21) | 55.6 ms | — | 93.0 ms | — | 0 |
+| v3.7.0 spot check (2026-10-21) | 69.2 ms | 92.4 ms | 103.5 ms | 113.9 ms | 0 |
 
 List `bytes_hashed` stayed 0 (`fs_metadata` 23). The last plan run hashed 9,802
 bytes with `plan_cache_hits` 1 and `plan_prepare_us` about 87 ms, the same shape
@@ -512,7 +516,7 @@ Re-measure with:
 Keep `fixtures/basic-apps` as the enforced CI fixture. Do not retune
 `scripts/perf/ci-thresholds.json` from these numbers.
 
-The script prefers `nix build .#nxr` and falls back to `cargo build -p nxr-cli --release`. It isolates cache homes, times cold/warm `list` and warm `plan` over `NXR_PERF_RUNS` (default 5), and prints per-run wall times plus **p50**. Compare p50 across commits; use p95/max to spot filesystem or Nix daemon outliers.
+The script prefers `nix build .#nxr` and falls back to `cargo build -p nxr-cli --release`. It isolates cache homes, times cold/warm `list` and warm `plan` over `NXR_PERF_RUNS` (default 5), and prints per-run wall times plus **p50** and **p95**. Compare p50 across commits; use p95 to spot filesystem or Nix daemon outliers.
 
 Suggested release p50 targets on a local SSD (order-of-magnitude; see also nxr-next performance foundations):
 

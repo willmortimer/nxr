@@ -42,6 +42,7 @@ echo "plan target: $plan_target"
 echo
 
 python3 - "$nxr_bin" "$ecosystem" "$plan_target" "$runs" <<'PY'
+import math
 import os
 import subprocess
 import sys
@@ -70,6 +71,13 @@ def once(args):
     return proc.returncode, elapsed_ms, stats
 
 
+def percentile_ms(ordered, pct):
+    if not ordered:
+        return 0.0
+    rank = max(1, min(len(ordered), int(math.ceil(pct / 100.0 * len(ordered)))))
+    return ordered[rank - 1]
+
+
 def measure(label, args):
     samples = []
     last = ""
@@ -79,8 +87,10 @@ def measure(label, args):
         last = stats
         print(f"{label} run {index}: {elapsed_ms:.1f} ms exit={code}")
     ordered = sorted(samples)
-    p50 = ordered[(len(ordered) - 1) // 2]
+    p50 = percentile_ms(ordered, 50)
+    p95 = percentile_ms(ordered, 95)
     print(f"{label} p50: {p50:.1f} ms")
+    print(f"{label} p95: {p95:.1f} ms")
     if last:
         print(f"{label} stats: {last}")
 
