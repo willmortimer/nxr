@@ -143,7 +143,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**3.7.0** (tagged) — portable `.nxr/workflows.toml` graphs (`nxr workflow`), native
+**3.7.1** (tagged) — portable `.nxr/workflows.toml` graphs (`nxr workflow`), native
 tasks without Nix, and remote WinExec/WinBuild submission. `nxr task` still
 uses the flake task document. Operator archives stay Darwin and Linux.
 

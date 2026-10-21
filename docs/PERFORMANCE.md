@@ -494,6 +494,7 @@ the nix-built release binary. The later rows are cargo release builds.
 | v3.7.0 (2026-10-20) | 469.7 ms | 637.1 ms | 0 |
 | index when equal to the walk (2026-10-20) | 458.7 ms | 493.8 ms | 0 |
 | Git-visible sources (2026-10-21) | 56.7 ms | 90.4 ms | 0 |
+| `017ebd4` remeasure (2026-10-21) | 55.6 ms | 93.0 ms | 0 |
 
 List `bytes_hashed` stayed 0 (`fs_metadata` 23). The last plan run hashed 9,802
 bytes with `plan_cache_hits` 1 and `plan_prepare_us` about 87 ms, the same shape

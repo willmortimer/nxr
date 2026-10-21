@@ -27,7 +27,7 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 | **V3.2** | Local orchestration performance | Plan/store-exe caches, digests/Merkle, optional `nxrd`, lazy prep, watch fast path, lean CLI, I/O batching, Determinate eval strategy, optional `nxrMetadata` — `v3.2.0`–`v3.2.1` (ADR-0151–0168). |
 | **V3.5** | Operator ergonomics MVP | `--set` + TTY params, `--log-dir` + live status, release path / Cosign — `v3.5.0`–`v3.5.3`. |
 | **V3.6** | Operator TUI | `--output tui`, `nxr attach`, `nxr ui`, OSC 52, wiki/demos — `v3.6.0` (ADR-0173). |
-| **V3.7** | Portable workflows | `.nxr/workflows.toml`, native execution without Nix, remote WinExec/WinBuild, signed tags fail closed — `v3.7.0`. |
+| **V3.7** | Portable workflows | `.nxr/workflows.toml`, native execution without Nix, remote WinExec/WinBuild, signed tags fail closed — `v3.7.0`, discovery fingerprints in `v3.7.1`. |
 | **V3.3–3.4** | Workspace scripting + materialized envs | Scripts/file-backed apps, print-dev-env snapshots, one-shell DAG, params/matrix, nom-style progress — `v3.4.0` (ADR-0169–0172). |
 
 ## Active roadmap
