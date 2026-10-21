@@ -143,8 +143,8 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**3.6.0** (tagged) — operator TUI (`--output tui`, `nxr attach`, `nxr ui`), OSC 52
-failure clipboard, deploy-wizard fixture, wiki/consumer docs split; builds on
-3.5.x floor-Nix and ergonomics foundations.
+**3.7.0** (tagged) — portable `.nxr/workflows.toml` graphs (`nxr workflow`), native
+tasks without Nix, and remote WinExec/WinBuild submission. `nxr task` still
+uses the flake task document. Operator archives stay Darwin and Linux.
 
 History: [CHANGELOG.md](CHANGELOG.md) · roadmap: [docs/ROADMAP.md](docs/ROADMAP.md).

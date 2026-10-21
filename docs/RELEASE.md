@@ -29,6 +29,8 @@ nxr task release -- --execute       # create signed tag + push (prompts unless -
 
 Break-glass only: `--skip-gates` (loud warning). Not for normal releases.
 
+The tag is signed (`git tag -s`). If signing fails, the release exits and does not push a tag. `--allow-unsigned` creates an annotated tag without a signature. That is an explicit exception, not the normal release.
+
 Equivalent manual commands (what the app prints):
 
 ```bash

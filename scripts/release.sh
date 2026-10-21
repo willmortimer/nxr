@@ -9,6 +9,7 @@
 #   nix run .#release -- --execute          # requires host+linux gate stamps
 #   nix run .#release -- --execute --yes
 #   nix run .#release -- --execute --skip-gates   # break-glass only
+#   nix run .#release -- --execute --allow-unsigned   # explicit unsigned exception
 #   nxr task release                        # runs host `ci` graph, then dry-run
 #   nxr task release -- --execute
 set -euo pipefail
@@ -17,16 +18,17 @@ execute=0
 assume_yes=0
 skip_remote_check=0
 skip_gates=0
+allow_unsigned=0
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 gates_sh="$script_dir/release-gates.sh"
 
 usage() {
   cat <<'EOF'
-Usage: release [--execute] [--yes] [--skip-remote-check] [--skip-gates]
+Usage: release [--execute] [--yes] [--skip-remote-check] [--skip-gates] [--allow-unsigned]
 
   (default)     Check repo state and print git tag/push commands.
-  --execute     Create annotated/signed tag and push to origin.
+  --execute     Create a signed tag and push to origin.
                 Requires .nxr/release-gates/{host,linux}.<HEAD> stamps from:
                   nxr task ci
                   nxr task ci-linux
@@ -35,6 +37,9 @@ Usage: release [--execute] [--yes] [--skip-remote-check] [--skip-gates]
   --skip-remote-check
                 Do not require origin/main containment / remote tag probe.
   --skip-gates  Break-glass: allow --execute without gate stamps (loud warning).
+  --allow-unsigned
+                Explicit exception: annotated tag without a signature.
+                A normal release does not use this. Signing failure exits.
 
 Environment:
   NXR_RELEASE_REMOTE   Remote name (default: origin)
@@ -61,6 +66,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-gates)
       skip_gates=1
+      shift
+      ;;
+    --allow-unsigned)
+      allow_unsigned=1
       shift
       ;;
     *)
@@ -196,7 +205,11 @@ echo "Local CI gate stamps (HEAD=$(git rev-parse --short HEAD)):"
 "$gates_sh" status
 echo
 
-tag_cmd=(git tag -s "$tag" -m "nxr ${version}")
+if [[ "$allow_unsigned" -eq 1 ]]; then
+  tag_cmd=(git tag -a "$tag" -m "nxr ${version}")
+else
+  tag_cmd=(git tag -s "$tag" -m "nxr ${version}")
+fi
 push_cmd=(git push "$remote" "refs/tags/${tag}")
 
 echo "Planned commands:"
@@ -220,6 +233,10 @@ else
   "$gates_sh" require
 fi
 
+if [[ "$allow_unsigned" -eq 1 ]]; then
+  echo "WARNING: --allow-unsigned set; the tag will not be signed" >&2
+fi
+
 if [[ "$assume_yes" -eq 0 ]]; then
   if [[ ! -t 0 ]]; then
     echo "error: --execute needs a TTY for confirmation (or pass --yes)" >&2
@@ -235,10 +252,13 @@ if [[ "$assume_yes" -eq 0 ]]; then
   esac
 fi
 
-# Prefer signed tags; fall back to annotated if signing is unavailable.
+# A normal release is signed. Signing failure does not create an unsigned tag.
 if ! "${tag_cmd[@]}"; then
-  echo "warning: git tag -s failed; falling back to annotated unsigned tag" >&2
-  git tag -a "$tag" -m "nxr ${version}"
+  echo "error: ${tag_cmd[*]} failed" >&2
+  if [[ "$allow_unsigned" -eq 0 ]]; then
+    echo "       refusing to create an unsigned tag; fix signing or pass --allow-unsigned" >&2
+  fi
+  exit 1
 fi
 
 "${push_cmd[@]}"

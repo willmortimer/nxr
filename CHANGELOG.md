@@ -7,10 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-10-20
+
+### Added
+
+- Portable workflows. `nxr workflow` reads an optional `.nxr/workflows.toml`.
+  `nxr task workflow` and `nxr task workflow:<task>` use that planner.
+  `nxr task <name>` still resolves the flake task document and does not
+  consult the workflow file. The flake-parts task schema is unchanged.
+- Native operation graph that can run native tasks without Nix
+  (`fixtures/native-workflow`).
+- Remote Windows execution. A workflow leaf can run on a selected Hub worker.
+  WinBuild uses its manifest contract, and remote source pins are resolved
+  before submit.
+- NixPlane fleet-state boundary ([ADR-0174](docs/adr/0174-nixplane-fleet-state-boundary.md)).
+  NXR does not store fleet Profile Assignments.
+
 ### Fixed
 
 - Allow `Zlib` in the Nix `deny-ci` license list (matches root `deny.toml`) so
   GitHub `ci.yml` quality passes with ratatui 0.30.
+- A task that asks for more CPUs than the pool has fails immediately instead
+  of waiting.
+- Windows pipe multiplexer compiles when reader threads are inspected without
+  joining them.
+- Native-build job id parsing so the host clippy gate passes.
+
+### Changed
+
+- Operator release archives stay `aarch64-darwin`, `x86_64-darwin`,
+  `aarch64-linux`, and `x86_64-linux`. This release does not publish an
+  `nxr.exe` archive. Windows work uses the remote workflow executor.
+- A normal release tag is signed. `scripts/release.sh` no longer falls back
+  to an unsigned annotated tag when `git tag -s` fails. `--allow-unsigned`
+  is the explicit exception.
+- Workspace and Nix package version **3.7.0**.
 
 ## [3.6.0] - 2026-08-01
 
