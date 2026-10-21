@@ -29,6 +29,12 @@ From the repository root:
 ./scripts/perf/measure-release.sh --enforce
 ```
 
+Local ecosystem checkout (not run in CI; see [PERFORMANCE.md](../../docs/PERFORMANCE.md)):
+
+```bash
+./scripts/perf/measure-ecosystem.sh
+```
+
 The harness isolates `HOME` / `XDG_CACHE_HOME` so cold vs warm cache behavior is
 stable. It prints per-run wall times and a p50 summary.
 

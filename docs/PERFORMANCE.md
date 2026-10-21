@@ -434,6 +434,43 @@ NXR_PERF_STATS=1 ./scripts/perf/measure-matrix.sh --stats
 | Workspace CAS all-hit / mixed DAG | deferred | `fixtures/workspace-cache`; Wave 1+ |
 | Watch edit-to-child-start | deferred | Flaky without controlled FS events |
 | High-output / process log latency | deferred | Profile `nxr-process` pipe drain separately |
+| Real ecosystem checkout | `measure-ecosystem.sh` | Local follow-up only. Not a CI gate. |
+
+## Ecosystem checkout follow-up
+
+`fixtures/basic-apps` stays the CI regression fixture. On 2026-10-20, warm
+v3.7.0 against that fixture was 5.7 ms list and 38.0 ms plan. The same binary
+against `/Users/willmortimer/Developer/lattice-ecosystem` was about 440–470 ms
+for `nxr -q list` and about 640–730 ms for `nxr plan ok`.
+
+Both commands reported `nix_spawns` 0. `plan ok` was a prepared-plan cache hit
+(`plan_cache_hits` 1) and `bytes_hashed` stayed near 10 KiB, so the time is not
+a Nix evaluation and not a content rehash. `plan_prepare_us` accounted for the
+plan command. That path still recomputes cache fingerprints before accepting
+the hit.
+
+The warm fingerprint walk stats the `.nix` files (`fs_metadata` about 66) and
+does not re-read them, but it still `readdir`s the checkout. With the built-in
+ignores (`.git`, `node_modules`, `target`, `result`, `.direnv`, `.cache`), that
+checkout is about 143,000 files and 16,700 directories, of which about 65 are
+`.nix`. A directory walk of that tree is the same order of magnitude as warm
+list. `git status --porcelain -- .` in that checkout was about 156 ms;
+`git rev-parse HEAD` was about 11 ms. Plan preparation runs the fingerprint
+walk and that git status.
+
+Untracked `wt-*` trees are inside the walk. Skipping them in a standalone walk
+dropped it from about 770 ms to about 410 ms. They are not the whole cost.
+
+This is acceptable for occasional release commands and too slow for an
+interactive command palette. Do not optimize it ahead of SYS-5. Re-measure
+with:
+
+```bash
+./scripts/perf/measure-ecosystem.sh
+# NXR_PERF_ECOSYSTEM=/path/to/lattice-ecosystem NXR_BIN=/path/to/nxr
+```
+
+Keep `fixtures/basic-apps` as the enforced CI fixture.
 
 The script prefers `nix build .#nxr` and falls back to `cargo build -p nxr-cli --release`. It isolates cache homes, times cold/warm `list` and warm `plan` over `NXR_PERF_RUNS` (default 5), and prints per-run wall times plus **p50**. Compare p50 across commits; use p95/max to spot filesystem or Nix daemon outliers.
 
