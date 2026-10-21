@@ -1740,8 +1740,8 @@ mod tests {
         SCAN_GIT, SCAN_WALK, ScanMode, WalkFilter, analyze_flake_source, append_stage_nix,
         discovery_inputs_fingerprint, explain_nix_tree_fingerprint, flake_references_worktree,
         nix_tree_fingerprint, nix_tree_fingerprint_scanning, nix_tree_fingerprint_with_ignore,
-        parse_enabled_flag, parse_truthy, recorded_nix_scan, reset_file_read_counter,
-        reset_index_store_counter, set_test_fingerprint_index_root,
+        parse_enabled_flag, parse_truthy, production_scan_mode, recorded_nix_scan,
+        reset_file_read_counter, reset_index_store_counter, set_test_fingerprint_index_root,
     };
 
     fn utf8_root(temp: &TempDir) -> camino::Utf8PathBuf {
@@ -2625,6 +2625,639 @@ mod tests {
             let walked = nix_tree_fingerprint_scanning(&root, &GlobSet::empty(), ScanMode::Walk)
                 .expect("walk");
             assert_eq!(cold, walked);
+        });
+    }
+
+    #[test]
+    fn tracked_nix_content_changes_the_git_visible_fingerprint() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            init_repo(&root);
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            fs::create_dir_all(root.join("nix")).expect("mkdir");
+            fs::write(root.join("nix/module.nix"), "module\n").expect("module");
+            fs::write(root.join("README.md"), "readme\n").expect("readme");
+            run_git(&root, &["add", "flake.nix", "nix/module.nix", "README.md"]);
+            run_git(&root, &["commit", "-m", "init"]);
+
+            let base = nix_tree_fingerprint(&root).expect("base");
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
+            assert_scans_match(&root);
+
+            fs::write(root.join("README.md"), "readme changed\n").expect("edit readme");
+            assert_eq!(
+                base,
+                nix_tree_fingerprint(&root).expect("readme"),
+                "non-nix files are outside the nix-tree fingerprint"
+            );
+
+            fs::write(root.join("nix/module.nix"), "module changed\n").expect("edit module");
+            let edited = nix_tree_fingerprint(&root).expect("edited module");
+            assert_ne!(base, edited, "tracked nix content is copied");
+            assert_scans_match(&root);
+
+            fs::write(root.join("flake.lock"), "{}\n").expect("lock");
+            let locked = nix_tree_fingerprint(&root).expect("lock");
+            assert_ne!(edited, locked, "flake.lock is part of the copied source");
+            fs::write(root.join("flake.lock"), "{\n  \"x\": 1\n}\n").expect("edit lock");
+            assert_ne!(
+                locked,
+                nix_tree_fingerprint(&root).expect("edited lock"),
+                "flake.lock content changes the fingerprint"
+            );
+        });
+    }
+
+    #[test]
+    fn staged_addition_and_deletion_track_the_copied_source() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            init_repo(&root);
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            run_git(&root, &["add", "flake.nix"]);
+            run_git(&root, &["commit", "-m", "init"]);
+            let base = nix_tree_fingerprint(&root).expect("base");
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
+
+            fs::create_dir_all(root.join("lib")).expect("mkdir");
+            fs::write(root.join("lib/new.nix"), "added\n").expect("new");
+            run_git(&root, &["add", "--", "lib/new.nix"]);
+            let staged = nix_tree_fingerprint(&root).expect("staged addition");
+            assert_ne!(base, staged, "a staged nix file is copied");
+            assert_scans_match(&root);
+
+            run_git(&root, &["rm", "-f", "--", "lib/new.nix"]);
+            let deleted = nix_tree_fingerprint(&root).expect("staged deletion");
+            assert_ne!(staged, deleted, "a staged deletion drops the file");
+            assert_eq!(deleted, base);
+            assert_scans_match(&root);
+
+            fs::create_dir_all(root.join("lib")).expect("mkdir again");
+            fs::write(root.join("lib/new.nix"), "added\n").expect("restore");
+            run_git(&root, &["add", "--", "lib/new.nix"]);
+            run_git(&root, &["commit", "-m", "add lib"]);
+            let committed = nix_tree_fingerprint(&root).expect("committed");
+            assert_eq!(committed, staged);
+
+            run_git(&root, &["rm", "--cached", "--", "lib/new.nix"]);
+            let still_present = nix_tree_fingerprint(&root).expect("cached removal");
+            assert_eq!(
+                still_present, committed,
+                "a staged index deletion that leaves a non-ignored file is still copied"
+            );
+            assert_scans_match(&root);
+
+            fs::write(root.join("lib/new.nix"), "ignored-edit\n").expect("edit before ignore");
+            fs::write(root.join(".gitignore"), "lib/\n").expect("gitignore");
+            run_git(&root, &["add", "--", ".gitignore"]);
+            run_git(&root, &["commit", "-m", "ignore lib"]);
+            let ignored = nix_tree_fingerprint(&root).expect("ignored");
+            assert_eq!(ignored, base, "an ignored untracked nix file is not copied");
+            fs::write(root.join("lib/new.nix"), "still-ignored\n").expect("edit ignored");
+            assert_eq!(
+                ignored,
+                nix_tree_fingerprint(&root).expect("ignored edit"),
+                "editing an ignored untracked file does not invalidate"
+            );
+
+            fs::write(root.join("lib/new.nix"), "added\n").expect("restore bytes");
+            run_git(&root, &["add", "-f", "--", "lib/new.nix"]);
+            let forced = nix_tree_fingerprint(&root).expect("force added");
+            assert_eq!(forced, committed, "a force-added nix file is copied again");
+            assert_scans_match(&root);
+        });
+    }
+
+    #[test]
+    fn untracked_non_ignored_nix_changes_the_fingerprint() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            init_repo(&root);
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            run_git(&root, &["add", "flake.nix"]);
+            run_git(&root, &["commit", "-m", "init"]);
+            let base = nix_tree_fingerprint(&root).expect("base");
+
+            fs::create_dir_all(root.join("fresh")).expect("mkdir");
+            fs::write(root.join("fresh/a.nix"), "1\n").expect("untracked");
+            let untracked = nix_tree_fingerprint(&root).expect("untracked dir");
+            assert_ne!(base, untracked, "an untracked directory of nix is copied");
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
+            assert_scans_match(&root);
+
+            fs::write(root.join("fresh/a.nix"), "22\n").expect("edit untracked");
+            let edited = nix_tree_fingerprint(&root).expect("edited untracked");
+            assert_ne!(untracked, edited);
+            assert_scans_match(&root);
+
+            fs::write(root.join("fresh/notes.txt"), "notes\n").expect("notes");
+            assert_eq!(
+                edited,
+                nix_tree_fingerprint(&root).expect("notes"),
+                "untracked non-nix files are outside the nix-tree fingerprint"
+            );
+
+            fs::write(root.join(".gitignore"), "fresh/\n").expect("gitignore");
+            let ignored = nix_tree_fingerprint(&root).expect("ignored");
+            assert_eq!(ignored, base, "gitignored untracked nix is not copied");
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
+            fs::write(root.join("fresh/a.nix"), "333\n").expect("edit ignored");
+            assert_eq!(ignored, nix_tree_fingerprint(&root).expect("still ignored"));
+        });
+    }
+
+    #[test]
+    fn ignored_unreferenced_worktree_does_not_change_the_fingerprint() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            init_repo(&root);
+            fs::write(root.join("flake.nix"), "{ outputs = {}; }\n").expect("flake");
+            fs::write(root.join(".gitignore"), ".claude/\n").expect("gitignore");
+            run_git(&root, &["add", "flake.nix", ".gitignore"]);
+            run_git(&root, &["commit", "-m", "init"]);
+            let base = nix_tree_fingerprint(&root).expect("base");
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
+
+            fs::create_dir_all(root.join("wt-scratch")).expect("wt");
+            fs::write(root.join("wt-scratch/a.nix"), "1\n").expect("wt nix");
+            assert_eq!(
+                base,
+                nix_tree_fingerprint(&root).expect("unreferenced wt"),
+                "an unreferenced wt-* tree is not copied"
+            );
+            assert_eq!(
+                base,
+                nix_tree_fingerprint_scanning(&root, &GlobSet::empty(), ScanMode::Walk)
+                    .expect("walk skips wt")
+            );
+            let full = nix_tree_fingerprint_scanning(&root, &GlobSet::empty(), ScanMode::FullWalk)
+                .expect("full");
+            assert_ne!(base, full);
+            fs::write(root.join("wt-scratch/a.nix"), "22\n").expect("edit wt");
+            assert_eq!(base, nix_tree_fingerprint(&root).expect("wt edit"));
+            assert_ne!(
+                full,
+                nix_tree_fingerprint_scanning(&root, &GlobSet::empty(), ScanMode::FullWalk)
+                    .expect("full sees wt edit")
+            );
+
+            fs::create_dir_all(root.join(".claude/worktrees/agent")).expect("claude");
+            fs::write(root.join(".claude/worktrees/agent/flake.nix"), "claude\n")
+                .expect("claude flake");
+            fs::write(root.join(".claude/worktrees/agent/module.nix"), "module\n")
+                .expect("claude module");
+            assert_eq!(
+                base,
+                nix_tree_fingerprint(&root).expect("ignored worktree"),
+                "a gitignored worktree is not copied"
+            );
+            let walked = nix_tree_fingerprint_scanning(&root, &GlobSet::empty(), ScanMode::Walk)
+                .expect("walk sees ignored worktree");
+            assert_ne!(base, walked);
+            fs::write(
+                root.join(".claude/worktrees/agent/module.nix"),
+                "module-2\n",
+            )
+            .expect("edit claude");
+            assert_eq!(base, nix_tree_fingerprint(&root).expect("claude edit"));
+            assert_ne!(
+                walked,
+                nix_tree_fingerprint_scanning(&root, &GlobSet::empty(), ScanMode::Walk)
+                    .expect("walk sees claude edit")
+            );
+
+            fs::write(root.join("flake.nix"), "{ src = ./wt-scratch; }\n").expect("refer wt");
+            let referenced = nix_tree_fingerprint(&root).expect("referenced wt");
+            fs::write(root.join("wt-scratch/a.nix"), "333\n").expect("edit referenced wt");
+            let referenced_edit = nix_tree_fingerprint(&root).expect("referenced wt edit");
+            assert_ne!(referenced, referenced_edit);
+            fs::write(
+                root.join(".claude/worktrees/agent/module.nix"),
+                "module-3\n",
+            )
+            .expect("claude still ignored");
+            assert_eq!(
+                referenced_edit,
+                nix_tree_fingerprint(&root).expect("claude still ignored")
+            );
+
+            fs::write(
+                root.join("flake.nix"),
+                "{ src = ./.claude/worktrees/agent; }\n",
+            )
+            .expect("refer claude");
+            let claude_ref = nix_tree_fingerprint(&root).expect("referenced claude");
+            fs::write(root.join("wt-scratch/a.nix"), "4444\n").expect("wt dropped");
+            assert_eq!(
+                claude_ref,
+                nix_tree_fingerprint(&root).expect("wt no longer referenced"),
+                "dropping the wt-* reference stops copying that tree"
+            );
+            fs::write(
+                root.join(".claude/worktrees/agent/module.nix"),
+                "module-4\n",
+            )
+            .expect("edit referenced claude");
+            assert_ne!(
+                claude_ref,
+                nix_tree_fingerprint(&root).expect("referenced claude edit")
+            );
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
+        });
+    }
+
+    #[test]
+    fn explicit_relative_import_hashes_only_the_named_source() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            init_repo(&root);
+            fs::write(root.join("flake.nix"), "{ outputs = {}; }\n").expect("flake");
+            fs::write(root.join(".gitignore"), "vendor/\n").expect("gitignore");
+            run_git(&root, &["add", "flake.nix", ".gitignore"]);
+            run_git(&root, &["commit", "-m", "init"]);
+            fs::create_dir_all(root.join("vendor")).expect("vendor");
+            fs::write(root.join("vendor/lib.nix"), "lib\n").expect("lib");
+            fs::write(root.join("vendor/other.nix"), "other\n").expect("other");
+
+            let base = nix_tree_fingerprint(&root).expect("unreferenced");
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
+            fs::write(root.join("vendor/lib.nix"), "lib-2\n").expect("edit ignored");
+            assert_eq!(
+                base,
+                nix_tree_fingerprint(&root).expect("ignored import target"),
+                "an ignored tree is not copied until flake.nix names it"
+            );
+
+            fs::write(
+                root.join("flake.nix"),
+                "{\n  # ./vendor/lib.nix\n  note = \"import ./vendor/lib.nix\";\n}\n",
+            )
+            .expect("mention");
+            let mentioned = nix_tree_fingerprint(&root).expect("mention");
+            fs::write(root.join("vendor/lib.nix"), "lib-3\n").expect("edit mention");
+            assert_eq!(
+                mentioned,
+                nix_tree_fingerprint(&root).expect("string mention"),
+                "comments and strings do not name a copied path"
+            );
+
+            for (label, flake) in [
+                ("import", "{ import ./vendor/lib.nix; }\n"),
+                ("path literal", "{ src = path:./vendor/lib.nix; }\n"),
+                (
+                    "builtins.path",
+                    "{ src = builtins.path { path = ./vendor/lib.nix; }; }\n",
+                ),
+            ] {
+                fs::write(root.join("flake.nix"), flake).expect(label);
+                let named = nix_tree_fingerprint(&root).expect(label);
+                assert_eq!(recorded_nix_scan(), SCAN_GIT);
+                fs::write(root.join("vendor/other.nix"), format!("other-{label}\n"))
+                    .expect("edit other");
+                assert_eq!(
+                    named,
+                    nix_tree_fingerprint(&root).expect("unnamed sibling"),
+                    "{label}: an unnamed ignored sibling is not copied"
+                );
+                fs::write(root.join("vendor/lib.nix"), format!("lib-{label}\n")).expect("edit lib");
+                assert_ne!(
+                    named,
+                    nix_tree_fingerprint(&root).expect("named file"),
+                    "{label}: the named relative import is copied"
+                );
+            }
+
+            fs::write(root.join("flake.nix"), "{ src = ./vendor; }\n").expect("directory");
+            let directory = nix_tree_fingerprint(&root).expect("directory reference");
+            fs::write(root.join("vendor/other.nix"), "other-dir\n").expect("edit dir sibling");
+            assert_ne!(
+                directory,
+                nix_tree_fingerprint(&root).expect("directory member"),
+                "a named relative directory copies the nix files under it"
+            );
+        });
+    }
+
+    #[test]
+    fn explicit_import_inside_a_gitlink_hashes_only_that_file() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        let nested = root.join("nested");
+        with_fingerprint_index_dir(&temp, || {
+            fs::create_dir_all(&nested).expect("mkdir");
+            init_repo(&nested);
+            fs::write(nested.join("lib.nix"), "lib\n").expect("lib");
+            fs::write(nested.join("other.nix"), "other\n").expect("other");
+            run_git(&nested, &["add", "lib.nix", "other.nix"]);
+            run_git(&nested, &["commit", "-m", "nested"]);
+
+            init_repo(&root);
+            fs::write(root.join("flake.nix"), "{ import ./nested/lib.nix; }\n").expect("flake");
+            run_git(&root, &["add", "flake.nix", "nested"]);
+            run_git(&root, &["commit", "-m", "parent"]);
+
+            let referenced = nix_tree_fingerprint(&root).expect("referenced");
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
+            fs::write(nested.join("lib.nix"), "lib-2\n").expect("edit lib");
+            let edited = nix_tree_fingerprint(&root).expect("edited lib");
+            assert_ne!(
+                referenced, edited,
+                "the named file inside the gitlink is copied"
+            );
+            fs::write(nested.join("other.nix"), "other-2\n").expect("edit other");
+            assert_eq!(
+                edited,
+                nix_tree_fingerprint(&root).expect("edited other"),
+                "an unnamed file inside the gitlink is not copied"
+            );
+
+            fs::write(root.join("flake.nix"), "{ outputs = {}; }\n").expect("drop");
+            let dropped = nix_tree_fingerprint(&root).expect("dropped");
+            fs::write(nested.join("lib.nix"), "lib-3\n").expect("edit dropped");
+            assert_eq!(
+                dropped,
+                nix_tree_fingerprint(&root).expect("unreferenced edit"),
+                "an unreferenced gitlink is not copied"
+            );
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_nix_paths_are_not_part_of_the_copied_source() {
+        let temp = TempDir::new().expect("tempdir");
+        let outside = TempDir::new().expect("outside");
+        let root = utf8_root(&temp);
+        let outside_root =
+            camino::Utf8PathBuf::from_path_buf(outside.path().to_path_buf()).expect("utf8 outside");
+        with_fingerprint_index_dir(&temp, || {
+            init_repo(&root);
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            fs::write(root.join("tracked.nix"), "tracked\n").expect("tracked");
+            std::os::unix::fs::symlink(root.join("tracked.nix"), root.join("alias.nix"))
+                .expect("alias");
+            std::os::unix::fs::symlink(outside.path(), root.join("link")).expect("linkdir");
+            fs::write(outside_root.join("hidden.nix"), "hidden\n").expect("hidden");
+            run_git(
+                &root,
+                &["add", "--", "flake.nix", "tracked.nix", "alias.nix", "link"],
+            );
+            run_git(&root, &["commit", "-m", "init"]);
+
+            let base = nix_tree_fingerprint(&root).expect("base");
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
+            fs::remove_file(root.join("alias.nix")).expect("remove alias");
+            assert_eq!(
+                base,
+                nix_tree_fingerprint(&root).expect("without alias"),
+                "a tracked symlink is not hashed"
+            );
+            fs::write(root.join("alias.nix"), "tracked\n").expect("regular alias");
+            run_git(&root, &["add", "--", "alias.nix"]);
+            assert_ne!(
+                base,
+                nix_tree_fingerprint(&root).expect("regular alias"),
+                "replacing the symlink with a staged regular nix file changes the fingerprint"
+            );
+            run_git(&root, &["rm", "-f", "--", "alias.nix"]);
+            assert_eq!(
+                base,
+                nix_tree_fingerprint(&root).expect("alias removed"),
+                "deleting that regular file restores the copied source"
+            );
+
+            std::os::unix::fs::symlink(root.join("tracked.nix"), root.join("extra.nix"))
+                .expect("untracked symlink");
+            assert_eq!(
+                base,
+                nix_tree_fingerprint(&root).expect("untracked symlink"),
+                "an untracked symlink is not hashed"
+            );
+            fs::remove_file(root.join("extra.nix")).expect("remove extra symlink");
+            fs::write(root.join("extra.nix"), "extra\n").expect("untracked file");
+            assert_ne!(
+                base,
+                nix_tree_fingerprint(&root).expect("untracked file"),
+                "an untracked regular nix file is copied"
+            );
+
+            fs::write(root.join("flake.nix"), "{ src = ./link; }\n").expect("reference link");
+            let referenced = nix_tree_fingerprint(&root).expect("referenced symlink");
+            fs::write(outside_root.join("hidden.nix"), "changed\n").expect("edit target");
+            assert_eq!(
+                referenced,
+                nix_tree_fingerprint(&root).expect("symlink target edited"),
+                "a referenced symlink directory is not followed"
+            );
+            fs::write(root.join("tracked.nix"), "tracked-2\n").expect("edit tracked");
+            assert_ne!(
+                referenced,
+                nix_tree_fingerprint(&root).expect("tracked edited"),
+                "a regular tracked nix file still invalidates"
+            );
+        });
+    }
+
+    #[test]
+    fn unusual_nix_filenames_change_the_git_visible_fingerprint() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            init_repo(&root);
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            let mut names = vec![
+                "odd name.nix".to_owned(),
+                "my nix/mod.nix".to_owned(),
+                "--odd.nix".to_owned(),
+                "λ.nix".to_owned(),
+                "o'brien.nix".to_owned(),
+                ".hidden.nix".to_owned(),
+                "star*.nix".to_owned(),
+            ];
+            #[cfg(unix)]
+            {
+                names.push("a\tb.nix".to_owned());
+                names.push("line\nbreak.nix".to_owned());
+            }
+            for name in &names {
+                let path = root.join(name);
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).expect("mkdir");
+                }
+                fs::write(&path, "1\n").expect("write unusual name");
+            }
+            run_git(&root, &["add", "-A"]);
+            run_git(&root, &["commit", "-m", "init"]);
+
+            let mut previous = nix_tree_fingerprint(&root).expect("base");
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
+            assert_scans_match(&root);
+            for (index, name) in names.iter().enumerate() {
+                fs::write(root.join(name), format!("changed-{index}\n")).expect("edit unusual");
+                let updated = nix_tree_fingerprint(&root).expect("edited unusual");
+                assert_ne!(
+                    previous, updated,
+                    "git-visible nix file {name:?} is part of the copied source"
+                );
+                assert_eq!(recorded_nix_scan(), SCAN_GIT);
+                assert_scans_match(&root);
+                previous = updated;
+            }
+
+            fs::write(root.join("notes.NIX"), "not nix\n").expect("wrong extension");
+            assert_eq!(
+                previous,
+                nix_tree_fingerprint(&root).expect("capital extension"),
+                "only a lowercase .nix extension is hashed"
+            );
+
+            fs::write(root.join(".gitignore"), "secret dir/\n").expect("gitignore");
+            run_git(&root, &["add", "--", ".gitignore"]);
+            run_git(&root, &["commit", "-m", "ignore secret"]);
+            fs::create_dir_all(root.join("secret dir")).expect("secret dir");
+            fs::write(root.join("secret dir/odd name.nix"), "secret\n").expect("secret nix");
+            let ignored = nix_tree_fingerprint(&root).expect("ignored unusual");
+            fs::write(root.join("secret dir/odd name.nix"), "secret-2\n").expect("edit secret");
+            assert_eq!(
+                ignored,
+                nix_tree_fingerprint(&root).expect("ignored unusual edit"),
+                "an ignored unusual filename is not copied"
+            );
+        });
+    }
+
+    #[test]
+    fn compatibility_walk_tracks_nix_source_without_the_git_index() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_root(&temp);
+        with_fingerprint_index_dir(&temp, || {
+            assert_eq!(
+                production_scan_mode(),
+                ScanMode::Auto,
+                "git index enumeration stays enabled unless the env switches say otherwise"
+            );
+            fs::write(root.join("flake.nix"), "{}\n").expect("flake");
+            fs::write(root.join("app.nix"), "1\n").expect("app");
+            fs::write(root.join(".gitignore"), "hidden/\n").expect("gitignore");
+            fs::create_dir_all(root.join("hidden")).expect("hidden");
+            fs::write(root.join("hidden/a.nix"), "hidden\n").expect("hidden nix");
+            fs::create_dir_all(root.join("wt-local")).expect("wt");
+            fs::write(root.join("wt-local/a.nix"), "wt\n").expect("wt nix");
+
+            let missing_git = nix_tree_fingerprint(&root).expect("missing git");
+            assert_eq!(recorded_nix_scan(), SCAN_WALK);
+            assert_eq!(
+                missing_git,
+                nix_tree_fingerprint_scanning(&root, &GlobSet::empty(), ScanMode::Walk)
+                    .expect("walk")
+            );
+            fs::write(root.join("app.nix"), "22\n").expect("edit app");
+            let app_edited = nix_tree_fingerprint(&root).expect("edited app");
+            assert_ne!(missing_git, app_edited);
+            fs::write(root.join("hidden/a.nix"), "hidden-2\n").expect("edit hidden");
+            let hidden_edited = nix_tree_fingerprint(&root).expect("edited hidden");
+            assert_ne!(
+                app_edited, hidden_edited,
+                "without git, a gitignore does not hide nix files from the walk"
+            );
+            fs::write(root.join("wt-local/a.nix"), "wt-2\n").expect("edit wt");
+            assert_eq!(
+                hidden_edited,
+                nix_tree_fingerprint(&root).expect("wt skipped"),
+                "a missing git command still skips an unreferenced wt-* tree"
+            );
+            let full = nix_tree_fingerprint_scanning(&root, &GlobSet::empty(), ScanMode::FullWalk)
+                .expect("full");
+            assert_ne!(hidden_edited, full);
+            fs::write(root.join("wt-local/a.nix"), "wt-3\n").expect("edit wt again");
+            assert_ne!(
+                full,
+                nix_tree_fingerprint_scanning(&root, &GlobSet::empty(), ScanMode::FullWalk)
+                    .expect("full edit"),
+                "NXR_FINGERPRINT_FULL_WALK=1 includes an independent wt-* tree"
+            );
+            assert_eq!(
+                hidden_edited,
+                nix_tree_fingerprint(&root).expect("production still skips wt")
+            );
+        });
+
+        let git_temp = TempDir::new().expect("git tempdir");
+        let git_root = utf8_root(&git_temp);
+        with_fingerprint_index_dir(&git_temp, || {
+            init_repo(&git_root);
+            fs::write(git_root.join("flake.nix"), "{}\n").expect("flake");
+            fs::write(git_root.join(".gitignore"), "hidden/\n").expect("gitignore");
+            run_git(&git_root, &["add", "flake.nix", ".gitignore"]);
+            run_git(&git_root, &["commit", "-m", "init"]);
+            fs::create_dir_all(git_root.join("hidden")).expect("hidden");
+            fs::write(git_root.join("hidden/a.nix"), "1\n").expect("hidden nix");
+            fs::create_dir_all(git_root.join("wt-local")).expect("wt");
+            fs::write(git_root.join("wt-local/a.nix"), "1\n").expect("wt nix");
+
+            let git_fp = nix_tree_fingerprint(&git_root).expect("git");
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
+            fs::write(git_root.join("hidden/a.nix"), "22\n").expect("edit hidden");
+            assert_eq!(
+                git_fp,
+                nix_tree_fingerprint(&git_root).expect("ignored edit"),
+                "an ignored unreferenced tree does not change the git fingerprint"
+            );
+            fs::write(git_root.join("wt-local/a.nix"), "22\n").expect("edit wt");
+            assert_eq!(git_fp, nix_tree_fingerprint(&git_root).expect("wt edit"));
+
+            let walk_before =
+                nix_tree_fingerprint_scanning(&git_root, &GlobSet::empty(), ScanMode::Walk)
+                    .expect("walk before");
+            assert_ne!(git_fp, walk_before);
+            fs::write(git_root.join("hidden/a.nix"), "333\n").expect("edit hidden for walk");
+            let walk_after =
+                nix_tree_fingerprint_scanning(&git_root, &GlobSet::empty(), ScanMode::Walk)
+                    .expect("walk after");
+            assert_ne!(
+                walk_before, walk_after,
+                "NXR_NIX_TREE_GIT_INDEX=off walks gitignored nix files"
+            );
+            fs::write(git_root.join("wt-local/a.nix"), "333\n").expect("edit wt for walk");
+            assert_eq!(
+                walk_after,
+                nix_tree_fingerprint_scanning(&git_root, &GlobSet::empty(), ScanMode::Walk)
+                    .expect("walk still skips wt"),
+                "NXR_NIX_TREE_GIT_INDEX=off still skips an unreferenced wt-* tree"
+            );
+
+            let full_before =
+                nix_tree_fingerprint_scanning(&git_root, &GlobSet::empty(), ScanMode::FullWalk)
+                    .expect("full before");
+            fs::write(git_root.join("wt-local/a.nix"), "4444\n").expect("edit wt for full");
+            let full_after =
+                nix_tree_fingerprint_scanning(&git_root, &GlobSet::empty(), ScanMode::FullWalk)
+                    .expect("full after");
+            assert_ne!(
+                full_before, full_after,
+                "NXR_FINGERPRINT_FULL_WALK=1 hashes an independent wt-* tree"
+            );
+            fs::write(git_root.join("hidden/a.nix"), "55555\n").expect("edit hidden for full");
+            assert_ne!(
+                full_after,
+                nix_tree_fingerprint_scanning(&git_root, &GlobSet::empty(), ScanMode::FullWalk)
+                    .expect("full sees ignored"),
+                "NXR_FINGERPRINT_FULL_WALK=1 also hashes gitignored nix files"
+            );
+
+            fs::write(git_root.join("flake.nix"), "{ changed = true; }\n").expect("edit flake");
+            assert_ne!(
+                git_fp,
+                nix_tree_fingerprint(&git_root).expect("flake edit"),
+                "a nix file Nix would copy still changes the git fingerprint"
+            );
+            assert_eq!(recorded_nix_scan(), SCAN_GIT);
         });
     }
 
