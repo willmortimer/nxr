@@ -3,14 +3,14 @@ schema_version = 1
 
 [tasks.prep]
 platform = "unix"
-executor = { native = ["/bin/echo", "prep"] }
+executor = { native = ["nxr-fixture-echo", "prep"] }
 
 [tasks.mid]
 platform = "unix"
 depends_on = ["prep"]
-executor = { native = ["/bin/echo", "mid"] }
+executor = { native = ["nxr-fixture-echo", "mid"] }
 
 [tasks.finish]
 platform = "unix"
 depends_on = ["mid"]
-executor = { native = ["/bin/echo", "finish"] }
+executor = { native = ["nxr-fixture-echo", "finish"] }

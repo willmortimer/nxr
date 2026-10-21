@@ -14,7 +14,7 @@
 //! [tasks.prep]
 //! platform = "unix" # any | unix | macos | linux | windows; default any
 //! depends_on = [] # alias: dependsOn
-//! executor = { native = ["/bin/echo", "prep"] }
+//! executor = { native = ["nxr-fixture-echo", "prep"] }
 //!
 //! [tasks.fmt]
 //! depends_on = ["prep"]
@@ -911,7 +911,9 @@ mod tests {
 
     use super::*;
     use crate::events::{RecordingSink, event_kind};
-    use crate::execute::{ExecContext, run_operation_plan, run_operation_plan_callbacks};
+    use crate::execute::{
+        ExecContext, ExecuteError, run_operation_plan, run_operation_plan_callbacks,
+    };
 
     fn parse(text: &str) -> WorkflowDocument {
         parse_workflow_str(text, "workflows.toml").expect("parse workflows")
@@ -1099,6 +1101,7 @@ executor = { native = ["/bin/true"] }
             let wsl_marker = trap_dir.path().join("wsl-ran");
             write_trap(trap_dir.path(), "nix", &nix_marker);
             write_trap(trap_dir.path(), "wsl", &wsl_marker);
+            write_fixture_echo(trap_dir.path());
             let ctx = ExecContext {
                 path: trap_dir.path().display().to_string(),
                 nix_override: Some("/definitely/missing/nix".to_owned()),
@@ -1136,6 +1139,43 @@ executor = { native = ["/bin/true"] }
         }
     }
 
+    #[test]
+    fn missing_native_program_fails_instead_of_skipping() {
+        let document = parse(
+            r#"
+schema_version = 1
+
+[tasks.only]
+executor = { native = ["nxr-fixture-missing", "nope"] }
+"#,
+        );
+        let plan = plan_workflow_document(
+            &document,
+            &WorkflowPlanMode::Explicit {
+                root: Some("only".to_owned()),
+            },
+            FailurePolicy::FailFast,
+            None,
+        )
+        .expect("plan");
+        let error = run_operation_plan(&plan, &ExecContext::isolated(""), 1, None)
+            .expect_err("absent program must fail the run");
+        assert!(
+            matches!(error, ExecuteError::Spawn { .. }),
+            "expected spawn failure, got {error}"
+        );
+        let detail = error.to_string();
+        assert!(
+            detail.contains("not found"),
+            "spawn failure should name the missing program, got {detail}"
+        );
+        assert!(
+            !detail.contains("skipped"),
+            "a missing program must not be reported as a skip: {detail}"
+        );
+        assert_eq!(error.exit_code(), exit::PROCESS_SUPERVISION);
+    }
+
     #[cfg(unix)]
     fn write_trap(dir: &std::path::Path, name: &str, marker: &std::path::Path) {
         use std::os::unix::fs::PermissionsExt;
@@ -1144,6 +1184,15 @@ executor = { native = ["/bin/true"] }
         std::fs::write(&program, script).expect("write trap");
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
             .expect("chmod trap");
+    }
+
+    #[cfg(unix)]
+    fn write_fixture_echo(dir: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let program = dir.join("nxr-fixture-echo");
+        std::fs::write(&program, "#!/bin/sh\nprintf '%s\\n' \"$1\"\n").expect("write echo");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod echo");
     }
 
     #[test]

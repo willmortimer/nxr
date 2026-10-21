@@ -7109,21 +7109,40 @@ fn daemon_log_broker_append_subscribe_round_trip() {
     let _ = child.wait();
 }
 
+fn install_native_fixture_echo(root: &std::path::Path) -> String {
+    let bin = root.join("bin");
+    std::fs::create_dir(&bin).expect("fixture bin");
+    let program = bin.join("nxr-fixture-echo");
+    std::fs::write(&program, "#!/bin/sh\nprintf '%s\\n' \"$1\"\n").expect("fixture echo");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fixture echo");
+    }
+    format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
 #[test]
 fn workflow_run_executes_native_graph_without_nix() {
     let root = tempfile::tempdir().expect("workflow root");
     std::fs::create_dir(root.path().join(".nxr")).expect("nxr dir");
+    let path = install_native_fixture_echo(root.path());
     std::fs::write(
         root.path().join(".nxr/workflows.toml"),
         r#"
 schema_version = 1
 
 [tasks.prep]
-executor = { native = ["/bin/echo", "prep"] }
+executor = { native = ["nxr-fixture-echo", "prep"] }
 
 [tasks.finish]
 depends_on = ["prep"]
-executor = { native = ["/bin/echo", "finish"] }
+executor = { native = ["nxr-fixture-echo", "finish"] }
 "#,
     )
     .expect("workflow file");
@@ -7131,6 +7150,7 @@ executor = { native = ["/bin/echo", "finish"] }
     cargo_bin_cmd!("nxr")
         .current_dir(root.path())
         .env("NXR_NIX", "/definitely/missing/nix")
+        .env("PATH", &path)
         .args(["workflow", "run", "finish"])
         .assert()
         .success()
@@ -7139,10 +7159,37 @@ executor = { native = ["/bin/echo", "finish"] }
 
     cargo_bin_cmd!("nxr")
         .current_dir(root.path())
+        .env("PATH", &path)
         .args(["task", "workflow:finish"])
         .assert()
         .success()
         .stdout(predicate::str::contains("finish"));
+}
+
+#[test]
+fn workflow_run_missing_native_program_fails() {
+    let root = tempfile::tempdir().expect("workflow root");
+    std::fs::create_dir(root.path().join(".nxr")).expect("nxr dir");
+    std::fs::write(
+        root.path().join(".nxr/workflows.toml"),
+        r#"
+schema_version = 1
+
+[tasks.only]
+executor = { native = ["nxr-fixture-missing", "nope"] }
+"#,
+    )
+    .expect("workflow file");
+
+    cargo_bin_cmd!("nxr")
+        .current_dir(root.path())
+        .env("PATH", "/definitely/empty")
+        .args(["workflow", "run", "only"])
+        .assert()
+        .failure()
+        .code(9)
+        .stderr(predicate::str::contains("not found"))
+        .stderr(predicate::str::contains("skipped").not());
 }
 
 #[cfg(unix)]

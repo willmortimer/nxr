@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The native workflow fixture calls `nxr-fixture-echo` from `fixtures/native-workflow/bin` instead of `/bin/echo`. Hermetic Nix checks do not provide `/bin/echo`. A missing native program fails the run; it is not skipped.
+
 ## [3.7.0] - 2026-10-20
 
 ### Added

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Prints its first argument. The native workflow fixture calls this by name so
+# hermetic Nix checks do not depend on /bin/echo.
+printf '%s\n' "$1"
