@@ -21,8 +21,9 @@ pub use dynamic::{
     write_task_parameter_value_candidates,
 };
 pub use fingerprint::{
-    FINGERPRINT_FULL_WALK_ENV, FINGERPRINT_IGNORE_ENV, NIX_TREE_GIT_INDEX_ENV,
-    discovery_inputs_fingerprint, nix_tree_fingerprint,
+    FINGERPRINT_FULL_WALK_ENV, FINGERPRINT_IGNORE_ENV, FingerprintExplainReport,
+    NIX_TREE_GIT_INDEX_ENV, SubtreeCost, discovery_inputs_fingerprint,
+    explain_nix_tree_fingerprint, nix_tree_fingerprint,
 };
 pub use generate::generate_script;
 pub use shell::Shell;

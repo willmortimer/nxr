@@ -25,7 +25,7 @@ nxr doctor determinate [--all] [--refresh]
 nxr explain <app|task> [args...]
 nxr explain task <name> [args...]
 nxr completion <shell>
-nxr cache clear|status
+nxr cache clear|status|fingerprint explain
 nxr daemon start|stop|status
 nxr inspect ...
 nxr task <task> [args...]

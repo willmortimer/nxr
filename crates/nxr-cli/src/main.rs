@@ -27,8 +27,9 @@ use nxr_core::{emit_stderr, perf_enabled};
 
 use crate::cli::{
     BuildSubcommand, CacheInvalidateTarget, CacheSubcommand, CiSubcommand, Cli, Command,
-    ContextSubcommand, DaemonSubcommand, DoctorSubcommand, ExplainSubcommand, HistorySubcommand,
-    InspectSubcommand, MigrateSubcommand, TrustSubcommand,
+    ContextSubcommand, DaemonSubcommand, DoctorSubcommand, ExplainSubcommand,
+    FingerprintSubcommand, HistorySubcommand, InspectSubcommand, MigrateSubcommand,
+    TrustSubcommand,
 };
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
@@ -654,6 +655,12 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 }
                 Ok(exit::SUCCESS)
             }
+            CacheSubcommand::Fingerprint { action } => match action {
+                FingerprintSubcommand::Explain => {
+                    cache::fingerprint_explain(cli.flake.as_deref(), cli.json, runner)?;
+                    Ok(exit::SUCCESS)
+                }
+            },
         },
         Some(Command::Daemon { action }) => match action {
             DaemonSubcommand::Start { foreground, socket } => Ok(daemon::start(

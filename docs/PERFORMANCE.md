@@ -345,13 +345,21 @@ Instrumented integration tests wrap `NXR_NIX` with a counting shim to assert the
 
 Discovery cache **schema v5** (incremental fingerprint index) invalidates on:
 
-- **Content-correct hashes** of every `*.nix` file under the local flake root
-  (path-scoped walk), plus `flake.lock` when present — not arbitrary non-Nix
-  sources. Unchanged files **reuse** a prior BLAKE3 when **device/inode/size/
+- **Content-correct hashes** of the `.nix` files Nix would copy for a Git flake,
+  plus `flake.lock` when present — not arbitrary non-Nix sources. That set is
+  tracked and staged `.nix` files, untracked `.nix` files that are not
+  gitignored, and relative paths named by a Nix path literal in `flake.nix`
+  (`./…` or `path:./…`), including a referenced gitlink or gitignored path.
+  Gitignored trees and unreferenced gitlinks are omitted. A missing or failing
+  Git command, a non-UTF-8 path, or an unresolvable import (`import "${…}"`,
+  `import (`, `builtins.readDir` of a computed path, `builtins.path` without a
+  literal relative path, or a path that escapes the flake root) falls back to
+  the recursive walk. Unchanged files **reuse** a prior BLAKE3 when **device/inode/size/
   nanosecond mtime** (and **ctime on Unix**) match (metadata-gated reuse, not a
   full re-read each warm hit). The on-disk index is compact JSON and is not
   rewritten when the computed index is unchanged. Legacy pretty-printed v1
-  indexes still load. Tools that rewrite bytes while preserving those metadata
+  indexes still load. The ignore-policy version is `v3`, so an index built by
+  the previous full walk is not reused. Tools that rewrite bytes while preserving those metadata
   fields can theoretically evade rehash until
   `NXR_FINGERPRINT_FORCE_REHASH_SECS` / TTL / `--refresh-discovery`; that is
   uncommon. **Git fsmonitor / watchman** integration is a future optimization
@@ -363,7 +371,7 @@ Discovery cache **schema v5** (incremental fingerprint index) invalidates on:
   Nix tree; hashed on store/load without a second eval on warm hits)
 - **TTL backstop**: default 24h (`NXR_CACHE_TTL_SECS`; `0` disables)
 
-Built-in ignores cover `.git`, `result`, `target`, and similar trees. Root directories named `wt-*` are skipped unless `flake.nix` references that relative path. `NXR_FINGERPRINT_FULL_WALK=1` restores the full walk. Set `NXR_CACHE_FINGERPRINT_IGNORE` to a colon-separated list of globs to skip huge vendored `.nix` trees. Git checkouts enumerate `.nix` candidates from the index when that set matches the walk; `NXR_NIX_TREE_GIT_INDEX=off` keeps the recursive walk. Remote flakes are never cached.
+Built-in ignores cover `.git`, `result`, `target`, and similar trees. Root directories named `wt-*` are skipped unless a Nix path literal names them. `NXR_FINGERPRINT_FULL_WALK=1` restores the full walk. Set `NXR_CACHE_FINGERPRINT_IGNORE` to a colon-separated list of globs to skip huge vendored `.nix` trees. Git checkouts fingerprint Git-visible `.nix` files; `NXR_NIX_TREE_GIT_INDEX=off` keeps the recursive walk. `nxr cache fingerprint explain` reports why that choice was made and is not on the list or plan path. Remote flakes are never cached.
 
 Capability cache (schema **v4** as of 2.7.1) invalidates on Nix executable identity (canonical path + device/inode + size + mtime) **and** an environment digest that includes `NIX_CONFIG` / path lists **plus config-file identity** (size/mtime/ctime/content hash for known conf files — [ADR-0145](adr/0145-capability-config-files.md)), with `nix config show --json` as a store-time / miss backstop and a 7-day TTL (`NXR_CAPABILITY_CACHE_TTL_SECS`; `0` disables). Warm hits with a matching environment digest skip all capability probes. When the binary layer is warm but the environment digest changed, only config is re-probed. Set `NXR_CAPABILITY_CACHE=off` to bypass. `nxr cache clear` removes capability entries alongside discovery cache.
 
@@ -449,37 +457,48 @@ a Nix evaluation and not a content rehash. `plan_prepare_us` accounted for the
 plan command. That path still recomputes cache fingerprints before accepting
 the hit.
 
-The warm fingerprint walk stats the `.nix` files (`fs_metadata` about 66) and
-does not re-read them, but it still `readdir`s the checkout. With the built-in
-ignores (`.git`, `node_modules`, `target`, `result`, `.direnv`, `.cache`), that
-checkout is about 143,000 files and 16,700 directories, of which about 65 are
-`.nix`. A directory walk of that tree is the same order of magnitude as warm
-list. `git status --porcelain -- .` in that checkout was about 156 ms;
-`git rev-parse HEAD` was about 11 ms. Plan preparation used to run the
-fingerprint walk and that full git status.
+Before Git-visible discovery, the warm fingerprint walk stats the `.nix` files
+(`fs_metadata` about 66) and does not re-read them, but it still `readdir`s the
+checkout. With the built-in ignores (`.git`, `node_modules`, `target`,
+`result`, `.direnv`, `.cache`), that checkout is about 143,000 files and 16,700
+directories, of which about 65 are `.nix`. A directory walk of that tree is the
+same order of magnitude as the old warm list. `git status --porcelain -- .` in
+that checkout was about 156 ms; `git rev-parse HEAD` was about 11 ms. Plan
+preparation used to run the fingerprint walk and that full git status.
 
-Root `wt-*` directories are now omitted unless `flake.nix` references them.
-Git checkouts use `git ls-files` for `.nix` candidates when that set matches
-the walk, including checked-out gitlinks. A gitignored directory outside the
-built-in ignores still selects the walk, because the fingerprint hashes `.nix`
-files there and Nix would not copy them. This checkout has those directories
-(`.pnpm-store`, `.venv`, `.claude`, `.next`, `dist`), and `.claude` worktrees
-contain `flake.nix`, so listing still walks. Prepared plans no longer status
-the whole tree; store-exe and `includeGitState` still do.
+Root `wt-*` directories are omitted unless a Nix path literal names them.
+The 2026-10-20 Git-index attempt used `git ls-files` only when that set matched
+the recursive walk, including checked-out gitlinks. A gitignored directory
+outside the built-in ignores rejected the index. This checkout has those
+directories (`.pnpm-store`, `.venv`, `.claude`, `.next`, `dist`), so listing
+still walked.
 
-Re-measured on 2026-10-20 with `scripts/perf/measure-ecosystem.sh` (5 warm
-runs). Before is nix-built v3.7.0. After is a release build of this change.
+`nxr cache fingerprint explain --json` on this checkout shows why that
+equivalence failed and what the current rule does. The compatibility walk
+visits 15,803 directories and 138,891 files. It sees 46 `.nix` files the Git
+index does not: the checked-out `cell`, `devcell`, and `lattice` gitlinks, plus
+`lattice/.claude/worktrees/lattice-improvements-priorities-a4a027/flake.nix` and
+`lattice/.claude/worktrees/stargate-cutover-completion-9ae44a/flake.nix`. Nix
+does not copy those into a Git flake source. The fast path is accepted: 21
+tracked `.nix` files, and the explicit `flake.nix` references are
+`ProjectStargate` plus the infra and ops `.nix` files. `./lattice`, `./cell`,
+and `./devcell` occur only inside comments and indented scripts, so they are
+not references. Prepared plans no longer status the whole tree; store-exe and
+`includeGitState` still do.
+
+Re-measured with `scripts/perf/measure-ecosystem.sh` (5 warm runs). v3.7.0 is
+the nix-built release binary. The later rows are cargo release builds.
 
 | | warm `nxr -q list` p50 | warm `nxr plan ok` p50 | `nix_spawns` |
 | --- | ---: | ---: | ---: |
-| v3.7.0 | 469.7 ms | 637.1 ms | 0 |
-| this change | 458.7 ms | 493.8 ms | 0 |
+| v3.7.0 (2026-10-20) | 469.7 ms | 637.1 ms | 0 |
+| index when equal to the walk (2026-10-20) | 458.7 ms | 493.8 ms | 0 |
+| Git-visible sources (2026-10-21) | 56.7 ms | 90.4 ms | 0 |
 
-List `bytes_hashed` stayed 0. The last plan run still hashed about 10 KiB with
-`plan_cache_hits` 1, the same shape as v3.7.0. Provisional targets (list under
-200 ms, plan under 250 ms) are not met. The remaining list cost is the
-recursive walk forced by those gitignored directories. The synthetic Git-index
-fixture is
+List `bytes_hashed` stayed 0 (`fs_metadata` 23). The last plan run hashed 9,802
+bytes with `plan_cache_hits` 1 and `plan_prepare_us` about 87 ms, the same shape
+as v3.7.0. The 143k-file walk is no longer on the list or plan path, so there
+is no directory-membership index. The synthetic Git-index fixture is
 `fingerprint::tests::synthetic_large_tree_uses_the_git_index_and_skips_warm_rereads`.
 
 Re-measure with:

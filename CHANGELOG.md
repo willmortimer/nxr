@@ -11,10 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The native workflow fixture calls `nxr-fixture-echo` from `fixtures/native-workflow/bin` instead of `/bin/echo`. Hermetic Nix checks do not provide `/bin/echo`. A missing native program fails the run; it is not skipped.
 
+### Added
+
+- `nxr cache fingerprint explain` reports whether discovery used Git-visible `.nix` files or the compatibility walk, including the fallback reason and `.nix` files the walk sees beyond that set.
+
 ### Changed
 
 - Discovery fingerprints skip independent root `wt-*` directories unless `flake.nix` references that path. `NXR_FINGERPRINT_FULL_WALK=1` restores the full walk.
-- Git checkouts enumerate `.nix` candidates from the index, including checked-out gitlinks, when that set matches the recursive walk. Ambiguous trees, including a gitignored directory outside the built-in ignores, keep the walk. `NXR_NIX_TREE_GIT_INDEX=off` forces the walk.
+- Git checkouts fingerprint the `.nix` files Nix would copy for a Git flake: tracked and staged files, untracked files that are not gitignored, and relative paths named in `flake.nix`. Gitignored trees and unreferenced gitlinks are omitted. A missing Git command, a non-UTF-8 path, or an unresolvable import falls back to the recursive walk. `NXR_NIX_TREE_GIT_INDEX=off` forces that walk. The fingerprint ignore policy is `v3`, so an index built by the previous walk is not reused.
 - Prepared-plan cache identity uses git status for `.nix` files, `flake.lock`, and declared discovery inputs. Store-exe reuse and `includeGitState` action keys still use a full `git status`.
 
 ## [3.7.0] - 2026-10-20

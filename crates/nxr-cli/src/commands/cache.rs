@@ -3,8 +3,9 @@
 use std::io::{self, Write};
 
 use nxr_completion::{
-    DiscoveryCacheOptions, clear_discovery_cache, discovery_cache_status, explain_discovery_cache,
-    gc_discovery_cache, invalidate_discovery_cache,
+    DiscoveryCacheOptions, FingerprintExplainReport, clear_discovery_cache, discovery_cache_status,
+    explain_discovery_cache, explain_nix_tree_fingerprint, gc_discovery_cache,
+    invalidate_discovery_cache,
 };
 use nxr_core::cas::CacheExplain;
 use nxr_core::cas::{clear_workspace_cas, workspace_cas_status};
@@ -688,6 +689,108 @@ pub fn explain(
             .info(format!("miss_reason: {rendered}"))
             .map_err(CacheError::Io)?;
     }
+    Ok(())
+}
+
+/// Explain which `.nix` files the discovery fingerprint uses.
+///
+/// # Errors
+///
+/// Returns [`CacheError`] when the flake is not local or the tree cannot be read.
+pub fn fingerprint_explain(
+    flake_arg: Option<&str>,
+    json: bool,
+    runner: RunnerOutput,
+) -> Result<(), CacheError> {
+    let invocation_directory =
+        crate::commands::common::current_invocation_directory().map_err(CacheError::Prepare)?;
+    let flake = resolve_flake(flake_arg, &invocation_directory)?;
+    let Some(root) = flake.local_root else {
+        return Err(CacheError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "fingerprint explain requires a local flake",
+        )));
+    };
+    let report = explain_nix_tree_fingerprint(&root)?;
+    if json {
+        let rendered = serde_json::to_string_pretty(&report)?;
+        writeln!(io::stdout().lock(), "{rendered}")?;
+        return Ok(());
+    }
+    render_fingerprint_explain(runner, &report)
+}
+
+fn render_fingerprint_explain(
+    runner: RunnerOutput,
+    report: &FingerprintExplainReport,
+) -> Result<(), CacheError> {
+    let decision = if report.fast_path_accepted {
+        "accepted"
+    } else {
+        "rejected"
+    };
+    runner
+        .info(format!("Git-index fast path: {decision}"))
+        .map_err(CacheError::Io)?;
+    if let Some(reason) = &report.fallback_reason {
+        runner
+            .info(format!("Fallback reason: {reason}"))
+            .map_err(CacheError::Io)?;
+    }
+    runner
+        .info(format!("Tracked .nix files: {}", report.tracked_nix.len()))
+        .map_err(CacheError::Io)?;
+    runner
+        .info("Additional .nix sources:")
+        .map_err(CacheError::Io)?;
+    if report.additional_filesystem_nix.is_empty() {
+        runner.info("  (none)").map_err(CacheError::Io)?;
+    } else {
+        for path in &report.additional_filesystem_nix {
+            runner.info(format!("  {path}")).map_err(CacheError::Io)?;
+        }
+    }
+    runner
+        .info("Explicit flake.nix references:")
+        .map_err(CacheError::Io)?;
+    if report.explicit_references.is_empty() {
+        runner.info("  (none)").map_err(CacheError::Io)?;
+    } else {
+        for path in &report.explicit_references {
+            runner.info(format!("  {path}")).map_err(CacheError::Io)?;
+        }
+    }
+    runner
+        .info(format!(
+            "Recursive discovery: {} directories, {} files",
+            report.directories_traversed, report.files_visited
+        ))
+        .map_err(CacheError::Io)?;
+    if !report.top_subtrees.is_empty() {
+        runner.info("Largest subtrees:").map_err(CacheError::Io)?;
+        for subtree in &report.top_subtrees {
+            runner
+                .info(format!(
+                    "  {}: {} directories, {} files",
+                    subtree.path, subtree.directories, subtree.files
+                ))
+                .map_err(CacheError::Io)?;
+        }
+    }
+    runner
+        .info(format!(
+            "Fingerprint duration: {} ms",
+            report.fingerprint_duration_ms
+        ))
+        .map_err(CacheError::Io)?;
+    let validity = if report.fingerprint_valid {
+        "confirmed"
+    } else {
+        "unconfirmed"
+    };
+    runner
+        .info(format!("Fingerprint validity: {validity}"))
+        .map_err(CacheError::Io)?;
     Ok(())
 }
 

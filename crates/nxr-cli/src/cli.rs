@@ -791,6 +791,18 @@ pub enum CacheSubcommand {
         #[arg(long = "tasks")]
         tasks: bool,
     },
+    /// Explain Nix source fingerprint selection
+    Fingerprint {
+        #[command(subcommand)]
+        action: FingerprintSubcommand,
+    },
+}
+
+/// `nxr cache fingerprint` subcommands.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum FingerprintSubcommand {
+    /// Explain Git-index eligibility and the compatibility walk
+    Explain,
 }
 
 /// Targets for `nxr cache invalidate`.
