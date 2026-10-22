@@ -658,6 +658,11 @@ pub enum WorkflowSubcommand {
         /// Task name. Omit to plan every task.
         name: Option<String>,
     },
+    /// Print the execution-spec-v1 envelope for one task
+    Spec {
+        /// Task name
+        name: String,
+    },
     /// Run one workflow task and its dependencies
     Run {
         /// Task name

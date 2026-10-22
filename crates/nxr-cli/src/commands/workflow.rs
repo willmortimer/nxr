@@ -67,6 +67,7 @@ pub fn execute(
             let mode = WorkflowPlanMode::Explicit { root: name.clone() };
             execute_mode(&mode, 1, false, nix, true, json)
         }
+        WorkflowSubcommand::Spec { name } => print_execution_spec(name),
         WorkflowSubcommand::Run {
             name,
             jobs,
@@ -148,6 +149,25 @@ fn list_tasks() -> Result<i32, WorkflowError> {
             .unwrap_or_else(|| "any".to_owned());
         println!("{name}\t{platform}\t{}", task.operation.kind());
     }
+    Ok(exit::SUCCESS)
+}
+
+fn print_execution_spec(name: &str) -> Result<i32, WorkflowError> {
+    let root = workflow_root()?;
+    let path = nxr_task::workflows::workflow_path(&root);
+    let bytes = std::fs::read(&path).map_err(|error| {
+        WorkflowError::new(exit::NOT_FOUND, format!("read {}: {error}", path.display()))
+    })?;
+    let document = load_workflow_document(&root)
+        .map_err(map_plan)?
+        .ok_or_else(|| WorkflowError::new(exit::NOT_FOUND, "workflow file is not present"))?;
+    let task = document.tasks.get(name).ok_or_else(|| {
+        WorkflowError::new(exit::USAGE, format!("unknown workflow task `{name}`"))
+    })?;
+    let spec = nxr_task::execution_spec_for_task(&nxr_task::source_set_id(&bytes), name, task);
+    let text = serde_json::to_string_pretty(&spec)
+        .map_err(|error| WorkflowError::new(exit::PROCESS_SUPERVISION, error.to_string()))?;
+    println!("{text}");
     Ok(exit::SUCCESS)
 }
 

@@ -1,0 +1,40 @@
+name: NXR workflow
+description: >-
+  Install one signed NXR release when nxr is not already on PATH, run one
+  workflow task, and write provider-neutral CI run metadata. Ordinary
+  ubuntu-latest is the runner. This action does not start a runner scale set.
+inputs:
+  task:
+    description: Workflow task name
+    required: true
+    default: finish
+  workflow-root:
+    description: Directory that contains .nxr/workflows.toml
+    required: true
+    default: .github/fixtures/wave2
+  nxr:
+    description: nxr binary. Empty uses PATH, then the signed portable release.
+    required: false
+    default: ""
+  version:
+    description: NXR release tag used when the binary is not already on PATH
+    required: false
+    default: "3.7.1"
+outputs:
+  exit-code:
+    description: Workflow process exit code
+    value: ${{ steps.run.outputs.exit-code }}
+  metadata:
+    description: Path to ci-run-metadata.json
+    value: ${{ steps.run.outputs.metadata }}
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        INPUT_TASK: ${{ inputs.task }}
+        INPUT_WORKFLOW_ROOT: ${{ inputs.workflow-root }}
+        INPUT_NXR: ${{ inputs.nxr }}
+        INPUT_VERSION: ${{ inputs.version }}
+      run: bash "$GITHUB_ACTION_PATH/run.sh"

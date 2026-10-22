@@ -10,10 +10,12 @@
 //! - [`scheduler`] — ready-queue scheduler with job limit ([`Scheduler`])
 
 pub mod action_key;
+pub mod ci_metadata;
 pub mod context;
 pub mod duration;
 pub mod events;
 pub mod execute;
+pub mod execution_spec;
 pub mod graph;
 pub mod matrix;
 pub mod memory;
@@ -31,6 +33,7 @@ pub mod selectors;
 pub mod workflows;
 
 pub use action_key::{WorkspaceCachePlan, WorkspaceCachePlanOptions, build_workspace_cache_plan};
+pub use ci_metadata::{CiRunMetadata, attach_ci_run};
 pub use context::{
     AppliedTaskContext, ContextError, NXR_ASSUME_YES_ENV, PlanSecretEntry,
     PlanSecretValuePlaceholder, apply_task_context, enforce_context_confirm,
@@ -46,6 +49,10 @@ pub use events::{
 pub use execute::{
     ExecContext, ExecuteError, ExecutorName, OperationResult, OperationRun, UNAVAILABLE_EXECUTOR,
     execute_operation, run_operation_plan,
+};
+pub use execution_spec::{
+    EventCursor, ExecutionSpecV1, RunEventV2, SpecRun, execute_spec_locally,
+    execution_spec_for_task, execution_specs_for_document, source_set_id,
 };
 pub use graph::{GraphError, TaskGraph, render_dot, render_mermaid, render_text};
 pub use matrix::{

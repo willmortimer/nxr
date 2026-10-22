@@ -1,0 +1,6 @@
+# Native leaf used by the Wave 2 GitHub Action and a local `nxr workflow run`.
+schema_version = 1
+
+[tasks.finish]
+platform = "unix"
+executor = { native = ["/usr/bin/true"] }

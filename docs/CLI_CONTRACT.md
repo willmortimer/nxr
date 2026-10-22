@@ -460,6 +460,7 @@ Dynamic completion must:
 ```bash
 nxr workflow list
 nxr workflow plan <task>
+nxr workflow spec <task>
 nxr workflow run <task> [--jobs N] [--keep-going]
 nxr workflow attach --job-id ID [--after-sequence N]
 nxr task workflow
@@ -481,7 +482,9 @@ nxr watch task:ci
 and `nxr task workflow:<task>` use that same planner. A bare task name still
 resolves through the flake task document and does not consult the workflow file.
 `workflow plan` prints the graph, including Windows-only leaves, and does not
-execute them. `workflow run` skips a leaf whose platform or architecture does
+execute them. `workflow spec` prints the `execution-spec-v1` envelope for one
+leaf. The operation id is stable for that leaf and is independent of a CI
+idempotency key. `workflow run` skips a leaf whose platform or architecture does
 not match the host and says why. Flake executors run through `nix run`. Native
 and winbuild executors do not look up Nix or WSL.
 
