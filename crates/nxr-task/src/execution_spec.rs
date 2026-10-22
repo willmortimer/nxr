@@ -6,8 +6,10 @@
 //! by [`ExecutionSpecV2::redacted`] for public metadata.
 
 use std::collections::BTreeMap;
+use std::fs;
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -234,36 +236,77 @@ pub fn execute_spec_locally(
     admit(spec)?;
     let argv = native_argv(&spec.leaf)?;
     let mut journal = RunJournal::open(journal_dir)?;
-    let sequence = journal.last_sequence()? + 1;
+    let mut sequence = journal.last_sequence()? + 1;
     journal.append(journal_event(spec, run_id, sequence, "started", None, None))?;
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]);
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
     for (key, value) in &spec.environment.ordinary {
         command.env(key, value);
     }
-    let output = command.output().map_err(|err| format!("spawn: {err}"))?;
-    let exit_code = output.status.code().unwrap_or(1);
-    let event_type = if output.status.code().is_none() {
+    let mut child = command.spawn().map_err(|err| format!("spawn: {err}"))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "stdout pipe is missing".to_owned())?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "stderr pipe is missing".to_owned())?;
+    sequence = stream_chunks(&mut journal, spec, run_id, sequence, &mut stdout, "stdout")?;
+    sequence = stream_chunks(&mut journal, spec, run_id, sequence, &mut stderr, "stderr")?;
+    let status = child.wait().map_err(|err| format!("wait: {err}"))?;
+    let exit_code = status.code().unwrap_or(1);
+    let event_type = if status.code().is_none() {
         "cancelled"
     } else {
         "exited"
     };
-    let log_ref = format!("log_{run_id}_{}", spec.operation_id);
-    let mut log_bytes = output.stdout;
-    log_bytes.extend_from_slice(&output.stderr);
-    journal.write_log(&log_ref, &log_bytes)?;
+    sequence += 1;
     journal.append(journal_event(
         spec,
         run_id,
-        sequence + 1,
+        sequence,
         event_type,
         Some(exit_code),
-        Some(log_ref),
+        None,
     ))?;
     Ok(SpecRun {
         operation_id: spec.operation_id.clone(),
         exit_code,
     })
+}
+
+fn stream_chunks(
+    journal: &mut RunJournal,
+    spec: &ExecutionSpecV2,
+    run_id: &str,
+    mut sequence: u64,
+    reader: &mut dyn Read,
+    source: &str,
+) -> Result<u64, String> {
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|err| format!("read {source}: {err}"))?;
+        if read == 0 {
+            return Ok(sequence);
+        }
+        sequence += 1;
+        let bytes = &buffer[..read];
+        let log_ref = format!("sha256:{}", hex_sha256(bytes));
+        journal.write_log(&log_ref, bytes)?;
+        journal.append(journal_event(
+            spec,
+            run_id,
+            sequence,
+            "log",
+            None,
+            Some(log_ref),
+        ))?;
+    }
 }
 
 fn journal_event(
@@ -414,28 +457,29 @@ fn native_argv(leaf: &Value) -> Result<Vec<String>, String> {
     Ok(argv)
 }
 
-/// Read a git checkout into a source set. Dirty identity hashes status and diff.
+/// Read a git checkout into a source set.
+///
+/// Dirty identity is a sorted inventory of path, mode, and content hash or
+/// symlink target. Ignored files stay out.
 ///
 /// # Errors
 ///
 /// Returns an error when `git rev-parse HEAD` fails.
 pub fn source_set_from_repo(root: &Path) -> Result<SourceSetV1, String> {
+    source_set_from_repo_inputs(root, &[])
+}
+
+/// Like [`source_set_from_repo`], and also hash `explicit_inputs` even when ignored.
+///
+/// # Errors
+///
+/// Returns an error when `git rev-parse HEAD` fails or an explicit input cannot be read.
+pub fn source_set_from_repo_inputs(
+    root: &Path,
+    explicit_inputs: &[&str],
+) -> Result<SourceSetV1, String> {
     let commit = git(root, &["rev-parse", "HEAD"])?;
-    let porcelain = git(root, &["status", "--porcelain"]).unwrap_or_default();
-    let diff = git(root, &["diff", "HEAD"]).unwrap_or_default();
-    let dirty_snapshot_id = if porcelain.trim().is_empty() {
-        None
-    } else {
-        let mut material = String::new();
-        material.push_str(&porcelain);
-        material.push('\n');
-        material.push_str(&diff);
-        Some(format!(
-            "dirty_{}",
-            crate::identity::workflow_definition_digest(material.as_bytes())
-                .trim_start_matches("wf_")
-        ))
-    };
+    let dirty_snapshot_id = dirty_snapshot_id(root, explicit_inputs)?;
     let mut submodules = Vec::new();
     if let Ok(status) = git(root, &["submodule", "status"]) {
         for line in status.lines() {
@@ -472,6 +516,303 @@ pub fn source_set_from_repo(root: &Path) -> Result<SourceSetV1, String> {
     })
 }
 
+/// Check out `expected` from `remote` and refuse the tree when the digest differs.
+///
+/// # Errors
+///
+/// Returns an error when clone, checkout, a submodule pin, or the digest check fails.
+pub fn checkout_source(
+    destination: &Path,
+    remote: &Path,
+    expected: &SourceSetV1,
+) -> Result<(), String> {
+    if expected.kind != "git" {
+        return Err("only a git source set can be checked out".to_owned());
+    }
+    if destination.exists() {
+        return Err("checkout destination already exists".to_owned());
+    }
+    let status = Command::new("git")
+        .args(["clone", "--quiet"])
+        .arg(remote)
+        .arg(destination)
+        .status()
+        .map_err(|err| format!("git clone: {err}"))?;
+    if !status.success() {
+        return Err("git clone failed".to_owned());
+    }
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(destination)
+        .args(["checkout", "--detach", "--quiet", expected.commit.trim()])
+        .status()
+        .map_err(|err| format!("git checkout: {err}"))?;
+    if !status.success() {
+        return Err("git checkout of the source commit failed".to_owned());
+    }
+    if !expected.submodules.is_empty() {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(destination)
+            .args(["submodule", "update", "--init", "--recursive"])
+            .status()
+            .map_err(|err| format!("git submodule: {err}"))?;
+        if !status.success() {
+            return Err("submodule pins could not be checked out".to_owned());
+        }
+    }
+    verify_source_checkout(destination, expected)
+}
+
+/// Recompute the source-set digest after checkout and refuse a mismatch.
+///
+/// # Errors
+///
+/// Returns an error when the commit, a submodule pin, or the digest does not match.
+pub fn verify_source_checkout(root: &Path, expected: &SourceSetV1) -> Result<(), String> {
+    let actual = source_set_from_repo(root)?;
+    if actual.commit != expected.commit.trim() {
+        return Err(format!(
+            "checked out commit {} does not match {}",
+            actual.commit,
+            expected.commit.trim()
+        ));
+    }
+    for pin in &expected.submodules {
+        let found = actual
+            .submodules
+            .iter()
+            .any(|item| item.path == pin.path && item.commit == pin.commit);
+        if !found {
+            return Err(format!(
+                "submodule `{}` is not pinned to {}",
+                pin.path, pin.commit
+            ));
+        }
+    }
+    let actual_digest = source_set_digest(&actual);
+    let expected_digest = source_set_digest(expected);
+    if actual_digest != expected_digest {
+        return Err(format!(
+            "source set digest {actual_digest} does not match {expected_digest}"
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceEntry {
+    path: String,
+    mode: String,
+    kind: String,
+    payload: String,
+}
+
+fn dirty_snapshot_id(root: &Path, explicit_inputs: &[&str]) -> Result<Option<String>, String> {
+    let mut entries = dirty_entries(root)?;
+    for path in explicit_inputs {
+        if entries.iter().any(|entry| entry.path == *path) {
+            continue;
+        }
+        if let Some(entry) = entry_for_worktree(root, path)? {
+            entries.push(entry);
+        }
+    }
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(Some(digest_source_entries(&entries)))
+}
+
+fn dirty_entries(root: &Path) -> Result<Vec<SourceEntry>, String> {
+    let porcelain = git(
+        root,
+        &["status", "--porcelain=v1", "--untracked-files=all", "-z"],
+    )
+    .unwrap_or_default();
+    parse_porcelain(root, &porcelain)
+}
+
+fn parse_porcelain(root: &Path, porcelain: &str) -> Result<Vec<SourceEntry>, String> {
+    let mut entries = Vec::new();
+    let mut rest = porcelain;
+    while !rest.is_empty() {
+        let (record, next) = split_nul(rest);
+        rest = next;
+        if record.len() < 3 {
+            continue;
+        }
+        let status = &record[..2];
+        let path = record[3..].to_owned();
+        if status.starts_with('R') || status.starts_with('C') {
+            let (dest, next) = split_nul(rest);
+            rest = next;
+            entries.push(tombstone(&path));
+            if let Some(entry) = entry_for_worktree(root, dest)? {
+                entries.push(entry);
+            }
+            continue;
+        }
+        let deleted =
+            status.as_bytes().get(1) == Some(&b'D') || status.as_bytes().first() == Some(&b'D');
+        if deleted && !root.join(&path).exists() {
+            entries.push(tombstone(&path));
+            continue;
+        }
+        if let Some(entry) = entry_for_worktree(root, &path)? {
+            entries.push(entry);
+        }
+    }
+    Ok(entries)
+}
+
+fn split_nul(text: &str) -> (&str, &str) {
+    match text.find('\0') {
+        Some(index) => (&text[..index], &text[index + 1..]),
+        None => (text, ""),
+    }
+}
+
+fn tombstone(path: &str) -> SourceEntry {
+    SourceEntry {
+        path: path.replace('\\', "/"),
+        mode: "000000".to_owned(),
+        kind: "deleted".to_owned(),
+        payload: String::new(),
+    }
+}
+
+fn entry_for_worktree(root: &Path, path: &str) -> Result<Option<SourceEntry>, String> {
+    let full = root.join(path);
+    let meta = match fs::symlink_metadata(&full) {
+        Ok(meta) => meta,
+        Err(_) => return Ok(Some(tombstone(path))),
+    };
+    if meta.file_type().is_symlink() {
+        let target = fs::read_link(&full).map_err(|err| format!("read link {path}: {err}"))?;
+        return Ok(Some(SourceEntry {
+            path: path.replace('\\', "/"),
+            mode: "120000".to_owned(),
+            kind: "symlink".to_owned(),
+            payload: target.to_string_lossy().into_owned(),
+        }));
+    }
+    if meta.is_dir() {
+        let commit = git(&full, &["rev-parse", "HEAD"]).unwrap_or_default();
+        let nested = dirty_entries(&full).unwrap_or_default();
+        let mut payload = commit.trim().to_owned();
+        if !nested.is_empty() {
+            if !payload.is_empty() {
+                payload.push('\n');
+            }
+            payload.push_str(&digest_source_entries(&nested));
+        }
+        return Ok(Some(SourceEntry {
+            path: path.replace('\\', "/"),
+            mode: "040000".to_owned(),
+            kind: "directory".to_owned(),
+            payload,
+        }));
+    }
+    let bytes = fs::read(&full).map_err(|err| format!("read {path}: {err}"))?;
+    Ok(Some(SourceEntry {
+        path: path.replace('\\', "/"),
+        mode: file_mode(&meta),
+        kind: "file".to_owned(),
+        payload: hex_sha256(&bytes),
+    }))
+}
+
+fn file_mode(meta: &fs::Metadata) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o111 != 0 {
+            return "100755".to_owned();
+        }
+    }
+    let _ = meta;
+    "100644".to_owned()
+}
+
+fn digest_source_entries(entries: &[SourceEntry]) -> String {
+    use sha2::Digest;
+    let mut ordered = entries.to_vec();
+    ordered.sort_by(|left, right| left.path.cmp(&right.path));
+    let mut hasher = sha2::Sha256::new();
+    for entry in ordered {
+        for field in [&entry.path, &entry.mode, &entry.kind, &entry.payload] {
+            let bytes = field.as_bytes();
+            hasher.update((bytes.len() as u64).to_be_bytes());
+            hasher.update(bytes);
+        }
+    }
+    format!("dirty_{}", hex_sha256_bytes(hasher.finalize().as_slice()))
+}
+
+#[cfg(test)]
+fn tree_digest(root: &Path) -> Result<String, String> {
+    let mut entries = Vec::new();
+    scan_tree(root, Path::new(""), &mut entries)?;
+    if entries.is_empty() {
+        return Ok(digest_source_entries(&[]));
+    }
+    Ok(digest_source_entries(&entries))
+}
+
+#[cfg(test)]
+fn scan_tree(root: &Path, relative: &Path, entries: &mut Vec<SourceEntry>) -> Result<(), String> {
+    let directory = root.join(relative);
+    let mut names = fs::read_dir(&directory)
+        .map_err(|err| format!("read {}: {err}", directory.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("read dir: {err}"))?;
+    names.sort_by_key(|entry| entry.file_name());
+    for entry in names {
+        let name = entry.file_name();
+        let path = relative.join(&name);
+        let display = path.to_string_lossy().replace('\\', "/");
+        let full = root.join(&path);
+        let meta = fs::symlink_metadata(&full).map_err(|err| format!("stat {display}: {err}"))?;
+        if meta.file_type().is_symlink() {
+            let target =
+                fs::read_link(&full).map_err(|err| format!("read link {display}: {err}"))?;
+            entries.push(SourceEntry {
+                path: display,
+                mode: "120000".to_owned(),
+                kind: "symlink".to_owned(),
+                payload: target.to_string_lossy().into_owned(),
+            });
+            continue;
+        }
+        if meta.is_dir() {
+            scan_tree(root, &path, entries)?;
+            continue;
+        }
+        let bytes = fs::read(&full).map_err(|err| format!("read {display}: {err}"))?;
+        entries.push(SourceEntry {
+            path: display,
+            mode: file_mode(&meta),
+            kind: "file".to_owned(),
+            payload: hex_sha256(&bytes),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn materialize_files(root: &Path, files: &[(&str, &[u8])]) -> Result<(), String> {
+    for (path, bytes) in files {
+        let full = root.join(path);
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent).map_err(|err| format!("mkdir: {err}"))?;
+        }
+        fs::write(&full, bytes).map_err(|err| format!("write {path}: {err}"))?;
+    }
+    Ok(())
+}
+
 fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")
@@ -490,10 +831,11 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
 
 fn hex_sha256(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    hex_sha256_bytes(Sha256::digest(bytes).as_slice())
+}
+
+fn hex_sha256_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[cfg(test)]
@@ -596,8 +938,7 @@ mod tests {
         assert_eq!(events[0].event_type, "started");
         assert_eq!(events[1].event_type, "exited");
         assert_eq!(events[1].exit_code, Some(0));
-        let log_ref = events[1].log_ref.clone().expect("log");
-        assert!(resumed.read_log(&log_ref).is_ok());
+        assert!(events[1].log_ref.is_none());
         let mut duplicate = events[1].clone();
         let mut writer = RunJournal::open(dir.path().join("local-dup")).expect("dup");
         writer.append(events[0].clone()).expect("first row");
@@ -613,5 +954,128 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp");
         let error = execute_spec_locally(&spec, dir.path(), "run").expect_err("reject");
         assert!(error.contains("architecture"));
+    }
+
+    fn git_repo(root: &std::path::Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .arg("-c")
+            .arg("user.email=nxr@example.com")
+            .arg("-c")
+            .arg("user.name=nxr")
+            .args(args)
+            .status()
+            .expect("git");
+        assert!(status.success(), "git {args:?}");
+    }
+
+    #[test]
+    fn untracked_bytes_change_the_dirty_digest() {
+        let dir = tempfile::tempdir().expect("temp");
+        let root = dir.path();
+        git_repo(root, &["init"]);
+        fs::write(root.join("tracked"), "base").expect("write");
+        git_repo(root, &["add", "tracked"]);
+        git_repo(root, &["commit", "-m", "base"]);
+        fs::write(root.join(".gitignore"), "ignored.txt\n").expect("ignore");
+        git_repo(root, &["add", ".gitignore"]);
+        git_repo(root, &["commit", "-m", "ignore"]);
+        fs::write(root.join("ignored.txt"), "secret").expect("ignored");
+        fs::write(root.join("extra.txt"), "one").expect("extra");
+        let first = source_set_from_repo(root).expect("first").dirty_snapshot_id;
+        fs::write(root.join("ignored.txt"), "changed").expect("ignored change");
+        let ignored = source_set_from_repo(root)
+            .expect("ignored")
+            .dirty_snapshot_id;
+        assert_eq!(first, ignored);
+        fs::write(root.join("extra.txt"), "two").expect("extra change");
+        let second = source_set_from_repo(root)
+            .expect("second")
+            .dirty_snapshot_id;
+        assert_ne!(first, second);
+        let named = source_set_from_repo_inputs(root, &["ignored.txt"])
+            .expect("named")
+            .dirty_snapshot_id;
+        fs::write(root.join("ignored.txt"), "again").expect("named change");
+        let named_again = source_set_from_repo_inputs(root, &["ignored.txt"])
+            .expect("named again")
+            .dirty_snapshot_id;
+        assert_ne!(named, named_again);
+    }
+
+    #[test]
+    fn the_same_inventory_has_one_digest() {
+        let left = tempfile::tempdir().expect("left");
+        let right = tempfile::tempdir().expect("right");
+        let files: &[(&str, &[u8])] = &[("a.txt", b"one"), ("nested/b.txt", b"two")];
+        materialize_files(left.path(), files).expect("left");
+        materialize_files(right.path(), files).expect("right");
+        assert_eq!(
+            tree_digest(left.path()).expect("left digest"),
+            tree_digest(right.path()).expect("right digest")
+        );
+        fs::write(right.path().join("a.txt"), b"three").expect("edit");
+        assert_ne!(
+            tree_digest(left.path()).expect("left digest"),
+            tree_digest(right.path()).expect("right digest")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_target_changes_the_dirty_digest() {
+        let dir = tempfile::tempdir().expect("temp");
+        let root = dir.path();
+        git_repo(root, &["init"]);
+        fs::write(root.join("tracked"), "base").expect("write");
+        git_repo(root, &["add", "tracked"]);
+        git_repo(root, &["commit", "-m", "base"]);
+        std::os::unix::fs::symlink("one", root.join("link")).expect("link");
+        let first = source_set_from_repo(root).expect("first").dirty_snapshot_id;
+        fs::remove_file(root.join("link")).expect("unlink");
+        std::os::unix::fs::symlink("two", root.join("link")).expect("relink");
+        let second = source_set_from_repo(root)
+            .expect("second")
+            .dirty_snapshot_id;
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn checkout_refuses_a_tree_that_does_not_match() {
+        let origin = tempfile::tempdir().expect("origin");
+        git_repo(origin.path(), &["init"]);
+        fs::write(origin.path().join("tracked"), "base").expect("write");
+        git_repo(origin.path(), &["add", "tracked"]);
+        git_repo(origin.path(), &["commit", "-m", "base"]);
+        let source = source_set_from_repo(origin.path()).expect("source");
+        let dest = tempfile::tempdir().expect("dest parent");
+        let checkout = dest.path().join("tree");
+        checkout_source(&checkout, origin.path(), &source).expect("checkout");
+        fs::write(checkout.join("extra.txt"), "dirty").expect("dirty");
+        let error = verify_source_checkout(&checkout, &source).expect_err("mismatch");
+        assert!(error.contains("digest"));
+    }
+
+    #[test]
+    fn streamed_stdout_is_one_content_addressed_chunk() {
+        let mut spec = fixture_spec("fixture-commit");
+        spec.leaf = serde_json::json!({
+            "kind": "native_command",
+            "argv": ["/bin/echo", "wave4"]
+        });
+        spec.operation_id = spec.recomputed_operation_id();
+        let dir = tempfile::tempdir().expect("temp");
+        execute_spec_locally(&spec, dir.path(), "run_echo").expect("run");
+        let journal = RunJournal::open(dir.path()).expect("journal");
+        let events = journal.replay_after(0, 10).expect("events");
+        let log = events
+            .iter()
+            .find(|event| event.event_type == "log")
+            .expect("log event");
+        let log_ref = log.log_ref.clone().expect("chunk");
+        let bytes = journal.read_log(&log_ref).expect("chunk bytes");
+        assert!(String::from_utf8_lossy(&bytes).contains("wave4"));
+        assert!(log_ref.starts_with("sha256:"));
     }
 }

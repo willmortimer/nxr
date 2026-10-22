@@ -119,7 +119,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 ```bash
 cosign verify-blob \
   --bundle nxr-….tar.gz.sigstore.json \
-  --certificate-identity-regexp 'https://github.com/willmortimer/nxr/.*' \
+  --certificate-identity-regexp '^https://github\.com/willmortimer/nxr/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   nxr-….tar.gz
 ```

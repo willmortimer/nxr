@@ -57,7 +57,7 @@ if [[ -z "$nxr_bin" ]]; then
     fi
     cosign verify-blob \
       --bundle "$work/$archive.sigstore.json" \
-      --certificate-identity-regexp 'https://github.com/willmortimer/nxr/.*' \
+      --certificate-identity-regexp '^https://github\.com/willmortimer/nxr/\.github/workflows/release\.yml@refs/tags/v' \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com \
       "$work/$archive"
     tar -xzf "$work/$archive" -C "$work"

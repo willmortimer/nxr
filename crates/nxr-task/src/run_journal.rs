@@ -72,6 +72,7 @@ impl RunJournal {
              );
              CREATE TABLE IF NOT EXISTS log_chunks (
                log_ref TEXT PRIMARY KEY,
+               content_hash TEXT NOT NULL,
                bytes INTEGER NOT NULL
              );",
         )
@@ -140,24 +141,48 @@ impl RunJournal {
         Ok(())
     }
 
-    /// Store acknowledged log bytes and fsync them before the index row commits.
+    /// Store a log chunk once, under its content hash.
+    ///
+    /// A second write of `log_ref` with different bytes is an error.
     ///
     /// # Errors
     ///
-    /// Returns an error when the chunk cannot be written or recorded.
+    /// Returns an error when the chunk cannot be written or the ref already differs.
     pub fn write_log(&mut self, log_ref: &str, bytes: &[u8]) -> Result<(), String> {
-        let path = self.log_path(log_ref)?;
-        let mut file = File::create(&path).map_err(|err| format!("create log: {err}"))?;
-        file.write_all(bytes)
-            .map_err(|err| format!("write log: {err}"))?;
-        file.sync_all().map_err(|err| format!("sync log: {err}"))?;
+        let hash = content_hash(bytes);
+        if let Some(stored) = self.stored_hash(log_ref)? {
+            if stored != hash {
+                return Err(format!("log `{log_ref}` already stores different bytes"));
+            }
+            return Ok(());
+        }
+        let path = self.chunk_path(&hash)?;
+        if path.exists() {
+            let existing = fs::read(&path).map_err(|err| format!("read chunk: {err}"))?;
+            if existing.as_slice() != bytes {
+                return Err(format!("chunk `{hash}` already stores different bytes"));
+            }
+        } else {
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&path)
+                .map_err(|err| format!("create log: {err}"))?;
+            file.write_all(bytes)
+                .map_err(|err| format!("write log: {err}"))?;
+            file.sync_all().map_err(|err| format!("sync log: {err}"))?;
+        }
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|err| format!("begin log: {err}"))?;
         tx.execute(
-            "INSERT OR REPLACE INTO log_chunks (log_ref, bytes) VALUES (?1, ?2)",
-            rusqlite::params![log_ref, i64::try_from(bytes.len()).unwrap_or(i64::MAX)],
+            "INSERT INTO log_chunks (log_ref, content_hash, bytes) VALUES (?1, ?2, ?3)",
+            rusqlite::params![
+                log_ref,
+                hash,
+                i64::try_from(bytes.len()).unwrap_or(i64::MAX)
+            ],
         )
         .map_err(|err| format!("index log: {err}"))?;
         tx.commit().map_err(|err| format!("commit log: {err}"))?;
@@ -168,21 +193,38 @@ impl RunJournal {
     ///
     /// # Errors
     ///
-    /// Returns an error when the ref was never committed or the file is missing.
+    /// Returns an error when the ref was never committed, the file is missing, or the hash differs.
     pub fn read_log(&self, log_ref: &str) -> Result<Vec<u8>, String> {
-        let indexed: Option<i64> = self
+        let indexed: Option<(String, i64)> = self
             .conn
             .query_row(
-                "SELECT bytes FROM log_chunks WHERE log_ref = ?1",
+                "SELECT content_hash, bytes FROM log_chunks WHERE log_ref = ?1",
+                [log_ref],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|err| format!("read log index: {err}"))?;
+        let Some((hash, stored_len)) = indexed else {
+            return Err(format!("log `{log_ref}` is not acknowledged"));
+        };
+        let bytes = fs::read(self.chunk_path(&hash)?).map_err(|err| format!("read log: {err}"))?;
+        if i64::try_from(bytes.len()).unwrap_or(i64::MAX) != stored_len
+            || content_hash(&bytes) != hash
+        {
+            return Err(format!("log `{log_ref}` does not match its content hash"));
+        }
+        Ok(bytes)
+    }
+
+    fn stored_hash(&self, log_ref: &str) -> Result<Option<String>, String> {
+        self.conn
+            .query_row(
+                "SELECT content_hash FROM log_chunks WHERE log_ref = ?1",
                 [log_ref],
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|err| format!("read log index: {err}"))?;
-        if indexed.is_none() {
-            return Err(format!("log `{log_ref}` is not acknowledged"));
-        }
-        fs::read(self.log_path(log_ref)?).map_err(|err| format!("read log: {err}"))
+            .map_err(|err| format!("read log index: {err}"))
     }
 
     /// Events with `sequence > after`, at most `limit` rows.
@@ -243,13 +285,20 @@ impl RunJournal {
         Ok(())
     }
 
-    fn log_path(&self, log_ref: &str) -> Result<PathBuf, String> {
-        if log_ref.is_empty() || log_ref.contains('/') || log_ref.contains("..") {
-            return Err(format!("log ref `{log_ref}` is not a file name"));
+    fn chunk_path(&self, hash: &str) -> Result<PathBuf, String> {
+        if hash.len() != 64 || !hash.chars().all(|character| character.is_ascii_hexdigit()) {
+            return Err(format!("chunk hash `{hash}` is not sha256"));
         }
-        let name = log_ref.replace(':', "_");
-        Ok(self.dir.join("logs").join(name))
+        Ok(self.dir.join("logs").join(hash))
     }
+}
+
+fn content_hash(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -318,5 +367,19 @@ mod tests {
         );
         let duplicate = journal.append(event(6, "started"));
         assert!(duplicate.is_err());
+    }
+
+    #[test]
+    fn a_log_chunk_cannot_be_replaced() {
+        let dir = tempfile::tempdir().expect("temp");
+        let mut journal = RunJournal::open(dir.path()).expect("open");
+        let log_ref = format!("sha256:{}", content_hash(b"one"));
+        journal.write_log(&log_ref, b"one").expect("first");
+        assert!(journal.write_log(&log_ref, b"two").is_err());
+        journal.write_log(&log_ref, b"one").expect("same bytes");
+        assert_eq!(journal.read_log(&log_ref).expect("read"), b"one");
+        let hash = content_hash(b"one");
+        fs::write(dir.path().join("logs").join(hash), b"tampered").expect("tamper");
+        assert!(journal.read_log(&log_ref).is_err());
     }
 }
