@@ -17,6 +17,7 @@ pub mod events;
 pub mod execute;
 pub mod execution_spec;
 pub mod graph;
+pub mod identity;
 pub mod matrix;
 pub mod memory;
 pub mod parameters;
@@ -26,6 +27,7 @@ pub mod process;
 pub mod resolve;
 pub mod resources;
 pub mod run_events;
+pub mod run_journal;
 pub mod scheduler;
 pub mod schema;
 pub mod secrets;
@@ -51,10 +53,12 @@ pub use execute::{
     execute_operation, run_operation_plan,
 };
 pub use execution_spec::{
-    EventCursor, ExecutionSpecV1, RunEventV2, SpecRun, execute_spec_locally,
-    execution_spec_for_task, execution_specs_for_document, source_set_id,
+    AdmissionPolicy, CiIdentity, ExecutionSpecV2, OutputDecl, RunEventV2, SpecRun,
+    execute_spec_locally, execution_spec_for_task, execution_specs_for_document,
+    source_set_from_repo, workflow_definition_digest,
 };
 pub use graph::{GraphError, TaskGraph, render_dot, render_mermaid, render_text};
+pub use identity::{SourceSetV1, operation_id, source_set_digest};
 pub use matrix::{
     MATRIX_ENV_PREFIX, MatrixExpansion, MatrixInstance, expand_matrix_roots, expand_matrix_tasks,
     matrix_attr_names, matrix_env_name, resolve_matrix_env, resolve_matrix_values,

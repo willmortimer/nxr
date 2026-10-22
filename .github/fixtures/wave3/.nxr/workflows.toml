@@ -1,0 +1,10 @@
+# Native leaves for the Wave 3 GitHub Action.
+schema_version = 1
+
+[tasks.finish]
+platform = "unix"
+executor = { native = ["/usr/bin/true"] }
+
+[tasks.fail]
+platform = "unix"
+executor = { native = ["/usr/bin/false"] }

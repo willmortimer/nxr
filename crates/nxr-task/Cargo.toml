@@ -18,6 +18,8 @@ toml = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
+fs2 = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }

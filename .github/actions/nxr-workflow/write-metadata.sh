@@ -1,26 +1,31 @@
 #!/bin/sh
-# Write ci-run-metadata-v1. Arguments:
-#   out provider external_job_id run_url idempotency_key operation_id exit_code
-# An empty run_url is omitted. Values are data, not a shell command.
+# Write ci-run-metadata-v2. Arguments:
+#   out provider run_id job run_attempt run_url operation_id exit_code
+# An empty operation_id is JSON null. An empty run_url is omitted.
 set -eu
 out=$1
 provider=$2
-job=$3
-url=$4
-idem=$5
-operation=$6
-code=$7
-python3 - "$out" "$provider" "$job" "$url" "$idem" "$operation" "$code" <<'PY'
+run_id=$3
+job=$4
+attempt=$5
+url=$6
+operation=$7
+code=$8
+python3 - "$out" "$provider" "$run_id" "$job" "$attempt" "$url" "$operation" "$code" <<'PY'
 import json
 import sys
 
-out, provider, job, url, idem, operation, code = sys.argv[1:8]
+out, provider, run_id, job, attempt, url, operation, code = sys.argv[1:9]
+attempt_number = int(attempt)
 document = {
-    "schema_version": "ci-run-metadata-v1",
+    "schema_version": "ci-run-metadata-v2",
     "provider": provider,
-    "external_job_id": job,
-    "idempotency_key": idem,
-    "operation_id": operation,
+    "external_job_id": f"{run_id}/{job}/{attempt_number}",
+    "run_id": run_id,
+    "job": job,
+    "run_attempt": attempt_number,
+    "idempotency_key": f"{provider}:{run_id}/{job}/{attempt_number}",
+    "operation_id": operation or None,
     "exit_code": int(code),
 }
 if url:

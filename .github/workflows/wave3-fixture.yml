@@ -1,0 +1,113 @@
+name: wave3 fixture
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verified-release:
+    name: verified release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Install the signed release and record a null operation id
+        id: release
+        continue-on-error: true
+        uses: ./.github/actions/nxr-workflow
+        with:
+          task: finish
+          workflow-root: .github/fixtures/wave3
+          require-operation-id: "false"
+          version: "3.7.1"
+
+      - name: Metadata omits a fabricated operation id
+        if: steps.release.outcome == 'success' || steps.release.outcome == 'failure'
+        run: |
+          python3 - <<'PY'
+          import json
+          document = json.load(open("ci-run-metadata.json"))
+          assert document["schema_version"] == "ci-run-metadata-v2"
+          assert document["operation_id"] is None or str(document["operation_id"]).startswith("op_")
+          assert "/" in document["external_job_id"]
+          print(document["exit_code"])
+          PY
+
+  source-spec:
+    name: source spec (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: DeterminateSystems/determinate-nix-action@d96678350ffd6a456235832eb11e1c491589b7bb # v3.21.8
+
+      - name: Build nxr
+        id: nxr
+        run: |
+          system="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
+          nix build ".#packages.$system.default" -L
+          echo "bin=$(nix path-info ./result)/bin/nxr" >> "$GITHUB_OUTPUT"
+
+      - name: Run the native fixture
+        uses: ./.github/actions/nxr-workflow
+        with:
+          task: finish
+          workflow-root: .github/fixtures/wave3
+          nxr: ${{ steps.nxr.outputs.bin }}
+
+      - name: Operation id is content-derived
+        run: |
+          python3 - <<'PY'
+          import json, re
+          document = json.load(open("ci-run-metadata.json"))
+          assert document["exit_code"] == 0
+          assert re.fullmatch(r"op_[0-9a-f]{32}", document["operation_id"])
+          PY
+
+  failed-job:
+    name: failed job still writes metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: DeterminateSystems/determinate-nix-action@d96678350ffd6a456235832eb11e1c491589b7bb # v3.21.8
+
+      - name: Build nxr
+        id: nxr
+        run: |
+          system="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
+          nix build ".#packages.$system.default" -L
+          echo "bin=$(nix path-info ./result)/bin/nxr" >> "$GITHUB_OUTPUT"
+
+      - name: Run the failing fixture
+        id: fail
+        continue-on-error: true
+        uses: ./.github/actions/nxr-workflow
+        with:
+          task: fail
+          workflow-root: .github/fixtures/wave3
+          nxr: ${{ steps.nxr.outputs.bin }}
+
+      - name: Exit code is recorded
+        run: |
+          python3 - <<'PY'
+          import json
+          document = json.load(open("ci-run-metadata.json"))
+          assert document["exit_code"] == 1
+          assert document["schema_version"] == "ci-run-metadata-v2"
+          PY
+          test "${{ steps.fail.outcome }}" = "failure"

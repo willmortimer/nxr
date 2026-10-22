@@ -1,0 +1,51 @@
+{
+  "schema_version": "execution-spec-v2",
+  "source_set_id": "src_e383defc7db43291dcac765a657d54b8b284e622a44ccb508856e06037f8dbca",
+  "workflow_definition_digest": "wf_4e1a53d3a13edf322c7d195c0bb546d0b29b969f74f6427a6edf05fa54ebafef",
+  "task_id": "finish",
+  "operation_id": "op_bac7776d6de1a951f25adc16b7bbade9",
+  "platform": "any",
+  "capabilities": [
+    "native_command"
+  ],
+  "admission": {
+    "cancel": "cooperative",
+    "jobs": 1
+  },
+  "environment": {
+    "ordinary": {
+      "PLAIN": "do-not-publish"
+    },
+    "bindings": [
+      {
+        "name": "ATTIC",
+        "ref": "nixplane://binding/attic-token",
+        "delivery": "environment"
+      }
+    ]
+  },
+  "working_directory": {
+    "kind": "workspace_relative",
+    "path": "."
+  },
+  "resources": {
+    "cpu": 0,
+    "memory_bytes": 0,
+    "exclusive": []
+  },
+  "secret_refs": [
+    "nixplane://binding/attic-token"
+  ],
+  "outputs": [
+    {
+      "name": "out.txt"
+    }
+  ],
+  "idempotency_key": "op_bac7776d6de1a951f25adc16b7bbade9",
+  "leaf": {
+    "argv": [
+      "/usr/bin/true"
+    ],
+    "kind": "native_command"
+  }
+}

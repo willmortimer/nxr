@@ -164,7 +164,15 @@ fn print_execution_spec(name: &str) -> Result<i32, WorkflowError> {
     let task = document.tasks.get(name).ok_or_else(|| {
         WorkflowError::new(exit::USAGE, format!("unknown workflow task `{name}`"))
     })?;
-    let spec = nxr_task::execution_spec_for_task(&nxr_task::source_set_id(&bytes), name, task);
+    let source = nxr_task::source_set_from_repo(&root)
+        .map_err(|error| WorkflowError::new(exit::USAGE, error))?;
+    let spec = nxr_task::execution_spec_for_task(
+        &source,
+        &nxr_task::workflow_definition_digest(&bytes),
+        name,
+        task,
+    )
+    .map_err(|error| WorkflowError::new(exit::USAGE, error))?;
     let text = serde_json::to_string_pretty(&spec)
         .map_err(|error| WorkflowError::new(exit::PROCESS_SUPERVISION, error.to_string()))?;
     println!("{text}");

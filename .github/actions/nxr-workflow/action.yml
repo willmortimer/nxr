@@ -1,8 +1,8 @@
 name: NXR workflow
 description: >-
-  Install one signed NXR release when nxr is not already on PATH, run one
-  workflow task, and write provider-neutral CI run metadata. Ordinary
-  ubuntu-latest is the runner. This action does not start a runner scale set.
+  Verify a signed NXR release when nxr is not already on PATH, run one
+  workflow task, and write ci-run-metadata-v2. Ordinary GitHub-hosted runners
+  are the target. This action does not start a runner scale set.
 inputs:
   task:
     description: Workflow task name
@@ -11,15 +11,19 @@ inputs:
   workflow-root:
     description: Directory that contains .nxr/workflows.toml
     required: true
-    default: .github/fixtures/wave2
+    default: .github/fixtures/wave3
   nxr:
-    description: nxr binary. Empty uses PATH, then the signed portable release.
+    description: nxr binary. Empty uses PATH, then a Cosign-verified portable release.
     required: false
     default: ""
   version:
     description: NXR release tag used when the binary is not already on PATH
     required: false
     default: "3.7.1"
+  require-operation-id:
+    description: Fail when workflow spec does not return an op_ identity
+    required: false
+    default: "true"
 outputs:
   exit-code:
     description: Workflow process exit code
@@ -37,4 +41,5 @@ runs:
         INPUT_WORKFLOW_ROOT: ${{ inputs.workflow-root }}
         INPUT_NXR: ${{ inputs.nxr }}
         INPUT_VERSION: ${{ inputs.version }}
+        INPUT_REQUIRE_OPERATION_ID: ${{ inputs.require-operation-id }}
       run: bash "$GITHUB_ACTION_PATH/run.sh"
