@@ -185,6 +185,29 @@ pub fn operation_id(identity: &OperationIdentity) -> String {
     id
 }
 
+/// One dirty-manifest entry after file bytes have been hashed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirtySnapshotEntry {
+    pub path: String,
+    pub mode: String,
+    pub kind: String,
+    pub payload: String,
+}
+
+/// Digest of a dirty manifest. This is the `dirty_snapshot_id` inside a source set.
+#[must_use]
+pub fn dirty_snapshot_digest(entries: &[DirtySnapshotEntry]) -> String {
+    let mut ordered = entries.to_vec();
+    ordered.sort_by(|left, right| left.path.cmp(&right.path));
+    let mut hasher = Sha256::new();
+    for entry in ordered {
+        for field in [entry.path, entry.mode, entry.kind, entry.payload] {
+            push_field(&mut hasher, field.as_bytes());
+        }
+    }
+    format!("dirty_{}", hex_digest(hasher.finalize().as_slice()))
+}
+
 pub(crate) fn push_field(hasher: &mut Sha256, bytes: &[u8]) {
     hasher.update((bytes.len() as u64).to_be_bytes());
     hasher.update(bytes);

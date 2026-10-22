@@ -48,7 +48,10 @@ pub struct CiIdentity {
 }
 
 /// One executable workflow leaf.
+///
+/// Unknown fields are rejected. Dirty bytes are not part of this document.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionSpecV2 {
     pub schema_version: String,
     pub source_set_id: String,
