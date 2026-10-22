@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
@@ -899,18 +899,21 @@ pub fn dirty_files_digest(files: &[DirtyFile]) -> String {
 
 /// Write `files` into `destination`. Deletions remove a path that is present.
 ///
+/// Paths are staged, then moved into `destination` only after every path is inside it.
+///
 /// # Errors
 ///
-/// Returns an error when a path cannot be created or removed.
+/// Returns an error when a path escapes `destination` or cannot be created.
 pub fn materialize_dirty_files(destination: &Path, files: &[DirtyFile]) -> Result<(), String> {
+    let staging = destination.join(".nixplane-stage");
+    let _ = fs::remove_dir_all(&staging);
+    fs::create_dir_all(&staging).map_err(|err| format!("staging: {err}"))?;
     for file in files {
-        let path = destination.join(&file.path);
+        let relative = safe_relative(&file.path)?;
+        reject_symlink_parent(destination, &relative)?;
+        let path = staging.join(&relative);
         match file.kind.as_str() {
-            "deleted" => {
-                if path.exists() {
-                    fs::remove_file(&path).map_err(|err| format!("remove {}: {err}", file.path))?;
-                }
-            }
+            "deleted" => {}
             "directory" => {
                 fs::create_dir_all(&path).map_err(|err| format!("mkdir {}: {err}", file.path))?;
             }
@@ -951,7 +954,91 @@ pub fn materialize_dirty_files(destination: &Path, files: &[DirtyFile]) -> Resul
             }
         }
     }
+    for file in files {
+        if file.kind == "deleted" {
+            let relative = safe_relative(&file.path)?;
+            let path = destination.join(&relative);
+            if path.exists() {
+                fs::remove_file(&path).map_err(|err| format!("remove {}: {err}", file.path))?;
+            }
+        }
+    }
+    activate_staging(destination, &staging)?;
+    let _ = fs::remove_dir_all(&staging);
     Ok(())
+}
+
+fn safe_relative(path: &str) -> Result<PathBuf, String> {
+    if path.is_empty() || path.starts_with('/') || path.starts_with('\\') || path.contains(':') {
+        return Err(format!("path {path} escapes the workspace"));
+    }
+    let relative = Path::new(path);
+    if relative.is_absolute() {
+        return Err(format!("path {path} escapes the workspace"));
+    }
+    for component in relative.components() {
+        if !matches!(component, Component::Normal(_)) {
+            return Err(format!("path {path} escapes the workspace"));
+        }
+    }
+    Ok(relative.to_path_buf())
+}
+
+fn reject_symlink_parent(root: &Path, relative: &Path) -> Result<(), String> {
+    let mut cursor = root.to_path_buf();
+    if let Ok(meta) = fs::symlink_metadata(&cursor)
+        && meta.file_type().is_symlink()
+    {
+        return Err("destination escapes the workspace".to_owned());
+    }
+    for component in relative.components() {
+        cursor.push(component);
+        match fs::symlink_metadata(&cursor) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(format!("path {} escapes the workspace", relative.display()));
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    Ok(())
+}
+
+fn activate_staging(destination: &Path, staging: &Path) -> Result<(), String> {
+    let entries = match fs::read_dir(staging) {
+        Ok(entries) => entries,
+        Err(err) => return Err(format!("stage: {err}")),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("stage: {err}"))?;
+        if entry.file_name() == ".nixplane-stage" {
+            continue;
+        }
+        move_tree(&entry.path(), &destination.join(entry.file_name()))?;
+    }
+    Ok(())
+}
+
+fn move_tree(from: &Path, to: &Path) -> Result<(), String> {
+    let target_is_dir = to
+        .symlink_metadata()
+        .map(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+        .unwrap_or(false);
+    if target_is_dir {
+        for entry in fs::read_dir(from).map_err(|err| format!("stage: {err}"))? {
+            let entry = entry.map_err(|err| format!("stage: {err}"))?;
+            move_tree(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        let _ = fs::remove_dir(from);
+        return Ok(());
+    }
+    if to.exists() {
+        fs::remove_file(to).map_err(|err| format!("replace {}: {err}", to.display()))?;
+    }
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("mkdir: {err}"))?;
+    }
+    fs::rename(from, to).map_err(|err| format!("activate {}: {err}", to.display()))
 }
 
 /// Recompute the digest and check the written paths.
@@ -1195,6 +1282,35 @@ mod tests {
         let mut mutated = files.clone();
         mutated[0].bytes.push(b'x');
         assert_ne!(dirty_files_digest(&mutated), expected);
+    }
+
+    #[test]
+    fn a_dirty_path_cannot_escape_the_destination() {
+        let dest = tempfile::tempdir().expect("dest");
+        let escape = DirtyFile {
+            path: "../escape.txt".to_owned(),
+            mode: "100644".to_owned(),
+            kind: "file".to_owned(),
+            payload: String::new(),
+            bytes: b"no".to_vec(),
+        };
+        assert!(materialize_dirty_files(dest.path(), &[escape]).is_err());
+        assert!(
+            !dest
+                .path()
+                .parent()
+                .expect("parent")
+                .join("escape.txt")
+                .exists()
+        );
+        let absolute = DirtyFile {
+            path: "/etc/passwd".to_owned(),
+            mode: "100644".to_owned(),
+            kind: "file".to_owned(),
+            payload: String::new(),
+            bytes: b"no".to_vec(),
+        };
+        assert!(materialize_dirty_files(dest.path(), &[absolute]).is_err());
     }
 
     #[test]

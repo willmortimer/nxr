@@ -24,6 +24,7 @@ pub mod parameters;
 pub mod plan_exec;
 pub mod planner;
 pub mod process;
+pub mod remote_execution;
 pub mod resolve;
 pub mod resources;
 pub mod run_events;
@@ -79,6 +80,9 @@ pub use process::{
     ProcessDefinition, ProcessNameError, ProcessReadiness, ProcessRestart, ReadinessHttp,
     ReadinessTcp, dependency_base_name, parse_processes, sanitize_process_log_name,
     validate_node_id,
+};
+pub use remote_execution::{
+    ExecutionTransport, cancel_execution, execution_status, replay_execution, submit_execution,
 };
 pub use resolve::{
     ResolveTaskError, enrich_apps_with_listing_metadata, listable_tasks, listable_tasks_filtered,
