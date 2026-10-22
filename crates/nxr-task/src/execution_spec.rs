@@ -838,6 +838,172 @@ fn hex_sha256_bytes(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// One dirty worktree path, including the bytes a worker must write.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirtyFile {
+    /// Repo-relative path.
+    pub path: String,
+    /// Git mode (`100644`, `100755`, `120000`, or `000000`).
+    pub mode: String,
+    /// `file`, `symlink`, `directory`, or `deleted`.
+    pub kind: String,
+    /// Content hash, symlink target, or empty tombstone.
+    pub payload: String,
+    /// File bytes. Empty for symlinks, directories, and deletions.
+    pub bytes: Vec<u8>,
+}
+
+/// Read the dirty inventory as whole files. Ignored paths stay out.
+///
+/// # Errors
+///
+/// Returns an error when git status or a dirty file cannot be read.
+pub fn capture_dirty_files(root: &Path) -> Result<Vec<DirtyFile>, String> {
+    let entries = dirty_entries(root)?;
+    let mut files = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let bytes = if entry.kind == "file" {
+            fs::read(root.join(&entry.path)).map_err(|err| format!("read {}: {err}", entry.path))?
+        } else {
+            Vec::new()
+        };
+        files.push(DirtyFile {
+            path: entry.path,
+            mode: entry.mode,
+            kind: entry.kind,
+            payload: entry.payload,
+            bytes,
+        });
+    }
+    Ok(files)
+}
+
+/// Digest of `files`. File payloads are the sha256 of `bytes`.
+#[must_use]
+pub fn dirty_files_digest(files: &[DirtyFile]) -> String {
+    let entries = files
+        .iter()
+        .map(|file| SourceEntry {
+            path: file.path.clone(),
+            mode: file.mode.clone(),
+            kind: file.kind.clone(),
+            payload: if file.kind == "file" {
+                hex_sha256(&file.bytes)
+            } else {
+                file.payload.clone()
+            },
+        })
+        .collect::<Vec<_>>();
+    digest_source_entries(&entries)
+}
+
+/// Write `files` into `destination`. Deletions remove a path that is present.
+///
+/// # Errors
+///
+/// Returns an error when a path cannot be created or removed.
+pub fn materialize_dirty_files(destination: &Path, files: &[DirtyFile]) -> Result<(), String> {
+    for file in files {
+        let path = destination.join(&file.path);
+        match file.kind.as_str() {
+            "deleted" => {
+                if path.exists() {
+                    fs::remove_file(&path).map_err(|err| format!("remove {}: {err}", file.path))?;
+                }
+            }
+            "directory" => {
+                fs::create_dir_all(&path).map_err(|err| format!("mkdir {}: {err}", file.path))?;
+            }
+            "symlink" => {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(|err| format!("mkdir: {err}"))?;
+                }
+                #[cfg(unix)]
+                {
+                    std::os::unix::fs::symlink(&file.payload, &path)
+                        .map_err(|err| format!("symlink {}: {err}", file.path))?;
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = path;
+                    return Err(format!(
+                        "symlink {} is not supported on this host",
+                        file.path
+                    ));
+                }
+            }
+            _ => {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(|err| format!("mkdir: {err}"))?;
+                }
+                fs::write(&path, &file.bytes)
+                    .map_err(|err| format!("write {}: {err}", file.path))?;
+                #[cfg(unix)]
+                if file.mode == "100755" {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut permissions = fs::metadata(&path)
+                        .map_err(|err| format!("stat {}: {err}", file.path))?
+                        .permissions();
+                    permissions.set_mode(0o755);
+                    fs::set_permissions(&path, permissions)
+                        .map_err(|err| format!("chmod {}: {err}", file.path))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Recompute the digest and check the written paths.
+///
+/// # Errors
+///
+/// Returns an error when the digest or a materialized path does not match.
+pub fn verify_materialized_dirty_files(
+    destination: &Path,
+    files: &[DirtyFile],
+    expected_digest: &str,
+) -> Result<(), String> {
+    let digest = dirty_files_digest(files);
+    if digest != expected_digest {
+        return Err(format!(
+            "source set digest {digest} does not match {expected_digest}"
+        ));
+    }
+    for file in files {
+        let path = destination.join(&file.path);
+        match file.kind.as_str() {
+            "deleted" => {
+                if path.exists() {
+                    return Err(format!("deleted path {} is still present", file.path));
+                }
+            }
+            "symlink" => {
+                let target =
+                    fs::read_link(&path).map_err(|err| format!("link {}: {err}", file.path))?;
+                if target.to_string_lossy() != file.payload {
+                    return Err(format!("symlink {} target does not match", file.path));
+                }
+            }
+            "directory" => {
+                if !path.is_dir() {
+                    return Err(format!("directory {} was not created", file.path));
+                }
+            }
+            _ => {
+                let bytes = fs::read(&path).map_err(|err| format!("read {}: {err}", file.path))?;
+                if bytes != file.bytes || hex_sha256(&bytes) != file.payload {
+                    return Err(format!(
+                        "file {} does not match the source digest",
+                        file.path
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1002,6 +1168,33 @@ mod tests {
             .expect("named again")
             .dirty_snapshot_id;
         assert_ne!(named, named_again);
+    }
+
+    #[test]
+    fn a_dirty_file_materializes_with_the_same_digest() {
+        let dir = tempfile::tempdir().expect("temp");
+        let root = dir.path();
+        git_repo(root, &["init"]);
+        fs::write(root.join("tracked"), "base").expect("write");
+        git_repo(root, &["add", "tracked"]);
+        git_repo(root, &["commit", "-m", "base"]);
+        fs::write(root.join("extra.txt"), "one").expect("extra");
+        let expected = source_set_from_repo(root)
+            .expect("source")
+            .dirty_snapshot_id
+            .expect("dirty");
+        let files = capture_dirty_files(root).expect("capture");
+        assert_eq!(dirty_files_digest(&files), expected);
+        let dest = tempfile::tempdir().expect("dest");
+        materialize_dirty_files(dest.path(), &files).expect("materialize");
+        verify_materialized_dirty_files(dest.path(), &files, &expected).expect("verify");
+        assert_eq!(
+            fs::read(dest.path().join("extra.txt")).expect("read"),
+            b"one"
+        );
+        let mut mutated = files.clone();
+        mutated[0].bytes.push(b'x');
+        assert_ne!(dirty_files_digest(&mutated), expected);
     }
 
     #[test]
