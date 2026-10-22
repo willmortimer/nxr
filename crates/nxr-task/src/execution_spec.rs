@@ -243,10 +243,12 @@ pub fn execute_spec_locally(
     let mut journal = RunJournal::open(journal_dir)?;
     let mut sequence = journal.last_sequence()? + 1;
     journal.append(journal_event(spec, run_id, sequence, "started", None, None))?;
+    let cwd = workspace_cwd(spec, journal_dir)?;
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]);
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
+    command.current_dir(&cwd);
     for (key, value) in &spec.environment.ordinary {
         command.env(key, value);
     }
@@ -273,6 +275,9 @@ pub fn execute_spec_locally(
     } else {
         "exited"
     };
+    if exit_code == 0 {
+        require_outputs(spec, &cwd)?;
+    }
     sequence += 1;
     journal.append(journal_event(
         spec,
@@ -425,6 +430,46 @@ fn split_environment(
         }
     }
     Ok(ExecutionEnvironment { ordinary, bindings })
+}
+
+fn workspace_cwd(spec: &ExecutionSpecV2, journal_dir: &Path) -> Result<PathBuf, String> {
+    if spec.working_directory.kind != "workspace_relative" {
+        return Err("working directory must be workspace_relative".to_owned());
+    }
+    let path = spec.working_directory.path.trim();
+    let relative = if path.is_empty() || path == "." {
+        PathBuf::new()
+    } else {
+        safe_output_name(path)?
+    };
+    let cwd = journal_dir.join(relative);
+    fs::create_dir_all(&cwd).map_err(|err| format!("working directory: {err}"))?;
+    Ok(cwd)
+}
+
+fn require_outputs(spec: &ExecutionSpecV2, cwd: &Path) -> Result<(), String> {
+    for output in &spec.outputs {
+        let relative = safe_output_name(&output.name)?;
+        let path = cwd.join(relative);
+        if !path.is_file() {
+            return Err(format!("output {} is missing", output.name));
+        }
+    }
+    Ok(())
+}
+
+fn safe_output_name(path: &str) -> Result<PathBuf, String> {
+    if path.is_empty() || path.starts_with('/') || path.starts_with('\\') || path.contains(':') {
+        return Err(format!("output {path} escapes the workspace"));
+    }
+    let relative = Path::new(path);
+    if relative
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(format!("output {path} escapes the workspace"));
+    }
+    Ok(relative.to_path_buf())
 }
 
 fn working_directory(path: Option<&str>) -> Result<WorkingDirectoryPolicy, String> {
@@ -1202,6 +1247,11 @@ mod tests {
         assert_eq!(parsed.recomputed_operation_id(), spec.operation_id);
 
         let dir = tempfile::tempdir().expect("temp");
+        for name in ["local", "remote"] {
+            let journal = dir.path().join(name);
+            fs::create_dir_all(&journal).expect("journal");
+            fs::write(journal.join("out.txt"), b"present").expect("output");
+        }
         let first =
             execute_spec_locally(&parsed, &dir.path().join("local"), "run_local").expect("first");
         let again = execute_spec_locally(&parsed, &dir.path().join("remote"), "run_remote")
@@ -1398,6 +1448,7 @@ mod tests {
             "kind": "native_command",
             "argv": ["/bin/echo", "wave4"]
         });
+        spec.outputs.clear();
         spec.operation_id = spec.recomputed_operation_id();
         let dir = tempfile::tempdir().expect("temp");
         execute_spec_locally(&spec, dir.path(), "run_echo").expect("run");
@@ -1424,6 +1475,7 @@ mod tests {
                 "dd if=/dev/zero bs=1000 count=200 status=none >&2; echo out-after-err"
             ]
         });
+        spec.outputs.clear();
         spec.operation_id = spec.recomputed_operation_id();
         let dir = tempfile::tempdir().expect("temp");
         let run = execute_spec_locally(&spec, dir.path(), "run_err").expect("run");
@@ -1438,5 +1490,21 @@ mod tests {
             .read_log(stdout.log_ref.as_deref().expect("ref"))
             .expect("bytes");
         assert!(String::from_utf8_lossy(&bytes).contains("out-after-err"));
+    }
+
+    #[test]
+    fn a_missing_declared_output_fails_the_local_run() {
+        let mut spec = fixture_spec("fixture-commit");
+        spec.leaf = serde_json::json!({
+            "kind": "native_command",
+            "argv": ["/usr/bin/true"]
+        });
+        spec.outputs = vec![OutputDecl {
+            name: "missing.txt".to_owned(),
+        }];
+        spec.operation_id = spec.recomputed_operation_id();
+        let dir = tempfile::tempdir().expect("temp");
+        let error = execute_spec_locally(&spec, dir.path(), "run_missing").expect_err("output");
+        assert!(error.contains("missing"));
     }
 }
