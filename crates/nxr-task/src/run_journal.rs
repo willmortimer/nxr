@@ -52,8 +52,13 @@ impl RunJournal {
             .truncate(false)
             .open(&lock_path)
             .map_err(|err| format!("open journal lock: {err}"))?;
-        lock.try_lock_exclusive()
-            .map_err(|_| "journal already has a writer".to_owned())?;
+        lock.try_lock_exclusive().map_err(|_| {
+            format!(
+                "journal already has a writer at {} pid {}",
+                lock_path.display(),
+                std::process::id()
+            )
+        })?;
         let conn = Connection::open(dir.join("events.sqlite"))
             .map_err(|err| format!("open journal db: {err}"))?;
         conn.execute_batch(
@@ -381,5 +386,18 @@ mod tests {
         let hash = content_hash(b"one");
         fs::write(dir.path().join("logs").join(hash), b"tampered").expect("tamper");
         assert!(journal.read_log(&log_ref).is_err());
+    }
+
+    #[test]
+    fn a_second_open_reports_the_lock_path() {
+        let dir = tempfile::tempdir().expect("temp");
+        let _held = RunJournal::open(dir.path()).expect("first");
+        let error = match RunJournal::open(dir.path()) {
+            Err(error) => error,
+            Ok(_) => panic!("second open took the lock"),
+        };
+        assert!(error.contains("journal already has a writer"));
+        assert!(error.contains(&dir.path().join("writer.lock").display().to_string()));
+        assert!(error.contains(&std::process::id().to_string()));
     }
 }

@@ -7,9 +7,11 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -249,16 +251,21 @@ pub fn execute_spec_locally(
         command.env(key, value);
     }
     let mut child = command.spawn().map_err(|err| format!("spawn: {err}"))?;
-    let mut stdout = child
+    let stdout = child
         .stdout
         .take()
         .ok_or_else(|| "stdout pipe is missing".to_owned())?;
-    let mut stderr = child
+    let stderr = child
         .stderr
         .take()
         .ok_or_else(|| "stderr pipe is missing".to_owned())?;
-    sequence = stream_chunks(&mut journal, spec, run_id, sequence, &mut stdout, "stdout")?;
-    sequence = stream_chunks(&mut journal, spec, run_id, sequence, &mut stderr, "stderr")?;
+    let (tx, rx) = mpsc::sync_channel::<OutputChunk>(8);
+    spawn_output_reader(tx.clone(), stdout, "stdout");
+    spawn_output_reader(tx, stderr, "stderr");
+    while let Ok(chunk) = rx.recv() {
+        sequence += 1;
+        sequence = record_chunk(&mut journal, spec, run_id, sequence, &chunk)?;
+    }
     let status = child.wait().map_err(|err| format!("wait: {err}"))?;
     let exit_code = status.code().unwrap_or(1);
     let event_type = if status.code().is_none() {
@@ -281,35 +288,50 @@ pub fn execute_spec_locally(
     })
 }
 
-fn stream_chunks(
+struct OutputChunk {
+    source: &'static str,
+    bytes: Vec<u8>,
+}
+
+fn spawn_output_reader<R>(tx: mpsc::SyncSender<OutputChunk>, stream: R, source: &'static str)
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stream);
+        let mut buffer = [0_u8; 4096];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => {
+                    if tx
+                        .send(OutputChunk {
+                            source,
+                            bytes: buffer[..read].to_vec(),
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn record_chunk(
     journal: &mut RunJournal,
     spec: &ExecutionSpecV2,
     run_id: &str,
-    mut sequence: u64,
-    reader: &mut dyn Read,
-    source: &str,
+    sequence: u64,
+    chunk: &OutputChunk,
 ) -> Result<u64, String> {
-    let mut buffer = [0_u8; 4096];
-    loop {
-        let read = reader
-            .read(&mut buffer)
-            .map_err(|err| format!("read {source}: {err}"))?;
-        if read == 0 {
-            return Ok(sequence);
-        }
-        sequence += 1;
-        let bytes = &buffer[..read];
-        let log_ref = format!("sha256:{}", hex_sha256(bytes));
-        journal.write_log(&log_ref, bytes)?;
-        journal.append(journal_event(
-            spec,
-            run_id,
-            sequence,
-            "log",
-            None,
-            Some(log_ref),
-        ))?;
-    }
+    let log_ref = format!("sha256:{}", hex_sha256(&chunk.bytes));
+    journal.write_log(&log_ref, &chunk.bytes)?;
+    let mut event = journal_event(spec, run_id, sequence, "log", None, Some(log_ref));
+    event.source = chunk.source.to_owned();
+    journal.append(event)?;
+    Ok(sequence)
 }
 
 fn journal_event(
@@ -1389,5 +1411,32 @@ mod tests {
         let bytes = journal.read_log(&log_ref).expect("chunk bytes");
         assert!(String::from_utf8_lossy(&bytes).contains("wave4"));
         assert!(log_ref.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn stderr_does_not_block_stdout() {
+        let mut spec = fixture_spec("fixture-commit");
+        spec.leaf = serde_json::json!({
+            "kind": "native_command",
+            "argv": [
+                "/bin/bash",
+                "-c",
+                "dd if=/dev/zero bs=1000 count=200 status=none >&2; echo out-after-err"
+            ]
+        });
+        spec.operation_id = spec.recomputed_operation_id();
+        let dir = tempfile::tempdir().expect("temp");
+        let run = execute_spec_locally(&spec, dir.path(), "run_err").expect("run");
+        assert_eq!(run.exit_code, 0);
+        let journal = RunJournal::open(dir.path()).expect("journal");
+        let events = journal.replay_after(0, 200).expect("events");
+        let stdout = events
+            .iter()
+            .find(|event| event.source == "stdout")
+            .expect("stdout");
+        let bytes = journal
+            .read_log(stdout.log_ref.as_deref().expect("ref"))
+            .expect("bytes");
+        assert!(String::from_utf8_lossy(&bytes).contains("out-after-err"));
     }
 }
