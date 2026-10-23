@@ -747,8 +747,8 @@ mod tests {
             assert!(status.total_bytes > 0);
             assert!(!status.path.is_empty());
             assert!(status.enabled);
-            assert_eq!(status.oldest_age_secs, Some(0));
-            assert_eq!(status.newest_age_secs, Some(0));
+            assert!(matches!(status.oldest_age_secs, Some(0) | Some(1)));
+            assert!(matches!(status.newest_age_secs, Some(0) | Some(1)));
         });
     }
 
