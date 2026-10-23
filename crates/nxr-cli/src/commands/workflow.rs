@@ -67,7 +67,10 @@ pub fn execute(
             let mode = WorkflowPlanMode::Explicit { root: name.clone() };
             execute_mode(&mode, 1, false, nix, true, json)
         }
-        WorkflowSubcommand::Spec { name } => print_execution_spec(name),
+        WorkflowSubcommand::Spec {
+            name,
+            source_set_out,
+        } => print_execution_spec(name, source_set_out.as_deref()),
         WorkflowSubcommand::Run {
             name,
             jobs,
@@ -152,7 +155,10 @@ fn list_tasks() -> Result<i32, WorkflowError> {
     Ok(exit::SUCCESS)
 }
 
-fn print_execution_spec(name: &str) -> Result<i32, WorkflowError> {
+fn print_execution_spec(
+    name: &str,
+    source_set_out: Option<&std::path::Path>,
+) -> Result<i32, WorkflowError> {
     let root = workflow_root()?;
     let path = nxr_task::workflows::workflow_path(&root);
     let bytes = std::fs::read(&path).map_err(|error| {
@@ -173,6 +179,16 @@ fn print_execution_spec(name: &str) -> Result<i32, WorkflowError> {
         task,
     )
     .map_err(|error| WorkflowError::new(exit::USAGE, error))?;
+    if let Some(path) = source_set_out {
+        let source_text = serde_json::to_string_pretty(&source)
+            .map_err(|error| WorkflowError::new(exit::PROCESS_SUPERVISION, error.to_string()))?;
+        std::fs::write(path, source_text).map_err(|error| {
+            WorkflowError::new(
+                exit::PROCESS_SUPERVISION,
+                format!("write {}: {error}", path.display()),
+            )
+        })?;
+    }
     let text = serde_json::to_string_pretty(&spec)
         .map_err(|error| WorkflowError::new(exit::PROCESS_SUPERVISION, error.to_string()))?;
     println!("{text}");

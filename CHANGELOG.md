@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `execution-spec-v2` envelopes for workflow leaves, including SourceSet digests, operation ids, and run journals. The golden fixture `op_bac7776d6de1a951f25adc16b7bbade9` matches NixPlane's copied fixture. NXR does not depend on the NixPlane crate.
 - Provider-neutral remote submit, status, cancel, and replay. Dirty snapshots are named by the source set and are not part of the operation id.
-- `nxr workflow spec <task>` emits that envelope from `.nxr/workflows.toml`. Flake `perSystem.nxr.tasks` entries are unchanged, and a sibling repository is not checked out.
+- `nxr workflow spec <task> --source-set-out` writes the SourceSet JSON beside the envelope. Flake `perSystem.nxr.tasks` entries are unchanged, and a sibling repository is not checked out.
 
 ### Changed
 
