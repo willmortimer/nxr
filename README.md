@@ -143,8 +143,9 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**3.7.1** (tagged) — portable `.nxr/workflows.toml` graphs (`nxr workflow`), native
-tasks without Nix, and remote WinExec/WinBuild submission. `nxr task` still
-uses the flake task document. Operator archives stay Darwin and Linux.
+**3.8.0-rc.1** — workflow leaves emit `execution-spec-v2` envelopes from
+`.nxr/workflows.toml`, with SourceSet digests and run journals. `nxr task`
+still uses the flake task document. A sibling repository is not part of the
+default source identity. Operator archives stay Darwin and Linux.
 
 History: [CHANGELOG.md](CHANGELOG.md) · roadmap: [docs/ROADMAP.md](docs/ROADMAP.md).

@@ -19,7 +19,7 @@ inputs:
   version:
     description: NXR release tag used when the binary is not already on PATH
     required: false
-    default: "3.7.1"
+    default: "3.8.0-rc.1"
   require-operation-id:
     description: Fail when workflow spec does not return an op_ identity
     required: false
