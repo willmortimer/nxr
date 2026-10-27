@@ -38,12 +38,40 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
     let outputs = output_names(&spec);
     let mut receipt = seed_receipt(&root, name, &spec, &commit);
     let pointers = attempt_pointers(&root, name)?;
-    if let Ok(follow) = std::env::var("NIXPLANE_FOLLOW")
-        && !follow.trim().is_empty()
-    {
-        receipt["attempt_id"] = json!(follow.trim());
+    let mut follow_id = std::env::var("NIXPLANE_FOLLOW")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    if follow_id.is_none() && std::env::var("NIXPLANE_REATTACH").ok().as_deref() == Some("1") {
+        if let Some(saved) = saved_receipt(&root, name) {
+            match reattach_action(Some(&saved)) {
+                "verify" if saved.get("hash_ok").and_then(Value::as_bool) == Some(true) => {
+                    let attempt = saved
+                        .get("attempt_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let code = saved.get("exit_code").and_then(Value::as_i64).unwrap_or(0) as i32;
+                    println!(
+                        "reattach verify attempt {attempt} status={}",
+                        saved.get("terminal").and_then(Value::as_str).unwrap_or("")
+                    );
+                    return Ok(code);
+                }
+                "verify" | "follow" => {
+                    follow_id = saved
+                        .get("attempt_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    receipt = saved;
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(follow) = follow_id {
+        receipt["attempt_id"] = json!(follow);
         receipt["submitted"] = json!(true);
-        remember_attempts(&pointers, follow.trim())?;
+        remember_attempts(&pointers, &follow)?;
     } else {
         let submitted = nixplane_output(&nixplane, submit_args(&spec_path, &source_path))?;
         let accepted: Value = serde_json::from_str(submitted.trim()).map_err(|error| {
@@ -85,8 +113,21 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
         .unwrap_or(900);
     let deadline = Instant::now() + Duration::from_secs(timeout);
     let mut events = Vec::new();
-    let mut cursor = 0_u64;
+    let mut cursor = receipt
+        .get("journal_cursor")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     let mut finished: Option<Value> = None;
+    if std::env::var("NIXPLANE_REATTACH").ok().as_deref() == Some("1")
+        && receipt.get("hash_ok").and_then(Value::as_bool) != Some(true)
+        && let Some(terminal) = receipt.get("terminal").and_then(Value::as_str)
+        && !terminal.is_empty()
+    {
+        finished = Some(json!({
+            "event_type": terminal,
+            "exit_code": receipt.get("exit_code").cloned().unwrap_or(json!(1)),
+        }));
+    }
     while finished.is_none() {
         if Instant::now() > deadline {
             let mut cancel_args =
@@ -128,6 +169,8 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
         .unwrap_or("exited");
     receipt["terminal"] = json!(kind);
     receipt["exit_code"] = json!(code);
+    receipt["journal_cursor"] = json!(cursor);
+    write_receipt(&root, &receipt)?;
     if kind == "cancelled" {
         write_receipt(&root, &receipt)?;
         clear_attempts(&pointers, &attempt);
@@ -628,9 +671,32 @@ fn write_receipt(root: &Path, receipt: &Value) -> Result<(), WorkflowError> {
     Ok(())
 }
 
+fn saved_receipt(root: &Path, task: &str) -> Option<Value> {
+    let run_id = std::env::var("NXR_RUN_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| run_context().map(|context| context.run_id))?;
+    let pointer = leaf_attempt_path(root, &run_id, task);
+    let attempt = fs::read_to_string(pointer).ok()?;
+    let attempt = attempt.trim();
+    if attempt.is_empty() {
+        return None;
+    }
+    let directory = std::env::var("NIXPLANE_RECEIPT_DIR")
+        .ok()
+        .filter(|text| !text.trim().is_empty())
+        .map_or_else(|| root.join(".fabric-receipts"), PathBuf::from);
+    let text = fs::read_to_string(directory.join(format!("{attempt}.json"))).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 fn attempt_pointers(root: &Path, task: &str) -> Result<Vec<PathBuf>, WorkflowError> {
-    let run_id =
-        std::env::var("NXR_RUN_ID").unwrap_or_else(|_| format!("run-{}", std::process::id()));
+    let context = run_context();
+    let run_id = std::env::var("NXR_RUN_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| context.as_ref().map(|context| context.run_id.clone()))
+        .unwrap_or_else(unique_run_id);
     let leaf = leaf_attempt_path(root, &run_id, task);
     let run_dir = leaf
         .parent()
@@ -653,13 +719,49 @@ fn attempt_pointers(root: &Path, task: &str) -> Result<Vec<PathBuf>, WorkflowErr
         })?;
     }
     let mut paths = vec![leaf];
-    if let Ok(shared) = std::env::var("NIXPLANE_ACTIVE_ATTEMPT")
+    let leaves = std::env::var("NXR_RUN_LEAVES")
+        .ok()
+        .and_then(|text| text.parse::<usize>().ok())
+        .or_else(|| context.map(|context| context.leaves))
+        .unwrap_or(1);
+    if leaves <= 1
+        && let Ok(shared) = std::env::var("NIXPLANE_ACTIVE_ATTEMPT")
         && !shared.trim().is_empty()
     {
         paths.push(PathBuf::from(shared));
     }
     Ok(paths)
 }
+
+/// A new id for every workflow run. Two runs do not share attempt files.
+pub(crate) fn unique_run_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(1);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("run-{millis}-{}-{sequence}", std::process::id())
+}
+
+pub(crate) fn set_run_context(run_id: String, leaves: usize) {
+    if let Ok(mut guard) = RUN_CONTEXT.lock() {
+        *guard = Some(RunContext { run_id, leaves });
+    }
+}
+
+fn run_context() -> Option<RunContext> {
+    RUN_CONTEXT.lock().ok().and_then(|guard| guard.clone())
+}
+
+#[derive(Clone)]
+struct RunContext {
+    run_id: String,
+    leaves: usize,
+}
+
+static RUN_CONTEXT: std::sync::Mutex<Option<RunContext>> = std::sync::Mutex::new(None);
 
 fn leaf_attempt_path(root: &Path, run_id: &str, task: &str) -> PathBuf {
     let safe_run = file_token(run_id);
@@ -706,12 +808,44 @@ fn remember_pointer(path: &Path, attempt: &str) -> Result<(), WorkflowError> {
             )
         })?;
     }
-    fs::write(path, format!("{attempt}\n")).map_err(|error| {
+    let temporary = path.with_extension("tmp");
+    fs::write(&temporary, format!("{attempt}\n")).map_err(|error| {
+        WorkflowError::new(
+            exit::PROCESS_SUPERVISION,
+            format!("active attempt: {error}"),
+        )
+    })?;
+    fs::rename(&temporary, path).map_err(|error| {
         WorkflowError::new(
             exit::PROCESS_SUPERVISION,
             format!("active attempt: {error}"),
         )
     })
+}
+
+/// What a stopped run should do with an attempt it already admitted.
+///
+/// A terminal attempt is checked again. An attempt that has not finished is
+/// followed. Neither path submits a second attempt.
+pub(crate) fn reattach_action(receipt: Option<&Value>) -> &'static str {
+    let Some(receipt) = receipt else {
+        return "submit";
+    };
+    let attempt = receipt
+        .get("attempt_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if attempt.is_empty() {
+        return "submit";
+    }
+    if receipt
+        .get("terminal")
+        .and_then(Value::as_str)
+        .is_some_and(|status| !status.is_empty())
+    {
+        return "verify";
+    }
+    "follow"
 }
 
 fn clear_attempts(paths: &[PathBuf], attempt: &str) {
@@ -829,5 +963,39 @@ mod tests {
         clear_attempts(&[right.clone(), shared.clone()], "att_right");
         assert!(!right.exists());
         assert!(!shared.exists());
+    }
+
+    #[test]
+    fn two_runs_do_not_share_an_attempt_file() {
+        let root = tempfile::tempdir().expect("root");
+        let first = unique_run_id();
+        let second = unique_run_id();
+        assert_ne!(first, second);
+        let left = leaf_attempt_path(root.path(), &first, "stargate-wasm-bundle");
+        let right = leaf_attempt_path(root.path(), &second, "stargate-wasm-bundle");
+        remember_pointer(&left, "att_one").expect("one");
+        remember_pointer(&right, "att_two").expect("two");
+        assert_eq!(fs::read_to_string(&left).expect("left").trim(), "att_one");
+        assert_eq!(fs::read_to_string(&right).expect("right").trim(), "att_two");
+        assert!(!left.with_extension("tmp").exists());
+    }
+
+    #[test]
+    fn a_finished_attempt_is_verified_instead_of_submitted() {
+        let exited = json!({
+            "attempt_id": "att_done",
+            "source_set_id": "src_1",
+            "artifact_digest": "abc",
+            "journal_cursor": 4,
+            "terminal": "exited",
+            "exit_code": 0
+        });
+        assert_eq!(reattach_action(Some(&exited)), "verify");
+        let interrupted = json!({
+            "attempt_id": "att_open",
+            "journal_cursor": 2
+        });
+        assert_eq!(reattach_action(Some(&interrupted)), "follow");
+        assert_eq!(reattach_action(None), "submit");
     }
 }

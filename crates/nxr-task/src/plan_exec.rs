@@ -100,6 +100,9 @@ pub struct PlanNode {
     /// Files hashed after a successful native or winbuild node.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<String>,
+    /// Dependency task names whose stored outputs this node consumes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<String>,
 }
 
 /// Versioned, immutable execution plan for a chosen root.
@@ -218,6 +221,7 @@ pub fn build_execution_plan_roots(
                 environment: BTreeMap::new(),
                 working_directory: None,
                 artifacts: Vec::new(),
+                inputs: Vec::new(),
             })
         })
         .collect();

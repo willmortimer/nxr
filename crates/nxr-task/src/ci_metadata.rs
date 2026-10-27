@@ -88,6 +88,7 @@ mod tests {
             environment: BTreeMap::new(),
             working_directory: None,
             artifacts: Vec::new(),
+            inputs: Vec::new(),
             operation: Operation::NativeCommand {
                 argv: vec!["/usr/bin/true".to_owned()],
             },

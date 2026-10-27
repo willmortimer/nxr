@@ -1186,6 +1186,7 @@ mod tests {
             environment,
             working_directory: None,
             artifacts: vec!["out.txt".to_owned()],
+            inputs: Vec::new(),
             operation: Operation::NativeCommand {
                 argv: vec!["/usr/bin/true".to_owned()],
             },

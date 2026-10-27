@@ -417,6 +417,9 @@ pub fn run_operation_plan_callbacks(
 fn context_for_node(base: &ExecContext, node: &PlanNode) -> ExecContext {
     let mut env = base.env.clone();
     env.extend(node.environment.clone());
+    if !node.inputs.is_empty() {
+        env.insert("NXR_ARTIFACT_INPUTS".to_owned(), node.inputs.join(","));
+    }
     let cwd = match (&node.working_directory, &base.cwd) {
         (Some(relative), Some(root)) => Some(root.join(relative)),
         (Some(relative), None) => Some(PathBuf::from(relative)),

@@ -482,13 +482,28 @@ nxr watch task:ci
 and `nxr task workflow:<task>` use that same planner. A bare task name still
 resolves through the flake task document and does not consult the workflow file.
 `workflow plan` prints the graph, including Windows-only leaves, and does not
-execute them. `workflow spec` prints the `execution-spec-v1` envelope for one
+execute them. A task may declare `artifacts` (files or directories it produces)
+and `inputs` (dependency task names whose stored outputs it consumes). An input
+that is not a dependency is rejected. `workflow spec` prints the `execution-spec-v1` envelope for one
 leaf. The operation id is stable for that leaf and is independent of a CI
 idempotency key. `workflow run` skips a leaf whose platform or architecture does
 not match the host and says why. `--execution remote` submits that same
 execution spec through `nixplane execution` submit, poll, and fetch, writes the
 receipt, and returns the remote exit code. It does not schedule work and it
-does not add a remote content store. The default remains local. Flake executors run through `nix run`. Native
+does not add a remote content store. The default remains local. Each workflow run gets its own id.
+Attempt files are written by rename under `.nxr/runs/<run>/tasks/<task>/`.
+`NIXPLANE_ACTIVE_ATTEMPT` remains the single-attempt path and is not written
+when the run has more than one leaf. Two runs of the same task do not share
+attempt files. Cancelling or finishing one leaf removes only the pointer whose
+contents are that attempt id. `NIXPLANE_REATTACH=1` with `NXR_RUN_ID` set to
+the original run keeps that attempt id, source set, artifact digest, journal
+cursor, and terminal status. A finished attempt is fetched or verified again.
+It is not submitted a second time. Independent leaves in one wave share the
+`--jobs` slots (the default is 4). Same-host artifact reuse reads the local
+store. A consumer on another host uses `nixplane execution fetch`. `nxr cache
+explain <task>` prints the artifact decision (`hit`, `miss`, `rebuild`, or
+`not-cacheable`), the identity field that caused it, and separate cargo and
+sccache lines. Flake executors run through `nix run`. Native
 and winbuild executors do not look up Nix or WSL.
 
 Trailing arguments after the task name are forwarded to the **root task app only**

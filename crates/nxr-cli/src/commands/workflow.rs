@@ -131,7 +131,15 @@ pub fn execute_mode(
         return Ok(exit::SUCCESS);
     }
     let mut sink = StdioSink;
-    let ctx = execution_context(&root, nix);
+    let mut ctx = execution_context(&root, nix);
+    let run_id = std::env::var("NXR_RUN_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(crate::commands::remote::unique_run_id);
+    crate::commands::remote::set_run_context(run_id.clone(), plan.nodes.len());
+    ctx.env.insert("NXR_RUN_ID".to_owned(), run_id);
+    ctx.env
+        .insert("NXR_RUN_LEAVES".to_owned(), plan.nodes.len().to_string());
     let run = run_operation_plan_callbacks(
         &plan,
         &ctx,

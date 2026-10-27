@@ -525,6 +525,21 @@ pub fn explain_task(
     json: bool,
     runner: RunnerOutput,
 ) -> Result<(), CacheError> {
+    if read_artifact_decision(task).is_some() {
+        if json {
+            let decision = read_artifact_decision(task).unwrap_or(serde_json::Value::Null);
+            writeln!(
+                io::stdout().lock(),
+                "{}",
+                serde_json::to_string_pretty(&decision)?
+            )?;
+        } else {
+            for line in artifact_decision_lines(task) {
+                runner.info(line).map_err(CacheError::Io)?;
+            }
+        }
+        return Ok(());
+    }
     let snapshot = WorkspaceSnapshot::load(flake_arg, nix_override, true, &Default::default())?;
     let document = snapshot
         .tasks
@@ -564,13 +579,75 @@ pub fn explain_task(
             name: canonical.clone(),
         })?;
     let explain = explain_workspace_cache(node);
+    let artifact = artifact_decision_lines(task);
     if json {
         let rendered = serde_json::to_string_pretty(&explain)?;
         writeln!(io::stdout().lock(), "{rendered}")?;
     } else {
+        for line in &artifact {
+            runner.info(line.clone()).map_err(CacheError::Io)?;
+        }
         render_cache_explain(&explain, &canonical, runner)?;
     }
     Ok(())
+}
+
+fn artifact_decision_lines(task: &str) -> Vec<String> {
+    let Some(decision) = read_artifact_decision(task) else {
+        return vec![
+            "artifact: not-recorded".to_owned(),
+            "cargo: not-recorded".to_owned(),
+            "sccache: not-recorded".to_owned(),
+        ];
+    };
+    let mut lines = vec![format!(
+        "artifact: {}",
+        decision
+            .get("decision")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("not-recorded")
+    )];
+    if let Some(reason) = decision.get("reason").and_then(serde_json::Value::as_str)
+        && !reason.is_empty()
+    {
+        lines.push(format!("reason: {reason}"));
+    }
+    lines.push(format!(
+        "cargo: {}",
+        decision
+            .get("cargo")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("not-recorded")
+    ));
+    lines.push(format!(
+        "sccache: {}",
+        decision
+            .get("sccache")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("not-recorded")
+    ));
+    lines
+}
+
+fn read_artifact_decision(task: &str) -> Option<serde_json::Value> {
+    let mut dir = std::env::var("NXR_ARTIFACT_DECISION_ROOT")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())?;
+    loop {
+        let path = dir
+            .join(".nxr")
+            .join("artifacts")
+            .join("decisions")
+            .join(format!("{task}.json"));
+        if path.is_file() {
+            let text = std::fs::read_to_string(path).ok()?;
+            return serde_json::from_str(&text).ok();
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
 }
 
 fn render_cache_explain(

@@ -170,6 +170,8 @@ pub struct WorkflowTask {
     pub environment: BTreeMap<String, String>,
     pub working_directory: Option<String>,
     pub artifacts: Vec<String>,
+    /// Named outputs this task restores from dependencies before it runs.
+    pub inputs: Vec<String>,
     pub operation: Operation,
 }
 
@@ -350,6 +352,7 @@ pub fn plan_workflow_document(
                 environment: task.environment.clone(),
                 working_directory: task.working_directory.clone(),
                 artifacts: task.artifacts.clone(),
+                inputs: task.inputs.clone(),
             })
         })
         .collect();
@@ -458,6 +461,14 @@ fn parse_workflow_str(text: &str, path: &str) -> Result<WorkflowDocument, Workfl
             .as_ref()
             .map(NodeResources::from_task_resources)
             .unwrap_or_default();
+        for input in &task.inputs {
+            if !task.depends_on.iter().any(|edge| edge == input) {
+                return Err(WorkflowError::Invalid {
+                    path: path.to_owned(),
+                    message: format!("task `{name}` input `{input}` is not a dependency"),
+                });
+            }
+        }
         tasks.insert(
             name,
             WorkflowTask {
@@ -468,6 +479,7 @@ fn parse_workflow_str(text: &str, path: &str) -> Result<WorkflowDocument, Workfl
                 environment: task.env,
                 working_directory: task.working_directory,
                 artifacts: task.artifacts,
+                inputs: task.inputs.clone(),
                 operation,
             },
         );
@@ -855,6 +867,9 @@ struct WorkflowTaskFile {
     working_directory: Option<String>,
     #[serde(default)]
     artifacts: Vec<String>,
+    /// Dependency task names whose stored outputs this task consumes.
+    #[serde(default)]
+    inputs: Vec<String>,
     executor: WorkflowExecutorFile,
 }
 
@@ -1552,5 +1567,35 @@ executor = { remote = { target = "windows-pc", task = "fixture", source_url = "h
             .status()
             .expect("git");
         assert!(status.success(), "git {args:?}");
+    }
+
+    #[test]
+    fn an_input_names_a_dependency_output() {
+        let text = r#"
+schema_version = 1
+
+[tasks.producer]
+artifacts = ["out.txt"]
+executor = { native = ["true"] }
+
+[tasks.consumer]
+depends_on = ["producer"]
+inputs = ["producer"]
+executor = { native = ["true"] }
+"#;
+        let document = parse_workflow_str(text, "workflows.toml").expect("parse");
+        assert_eq!(
+            document.tasks["consumer"].inputs,
+            vec!["producer".to_owned()]
+        );
+        let missing = r#"
+schema_version = 1
+
+[tasks.consumer]
+inputs = ["producer"]
+executor = { native = ["true"] }
+"#;
+        let error = parse_workflow_str(missing, "workflows.toml").expect_err("input");
+        assert!(error.to_string().contains("is not a dependency"));
     }
 }

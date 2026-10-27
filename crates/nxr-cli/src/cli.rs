@@ -670,8 +670,8 @@ pub enum WorkflowSubcommand {
     Run {
         /// Task name
         name: String,
-        /// Maximum parallel task nodes
-        #[arg(short = 'j', long = "jobs", default_value_t = 1, value_name = "N")]
+        /// Maximum parallel task nodes. Independent leaves in one wave share these slots.
+        #[arg(short = 'j', long = "jobs", default_value_t = 4, value_name = "N")]
         jobs: usize,
         /// Continue independent work after a failure
         #[arg(long = "keep-going")]
