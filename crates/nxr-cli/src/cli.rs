@@ -676,6 +676,9 @@ pub enum WorkflowSubcommand {
         /// Continue independent work after a failure
         #[arg(long = "keep-going")]
         keep_going: bool,
+        /// `local` runs on this host. `remote` submits through `nixplane execution`.
+        #[arg(long, default_value = "local", value_parser = ["local", "remote"])]
+        execution: String,
     },
     /// Reattach to a native build that is already on the Hub.
     Attach {

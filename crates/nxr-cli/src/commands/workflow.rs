@@ -41,7 +41,7 @@ impl WorkflowError {
         }
     }
 
-    fn new(code: i32, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: i32, message: impl Into<String>) -> Self {
         Self::Message {
             code,
             message: message.into(),
@@ -75,7 +75,11 @@ pub fn execute(
             name,
             jobs,
             keep_going,
+            execution,
         } => {
+            if execution == "remote" {
+                return crate::commands::remote::execute(name);
+            }
             let mode = WorkflowPlanMode::Explicit {
                 root: Some(name.clone()),
             };
@@ -193,6 +197,55 @@ fn print_execution_spec(
         .map_err(|error| WorkflowError::new(exit::PROCESS_SUPERVISION, error.to_string()))?;
     println!("{text}");
     Ok(exit::SUCCESS)
+}
+
+/// Write the execution spec and source set without printing them.
+///
+/// # Errors
+///
+/// Returns [`WorkflowError`] when the task or the repository cannot be read.
+pub(crate) fn write_execution_files(
+    name: &str,
+    spec_out: &std::path::Path,
+    source_out: &std::path::Path,
+) -> Result<(), WorkflowError> {
+    let root = workflow_root()?;
+    let path = nxr_task::workflows::workflow_path(&root);
+    let bytes = std::fs::read(&path).map_err(|error| {
+        WorkflowError::new(exit::NOT_FOUND, format!("read {}: {error}", path.display()))
+    })?;
+    let document = load_workflow_document(&root)
+        .map_err(map_plan)?
+        .ok_or_else(|| WorkflowError::new(exit::NOT_FOUND, "workflow file is not present"))?;
+    let task = document.tasks.get(name).ok_or_else(|| {
+        WorkflowError::new(exit::USAGE, format!("unknown workflow task `{name}`"))
+    })?;
+    let source = nxr_task::source_set_from_repo(&root)
+        .map_err(|error| WorkflowError::new(exit::USAGE, error))?;
+    let spec = nxr_task::execution_spec_for_task(
+        &source,
+        &nxr_task::workflow_definition_digest(&bytes),
+        name,
+        task,
+    )
+    .map_err(|error| WorkflowError::new(exit::USAGE, error))?;
+    let source_text = serde_json::to_string_pretty(&source)
+        .map_err(|error| WorkflowError::new(exit::PROCESS_SUPERVISION, error.to_string()))?;
+    std::fs::write(source_out, source_text).map_err(|error| {
+        WorkflowError::new(
+            exit::PROCESS_SUPERVISION,
+            format!("write {}: {error}", source_out.display()),
+        )
+    })?;
+    let text = serde_json::to_string_pretty(&spec)
+        .map_err(|error| WorkflowError::new(exit::PROCESS_SUPERVISION, error.to_string()))?;
+    std::fs::write(spec_out, text).map_err(|error| {
+        WorkflowError::new(
+            exit::PROCESS_SUPERVISION,
+            format!("write {}: {error}", spec_out.display()),
+        )
+    })?;
+    Ok(())
 }
 
 fn workflow_root() -> Result<std::path::PathBuf, WorkflowError> {

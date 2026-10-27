@@ -461,7 +461,7 @@ Dynamic completion must:
 nxr workflow list
 nxr workflow plan <task>
 nxr workflow spec <task>
-nxr workflow run <task> [--jobs N] [--keep-going]
+nxr workflow run <task> [--jobs N] [--keep-going] [--execution local|remote]
 nxr workflow attach --job-id ID [--after-sequence N]
 nxr task workflow
 nxr task workflow:<task>
@@ -485,7 +485,10 @@ resolves through the flake task document and does not consult the workflow file.
 execute them. `workflow spec` prints the `execution-spec-v1` envelope for one
 leaf. The operation id is stable for that leaf and is independent of a CI
 idempotency key. `workflow run` skips a leaf whose platform or architecture does
-not match the host and says why. Flake executors run through `nix run`. Native
+not match the host and says why. `--execution remote` submits that same
+execution spec through `nixplane execution` submit, poll, and fetch, writes the
+receipt, and returns the remote exit code. It does not schedule work and it
+does not add a remote content store. The default remains local. Flake executors run through `nix run`. Native
 and winbuild executors do not look up Nix or WSL.
 
 Trailing arguments after the task name are forwarded to the **root task app only**
