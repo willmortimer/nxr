@@ -83,6 +83,7 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
         .unwrap_or(900);
     let deadline = Instant::now() + Duration::from_secs(timeout);
     let mut events = Vec::new();
+    let mut cursor = 0_u64;
     let mut finished: Option<Value> = None;
     while finished.is_none() {
         if Instant::now() > deadline {
@@ -96,7 +97,9 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
             clear_attempt();
             return Ok(124);
         }
-        events = collect_journal(&nixplane, &attempt)?;
+        let page = collect_journal(&nixplane, &attempt, cursor)?;
+        cursor = journal_cursor(cursor, &page);
+        events.extend(page);
         absorb_marks(&mut receipt, &events);
         finished = terminal_event(&events);
         if finished.is_none() {
@@ -168,7 +171,9 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
     if let Some(line) = sccache_line(&events) {
         receipt["sccache"] = json!(line);
     }
-    verify_desktop(&output_dir, &commit, &mut receipt, &mut mismatches);
+    if let Some(verifier) = output_verifier() {
+        run_output_verifier(&verifier, &output_dir, &commit, &mut mismatches)?;
+    }
     let hash_ok = mismatches.is_empty();
     receipt["hash_ok"] = json!(hash_ok);
     write_receipt(&root, &receipt)?;
@@ -267,17 +272,30 @@ fn nixplane_both(bin: &str, args: Vec<String>) -> Result<(String, String), Workf
     ))
 }
 
-fn collect_journal(bin: &str, attempt: &str) -> Result<Vec<Value>, WorkflowError> {
+pub(crate) fn journal_cursor(after: u64, events: &[Value]) -> u64 {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| event.get("sequence").and_then(Value::as_u64))
+        .map(|sequence| sequence.max(after))
+        .unwrap_or(after)
+}
+
+fn replay_args(attempt: &str, after: u64) -> Vec<String> {
+    vec![
+        "execution".to_owned(),
+        "replay".to_owned(),
+        attempt.to_owned(),
+        "--after-sequence".to_owned(),
+        after.to_string(),
+    ]
+}
+
+fn collect_journal(bin: &str, attempt: &str, after: u64) -> Result<Vec<Value>, WorkflowError> {
     let mut events = Vec::new();
-    let mut after = 0_u64;
+    let mut cursor = after;
     loop {
-        let mut args = vec![
-            "execution".to_owned(),
-            "replay".to_owned(),
-            attempt.to_owned(),
-            "--after-sequence".to_owned(),
-            after.to_string(),
-        ];
+        let mut args = replay_args(attempt, cursor);
         push_state(&mut args);
         let page = nixplane_output(bin, args)?;
         let parsed: Vec<Value> = serde_json::from_str(page.trim()).unwrap_or_default();
@@ -293,10 +311,10 @@ fn collect_journal(bin: &str, attempt: &str) -> Result<Vec<Value>, WorkflowError
         let Some(last) = last else {
             return Ok(events);
         };
-        if last <= after || parsed.len() < 100 {
+        if last <= cursor || parsed.len() < 100 {
             return Ok(events);
         }
-        after = last;
+        cursor = last;
     }
 }
 
@@ -396,72 +414,48 @@ fn sccache_line(events: &[Value]) -> Option<String> {
     })
 }
 
-fn verify_desktop(dir: &Path, commit: &str, receipt: &mut Value, mismatches: &mut Vec<String>) {
-    let manifest_path = dir.join("lattice-desktop-manifest.txt");
-    let Ok(text) = fs::read_to_string(&manifest_path) else {
-        return;
+fn output_verifier() -> Option<String> {
+    let Ok(command) = std::env::var("NXR_OUTPUT_VERIFY") else {
+        return None;
     };
-    if !commit.is_empty() && !text.starts_with(&format!("lattice {commit}\n")) {
-        mismatches.push("desktop manifest does not name the submitted commit".to_owned());
-    }
-    receipt["desktop_manifest"] = json!(text);
-    if let Some(toolchain) = field(&text, "rustc ") {
-        receipt["toolchain"] = json!(toolchain);
-    }
-    if let Some(linker) = field(&text, "linker ") {
-        receipt["linker"] = json!(linker);
-    }
-    if receipt.get("sccache").is_none()
-        && let Some(line) = text.lines().find(|line| line.starts_with("sccache "))
-    {
-        receipt["sccache"] = json!(line);
-    }
-    let Some(expected) = field(&text, "sha256 ") else {
-        mismatches.push("desktop manifest is missing the binary hash".to_owned());
-        return;
-    };
-    let binary = ["lattice-desktop.exe", "lattice-desktop"]
-        .into_iter()
-        .map(|name| dir.join(name))
-        .find(|path| path.is_file());
-    let Some(binary) = binary else {
-        mismatches.push("desktop binary was not fetched".to_owned());
-        return;
-    };
-    match file_sha256(&binary) {
-        Ok(actual) if actual == expected => {
-            receipt["verified_sha256"] = json!(actual);
-        }
-        Ok(actual) => mismatches.push(format!(
-            "retrieved desktop bytes {actual} do not match the manifest hash {expected}"
-        )),
-        Err(error) => mismatches.push(error),
+    let command = command.trim();
+    if command.is_empty() {
+        None
+    } else {
+        Some(command.to_owned())
     }
 }
 
-fn field(text: &str, prefix: &str) -> Option<String> {
-    text.lines()
-        .find(|line| line.starts_with(prefix))
-        .map(|line| line[prefix.len()..].trim().to_owned())
-}
-
-fn file_sha256(path: &Path) -> Result<String, String> {
-    for (program, extra) in [("sha256sum", &[] as &[&str]), ("shasum", &["-a", "256"])] {
-        let mut command = Command::new(program);
-        command.args(extra).arg(path);
-        let Ok(output) = command.output() else {
-            continue;
-        };
-        if !output.status.success() {
-            continue;
-        }
-        let text = String::from_utf8_lossy(&output.stdout);
-        let digest = text.split_whitespace().next().unwrap_or("");
-        if digest.len() == 64 {
-            return Ok(digest.to_owned());
-        }
+fn run_output_verifier(
+    command: &str,
+    dir: &Path,
+    commit: &str,
+    mismatches: &mut Vec<String>,
+) -> Result<(), WorkflowError> {
+    let output = Command::new(command)
+        .arg(dir)
+        .env("NXR_VERIFY_COMMIT", commit)
+        .output()
+        .map_err(|error| {
+            WorkflowError::new(
+                exit::PROCESS_SUPERVISION,
+                format!("output verifier {command}: {error}"),
+            )
+        })?;
+    if output.status.success() {
+        return Ok(());
     }
-    Err(format!("could not hash {}", path.display()))
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr.trim();
+    mismatches.push(if detail.is_empty() {
+        format!(
+            "output verifier {command} exited {}",
+            output.status.code().unwrap_or(1)
+        )
+    } else {
+        format!("output verifier {command}: {detail}")
+    });
+    Ok(())
 }
 
 pub(crate) fn chunk_counts(stderr: &str) -> (u64, u64) {
@@ -646,11 +640,38 @@ mod tests {
     }
 
     #[test]
-    fn a_manifest_names_the_commit_toolchain_and_linker() {
-        let text = "lattice abc\nrustc 1.98.0\ntarget x86_64-pc-windows-msvc\nsha256 d6c1a8f7\nlinker link.exe\nsccache stock hits=90 misses=0 non-cacheable=11\n";
-        assert_eq!(field(text, "rustc ").as_deref(), Some("1.98.0"));
-        assert_eq!(field(text, "linker ").as_deref(), Some("link.exe"));
-        assert_eq!(field(text, "sha256 ").as_deref(), Some("d6c1a8f7"));
-        assert!(text.starts_with("lattice abc\n"));
+    fn the_second_poll_requests_the_last_sequence() {
+        let first = vec![json!({"sequence": 3}), json!({"sequence": 11})];
+        let cursor = journal_cursor(0, &first);
+        assert_eq!(cursor, 11);
+        let args = replay_args("att_1", cursor);
+        let position = args
+            .iter()
+            .position(|arg| arg == "--after-sequence")
+            .expect("cursor flag");
+        assert_eq!(args[position + 1], "11");
+        assert_eq!(journal_cursor(cursor, &[]), 11);
+    }
+
+    #[test]
+    fn a_nonzero_verifier_fails_the_transfer_check() {
+        let root = tempfile::tempdir().expect("root");
+        let script = root.path().join("verify.sh");
+        fs::write(&script, "#!/bin/sh\necho mismatch >&2\nexit 7\n").expect("script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        let mut mismatches = Vec::new();
+        run_output_verifier(
+            script.to_str().expect("utf8"),
+            root.path(),
+            "abc",
+            &mut mismatches,
+        )
+        .expect("spawn");
+        assert_eq!(mismatches.len(), 1);
+        assert!(mismatches[0].contains("mismatch"), "{}", mismatches[0]);
     }
 }
