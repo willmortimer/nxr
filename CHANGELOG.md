@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.0-rc.2] - 2026-10-27
+
+### Added
+
+- `nxr workflow run --execution remote` keeps a journal cursor across polls and appends only new events.
+- `NXR_OUTPUT_VERIFY` runs a project checker after fetch. A non-zero exit fails the transfer check. NXR does not parse Lattice manifests.
+
+### Changed
+
+- Workspace and Nix package version **3.8.0-rc.2**.
+
 ## [3.8.0-rc.1] - 2026-10-23
 
 ### Added

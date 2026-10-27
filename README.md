@@ -143,9 +143,10 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**3.8.0-rc.1** — workflow leaves emit `execution-spec-v2` envelopes from
-`.nxr/workflows.toml`, with SourceSet digests and run journals. `nxr task`
-still uses the flake task document. A sibling repository is not part of the
-default source identity. Operator archives stay Darwin and Linux.
+**3.8.0-rc.2** — remote workflow runs follow the journal from a cursor and
+can hand fetched outputs to `NXR_OUTPUT_VERIFY`. Workflow leaves still emit
+`execution-spec-v2` envelopes from `.nxr/workflows.toml`. `nxr task` still
+uses the flake task document. A sibling repository is not part of the default
+source identity. Operator archives stay Darwin and Linux.
 
 History: [CHANGELOG.md](CHANGELOG.md) · roadmap: [docs/ROADMAP.md](docs/ROADMAP.md).
