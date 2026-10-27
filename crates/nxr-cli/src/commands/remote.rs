@@ -37,11 +37,13 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
         .to_owned();
     let outputs = output_names(&spec);
     let mut receipt = seed_receipt(&root, name, &spec, &commit);
+    let pointers = attempt_pointers(&root, name)?;
     if let Ok(follow) = std::env::var("NIXPLANE_FOLLOW")
         && !follow.trim().is_empty()
     {
         receipt["attempt_id"] = json!(follow.trim());
         receipt["submitted"] = json!(true);
+        remember_attempts(&pointers, follow.trim())?;
     } else {
         let submitted = nixplane_output(&nixplane, submit_args(&spec_path, &source_path))?;
         let accepted: Value = serde_json::from_str(submitted.trim()).map_err(|error| {
@@ -66,7 +68,7 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
         receipt["operation_id"] = accepted.get("operation_id").cloned().unwrap_or(json!(null));
         receipt["submit_status"] = accepted.get("status").cloned().unwrap_or(json!(null));
         receipt["submitted"] = json!(true);
-        remember_attempt(&attempt)?;
+        remember_attempts(&pointers, &attempt)?;
         println!(
             "admitted attempt {attempt} status={}",
             accepted.get("status").and_then(Value::as_str).unwrap_or("")
@@ -92,12 +94,21 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
             push_state(&mut cancel_args);
             let _ = nixplane_output(&nixplane, cancel_args);
             receipt["error"] = json!("timed out waiting for a terminal result");
+            receipt["journal_cursor"] = json!(cursor);
             receipt["cancelled"] = json!(true);
             write_receipt(&root, &receipt)?;
-            clear_attempt();
+            clear_attempts(&pointers, &attempt);
             return Ok(124);
         }
-        let page = collect_journal(&nixplane, &attempt, cursor)?;
+        let page = match collect_journal(&nixplane, &attempt, cursor) {
+            Ok(page) => page,
+            Err(error) => {
+                receipt["journal_cursor"] = json!(cursor);
+                receipt["error"] = json!(error.to_string());
+                write_receipt(&root, &receipt)?;
+                return Err(error);
+            }
+        };
         cursor = journal_cursor(cursor, &page);
         events.extend(page);
         absorb_marks(&mut receipt, &events);
@@ -119,7 +130,7 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
     receipt["exit_code"] = json!(code);
     if kind == "cancelled" {
         write_receipt(&root, &receipt)?;
-        clear_attempt();
+        clear_attempts(&pointers, &attempt);
         println!("terminal attempt {attempt} cancelled exit={code}");
         drop(scratch);
         return Ok(code);
@@ -176,8 +187,9 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
     }
     let hash_ok = mismatches.is_empty();
     receipt["hash_ok"] = json!(hash_ok);
+    receipt["journal_cursor"] = json!(cursor);
     write_receipt(&root, &receipt)?;
-    clear_attempt();
+    clear_attempts(&pointers, &attempt);
     println!("terminal attempt {attempt} exit={code}");
     println!("chunks resumed={resumed} fetched={fetched} hash_ok={hash_ok}");
     for line in &mismatches {
@@ -298,7 +310,12 @@ fn collect_journal(bin: &str, attempt: &str, after: u64) -> Result<Vec<Value>, W
         let mut args = replay_args(attempt, cursor);
         push_state(&mut args);
         let page = nixplane_output(bin, args)?;
-        let parsed: Vec<Value> = serde_json::from_str(page.trim()).unwrap_or_default();
+        let parsed = parse_journal_page(&page).map_err(|error| {
+            WorkflowError::new(
+                exit::PROCESS_SUPERVISION,
+                format!("remote journal after sequence {cursor} was not json: {error}"),
+            )
+        })?;
         if parsed.is_empty() {
             return Ok(events);
         }
@@ -316,6 +333,14 @@ fn collect_journal(bin: &str, attempt: &str, after: u64) -> Result<Vec<Value>, W
         }
         cursor = last;
     }
+}
+
+fn parse_journal_page(page: &str) -> Result<Vec<Value>, String> {
+    let trimmed = page.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_str(trimmed).map_err(|error| error.to_string())
 }
 
 fn journal_events(items: &[Value]) -> Vec<Value> {
@@ -494,6 +519,20 @@ fn output_names(spec: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn tool_line(program: &str, args: &[&str]) -> String {
+    let Ok(output) = Command::new(program).args(args).output() else {
+        return "none".to_owned();
+    };
+    if !output.status.success() {
+        return "none".to_owned();
+    }
+    String::from_utf8(output.stdout)
+        .ok()
+        .and_then(|text| text.lines().next().map(str::trim).map(str::to_owned))
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| "none".to_owned())
+}
+
 fn seed_receipt(root: &Path, name: &str, spec: &Value, commit: &str) -> Value {
     if let Ok(path) = std::env::var("NIXPLANE_RECEIPT_SEED")
         && let Ok(text) = fs::read_to_string(path)
@@ -507,6 +546,9 @@ fn seed_receipt(root: &Path, name: &str, spec: &Value, commit: &str) -> Value {
         "operation_id": spec.get("operation_id").and_then(Value::as_str).unwrap_or(""),
         "commit": commit,
         "lattice_revision": commit,
+        "source": commit,
+        "rustc": tool_line("rustc", &["--version"]),
+        "linker": tool_line("cc", &["--version"]),
         "submitted": false,
         "timings": {},
         "receipt_root": root.display().to_string(),
@@ -586,23 +628,103 @@ fn write_receipt(root: &Path, receipt: &Value) -> Result<(), WorkflowError> {
     Ok(())
 }
 
-fn remember_attempt(attempt: &str) -> Result<(), WorkflowError> {
-    if let Ok(path) = std::env::var("NIXPLANE_ACTIVE_ATTEMPT") {
-        if let Some(parent) = Path::new(&path).parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        fs::write(path, attempt).map_err(|error| {
+fn attempt_pointers(root: &Path, task: &str) -> Result<Vec<PathBuf>, WorkflowError> {
+    let run_id =
+        std::env::var("NXR_RUN_ID").unwrap_or_else(|_| format!("run-{}", std::process::id()));
+    let leaf = leaf_attempt_path(root, &run_id, task);
+    let run_dir = leaf
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or_else(|| {
+            WorkflowError::new(
+                exit::PROCESS_SUPERVISION,
+                "attempt path has no run directory",
+            )
+        })?;
+    fs::create_dir_all(run_dir).map_err(|error| {
+        WorkflowError::new(exit::PROCESS_SUPERVISION, format!("run dir: {error}"))
+    })?;
+    let record = run_dir.join("run.json");
+    if !record.exists() {
+        let body = json!({"run_id": run_id});
+        fs::write(&record, format!("{body}\n")).map_err(|error| {
+            WorkflowError::new(exit::PROCESS_SUPERVISION, format!("run record: {error}"))
+        })?;
+    }
+    let mut paths = vec![leaf];
+    if let Ok(shared) = std::env::var("NIXPLANE_ACTIVE_ATTEMPT")
+        && !shared.trim().is_empty()
+    {
+        paths.push(PathBuf::from(shared));
+    }
+    Ok(paths)
+}
+
+fn leaf_attempt_path(root: &Path, run_id: &str, task: &str) -> PathBuf {
+    let safe_run = file_token(run_id);
+    let safe_task = file_token(task);
+    root.join(".nxr")
+        .join("runs")
+        .join(safe_run)
+        .join("tasks")
+        .join(safe_task)
+        .join("attempt.json")
+}
+
+fn file_token(value: &str) -> String {
+    let token: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if token.is_empty() {
+        "unnamed".to_owned()
+    } else {
+        token
+    }
+}
+
+fn remember_attempts(paths: &[PathBuf], attempt: &str) -> Result<(), WorkflowError> {
+    for path in paths {
+        remember_pointer(path, attempt)?;
+    }
+    Ok(())
+}
+
+fn remember_pointer(path: &Path, attempt: &str) -> Result<(), WorkflowError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
             WorkflowError::new(
                 exit::PROCESS_SUPERVISION,
                 format!("active attempt: {error}"),
             )
         })?;
     }
-    Ok(())
+    fs::write(path, format!("{attempt}\n")).map_err(|error| {
+        WorkflowError::new(
+            exit::PROCESS_SUPERVISION,
+            format!("active attempt: {error}"),
+        )
+    })
 }
 
-fn clear_attempt() {
-    if let Ok(path) = std::env::var("NIXPLANE_ACTIVE_ATTEMPT") {
+fn clear_attempts(paths: &[PathBuf], attempt: &str) {
+    for path in paths {
+        clear_pointer(path, attempt);
+    }
+}
+
+fn clear_pointer(path: &Path, attempt: &str) {
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
+    if text.trim() == attempt {
         let _ = fs::remove_file(path);
     }
 }
@@ -673,5 +795,39 @@ mod tests {
         .expect("spawn");
         assert_eq!(mismatches.len(), 1);
         assert!(mismatches[0].contains("mismatch"), "{}", mismatches[0]);
+    }
+
+    #[test]
+    fn a_malformed_journal_page_is_not_an_empty_page() {
+        assert!(parse_journal_page("").expect("empty").is_empty());
+        assert!(parse_journal_page("[]").expect("array").is_empty());
+        assert!(parse_journal_page("{").is_err());
+        assert!(parse_journal_page("not-json").is_err());
+        let page = parse_journal_page(r#"[{"sequence":4}]"#).expect("page");
+        assert_eq!(page[0]["sequence"], 4);
+    }
+
+    #[test]
+    fn finishing_one_leaf_keeps_the_other_attempt_pointer() {
+        let root = tempfile::tempdir().expect("root");
+        let left = leaf_attempt_path(root.path(), "run-1", "stargate-wasm");
+        let right = leaf_attempt_path(root.path(), "run-1", "lattice-check");
+        let shared = root.path().join("shared-active");
+        remember_pointer(&left, "att_left").expect("left");
+        remember_pointer(&right, "att_right").expect("right");
+        remember_pointer(&shared, "att_right").expect("shared");
+        clear_attempts(&[left.clone(), shared.clone()], "att_left");
+        assert!(!left.exists());
+        assert_eq!(
+            fs::read_to_string(&right).expect("right").trim(),
+            "att_right"
+        );
+        assert_eq!(
+            fs::read_to_string(&shared).expect("shared").trim(),
+            "att_right"
+        );
+        clear_attempts(&[right.clone(), shared.clone()], "att_right");
+        assert!(!right.exists());
+        assert!(!shared.exists());
     }
 }
