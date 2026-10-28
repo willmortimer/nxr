@@ -1,5 +1,6 @@
 {
   "schema": "artifact-explain-receipt-v1",
+  "note": "savings_ms is omitted until a comparable rebuild baseline exists. A previous 32169 figure copied task_ms and is not writer output.",
   "source": "existing bytes under lattice-ecosystem/.nxr; no new worker submit",
   "cases": [
     {
@@ -10,7 +11,7 @@
       "changed_field": "",
       "task_ms": 751,
       "checkout_ms": null,
-      "savings_ms": 32169,
+      "savings_basis": "unavailable",
       "chunks_resumed": 0,
       "chunks_fetched": 0,
       "bytes": "objects/4e0cb6a8e6ea29380afe8d59ef3d7495e260aef4619d5ece77f5c4185d0c2db0"

@@ -499,9 +499,16 @@ rename leaves the previous record readable. Before a leaf starts, each `inputs`
 entry is materialized by verifying the host-local object under
 `$XDG_CACHE_HOME/nxr/artifacts/` (or `~/.cache/nxr/artifacts` when
 `XDG_CACHE_HOME` is unset), then the checkout object under `.nxr/artifacts/`.
-The catalog key is the source-set digest and the task name. `physicalHost` and
+The catalog key is the sha256 of the canonical task inputs and the task name.
+A Stargate record is keyed by commit, profile, toolchain, lockfile, and
+dirty-source digest. A repository SourceSet stays on the record as provenance
+and does not by itself change that key. A generic record uses its source-set
+id, toolchain, and inputs. The directory name is hex. `physicalHost` and
 `facet` stay labels on the record; NXR does not register a Realization or an
-Assignment. Every file named by the manifest is hashed. The verifier recomputes
+Assignment. Publication refuses a record with none of those input fields. The
+same inputs with a different content digest are a conflict and do not overwrite
+the stored object. A legacy `unscoped/` or raw source-set directory is read
+only when its content digest matches. Every file named by the manifest is hashed. The verifier recomputes
 the bundle digest from the canonical lines and rejects a stale or forged
 `bundleSha256`. A verified host-local object is copied into the checkout and
 reused. A missing or corrupt local manifest is fetched when the record has an
@@ -512,9 +519,11 @@ verified object, and a failed replace moves the previous tree back. On producer
 success the verified record and tree are written to that catalog. `nxr cache
 explain <task>` prints the artifact decision, the digest, `local` or `fetch`,
 the identity field that changed (`sourceSet`, `toolchain`, or `inputs`), the
-savings, and separate cargo and sccache lines. The run receipt records the
-decision, digest, transfer, changed field, and savings. `task_ms`,
-`checkout_ms`, and chunk counts are copied onto the decision.
+savings basis (`measured`, `estimated`, or `unavailable`), and separate cargo
+and sccache lines. `savings_ms` is present only when a comparable rebuild
+baseline exists. The run receipt records the decision, digest, transfer,
+changed field, and savings basis. `task_ms`, `checkout_ms`, and chunk counts
+are copied onto the decision.
 `NIXPLANE_STOP_AFTER_ADMIT=1` writes that record and returns before local verification.
 `NIXPLANE_ACTIVE_ATTEMPT` remains the single-attempt path and is not written
 when the run has more than one leaf. Two runs of the same task do not share
@@ -528,8 +537,8 @@ host-local catalog, then from the checkout. A missing or corrupt object uses
 `nixplane execution fetch` when the record has an attempt id, and the fetched
 tree is stored in the catalog. `nxr cache explain <task>` prints the artifact
 decision (`hit`, `miss`, `rebuild`, or `not-cacheable`), the digest, `local` or
-`fetch`, the identity field that caused it, the savings, and separate cargo and
-sccache lines. Flake executors run through `nix run`. Native
+`fetch`, the identity field that caused it, the savings basis (`measured`,
+`estimated`, or `unavailable`), and separate cargo and sccache lines. Flake executors run through `nix run`. Native
 and winbuild executors do not look up Nix or WSL.
 
 Trailing arguments after the task name are forwarded to the **root task app only**

@@ -151,7 +151,7 @@ fn materialize_inputs_from(
         }
         if verify_tree(&checkout_object, &record.content_digest).is_ok() {
             if let Some(catalog) = catalog {
-                publish_record_tree(catalog, &record, &checkout_object)?;
+                accept_catalog_publish(publish_record_tree(catalog, &record, &checkout_object))?;
             }
             restore_local(&store, &record, &destination)?;
             write_materialize_decision(&store, input, &record, "local", "hit", &changed)?;
@@ -163,7 +163,7 @@ fn materialize_inputs_from(
             if verify_tree(&destination, &record.content_digest).is_ok() {
                 publish_tree(&destination, &checkout_object, &record.content_digest)?;
                 if let Some(catalog) = catalog {
-                    publish_record_tree(catalog, &record, &destination)?;
+                    accept_catalog_publish(publish_record_tree(catalog, &record, &destination))?;
                 }
             }
             write_materialize_decision(&store, input, &record, "fetch", "miss", &changed)?;
@@ -181,8 +181,10 @@ fn materialize_inputs_from(
 
 /// Copy verified checkout records into the host-local catalog.
 ///
-/// The catalog key is the source-set digest and the task name. `physicalHost`
-/// and `facet` stay labels on the record.
+/// The catalog key is the canonical input digest and the task name.
+/// `physicalHost` and `facet` stay labels on the record. A record with no
+/// source identity is skipped. The same inputs with a different content
+/// digest are a conflict and leave the stored object in place.
 pub fn publish_checkout_catalog(root: &Path) -> Result<(), String> {
     let Some(catalog) = catalog_root() else {
         return Ok(());
@@ -209,7 +211,11 @@ pub fn publish_checkout_catalog(root: &Path) -> Result<(), String> {
         };
         let object = store.join("objects").join(&record.content_digest);
         if verify_tree(&object, &record.content_digest).is_ok() {
-            publish_record_tree(&catalog, &record, &object)?;
+            match publish_record_tree(&catalog, &record, &object) {
+                Ok(()) => {}
+                Err(err) if err.contains("no source identity") => continue,
+                Err(err) => return Err(err),
+            }
         }
     }
     Ok(())
@@ -227,39 +233,153 @@ fn catalog_root() -> Option<std::path::PathBuf> {
     Some(base.join("nxr").join("artifacts"))
 }
 
-fn source_set_key(record: &ArtifactRecord) -> String {
+fn accept_catalog_publish(result: Result<(), String>) -> Result<(), String> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(err) if err.contains("no source identity") || err.contains("catalog conflict") => {
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Directory name for a reusable record: sha256 of the task inputs.
+///
+/// Stargate commit, profile, toolchain, lockfile, and dirty-source digest
+/// form the key when they are present. A repository SourceSet stays on the
+/// record as provenance and does not change that key. A generic record uses
+/// its source-set id, toolchain, and inputs. The result is hex, so the
+/// directory does not depend on path separators.
+fn catalog_key(record: &ArtifactRecord) -> Result<String, String> {
+    let lines = stargate_input_lines(&record.identity)
+        .or_else(|| generic_input_lines(&record.identity))
+        .ok_or_else(|| "artifact record has no source identity".to_owned())?;
+    Ok(hex_digest(lines.join("\n").as_bytes()))
+}
+
+fn stargate_input_lines(identity: &Value) -> Option<Vec<String>> {
+    let commit = text_at(identity, "commit")?;
+    let profile = text_at(identity, "profile")?;
+    let toolchain = identity.get("toolchain")?.as_object()?;
+    let tool = |name: &str| {
+        toolchain
+            .get(name)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned()
+    };
+    Some(vec![
+        "stargate".to_owned(),
+        commit,
+        profile,
+        tool("rustc"),
+        tool("wasmBindgen"),
+        tool("binaryen"),
+        first_text(identity, &["lockfile", "lockfileDigest", "lockfile_digest"]),
+        first_text(
+            identity,
+            &["dirty", "dirtySource", "dirty_snapshot_id", "dirtySnapshot"],
+        ),
+    ])
+}
+
+fn generic_input_lines(identity: &Value) -> Option<Vec<String>> {
+    let source = ["sourceSet", "source_set", "source_set_id"]
+        .iter()
+        .find_map(|key| text_at(identity, key))?;
+    Some(vec![
+        "source-set".to_owned(),
+        source,
+        identity
+            .get("toolchain")
+            .map(canonical_fragment)
+            .unwrap_or_default(),
+        identity
+            .get("inputs")
+            .or_else(|| identity.get("inputDigests"))
+            .map(canonical_fragment)
+            .unwrap_or_default(),
+    ])
+}
+
+fn text_at(identity: &Value, key: &str) -> Option<String> {
+    identity
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn first_text(identity: &Value, keys: &[&str]) -> String {
+    keys.iter()
+        .find_map(|key| text_at(identity, key))
+        .unwrap_or_default()
+}
+
+fn canonical_fragment(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Object(map) => {
+            let mut keys: Vec<_> = map.keys().cloned().collect();
+            keys.sort();
+            keys.into_iter()
+                .map(|key| format!("{key}={}", canonical_fragment(&map[&key])))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        Value::Array(items) => items
+            .iter()
+            .map(canonical_fragment)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => other.to_string(),
+    }
+}
+
+fn legacy_record_dirs(record: &ArtifactRecord) -> Vec<String> {
+    let mut dirs = vec!["unscoped".to_owned()];
     for field in ["sourceSet", "source_set", "source_set_id"] {
-        if let Some(value) = record.identity.get(field).and_then(Value::as_str)
-            && !value.is_empty()
+        if let Some(value) = text_at(&record.identity, field)
+            && value != "unscoped"
+            && safe_segment(&value, "source set").is_ok()
         {
-            return value.to_owned();
+            dirs.push(value);
         }
     }
-    "unscoped".to_owned()
+    dirs
+}
+
+fn stored_content_digest(catalog: &Path, dir: &str, name: &str) -> Option<String> {
+    let path = catalog
+        .join("records")
+        .join(dir)
+        .join(format!("{name}.json"));
+    let text = fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let stored = ArtifactRecord::from_value(&value).ok()?;
+    Some(stored.content_digest)
+}
+
+fn object_verified(catalog: &Path, digest: &str) -> bool {
+    verify_tree(&catalog.join("objects").join(digest), digest).is_ok()
 }
 
 fn catalog_object_ok(catalog: &Path, record: &ArtifactRecord) -> bool {
-    let path = catalog
-        .join("records")
-        .join(source_set_key(record))
-        .join(format!("{}.json", record.name));
-    let Ok(text) = fs::read_to_string(path) else {
+    let Ok(key) = catalog_key(record) else {
         return false;
     };
-    let Ok(value) = serde_json::from_str::<Value>(&text) else {
-        return false;
-    };
-    let Ok(stored) = ArtifactRecord::from_value(&value) else {
-        return false;
-    };
-    if stored.content_digest != record.content_digest {
-        return false;
+    match stored_content_digest(catalog, &key, &record.name) {
+        Some(digest) if digest == record.content_digest => {
+            return object_verified(catalog, &record.content_digest);
+        }
+        Some(_) => return false,
+        None => {}
     }
-    verify_tree(
-        &catalog.join("objects").join(&record.content_digest),
-        &record.content_digest,
-    )
-    .is_ok()
+    legacy_record_dirs(record).into_iter().any(|dir| {
+        stored_content_digest(catalog, &dir, &record.name).as_deref()
+            == Some(record.content_digest.as_str())
+            && object_verified(catalog, &record.content_digest)
+    })
 }
 
 fn publish_record_tree(
@@ -267,12 +387,21 @@ fn publish_record_tree(
     record: &ArtifactRecord,
     object: &Path,
 ) -> Result<(), String> {
-    let destination = catalog.join("objects").join(&record.content_digest);
-    publish_tree(object, &destination, &record.content_digest)?;
+    let key = catalog_key(record)?;
     let record_path = catalog
         .join("records")
-        .join(source_set_key(record))
+        .join(&key)
         .join(format!("{}.json", record.name));
+    if let Some(stored) = stored_content_digest(catalog, &key, &record.name)
+        && stored != record.content_digest
+    {
+        return Err(format!(
+            "catalog conflict for {} at {key}: stored {stored} does not match {}",
+            record.name, record.content_digest
+        ));
+    }
+    let destination = catalog.join("objects").join(&record.content_digest);
+    publish_tree(object, &destination, &record.content_digest)?;
     if let Some(parent) = record_path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
@@ -337,6 +466,11 @@ fn identity_value<'a>(identity: &'a Value, keys: &[&str]) -> Option<&'a Value> {
 }
 
 /// Copy run timings onto the stored materialize decision.
+///
+/// A local hit does not copy `task_ms` into `savings_ms`. Savings are
+/// `measured` against the median rebuild of the same task, toolchain, and
+/// input digest, `estimated` against the same task and toolchain, or
+/// `unavailable` when no comparable sample exists.
 pub fn annotate_decision(
     root: &Path,
     task: &str,
@@ -344,6 +478,26 @@ pub fn annotate_decision(
     checkout_ms: Option<&Value>,
     chunks_resumed: u64,
     chunks_fetched: u64,
+) -> Result<(), String> {
+    annotate_decision_from(
+        root,
+        task,
+        task_ms,
+        checkout_ms,
+        chunks_resumed,
+        chunks_fetched,
+        catalog_root().as_deref(),
+    )
+}
+
+fn annotate_decision_from(
+    root: &Path,
+    task: &str,
+    task_ms: Option<&Value>,
+    checkout_ms: Option<&Value>,
+    chunks_resumed: u64,
+    chunks_fetched: u64,
+    catalog: Option<&Path>,
 ) -> Result<(), String> {
     let path = root
         .join(".nxr")
@@ -361,16 +515,172 @@ pub fn annotate_decision(
     };
     if let Some(value) = task_ms {
         object.insert("task_ms".to_owned(), value.clone());
-        if object.get("transfer").and_then(Value::as_str) == Some("local") {
-            object.insert("savings_ms".to_owned(), value.clone());
-        }
     }
     if let Some(value) = checkout_ms {
         object.insert("checkout_ms".to_owned(), value.clone());
     }
     object.insert("chunks_resumed".to_owned(), json!(chunks_resumed));
     object.insert("chunks_fetched".to_owned(), json!(chunks_fetched));
+    let decision_kind = object
+        .get("decision")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let transfer = object
+        .get("transfer")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let record = load_checkout_record(root, task);
+    let observed = task_ms.and_then(json_u64);
+    if decision_kind == "rebuild" {
+        if let (Some(catalog), Some(record), Some(elapsed)) = (catalog, record.as_ref(), observed) {
+            record_rebuild_sample(catalog, task, record, elapsed)?;
+        }
+    }
+    let (basis, savings) = if transfer == "local" && decision_kind == "hit" {
+        match (catalog, record.as_ref(), observed) {
+            (Some(catalog), Some(record), Some(elapsed)) => {
+                savings_against_baseline(catalog, task, record, elapsed)
+            }
+            _ => ("unavailable".to_owned(), None),
+        }
+    } else {
+        ("unavailable".to_owned(), None)
+    };
+    object.insert("savingsBasis".to_owned(), json!(basis));
+    match savings {
+        Some(value) => {
+            object.insert("savings_ms".to_owned(), json!(value));
+        }
+        None => {
+            object.remove("savings_ms");
+        }
+    }
     fs::write(&path, format!("{decision}\n")).map_err(|err| err.to_string())
+}
+
+fn load_checkout_record(root: &Path, task: &str) -> Option<ArtifactRecord> {
+    let path = root
+        .join(".nxr")
+        .join("artifacts")
+        .join("records")
+        .join(format!("{task}.json"));
+    let text = fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    ArtifactRecord::from_value(&value).ok()
+}
+
+fn toolchain_digest(record: &ArtifactRecord) -> Result<String, String> {
+    let fragment = record
+        .identity
+        .get("toolchain")
+        .map(canonical_fragment)
+        .unwrap_or_default();
+    Ok(hex_digest(fragment.as_bytes()))
+}
+
+const BASELINE_SAMPLE_CAP: usize = 16;
+
+fn record_rebuild_sample(
+    catalog: &Path,
+    task: &str,
+    record: &ArtifactRecord,
+    task_ms: u64,
+) -> Result<(), String> {
+    if safe_segment(task, "artifact task").is_err() {
+        return Ok(());
+    }
+    let input = catalog_key(record)?;
+    let toolchain = toolchain_digest(record)?;
+    let path = catalog
+        .join("baselines")
+        .join(task)
+        .join(format!("{toolchain}.json"));
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let mut samples = read_baseline_samples(&path);
+    samples.push(json!({ "input": input, "task_ms": task_ms }));
+    if samples.len() > BASELINE_SAMPLE_CAP {
+        let extra = samples.len() - BASELINE_SAMPLE_CAP;
+        samples.drain(0..extra);
+    }
+    let body = json!({ "samples": samples });
+    fs::write(&path, format!("{body}\n")).map_err(|err| err.to_string())
+}
+
+fn read_baseline_samples(path: &Path) -> Vec<Value> {
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return Vec::new();
+    };
+    value
+        .get("samples")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn savings_against_baseline(
+    catalog: &Path,
+    task: &str,
+    record: &ArtifactRecord,
+    task_ms: u64,
+) -> (String, Option<i64>) {
+    let Ok(input) = catalog_key(record) else {
+        return ("unavailable".to_owned(), None);
+    };
+    let Ok(toolchain) = toolchain_digest(record) else {
+        return ("unavailable".to_owned(), None);
+    };
+    let path = catalog
+        .join("baselines")
+        .join(task)
+        .join(format!("{toolchain}.json"));
+    let samples = read_baseline_samples(&path);
+    let exact: Vec<u64> = samples
+        .iter()
+        .filter(|sample| sample.get("input").and_then(Value::as_str) == Some(input.as_str()))
+        .filter_map(|sample| sample.get("task_ms").and_then(json_u64))
+        .collect();
+    if let Some(median) = median_ms(&exact) {
+        return ("measured".to_owned(), Some(signed_delta(median, task_ms)));
+    }
+    let class: Vec<u64> = samples
+        .iter()
+        .filter_map(|sample| sample.get("task_ms").and_then(json_u64))
+        .collect();
+    if let Some(median) = median_ms(&class) {
+        return ("estimated".to_owned(), Some(signed_delta(median, task_ms)));
+    }
+    ("unavailable".to_owned(), None)
+}
+
+fn json_u64(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|number| u64::try_from(number).ok()))
+}
+
+fn median_ms(samples: &[u64]) -> Option<u64> {
+    if samples.is_empty() {
+        return None;
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let mid = sorted.len() / 2;
+    if sorted.len() % 2 == 1 {
+        Some(sorted[mid])
+    } else {
+        Some(sorted[mid - 1].saturating_add(sorted[mid]) / 2)
+    }
+}
+
+fn signed_delta(baseline: u64, observed: u64) -> i64 {
+    i64::try_from(baseline).unwrap_or(i64::MAX) - i64::try_from(observed).unwrap_or(0)
 }
 
 fn write_materialize_decision(
@@ -402,7 +712,7 @@ fn write_materialize_decision(
         "identityFields": identity_fields,
         "physicalHost": record.physical_host,
         "reason": changed,
-        "savings_ms": 0,
+        "savingsBasis": "unavailable",
         "sccache": "not-recorded",
         "task": input,
         "transfer": transfer,
@@ -1052,10 +1362,21 @@ mod tests {
             Some(catalog.as_path()),
         )
         .unwrap();
+        let record_dirs = fs::read_dir(catalog.join("records")).unwrap();
+        let keys: Vec<String> = record_dirs
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].len(), 64);
+        assert!(
+            keys[0]
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+        );
         assert!(
             catalog
                 .join("records")
-                .join("src-a")
+                .join(&keys[0])
                 .join("bundle.json")
                 .is_file()
         );
@@ -1147,7 +1468,262 @@ mod tests {
         assert_eq!(decision["task_ms"], 1200);
         assert_eq!(decision["checkout_ms"], 40);
         assert_eq!(decision["chunks_resumed"], 3);
-        assert_eq!(decision["savings_ms"], 1200);
+        assert!(decision.get("savings_ms").is_none());
+        assert_eq!(decision["savingsBasis"], "unavailable");
+    }
+
+    #[test]
+    fn stargate_inputs_key_the_catalog_not_the_source_set() {
+        let root = tempfile::tempdir().unwrap();
+        let catalog = root.path().join("catalog");
+        let source = root.path().join("object");
+        let first_digest = fixture(&source, b"wasm");
+        let other = root.path().join("other");
+        let second_digest = fixture(&other, b"next");
+        let first = stargate_record(&first_digest, "commit-a", "lattice-1");
+        let same_inputs = stargate_record(&first_digest, "commit-a", "lattice-2");
+        let other_commit = stargate_record(&second_digest, "commit-b", "lattice-1");
+        let key = super::catalog_key(&first).unwrap();
+        assert_eq!(key.len(), 64);
+        assert!(!key.contains('/') && !key.contains('\\'));
+        assert_eq!(super::catalog_key(&same_inputs).unwrap(), key);
+        assert_ne!(super::catalog_key(&other_commit).unwrap(), key);
+
+        let object = copy_fixture_object(root.path(), &source, &first_digest);
+        super::publish_record_tree(&catalog, &first, &object).unwrap();
+        let other_object = copy_fixture_object(root.path(), &other, &second_digest);
+        let conflict = super::publish_record_tree(
+            &catalog,
+            &other_commit_same_key(&first, &second_digest),
+            &other_object,
+        )
+        .unwrap_err();
+        assert!(conflict.contains("catalog conflict"), "{conflict}");
+        let stored =
+            fs::read_to_string(catalog.join("records").join(&key).join("bundle.json")).unwrap();
+        assert!(stored.contains(&first_digest));
+        assert!(!stored.contains(&second_digest));
+
+        let legacy = root.path().join("legacy");
+        fs::create_dir_all(legacy.join("records").join("unscoped")).unwrap();
+        fs::write(
+            legacy.join("records").join("unscoped").join("bundle.json"),
+            serde_json::to_string(&json!({
+                "contentDigest": "ab".repeat(32),
+                "name": "bundle",
+                "output": "bundle.tar",
+                "identity": first.identity
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(!super::catalog_object_ok(&legacy, &first));
+
+        let matched = root.path().join("matched");
+        let matched_object = matched.join("objects").join(&first_digest);
+        fs::create_dir_all(&matched_object).unwrap();
+        fs::copy(object.join("mod.wasm"), matched_object.join("mod.wasm")).unwrap();
+        fs::copy(
+            object.join("manifest.json"),
+            matched_object.join("manifest.json"),
+        )
+        .unwrap();
+        fs::create_dir_all(matched.join("records").join("unscoped")).unwrap();
+        fs::write(
+            matched.join("records").join("unscoped").join("bundle.json"),
+            serde_json::to_string(&json!({
+                "contentDigest": first_digest,
+                "name": "bundle",
+                "output": "bundle.tar",
+                "identity": first.identity.clone()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(super::catalog_object_ok(&matched, &first));
+
+        let checkout = root.path().join("checkout");
+        write_stargate_checkout(&checkout, &first_digest, "commit-a", "lattice-2");
+        super::materialize_inputs_from(
+            &ExecContext {
+                path: String::new(),
+                nix_override: None,
+                cwd: Some(checkout.clone()),
+                env: Default::default(),
+            },
+            &["bundle".to_owned()],
+            Some(catalog.as_path()),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(checkout.join(".nxr/artifacts/materialized/bundle/mod.wasm")).unwrap(),
+            b"wasm"
+        );
+        let decision: Value = serde_json::from_str(
+            &fs::read_to_string(checkout.join(".nxr/artifacts/decisions/bundle.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decision["decision"], "hit");
+        assert_eq!(decision["transfer"], "local");
+    }
+
+    #[test]
+    fn savings_are_measured_against_a_rebuild_baseline() {
+        let root = tempfile::tempdir().unwrap();
+        let catalog = root.path().join("catalog");
+        let checkout = root.path().join("checkout");
+        let source = root.path().join("object");
+        let digest = fixture(&source, b"wasm");
+        write_record_identity(checkout.as_path(), &digest, "src-a");
+        let decisions = checkout.join(".nxr").join("artifacts").join("decisions");
+        fs::create_dir_all(&decisions).unwrap();
+        fs::write(
+            decisions.join("bundle.json"),
+            serde_json::to_string(&json!({
+                "decision": "rebuild",
+                "digest": digest,
+                "transfer": "local",
+                "task": "bundle"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        super::annotate_decision_from(
+            checkout.as_path(),
+            "bundle",
+            Some(&json!(5000)),
+            None,
+            0,
+            0,
+            Some(catalog.as_path()),
+        )
+        .unwrap();
+        let rebuilt: Value =
+            serde_json::from_str(&fs::read_to_string(decisions.join("bundle.json")).unwrap())
+                .unwrap();
+        assert_eq!(rebuilt["savingsBasis"], "unavailable");
+        assert!(rebuilt.get("savings_ms").is_none());
+
+        fs::write(
+            decisions.join("bundle.json"),
+            serde_json::to_string(&json!({
+                "decision": "hit",
+                "digest": digest,
+                "transfer": "local",
+                "task": "bundle"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        super::annotate_decision_from(
+            checkout.as_path(),
+            "bundle",
+            Some(&json!(1200)),
+            None,
+            0,
+            0,
+            Some(catalog.as_path()),
+        )
+        .unwrap();
+        let hit: Value =
+            serde_json::from_str(&fs::read_to_string(decisions.join("bundle.json")).unwrap())
+                .unwrap();
+        assert_eq!(hit["savingsBasis"], "measured");
+        assert_eq!(hit["savings_ms"], 3800);
+
+        fs::write(
+            checkout.join(".nxr/artifacts/records/bundle.json"),
+            serde_json::to_string(&json!({
+                "contentDigest": digest,
+                "name": "bundle",
+                "output": "bundle.tar",
+                "identity": {"sourceSet": "src-b", "toolchain": "rust-1", "inputs": "bbb"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        super::annotate_decision_from(
+            checkout.as_path(),
+            "bundle",
+            Some(&json!(1000)),
+            None,
+            0,
+            0,
+            Some(catalog.as_path()),
+        )
+        .unwrap();
+        let estimated: Value =
+            serde_json::from_str(&fs::read_to_string(decisions.join("bundle.json")).unwrap())
+                .unwrap();
+        assert_eq!(estimated["savingsBasis"], "estimated");
+        assert_eq!(estimated["savings_ms"], 4000);
+    }
+
+    fn stargate_record(digest: &str, commit: &str, source_set: &str) -> super::ArtifactRecord {
+        super::ArtifactRecord::from_value(&json!({
+            "attemptId": "",
+            "consumerInput": "bundle",
+            "contentDigest": digest,
+            "facet": "system",
+            "host": "linux",
+            "identity": {
+                "commit": commit,
+                "dirty": "dirty-1",
+                "lockfile": "lock-1",
+                "profile": "wasm-dev",
+                "sourceSet": source_set,
+                "toolchain": {
+                    "binaryen": "1",
+                    "rustc": "1.98.0",
+                    "wasmBindgen": "0.2.127"
+                }
+            },
+            "name": "bundle",
+            "output": "bundle.tar",
+            "physicalHost": "nixdev",
+            "producerRun": "run-1"
+        }))
+        .unwrap()
+    }
+
+    fn other_commit_same_key(
+        record: &super::ArtifactRecord,
+        digest: &str,
+    ) -> super::ArtifactRecord {
+        let mut copy = record.clone();
+        copy.content_digest = digest.to_owned();
+        copy
+    }
+
+    fn copy_fixture_object(root: &Path, source: &Path, digest: &str) -> std::path::PathBuf {
+        let object = root.join("staged").join(digest);
+        fs::create_dir_all(&object).unwrap();
+        fs::copy(source.join("mod.wasm"), object.join("mod.wasm")).unwrap();
+        fs::copy(source.join("manifest.json"), object.join("manifest.json")).unwrap();
+        object
+    }
+
+    fn write_stargate_checkout(root: &Path, digest: &str, commit: &str, source_set: &str) {
+        let record = stargate_record(digest, commit, source_set);
+        let records = root.join(".nxr").join("artifacts").join("records");
+        fs::create_dir_all(&records).unwrap();
+        fs::write(
+            records.join("bundle.json"),
+            serde_json::to_string(&json!({
+                "attemptId": record.attempt_id,
+                "consumerInput": record.consumer_input,
+                "contentDigest": record.content_digest,
+                "facet": record.facet,
+                "host": record.host,
+                "identity": record.identity,
+                "name": record.name,
+                "output": record.output,
+                "physicalHost": record.physical_host,
+                "producerRun": record.producer_run
+            }))
+            .unwrap(),
+        )
+        .unwrap();
     }
 
     fn write_record_identity(root: &Path, digest: &str, source_set: &str) {

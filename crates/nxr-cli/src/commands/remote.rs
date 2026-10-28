@@ -241,7 +241,15 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
         receipt["decision"] = decision.get("decision").cloned().unwrap_or(json!(""));
         receipt["digest"] = decision.get("digest").cloned().unwrap_or(json!(""));
         receipt["transfer"] = decision.get("transfer").cloned().unwrap_or(json!(""));
-        receipt["savings_ms"] = decision.get("savings_ms").cloned().unwrap_or(json!(0));
+        receipt["savings_basis"] = decision
+            .get("savingsBasis")
+            .cloned()
+            .unwrap_or(json!("unavailable"));
+        if let Some(savings) = decision.get("savings_ms") {
+            receipt["savings_ms"] = savings.clone();
+        } else if let Some(object) = receipt.as_object_mut() {
+            object.remove("savings_ms");
+        }
         receipt["changed_field"] = decision.get("changedField").cloned().unwrap_or(json!(""));
     }
     if let Some(object) = receipt.as_object_mut() {
@@ -730,9 +738,8 @@ fn update_run_record(root: &Path, task: &str, receipt: &Value) -> Result<(), Wor
         .and_then(Value::as_str)
         .filter(|status| !status.is_empty())
         .unwrap_or(if admitted { "admitted" } else { "pending" });
-    leaves.insert(
-        task.to_owned(),
-        json!({
+    leaves.insert(task.to_owned(), {
+        let mut leaf = json!({
             "attempt_id": receipt.get("attempt_id").cloned().unwrap_or(json!("")),
             "status": status,
             "source_set": receipt.get("source_set_id").cloned().unwrap_or(json!("")),
@@ -741,10 +748,14 @@ fn update_run_record(root: &Path, task: &str, receipt: &Value) -> Result<(), Wor
             "decision": receipt.get("decision").cloned().unwrap_or(json!("")),
             "digest": receipt.get("digest").cloned().unwrap_or(json!("")),
             "transfer": receipt.get("transfer").cloned().unwrap_or(json!("")),
-            "savings_ms": receipt.get("savings_ms").cloned().unwrap_or(json!(0)),
+            "savings_basis": receipt.get("savings_basis").cloned().unwrap_or(json!("unavailable")),
             "changed_field": receipt.get("changed_field").cloned().unwrap_or(json!("")),
-        }),
-    );
+        });
+        if let Some(savings) = receipt.get("savings_ms") {
+            leaf["savings_ms"] = savings.clone();
+        }
+        leaf
+    });
     let text = serde_json::to_string_pretty(&body)
         .map_err(|error| WorkflowError::new(exit::PROCESS_SUPERVISION, error.to_string()))?;
     let write_result = stage_run_record(&record, &format!("{text}\n"));

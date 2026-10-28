@@ -638,6 +638,11 @@ fn artifact_decision_lines(task: &str) -> Vec<String> {
     {
         lines.push(format!("changed: {changed}"));
     }
+    let basis = decision
+        .get("savingsBasis")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unavailable");
+    lines.push(format!("savings: {basis}"));
     if let Some(savings) = decision.get("savings_ms") {
         lines.push(format!("savings_ms: {savings}"));
     }
