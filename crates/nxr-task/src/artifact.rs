@@ -4,10 +4,11 @@
 //! Materialization hashes every file the manifest lists before it replaces a
 //! destination. A failed check leaves the previous destination in place.
 
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::path::Path;
 use std::process::Command;
 
+use fs2::FileExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -261,25 +262,23 @@ fn stargate_input_lines(identity: &Value) -> Option<Vec<String>> {
     let commit = text_at(identity, "commit")?;
     let profile = text_at(identity, "profile")?;
     let toolchain = identity.get("toolchain")?.as_object()?;
-    let tool = |name: &str| {
-        toolchain
-            .get(name)
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned()
-    };
+    let rustc = object_text(toolchain, "rustc")?;
+    let wasm_bindgen = object_text(toolchain, "wasmBindgen")?;
+    let binaryen = object_text(toolchain, "binaryen")?;
+    let lockfile = first_required(identity, &["lockfile", "lockfileDigest", "lockfile_digest"])?;
+    let dirty = first_required(
+        identity,
+        &["dirty", "dirtySource", "dirty_snapshot_id", "dirtySnapshot"],
+    )?;
     Some(vec![
         "stargate".to_owned(),
         commit,
         profile,
-        tool("rustc"),
-        tool("wasmBindgen"),
-        tool("binaryen"),
-        first_text(identity, &["lockfile", "lockfileDigest", "lockfile_digest"]),
-        first_text(
-            identity,
-            &["dirty", "dirtySource", "dirty_snapshot_id", "dirtySnapshot"],
-        ),
+        rustc,
+        wasm_bindgen,
+        binaryen,
+        lockfile,
+        dirty,
     ])
 }
 
@@ -287,19 +286,28 @@ fn generic_input_lines(identity: &Value) -> Option<Vec<String>> {
     let source = ["sourceSet", "source_set", "source_set_id"]
         .iter()
         .find_map(|key| text_at(identity, key))?;
-    Some(vec![
-        "source-set".to_owned(),
-        source,
-        identity
-            .get("toolchain")
-            .map(canonical_fragment)
-            .unwrap_or_default(),
-        identity
-            .get("inputs")
-            .or_else(|| identity.get("inputDigests"))
-            .map(canonical_fragment)
-            .unwrap_or_default(),
-    ])
+    let toolchain = identity
+        .get("toolchain")
+        .map(canonical_fragment)
+        .filter(|value| !value.is_empty())?;
+    let inputs = identity
+        .get("inputs")
+        .or_else(|| identity.get("inputDigests"))
+        .map(canonical_fragment)
+        .filter(|value| !value.is_empty())?;
+    Some(vec!["source-set".to_owned(), source, toolchain, inputs])
+}
+
+fn object_text(object: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn first_required(identity: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| text_at(identity, key))
 }
 
 fn text_at(identity: &Value, key: &str) -> Option<String> {
@@ -308,12 +316,6 @@ fn text_at(identity: &Value, key: &str) -> Option<String> {
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
-}
-
-fn first_text(identity: &Value, keys: &[&str]) -> String {
-    keys.iter()
-        .find_map(|key| text_at(identity, key))
-        .unwrap_or_default()
 }
 
 fn canonical_fragment(value: &Value) -> String {
@@ -388,36 +390,71 @@ fn publish_record_tree(
     object: &Path,
 ) -> Result<(), String> {
     let key = catalog_key(record)?;
-    let record_path = catalog
-        .join("records")
-        .join(&key)
-        .join(format!("{}.json", record.name));
-    if let Some(stored) = stored_content_digest(catalog, &key, &record.name)
-        && stored != record.content_digest
-    {
-        return Err(format!(
-            "catalog conflict for {} at {key}: stored {stored} does not match {}",
-            record.name, record.content_digest
-        ));
-    }
-    let destination = catalog.join("objects").join(&record.content_digest);
-    publish_tree(object, &destination, &record.content_digest)?;
-    if let Some(parent) = record_path.parent() {
+    let record_dir = catalog.join("records").join(&key);
+    fs::create_dir_all(&record_dir).map_err(|err| err.to_string())?;
+    let lock_path = record_dir.join(format!("{}.lock", record.name));
+    with_exclusive_lock(&lock_path, || {
+        let record_path = record_dir.join(format!("{}.json", record.name));
+        if let Some(stored) = stored_content_digest(catalog, &key, &record.name)
+            && stored != record.content_digest
+        {
+            return Err(format!(
+                "catalog conflict for {} at {key}: stored {stored} does not match {}",
+                record.name, record.content_digest
+            ));
+        }
+        let destination = catalog.join("objects").join(&record.content_digest);
+        publish_tree(object, &destination, &record.content_digest)?;
+        let body = json!({
+            "attemptId": record.attempt_id,
+            "consumerInput": record.consumer_input,
+            "contentDigest": record.content_digest,
+            "facet": record.facet,
+            "host": record.host,
+            "identity": record.identity,
+            "name": record.name,
+            "output": record.output,
+            "physicalHost": record.physical_host,
+            "producerRun": record.producer_run,
+        });
+        atomic_replace(&record_path, &format!("{body}\n"))
+    })
+}
+
+fn with_exclusive_lock<T>(
+    lock_path: &Path,
+    body: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    if let Some(parent) = lock_path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
-    let body = json!({
-        "attemptId": record.attempt_id,
-        "consumerInput": record.consumer_input,
-        "contentDigest": record.content_digest,
-        "facet": record.facet,
-        "host": record.host,
-        "identity": record.identity,
-        "name": record.name,
-        "output": record.output,
-        "physicalHost": record.physical_host,
-        "producerRun": record.producer_run,
-    });
-    fs::write(&record_path, format!("{body}\n")).map_err(|err| err.to_string())
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .map_err(|err| err.to_string())?;
+    file.lock_exclusive().map_err(|err| err.to_string())?;
+    let result = body();
+    let _ = file.unlock();
+    result
+}
+
+fn atomic_replace(path: &Path, body: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("record");
+    let temporary = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    fs::write(&temporary, body).map_err(|err| err.to_string())?;
+    fs::rename(&temporary, path).map_err(|err| {
+        let _ = fs::remove_file(&temporary);
+        err.to_string()
+    })
 }
 
 fn changed_identity_field(catalog: &Path, current: &ArtifactRecord) -> Option<String> {
@@ -593,21 +630,20 @@ fn record_rebuild_sample(
     }
     let input = catalog_key(record)?;
     let toolchain = toolchain_digest(record)?;
-    let path = catalog
-        .join("baselines")
-        .join(task)
-        .join(format!("{toolchain}.json"));
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-    }
-    let mut samples = read_baseline_samples(&path);
-    samples.push(json!({ "input": input, "task_ms": task_ms }));
-    if samples.len() > BASELINE_SAMPLE_CAP {
-        let extra = samples.len() - BASELINE_SAMPLE_CAP;
-        samples.drain(0..extra);
-    }
-    let body = json!({ "samples": samples });
-    fs::write(&path, format!("{body}\n")).map_err(|err| err.to_string())
+    let directory = catalog.join("baselines").join(task);
+    fs::create_dir_all(&directory).map_err(|err| err.to_string())?;
+    let path = directory.join(format!("{toolchain}.json"));
+    let lock_path = directory.join(format!("{toolchain}.lock"));
+    with_exclusive_lock(&lock_path, || {
+        let mut samples = read_baseline_samples(&path);
+        samples.push(json!({ "input": input, "task_ms": task_ms }));
+        if samples.len() > BASELINE_SAMPLE_CAP {
+            let extra = samples.len() - BASELINE_SAMPLE_CAP;
+            samples.drain(0..extra);
+        }
+        let body = json!({ "samples": samples });
+        atomic_replace(&path, &format!("{body}\n"))
+    })
 }
 
 fn read_baseline_samples(path: &Path) -> Vec<Value> {
@@ -1565,6 +1601,121 @@ mod tests {
         .unwrap();
         assert_eq!(decision["decision"], "hit");
         assert_eq!(decision["transfer"], "local");
+    }
+
+    #[test]
+    fn incomplete_stargate_identity_is_not_cacheable() {
+        let digest = "ab".repeat(32);
+        let mut missing_compiler = stargate_record(&digest, "commit-a", "lattice-1");
+        missing_compiler.identity["toolchain"]["rustc"] = json!("");
+        let error = super::catalog_key(&missing_compiler).unwrap_err();
+        assert!(error.contains("no source identity"), "{error}");
+
+        let mut clean = stargate_record(&digest, "commit-a", "lattice-1");
+        clean.identity["dirty"] = json!("clean");
+        let mut dirty = stargate_record(&digest, "commit-a", "lattice-1");
+        dirty.identity["dirty"] = json!("dirty-1");
+        assert_ne!(
+            super::catalog_key(&clean).unwrap(),
+            super::catalog_key(&dirty).unwrap()
+        );
+
+        let mut generic = super::ArtifactRecord::from_value(&json!({
+            "contentDigest": digest,
+            "name": "bundle",
+            "output": "bundle.tar",
+            "identity": {"sourceSet": "src-a"}
+        }))
+        .unwrap();
+        assert!(
+            super::catalog_key(&generic)
+                .unwrap_err()
+                .contains("no source identity")
+        );
+        generic.identity["toolchain"] = json!("rust-1");
+        generic.identity["inputs"] = json!("aaa");
+        assert!(super::catalog_key(&generic).is_ok());
+    }
+
+    #[test]
+    fn two_writers_keep_one_catalog_record() {
+        if let Ok(role) = std::env::var("NXR_CATALOG_CHILD") {
+            let catalog = std::path::PathBuf::from(std::env::var("NXR_CATALOG_DIR").unwrap());
+            let digest = std::env::var("NXR_CATALOG_DIGEST").unwrap();
+            let object = std::path::PathBuf::from(std::env::var("NXR_CATALOG_OBJECT").unwrap());
+            let record = stargate_record(&digest, "commit-a", "lattice-1");
+            let result = super::publish_record_tree(&catalog, &record, &object);
+            let report = catalog.join(format!("writer-{role}.txt"));
+            let text = match result {
+                Ok(()) => "ok".to_owned(),
+                Err(err) => err,
+            };
+            fs::write(report, text).unwrap();
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let catalog = root.path().join("catalog");
+        let left_source = root.path().join("left");
+        let right_source = root.path().join("right");
+        let left_digest = fixture(&left_source, b"wasm-left");
+        let right_digest = fixture(&right_source, b"wasm-right");
+        let left_object = copy_fixture_object(root.path(), &left_source, &left_digest);
+        let right_object = copy_fixture_object(root.path(), &right_source, &right_digest);
+        fs::create_dir_all(&catalog).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let mut children = Vec::new();
+        for (role, digest, object) in [
+            ("left", &left_digest, &left_object),
+            ("right", &right_digest, &right_object),
+        ] {
+            let child = std::process::Command::new(&exe)
+                .arg("--exact")
+                .arg("artifact::tests::two_writers_keep_one_catalog_record")
+                .arg("--test-threads=1")
+                .env("NXR_CATALOG_CHILD", role)
+                .env("NXR_CATALOG_DIR", &catalog)
+                .env("NXR_CATALOG_DIGEST", digest)
+                .env("NXR_CATALOG_OBJECT", object)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            children.push(child);
+        }
+        for mut child in children {
+            let status = child.wait().unwrap();
+            assert!(status.success(), "{status}");
+        }
+        let left = fs::read_to_string(catalog.join("writer-left.txt")).unwrap();
+        let right = fs::read_to_string(catalog.join("writer-right.txt")).unwrap();
+        let outcomes = [left.trim(), right.trim()];
+        assert_eq!(outcomes.iter().filter(|line| **line == "ok").count(), 1);
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|line| line.contains("catalog conflict"))
+                .count(),
+            1
+        );
+        let records = catalog.join("records");
+        let mut record_files = Vec::new();
+        for entry in fs::read_dir(&records).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                let file = path.join("bundle.json");
+                if file.is_file() {
+                    record_files.push(file);
+                }
+            }
+        }
+        assert_eq!(record_files.len(), 1);
+        let stored = fs::read_to_string(&record_files[0]).unwrap();
+        let winners = [&left_digest, &right_digest]
+            .into_iter()
+            .filter(|digest| stored.contains(*digest))
+            .count();
+        assert_eq!(winners, 1);
     }
 
     #[test]
