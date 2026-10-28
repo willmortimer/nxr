@@ -4,10 +4,13 @@
 //! attempt, fetches each declared output, and writes the receipt. This is not
 //! a scheduler.
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
+
+use fs2::FileExt;
 
 use serde_json::{Value, json};
 
@@ -663,6 +666,19 @@ fn update_run_record(root: &Path, task: &str, receipt: &Value) -> Result<(), Wor
             WorkflowError::new(exit::PROCESS_SUPERVISION, format!("run dir: {error}"))
         })?;
     }
+    let lock_path = record.with_file_name(".run.json.lock");
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|error| {
+            WorkflowError::new(exit::PROCESS_SUPERVISION, format!("run lock: {error}"))
+        })?;
+    lock_file.lock_exclusive().map_err(|error| {
+        WorkflowError::new(exit::PROCESS_SUPERVISION, format!("run lock: {error}"))
+    })?;
     let mut body: Value = fs::read_to_string(&record)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
@@ -700,13 +716,71 @@ fn update_run_record(root: &Path, task: &str, receipt: &Value) -> Result<(), Wor
     );
     let text = serde_json::to_string_pretty(&body)
         .map_err(|error| WorkflowError::new(exit::PROCESS_SUPERVISION, error.to_string()))?;
-    let temporary = record.with_extension("tmp");
-    fs::write(&temporary, format!("{text}\n")).map_err(|error| {
-        WorkflowError::new(exit::PROCESS_SUPERVISION, format!("run record: {error}"))
+    let write_result = stage_run_record(&record, &format!("{text}\n"));
+    let _ = lock_file.unlock();
+    write_result
+}
+
+/// Publish `run.json` from a unique temporary file.
+///
+/// The caller holds the run lock. A crash before the rename leaves the
+/// previous record in place.
+fn stage_run_record(record: &Path, text: &str) -> Result<(), WorkflowError> {
+    let parent = record.parent().ok_or_else(|| {
+        WorkflowError::new(exit::PROCESS_SUPERVISION, "run record has no directory")
     })?;
-    fs::rename(&temporary, &record).map_err(|error| {
-        WorkflowError::new(exit::PROCESS_SUPERVISION, format!("run record: {error}"))
-    })
+    let temporary = parent.join(format!(
+        ".run.json.{}.{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0)
+    ));
+    let write_result = (|| {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| {
+                WorkflowError::new(exit::PROCESS_SUPERVISION, format!("run record: {error}"))
+            })?;
+        file.write_all(text.as_bytes()).map_err(|error| {
+            WorkflowError::new(exit::PROCESS_SUPERVISION, format!("run record: {error}"))
+        })?;
+        file.sync_all().map_err(|error| {
+            WorkflowError::new(exit::PROCESS_SUPERVISION, format!("run record: {error}"))
+        })?;
+        drop(file);
+        if crash_after_stage() {
+            return Err(WorkflowError::new(
+                exit::PROCESS_SUPERVISION,
+                "stopped after staging the run record",
+            ));
+        }
+        fs::rename(&temporary, record).map_err(|error| {
+            WorkflowError::new(exit::PROCESS_SUPERVISION, format!("run record: {error}"))
+        })
+    })();
+    let _ = fs::remove_file(&temporary);
+    write_result
+}
+
+fn crash_after_stage() -> bool {
+    #[cfg(test)]
+    {
+        CRASH_AFTER_STAGE.with(|flag| flag.get())
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static CRASH_AFTER_STAGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn write_receipt(root: &Path, receipt: &Value) -> Result<(), WorkflowError> {
@@ -965,6 +1039,16 @@ fn write_json(path: &Path, value: &Value) -> Result<(), WorkflowError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static RUN_RECORD_TEST: Mutex<()> = Mutex::new(());
+
+    fn test_run_id() -> String {
+        std::env::var("NXR_RUN_ID")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(unique_run_id)
+    }
 
     #[test]
     fn chunk_resume_counts_add_across_fetches() {
@@ -1080,8 +1164,9 @@ mod tests {
 
     #[test]
     fn one_run_record_keeps_both_leaves() {
+        let _guard = RUN_RECORD_TEST.lock().expect("run record tests");
         let root = tempfile::tempdir().expect("root");
-        let run = unique_run_id();
+        let run = test_run_id();
         set_run_context(run.clone(), 2);
         update_run_record(
             root.path(),
@@ -1118,5 +1203,143 @@ mod tests {
         assert_eq!(body["leaves"]["probe-windows"]["status"], "exited");
         assert_eq!(body["leaves"]["probe-windows"]["artifact_digest"], "abc");
         assert_eq!(body["leaves"]["probe-windows"]["journal_cursor"], 3);
+    }
+
+    #[test]
+    fn concurrent_leaves_keep_every_update() {
+        let _guard = RUN_RECORD_TEST.lock().expect("run record tests");
+        let root = tempfile::tempdir().expect("root");
+        let run = test_run_id();
+        set_run_context(run.clone(), 8);
+        let path = root.path().to_path_buf();
+        std::thread::scope(|scope| {
+            for index in 0..8 {
+                let path = path.clone();
+                scope.spawn(move || {
+                    update_run_record(
+                        &path,
+                        &format!("leaf-{index}"),
+                        &json!({
+                            "attempt_id": format!("att_{index}"),
+                            "source_set_id": format!("src_{index}"),
+                            "terminal": "exited",
+                            "artifact_digest": format!("dig_{index}"),
+                            "journal_cursor": index
+                        }),
+                    )
+                    .expect("leaf");
+                });
+            }
+        });
+        let record = root
+            .path()
+            .join(".nxr")
+            .join("runs")
+            .join(file_token(&run))
+            .join("run.json");
+        let body: Value =
+            serde_json::from_str(&fs::read_to_string(&record).expect("record")).expect("json");
+        for index in 0..8 {
+            assert_eq!(
+                body["leaves"][&format!("leaf-{index}")]["attempt_id"],
+                format!("att_{index}")
+            );
+        }
+        assert!(
+            !record
+                .parent()
+                .expect("parent")
+                .read_dir()
+                .expect("dir")
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+        );
+    }
+
+    #[test]
+    fn a_crash_before_rename_keeps_the_previous_run_record() {
+        let _guard = RUN_RECORD_TEST.lock().expect("run record tests");
+        let root = tempfile::tempdir().expect("root");
+        let run = test_run_id();
+        set_run_context(run.clone(), 2);
+        update_run_record(
+            root.path(),
+            "kept",
+            &json!({
+                "attempt_id": "att_kept",
+                "source_set_id": "src_kept",
+                "terminal": "exited",
+                "journal_cursor": 1
+            }),
+        )
+        .expect("kept");
+        CRASH_AFTER_STAGE.with(|flag| flag.set(true));
+        let failed = update_run_record(
+            root.path(),
+            "lost",
+            &json!({
+                "attempt_id": "att_lost",
+                "source_set_id": "src_lost",
+                "terminal": "exited",
+                "journal_cursor": 2
+            }),
+        );
+        CRASH_AFTER_STAGE.with(|flag| flag.set(false));
+        assert!(failed.is_err());
+        let record = root
+            .path()
+            .join(".nxr")
+            .join("runs")
+            .join(file_token(&run))
+            .join("run.json");
+        let body: Value =
+            serde_json::from_str(&fs::read_to_string(&record).expect("record")).expect("json");
+        assert_eq!(body["leaves"]["kept"]["attempt_id"], "att_kept");
+        assert!(body["leaves"].get("lost").is_none());
+        update_run_record(
+            root.path(),
+            "kept",
+            &json!({
+                "attempt_id": "att_kept",
+                "source_set_id": "src_kept",
+                "terminal": "exited",
+                "journal_cursor": 4
+            }),
+        )
+        .expect("resume");
+        let resumed: Value =
+            serde_json::from_str(&fs::read_to_string(&record).expect("record")).expect("json");
+        assert_eq!(resumed["leaves"]["kept"]["journal_cursor"], 4);
+    }
+
+    #[test]
+    fn run_record_keeps_cancelled_timed_out_and_terminated_leaves() {
+        let _guard = RUN_RECORD_TEST.lock().expect("run record tests");
+        let root = tempfile::tempdir().expect("temp");
+        let run = test_run_id();
+        set_run_context(run.clone(), 3);
+        for (task, terminal) in [
+            ("cancelled", "cancelled"),
+            ("timed-out", "timed_out"),
+            ("terminated", "terminated"),
+        ] {
+            update_run_record(
+                root.path(),
+                task,
+                &json!({"task_id": task, "terminal": terminal, "journal_cursor": 1}),
+            )
+            .expect(task);
+        }
+        let record = root
+            .path()
+            .join(".nxr")
+            .join("runs")
+            .join(file_token(&run))
+            .join("run.json");
+        let body: Value =
+            serde_json::from_str(&fs::read_to_string(&record).expect("record")).expect("json");
+        assert_eq!(body["leaves"]["cancelled"]["status"], "cancelled");
+        assert_eq!(body["leaves"]["timed-out"]["status"], "timed_out");
+        assert_eq!(body["leaves"]["terminated"]["status"], "terminated");
     }
 }

@@ -20,6 +20,7 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 fs2 = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
+tar = "0.4"
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -315,6 +315,9 @@ pub fn run_operation_plan_callbacks(
                 return Err(ExecuteError::MissingOperation { node: id });
             };
             let node_ctx = context_for_node(ctx, node);
+            if let Err(detail) = crate::artifact::materialize_inputs(&node_ctx, &node.inputs) {
+                return Err(ExecuteError::Invalid { detail });
+            }
             emit(sink.as_mut(), Event::node_queued(id.clone()));
             emit(sink.as_mut(), Event::node_started(id.clone()));
             let executed = if matches!(operation, Operation::Remote { .. }) {
@@ -417,14 +420,25 @@ pub fn run_operation_plan_callbacks(
 fn context_for_node(base: &ExecContext, node: &PlanNode) -> ExecContext {
     let mut env = base.env.clone();
     env.extend(node.environment.clone());
-    if !node.inputs.is_empty() {
-        env.insert("NXR_ARTIFACT_INPUTS".to_owned(), node.inputs.join(","));
-    }
     let cwd = match (&node.working_directory, &base.cwd) {
         (Some(relative), Some(root)) => Some(root.join(relative)),
         (Some(relative), None) => Some(PathBuf::from(relative)),
         (None, cwd) => cwd.clone(),
     };
+    if !node.inputs.is_empty() {
+        env.insert("NXR_ARTIFACT_INPUTS".to_owned(), node.inputs.join(","));
+        if let Some(root) = &cwd {
+            env.insert(
+                "NXR_ARTIFACT_MATERIALIZED".to_owned(),
+                root.join(".nxr")
+                    .join("artifacts")
+                    .join("materialized")
+                    .join(&node.inputs[0])
+                    .display()
+                    .to_string(),
+            );
+        }
+    }
     ExecContext {
         path: base.path.clone(),
         nix_override: base.nix_override.clone(),

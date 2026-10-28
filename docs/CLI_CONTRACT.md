@@ -493,7 +493,13 @@ receipt, and returns the remote exit code. It does not schedule work and it
 does not add a remote content store. The default remains local. Each workflow run gets its own id.
 Attempt files are written by rename under `.nxr/runs/<run>/tasks/<task>/`.
 `.nxr/runs/<run>/run.json` records each leaf's attempt id, status, source set,
-artifact digest, and journal cursor. `NIXPLANE_STOP_AFTER_ADMIT=1` writes that
+artifact digest, and journal cursor. Updates take an exclusive lock and write a
+unique temporary file, then rename it over `run.json`. A crash before that
+rename leaves the previous record readable. Before a leaf starts, each `inputs`
+entry is materialized from `.nxr/artifacts/` and every file named by the
+manifest is hashed. A failed check leaves the previous destination in place.
+Same-host reuse reads that store. A different host calls `nixplane execution
+fetch` and then the same verifier. `NIXPLANE_STOP_AFTER_ADMIT=1` writes that
 record and returns before local verification.
 `NIXPLANE_ACTIVE_ATTEMPT` remains the single-attempt path and is not written
 when the run has more than one leaf. Two runs of the same task do not share

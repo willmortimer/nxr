@@ -10,6 +10,7 @@
 //! - [`scheduler`] — ready-queue scheduler with job limit ([`Scheduler`])
 
 pub mod action_key;
+pub mod artifact;
 pub mod ci_metadata;
 pub mod context;
 pub mod duration;
