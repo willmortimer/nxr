@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.0-rc.3] - 2026-10-27
+
+### Changed
+
+- Artifact verification recomputes the bundle digest and rejects a stale or forged `bundleSha256`.
+- A verified local object is reused on any machine. A damaged destination is restored from that object, and a failed replace puts the previous tree back.
+- Workspace and Nix package version **3.8.0-rc.3**.
+
 ## [3.8.0-rc.2] - 2026-10-27
 
 ### Added

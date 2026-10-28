@@ -143,7 +143,8 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**3.8.0-rc.2** — remote workflow runs follow the journal from a cursor and
+**3.8.0-rc.3** — artifact digests are recomputed, and a verified object is reused
+on any machine. Remote workflow runs still follow the journal from a cursor and
 can hand fetched outputs to `NXR_OUTPUT_VERIFY`. Workflow leaves still emit
 `execution-spec-v2` envelopes from `.nxr/workflows.toml`. `nxr task` still
 uses the flake task document. A sibling repository is not part of the default
