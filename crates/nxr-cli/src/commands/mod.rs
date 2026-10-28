@@ -3,6 +3,7 @@
 pub mod affected;
 pub mod attach;
 pub mod cache;
+pub mod catalog;
 pub mod ci;
 pub mod common;
 pub mod complete;
@@ -36,6 +37,7 @@ pub mod script;
 pub mod secrets;
 pub mod select;
 pub mod selectors;
+pub mod session;
 pub mod store_exe;
 pub mod task;
 pub mod task_params;

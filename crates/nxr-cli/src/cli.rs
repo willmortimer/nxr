@@ -235,6 +235,51 @@ pub enum BuildSubcommand {
     },
 }
 
+/// `nxr catalog` sub-targets. Retention runs only from this command.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum CatalogSubcommand {
+    /// Expire unpinned catalog records down to an explicit quota.
+    Retain {
+        /// Print pins, quarantine, and the records that would expire.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+        /// Maximum unpinned records to keep. Required so a task run cannot imply a quota.
+        #[arg(long = "quota", value_name = "COUNT")]
+        quota: usize,
+        /// Catalog directory. Defaults to the nxr artifact cache.
+        #[arg(long = "catalog", value_name = "PATH")]
+        catalog: Option<PathBuf>,
+    },
+}
+
+/// `nxr session` sub-targets for a detached run. These records are not fleet assignments.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum SessionSubcommand {
+    /// Start a detached run and print its id.
+    Start {
+        /// Label stored with the run.
+        label: String,
+    },
+    /// Print events after a cursor.
+    Events {
+        /// Run id.
+        run: String,
+        /// Skip events at or before this cursor.
+        #[arg(long = "after", default_value_t = 0)]
+        after: u64,
+    },
+    /// Print the run status and artifact references.
+    Inspect {
+        /// Run id.
+        run: String,
+    },
+    /// Mark the run cancelled. This does not delete catalog objects.
+    Cancel {
+        /// Run id.
+        run: String,
+    },
+}
+
 /// Top-level commands. Bare `nxr` defaults to listing apps.
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 pub enum Command {
@@ -516,6 +561,16 @@ pub enum Command {
     History {
         #[command(subcommand)]
         action: Option<HistorySubcommand>,
+    },
+    /// Expire catalog records only when an operator passes an explicit quota.
+    Catalog {
+        #[command(subcommand)]
+        action: CatalogSubcommand,
+    },
+    /// Detached run id, events, inspect, and cancel. NXR does not store fleet assignments.
+    Session {
+        #[command(subcommand)]
+        action: SessionSubcommand,
     },
     /// Reopen the TUI watch for a recorded run
     Attach {

@@ -225,6 +225,12 @@ pub fn publish_checkout_catalog(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Cache directory for catalog objects. Tests do not receive a default path.
+#[must_use]
+pub fn catalog_directory() -> Option<std::path::PathBuf> {
+    catalog_root()
+}
+
 fn catalog_root() -> Option<std::path::PathBuf> {
     if cfg!(test) {
         return None;
@@ -852,6 +858,56 @@ fn recorded_tool(store: &Path, input: &str, tool: &str) -> &'static str {
 
 /// Drop unreferenced records past `quota`, quarantine a record whose object
 /// does not verify, and leave an object in place while its materialize lock is held.
+/// What an explicit retain would pin, quarantine, or expire. This does not delete.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RetentionPreview {
+    pub pins: Vec<String>,
+    pub quarantine: Vec<String>,
+    pub would_expire: Vec<String>,
+}
+
+pub fn preview_retention(catalog: &Path, quota: usize) -> Result<RetentionPreview, String> {
+    let pins = pinned_digests(catalog).into_iter().collect();
+    let quarantine = list_relative(catalog.join("quarantine"))?;
+    let mut records = record_files(catalog)?;
+    records.sort_by(|left, right| {
+        left.modified
+            .cmp(&right.modified)
+            .then(left.path.cmp(&right.path))
+    });
+    let pinned = pinned_digests(catalog);
+    let mut remaining = records.len();
+    let mut would_expire = Vec::new();
+    for record in records {
+        if remaining <= quota {
+            break;
+        }
+        if pinned.contains(&record.digest) {
+            continue;
+        }
+        would_expire.push(record.digest);
+        remaining -= 1;
+    }
+    Ok(RetentionPreview {
+        pins,
+        quarantine,
+        would_expire,
+    })
+}
+
+fn list_relative(dir: std::path::PathBuf) -> Result<Vec<String>, String> {
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut names = Vec::new();
+    for entry in fs::read_dir(&dir).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        names.push(entry.file_name().to_string_lossy().into_owned());
+    }
+    names.sort();
+    Ok(names)
+}
+
 pub fn retain_catalog(catalog: &Path, quota: usize) -> Result<(), String> {
     quarantine_unverified(catalog)?;
     let mut records = record_files(catalog)?;

@@ -34,6 +34,8 @@ Commands:
   cache       Manage nxr discovery cache
   daemon      Optional local cache/coordination daemon (`nxrd`)
   history     Show recent run summaries persisted under XDG state
+  catalog     Expire catalog records only when an operator passes an explicit quota
+  session     Detached run id, events, inspect, and cancel. NXR does not store fleet assignments
   attach      Reopen the TUI watch for a recorded run
   ui          Browse apps, tasks, and workspace scripts; Enter runs the selection
   affected    Report apps and tasks likely affected by changed paths

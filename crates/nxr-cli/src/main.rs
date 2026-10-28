@@ -26,17 +26,17 @@ use nxr_core::{EnvironmentPolicy, parse_env_name, parse_set_env};
 use nxr_core::{emit_stderr, perf_enabled};
 
 use crate::cli::{
-    BuildSubcommand, CacheInvalidateTarget, CacheSubcommand, CiSubcommand, Cli, Command,
-    ContextSubcommand, DaemonSubcommand, DoctorSubcommand, ExplainSubcommand,
+    BuildSubcommand, CacheInvalidateTarget, CacheSubcommand, CatalogSubcommand, CiSubcommand, Cli,
+    Command, ContextSubcommand, DaemonSubcommand, DoctorSubcommand, ExplainSubcommand,
     FingerprintSubcommand, HistorySubcommand, InspectSubcommand, MigrateSubcommand,
-    TrustSubcommand,
+    SessionSubcommand, TrustSubcommand,
 };
 use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
-    affected, attach, cache, ci, complete, completion, configurations, context, daemon, doctor,
-    doctor_builders, doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt, graph,
-    history, init, inspect, inventory, list, manpage, migrate, nix_op, plan, process_cmd, run,
-    script, select, selectors, task, trust, ui, watch, workflow,
+    affected, attach, cache, catalog, ci, complete, completion, configurations, context, daemon,
+    doctor, doctor_builders, doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt,
+    graph, history, init, inspect, inventory, list, manpage, migrate, nix_op, plan, process_cmd,
+    run, script, select, selectors, session, task, trust, ui, watch, workflow,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -687,6 +687,35 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             }
             Some(HistorySubcommand::Clear) => {
                 history::clear(cli.json, runner)?;
+                Ok(exit::SUCCESS)
+            }
+        },
+        Some(Command::Catalog { action }) => match action {
+            CatalogSubcommand::Retain {
+                dry_run,
+                quota,
+                catalog: catalog_path,
+            } => {
+                catalog::retain(catalog_path.clone(), *quota, *dry_run, runner)
+                    .map_err(RunError::Usage)?;
+                Ok(exit::SUCCESS)
+            }
+        },
+        Some(Command::Session { action }) => match action {
+            SessionSubcommand::Start { label } => {
+                session::start(label, runner).map_err(RunError::Usage)?;
+                Ok(exit::SUCCESS)
+            }
+            SessionSubcommand::Events { run, after } => {
+                session::events(run, *after, runner).map_err(RunError::Usage)?;
+                Ok(exit::SUCCESS)
+            }
+            SessionSubcommand::Inspect { run } => {
+                session::inspect(run, runner).map_err(RunError::Usage)?;
+                Ok(exit::SUCCESS)
+            }
+            SessionSubcommand::Cancel { run } => {
+                session::cancel(run, runner).map_err(RunError::Usage)?;
                 Ok(exit::SUCCESS)
             }
         },
