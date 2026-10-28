@@ -1,0 +1,58 @@
+{
+  "schema": "artifact-explain-receipt-v1",
+  "source": "existing bytes under lattice-ecosystem/.nxr; no new worker submit",
+  "cases": [
+    {
+      "case": "unchanged-tree",
+      "decision": "hit",
+      "digest": "4e0cb6a8e6ea29380afe8d59ef3d7495e260aef4619d5ece77f5c4185d0c2db0",
+      "transfer": "local",
+      "changed_field": "",
+      "task_ms": 751,
+      "checkout_ms": null,
+      "savings_ms": 32169,
+      "chunks_resumed": 0,
+      "chunks_fetched": 0,
+      "bytes": "objects/4e0cb6a8e6ea29380afe8d59ef3d7495e260aef4619d5ece77f5c4185d0c2db0"
+    },
+    {
+      "case": "typescript-edit",
+      "decision": "hit",
+      "digest": "4e0cb6a8e6ea29380afe8d59ef3d7495e260aef4619d5ece77f5c4185d0c2db0",
+      "transfer": "local",
+      "changed_field": "",
+      "reason": "Lattice TypeScript outside the Stargate WASM source set left the stored identity unchanged",
+      "cargo": "reused",
+      "sccache": "not-recorded"
+    },
+    {
+      "case": "wasm-input-change",
+      "decision": "rebuild",
+      "digest": "7e041eb1ac5dcc46d709e6fa337c36407a56e8e7faaaa137b130475bfc9b5dc0",
+      "transfer": "local",
+      "changed_field": "inputs",
+      "compared_with": "4e0cb6a8e6ea29380afe8d59ef3d7495e260aef4619d5ece77f5c4185d0c2db0",
+      "source_set": "02f9c92ecc9fdb85fb4baa03063bbaebd3af372d",
+      "previous_source_set": "ae872f38fe884adf03aad797ab097eba7b0b977a",
+      "toolchain": "unchanged",
+      "bytes": "objects/7e041eb1ac5dcc46d709e6fa337c36407a56e8e7faaaa137b130475bfc9b5dc0"
+    },
+    {
+      "case": "native-rust-input-change",
+      "decision": "rebuild",
+      "changed_field": "sourceSet",
+      "digest": "4e0cb6a8e6ea29380afe8d59ef3d7495e260aef4619d5ece77f5c4185d0c2db0",
+      "dirty": "cbf314e0cd998732d0971b927848226f143dc4447249b952a9dac5bf09472178",
+      "transfer": "local",
+      "cargo": "reused",
+      "sccache": "not-recorded",
+      "worker_submit": "not submitted"
+    }
+  ],
+  "fetch": {
+    "attempt_id": "att_3be7dd2901651c07ed3a4191acd28270",
+    "chunks_fetched": 2,
+    "task_ms": 4520,
+    "transfer": "fetch"
+  }
+}

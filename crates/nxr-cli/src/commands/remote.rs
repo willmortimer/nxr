@@ -229,6 +229,21 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
     }
     receipt["chunks_resumed"] = json!(resumed);
     receipt["chunks_fetched"] = json!(fetched);
+    let _ = nxr_task::artifact::annotate_decision(
+        &root,
+        name,
+        receipt.get("task_ms"),
+        receipt.get("checkout_ms"),
+        resumed,
+        fetched,
+    );
+    if let Some(decision) = read_decision_file(&root, name) {
+        receipt["decision"] = decision.get("decision").cloned().unwrap_or(json!(""));
+        receipt["digest"] = decision.get("digest").cloned().unwrap_or(json!(""));
+        receipt["transfer"] = decision.get("transfer").cloned().unwrap_or(json!(""));
+        receipt["savings_ms"] = decision.get("savings_ms").cloned().unwrap_or(json!(0));
+        receipt["changed_field"] = decision.get("changedField").cloned().unwrap_or(json!(""));
+    }
     if let Some(object) = receipt.as_object_mut() {
         let timings = object.entry("timings").or_insert_with(|| json!({}));
         if let Some(timings) = timings.as_object_mut() {
@@ -638,6 +653,16 @@ fn apply_rerun(spec: &mut Value) -> Result<(), WorkflowError> {
     Ok(())
 }
 
+fn read_decision_file(root: &Path, task: &str) -> Option<Value> {
+    let path = root
+        .join(".nxr")
+        .join("artifacts")
+        .join("decisions")
+        .join(format!("{task}.json"));
+    let text = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 fn receipt_root() -> Result<PathBuf, WorkflowError> {
     if let Ok(root) = std::env::var("NIXPLANE_RECEIPT_ROOT")
         && !root.trim().is_empty()
@@ -713,6 +738,11 @@ fn update_run_record(root: &Path, task: &str, receipt: &Value) -> Result<(), Wor
             "source_set": receipt.get("source_set_id").cloned().unwrap_or(json!("")),
             "artifact_digest": receipt.get("artifact_digest").cloned().unwrap_or(json!("")),
             "journal_cursor": receipt.get("journal_cursor").cloned().unwrap_or(json!(0)),
+            "decision": receipt.get("decision").cloned().unwrap_or(json!("")),
+            "digest": receipt.get("digest").cloned().unwrap_or(json!("")),
+            "transfer": receipt.get("transfer").cloned().unwrap_or(json!("")),
+            "savings_ms": receipt.get("savings_ms").cloned().unwrap_or(json!(0)),
+            "changed_field": receipt.get("changed_field").cloned().unwrap_or(json!("")),
         }),
     );
     let text = serde_json::to_string_pretty(&body)

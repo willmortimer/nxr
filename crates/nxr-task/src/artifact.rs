@@ -116,6 +116,14 @@ pub fn local_host() -> &'static str {
 
 /// Materialize each named input before the leaf process starts.
 pub fn materialize_inputs(ctx: &ExecContext, inputs: &[String]) -> Result<(), String> {
+    materialize_inputs_from(ctx, inputs, catalog_root().as_deref())
+}
+
+fn materialize_inputs_from(
+    ctx: &ExecContext,
+    inputs: &[String],
+    catalog: Option<&Path>,
+) -> Result<(), String> {
     if inputs.is_empty() {
         return Ok(());
     }
@@ -127,27 +135,242 @@ pub fn materialize_inputs(ctx: &ExecContext, inputs: &[String]) -> Result<(), St
     for input in inputs {
         safe_segment(input, "artifact input")?;
         let record = load_record(&store, input)?;
-        let destination = root
-            .join(".nxr")
-            .join("artifacts")
-            .join("materialized")
-            .join(input);
+        let destination = store.join("materialized").join(input);
+        let checkout_object = store.join("objects").join(&record.content_digest);
+        let changed = catalog
+            .and_then(|root| changed_identity_field(root, &record))
+            .unwrap_or_default();
+        if let Some(catalog) = catalog
+            && catalog_object_ok(catalog, &record)
+        {
+            let source = catalog.join("objects").join(&record.content_digest);
+            publish_tree(&source, &checkout_object, &record.content_digest)?;
+            restore_local(&store, &record, &destination)?;
+            write_materialize_decision(&store, input, &record, "local", "hit", &changed)?;
+            continue;
+        }
+        if verify_tree(&checkout_object, &record.content_digest).is_ok() {
+            if let Some(catalog) = catalog {
+                publish_record_tree(catalog, &record, &checkout_object)?;
+            }
+            restore_local(&store, &record, &destination)?;
+            write_materialize_decision(&store, input, &record, "local", "hit", &changed)?;
+            continue;
+        }
+        let corrupt = checkout_object.join("manifest.json").is_file();
+        if !record.attempt_id.is_empty() && (corrupt || !checkout_object.exists()) {
+            fetch_remote(&record, &destination)?;
+            if verify_tree(&destination, &record.content_digest).is_ok() {
+                publish_tree(&destination, &checkout_object, &record.content_digest)?;
+                if let Some(catalog) = catalog {
+                    publish_record_tree(catalog, &record, &destination)?;
+                }
+            }
+            write_materialize_decision(&store, input, &record, "fetch", "miss", &changed)?;
+            continue;
+        }
+        if corrupt {
+            verify_tree(&checkout_object, &record.content_digest)?;
+        }
+        return Err(format!(
+            "artifact {input} is not available locally and has no attempt id"
+        ));
+    }
+    Ok(())
+}
+
+/// Copy verified checkout records into the host-local catalog.
+///
+/// The catalog key is the source-set digest and the task name. `physicalHost`
+/// and `facet` stay labels on the record.
+pub fn publish_checkout_catalog(root: &Path) -> Result<(), String> {
+    let Some(catalog) = catalog_root() else {
+        return Ok(());
+    };
+    let store = root.join(".nxr").join("artifacts");
+    let records = store.join("records");
+    if !records.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(&records).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        let Ok(record) = ArtifactRecord::from_value(&value) else {
+            continue;
+        };
         let object = store.join("objects").join(&record.content_digest);
         if verify_tree(&object, &record.content_digest).is_ok() {
-            restore_local(&store, &record, &destination)?;
-            write_materialize_decision(&store, input, &record, "local")?;
-        } else if object.join("manifest.json").is_file() {
-            verify_tree(&object, &record.content_digest)?;
-        } else if !record.attempt_id.is_empty() {
-            fetch_remote(&record, &destination)?;
-            write_materialize_decision(&store, input, &record, "fetch")?;
-        } else {
-            return Err(format!(
-                "artifact {input} is not available locally and has no attempt id"
-            ));
+            publish_record_tree(&catalog, &record, &object)?;
         }
     }
     Ok(())
+}
+
+fn catalog_root() -> Option<std::path::PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".cache"))
+        })?;
+    Some(base.join("nxr").join("artifacts"))
+}
+
+fn source_set_key(record: &ArtifactRecord) -> String {
+    for field in ["sourceSet", "source_set", "source_set_id"] {
+        if let Some(value) = record.identity.get(field).and_then(Value::as_str)
+            && !value.is_empty()
+        {
+            return value.to_owned();
+        }
+    }
+    "unscoped".to_owned()
+}
+
+fn catalog_object_ok(catalog: &Path, record: &ArtifactRecord) -> bool {
+    let path = catalog
+        .join("records")
+        .join(source_set_key(record))
+        .join(format!("{}.json", record.name));
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    let Ok(stored) = ArtifactRecord::from_value(&value) else {
+        return false;
+    };
+    if stored.content_digest != record.content_digest {
+        return false;
+    }
+    verify_tree(
+        &catalog.join("objects").join(&record.content_digest),
+        &record.content_digest,
+    )
+    .is_ok()
+}
+
+fn publish_record_tree(
+    catalog: &Path,
+    record: &ArtifactRecord,
+    object: &Path,
+) -> Result<(), String> {
+    let destination = catalog.join("objects").join(&record.content_digest);
+    publish_tree(object, &destination, &record.content_digest)?;
+    let record_path = catalog
+        .join("records")
+        .join(source_set_key(record))
+        .join(format!("{}.json", record.name));
+    if let Some(parent) = record_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let body = json!({
+        "attemptId": record.attempt_id,
+        "consumerInput": record.consumer_input,
+        "contentDigest": record.content_digest,
+        "facet": record.facet,
+        "host": record.host,
+        "identity": record.identity,
+        "name": record.name,
+        "output": record.output,
+        "physicalHost": record.physical_host,
+        "producerRun": record.producer_run,
+    });
+    fs::write(&record_path, format!("{body}\n")).map_err(|err| err.to_string())
+}
+
+fn changed_identity_field(catalog: &Path, current: &ArtifactRecord) -> Option<String> {
+    let records = catalog.join("records");
+    let Ok(source_sets) = fs::read_dir(&records) else {
+        return None;
+    };
+    for source_set in source_sets.filter_map(Result::ok) {
+        let path = source_set.path().join(format!("{}.json", current.name));
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        let Ok(stored) = ArtifactRecord::from_value(&value) else {
+            continue;
+        };
+        if let Some(field) = first_changed_field(&current.identity, &stored.identity) {
+            return Some(field);
+        }
+    }
+    None
+}
+
+fn first_changed_field(current: &Value, stored: &Value) -> Option<String> {
+    for (label, keys) in [
+        (
+            "sourceSet",
+            &["sourceSet", "source_set", "source_set_id"][..],
+        ),
+        ("toolchain", &["toolchain"][..]),
+        ("inputs", &["inputs", "inputDigests"][..]),
+    ] {
+        let left = identity_value(current, keys);
+        let right = identity_value(stored, keys);
+        if left != right && (left.is_some() || right.is_some()) {
+            return Some(label.to_owned());
+        }
+    }
+    None
+}
+
+fn identity_value<'a>(identity: &'a Value, keys: &[&str]) -> Option<&'a Value> {
+    keys.iter().find_map(|key| identity.get(*key))
+}
+
+/// Copy run timings onto the stored materialize decision.
+pub fn annotate_decision(
+    root: &Path,
+    task: &str,
+    task_ms: Option<&Value>,
+    checkout_ms: Option<&Value>,
+    chunks_resumed: u64,
+    chunks_fetched: u64,
+) -> Result<(), String> {
+    let path = root
+        .join(".nxr")
+        .join("artifacts")
+        .join("decisions")
+        .join(format!("{task}.json"));
+    if !path.is_file() {
+        return Ok(());
+    }
+    let text = fs::read_to_string(&path).map_err(|err| err.to_string())?;
+    let mut decision: Value =
+        serde_json::from_str(&text).map_err(|err| format!("decision json: {err}"))?;
+    let Some(object) = decision.as_object_mut() else {
+        return Ok(());
+    };
+    if let Some(value) = task_ms {
+        object.insert("task_ms".to_owned(), value.clone());
+        if object.get("transfer").and_then(Value::as_str) == Some("local") {
+            object.insert("savings_ms".to_owned(), value.clone());
+        }
+    }
+    if let Some(value) = checkout_ms {
+        object.insert("checkout_ms".to_owned(), value.clone());
+    }
+    object.insert("chunks_resumed".to_owned(), json!(chunks_resumed));
+    object.insert("chunks_fetched".to_owned(), json!(chunks_fetched));
+    fs::write(&path, format!("{decision}\n")).map_err(|err| err.to_string())
 }
 
 fn write_materialize_decision(
@@ -155,6 +378,8 @@ fn write_materialize_decision(
     input: &str,
     record: &ArtifactRecord,
     transfer: &str,
+    decision: &str,
+    changed: &str,
 ) -> Result<(), String> {
     let path = store.join("decisions").join(format!("{input}.json"));
     if let Some(parent) = path.parent() {
@@ -166,14 +391,18 @@ fn write_materialize_decision(
         .map(|fields| fields.keys().cloned().collect::<Vec<_>>().join(","))
         .unwrap_or_default();
     let body = json!({
-        "artifact": "hit",
+        "artifact": decision,
         "cargo": "reused",
-        "decision": "hit",
+        "changedField": changed,
+        "chunks_fetched": 0,
+        "chunks_resumed": 0,
+        "decision": decision,
         "digest": record.content_digest,
         "facet": record.facet,
         "identityFields": identity_fields,
         "physicalHost": record.physical_host,
-        "reason": "",
+        "reason": changed,
+        "savings_ms": 0,
         "sccache": "not-recorded",
         "task": input,
         "transfer": transfer,
@@ -794,6 +1023,154 @@ mod tests {
             fs::read_to_string(destination.join("previous.txt")).unwrap(),
             "stay"
         );
+    }
+
+    #[test]
+    fn a_second_checkout_reuses_the_host_catalog() {
+        let root = tempfile::tempdir().unwrap();
+        let catalog = root.path().join("catalog");
+        let first = root.path().join("first");
+        let source = root.path().join("object");
+        let digest = fixture(&source, b"wasm");
+        let object = first
+            .join(".nxr")
+            .join("artifacts")
+            .join("objects")
+            .join(&digest);
+        fs::create_dir_all(&object).unwrap();
+        fs::copy(source.join("mod.wasm"), object.join("mod.wasm")).unwrap();
+        fs::copy(source.join("manifest.json"), object.join("manifest.json")).unwrap();
+        write_record_identity(first.as_path(), &digest, "src-a");
+        super::materialize_inputs_from(
+            &ExecContext {
+                path: String::new(),
+                nix_override: None,
+                cwd: Some(first.clone()),
+                env: Default::default(),
+            },
+            &["bundle".to_owned()],
+            Some(catalog.as_path()),
+        )
+        .unwrap();
+        assert!(
+            catalog
+                .join("records")
+                .join("src-a")
+                .join("bundle.json")
+                .is_file()
+        );
+        let second = root.path().join("second");
+        write_record_identity(second.as_path(), &digest, "src-a");
+        super::materialize_inputs_from(
+            &ExecContext {
+                path: String::new(),
+                nix_override: None,
+                cwd: Some(second.clone()),
+                env: Default::default(),
+            },
+            &["bundle".to_owned()],
+            Some(catalog.as_path()),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(second.join(".nxr/artifacts/materialized/bundle/mod.wasm")).unwrap(),
+            b"wasm"
+        );
+        let decision: Value = serde_json::from_str(
+            &fs::read_to_string(second.join(".nxr/artifacts/decisions/bundle.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decision["transfer"], "local");
+        assert_eq!(decision["decision"], "hit");
+    }
+
+    #[test]
+    fn explain_names_the_source_set_when_it_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let catalog = root.path().join("catalog");
+        let checkout = root.path().join("checkout");
+        let source = root.path().join("object");
+        let digest = fixture(&source, b"wasm");
+        let object = checkout
+            .join(".nxr")
+            .join("artifacts")
+            .join("objects")
+            .join(&digest);
+        fs::create_dir_all(&object).unwrap();
+        fs::copy(source.join("mod.wasm"), object.join("mod.wasm")).unwrap();
+        fs::copy(source.join("manifest.json"), object.join("manifest.json")).unwrap();
+        write_record_identity(checkout.as_path(), &digest, "src-new");
+        let stored = catalog.join("records").join("src-old");
+        fs::create_dir_all(&stored).unwrap();
+        fs::write(
+            stored.join("bundle.json"),
+            serde_json::to_string(&json!({
+                "attemptId": "",
+                "contentDigest": digest,
+                "host": "linux",
+                "name": "bundle",
+                "output": "bundle.tar",
+                "identity": {"sourceSet": "src-old", "toolchain": "rust-1", "inputs": "aaa"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        super::materialize_inputs_from(
+            &ExecContext {
+                path: String::new(),
+                nix_override: None,
+                cwd: Some(checkout.clone()),
+                env: Default::default(),
+            },
+            &["bundle".to_owned()],
+            Some(catalog.as_path()),
+        )
+        .unwrap();
+        let decision: Value = serde_json::from_str(
+            &fs::read_to_string(checkout.join(".nxr/artifacts/decisions/bundle.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decision["changedField"], "sourceSet");
+        annotate_decision(
+            checkout.as_path(),
+            "bundle",
+            Some(&json!(1200)),
+            Some(&json!(40)),
+            3,
+            1,
+        )
+        .unwrap();
+        let decision: Value = serde_json::from_str(
+            &fs::read_to_string(checkout.join(".nxr/artifacts/decisions/bundle.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decision["task_ms"], 1200);
+        assert_eq!(decision["checkout_ms"], 40);
+        assert_eq!(decision["chunks_resumed"], 3);
+        assert_eq!(decision["savings_ms"], 1200);
+    }
+
+    fn write_record_identity(root: &Path, digest: &str, source_set: &str) {
+        let record = json!({
+            "attemptId": "",
+            "bundleSha256": digest,
+            "consumerInput": "bundle",
+            "contentDigest": digest,
+            "host": "linux",
+            "physicalHost": "nixdev",
+            "facet": "system",
+            "identity": {"sourceSet": source_set, "toolchain": "rust-1", "inputs": "aaa"},
+            "name": "bundle",
+            "output": "bundle.tar",
+            "producerRun": "run-1"
+        });
+        let records = root.join(".nxr").join("artifacts").join("records");
+        fs::create_dir_all(&records).unwrap();
+        fs::write(
+            records.join("bundle.json"),
+            serde_json::to_string(&record).unwrap(),
+        )
+        .unwrap();
     }
 
     fn write_record(root: &Path, digest: &str) {

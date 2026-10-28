@@ -472,6 +472,9 @@ fn record_artifacts(
             });
         }
     }
+    if let Some(cwd) = &ctx.cwd {
+        crate::artifact::publish_checkout_catalog(cwd)?;
+    }
     Ok(())
 }
 

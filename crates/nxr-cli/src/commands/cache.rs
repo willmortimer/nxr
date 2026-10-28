@@ -621,10 +621,25 @@ fn artifact_decision_lines(task: &str) -> Vec<String> {
     {
         lines.push(format!("identity: {fields}"));
     }
+    if let Some(digest) = decision.get("digest").and_then(serde_json::Value::as_str)
+        && !digest.is_empty()
+    {
+        lines.push(format!("digest: {digest}"));
+    }
     if let Some(transfer) = decision.get("transfer").and_then(serde_json::Value::as_str)
         && !transfer.is_empty()
     {
         lines.push(format!("transfer: {transfer}"));
+    }
+    if let Some(changed) = decision
+        .get("changedField")
+        .and_then(serde_json::Value::as_str)
+        && !changed.is_empty()
+    {
+        lines.push(format!("changed: {changed}"));
+    }
+    if let Some(savings) = decision.get("savings_ms") {
+        lines.push(format!("savings_ms: {savings}"));
     }
     lines.push(format!(
         "cargo: {}",
