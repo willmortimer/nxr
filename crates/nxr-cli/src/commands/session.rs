@@ -1,4 +1,5 @@
-//! Detached run records. These are nxr sessions, not fleet Profile Assignments.
+//! Session metadata. These records do not launch or cancel a process, and they
+//! are not fleet Profile Assignments.
 
 use std::fs;
 use std::path::PathBuf;
@@ -48,8 +49,11 @@ fn load(id: &str) -> Result<SessionRecord, String> {
 }
 
 fn store(record: &SessionRecord) -> Result<(), String> {
+    let path = session_path(&record.id)?;
     let body = serde_json::to_string_pretty(record).map_err(|err| err.to_string())?;
-    fs::write(session_path(&record.id)?, body).map_err(|err| err.to_string())
+    let temporary = path.with_extension("json.tmp");
+    fs::write(&temporary, body).map_err(|err| err.to_string())?;
+    fs::rename(&temporary, &path).map_err(|err| err.to_string())
 }
 
 pub fn start(label: &str, runner: RunnerOutput) -> Result<(), String> {
@@ -63,10 +67,10 @@ pub fn start(label: &str, runner: RunnerOutput) -> Result<(), String> {
     let record = SessionRecord {
         id: id.clone(),
         label: label.to_owned(),
-        status: "running".into(),
+        status: "recorded".into(),
         events: vec![SessionEvent {
             cursor: 1,
-            message: "detached".into(),
+            message: "recorded".into(),
         }],
         artifacts: Vec::new(),
     };

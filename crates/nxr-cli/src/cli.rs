@@ -252,10 +252,10 @@ pub enum CatalogSubcommand {
     },
 }
 
-/// `nxr session` sub-targets for a detached run. These records are not fleet assignments.
+/// `nxr session` stores a run id and events. It does not launch or cancel a process.
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 pub enum SessionSubcommand {
-    /// Start a detached run and print its id.
+    /// Record a session id and label. This does not launch a task.
     Start {
         /// Label stored with the run.
         label: String,
@@ -273,7 +273,7 @@ pub enum SessionSubcommand {
         /// Run id.
         run: String,
     },
-    /// Mark the run cancelled. This does not delete catalog objects.
+    /// Mark the record cancelled. This does not terminate a process.
     Cancel {
         /// Run id.
         run: String,
@@ -567,7 +567,7 @@ pub enum Command {
         #[command(subcommand)]
         action: CatalogSubcommand,
     },
-    /// Detached run id, events, inspect, and cancel. NXR does not store fleet assignments.
+    /// Session metadata. These commands store a record and do not launch or cancel a process.
     Session {
         #[command(subcommand)]
         action: SessionSubcommand,
