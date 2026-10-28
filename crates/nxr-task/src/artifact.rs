@@ -144,8 +144,11 @@ fn materialize_inputs_from(
         if let Some(catalog) = catalog
             && catalog_object_ok(catalog, &record)
         {
-            let source = catalog.join("objects").join(&record.content_digest);
-            publish_tree(&source, &checkout_object, &record.content_digest)?;
+            let digest = record.content_digest.clone();
+            with_exclusive_lock(&object_lock_path(catalog, &digest), || {
+                let source = catalog.join("objects").join(&digest);
+                publish_tree(&source, &checkout_object, &digest)
+            })?;
             restore_local(&store, &record, &destination)?;
             write_materialize_decision(&store, input, &record, "local", "hit", &changed)?;
             continue;
@@ -389,7 +392,8 @@ fn publish_record_tree(
     record: &ArtifactRecord,
     object: &Path,
 ) -> Result<(), String> {
-    let key = catalog_key(record)?;
+    let record = prepare_publication(record)?;
+    let key = catalog_key(&record)?;
     let record_dir = catalog.join("records").join(&key);
     fs::create_dir_all(&record_dir).map_err(|err| err.to_string())?;
     let lock_path = record_dir.join(format!("{}.lock", record.name));
@@ -457,12 +461,77 @@ fn atomic_replace(path: &Path, body: &str) -> Result<(), String> {
     })
 }
 
+fn prepare_publication(record: &ArtifactRecord) -> Result<ArtifactRecord, String> {
+    reject_unknown_producer(&record.identity)?;
+    reject_noncanonical_generic_inputs(&record.identity)?;
+    let mut record = record.clone();
+    record.identity = identity_with_schema(&record.identity);
+    Ok(record)
+}
+
+fn reject_unknown_producer(identity: &Value) -> Result<(), String> {
+    match identity.get("producer").and_then(Value::as_str) {
+        None | Some("stargate") | Some("generic") => Ok(()),
+        Some(kind) => Err(format!("unknown producer kind: {kind}")),
+    }
+}
+
+fn reject_noncanonical_generic_inputs(identity: &Value) -> Result<(), String> {
+    let kind = identity.get("producer").and_then(Value::as_str);
+    let generic = kind == Some("generic")
+        || (kind.is_none()
+            && (identity.get("inputs").is_some() || identity.get("inputDigests").is_some()));
+    if !generic {
+        return Ok(());
+    }
+    for key in ["inputs", "inputDigests"] {
+        let Some(value) = identity.get(key) else {
+            continue;
+        };
+        if value
+            .as_str()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .is_none()
+        {
+            return Err("generic artifact inputs are not canonical".into());
+        }
+    }
+    Ok(())
+}
+
+fn identity_with_schema(identity: &Value) -> Value {
+    let mut value = identity.clone();
+    if let Some(object) = value.as_object_mut() {
+        object.insert("identitySchema".to_owned(), json!(1));
+    }
+    sort_json(&value)
+}
+
+fn sort_json(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<_> = map.keys().cloned().collect();
+            keys.sort();
+            let mut sorted = serde_json::Map::new();
+            for key in keys {
+                sorted.insert(key.clone(), sort_json(&map[&key]));
+            }
+            Value::Object(sorted)
+        }
+        Value::Array(items) => Value::Array(items.iter().map(sort_json).collect()),
+        other => other.clone(),
+    }
+}
+
 fn changed_identity_field(catalog: &Path, current: &ArtifactRecord) -> Option<String> {
     let records = catalog.join("records");
-    let Ok(source_sets) = fs::read_dir(&records) else {
-        return None;
-    };
-    for source_set in source_sets.filter_map(Result::ok) {
+    let mut directories = fs::read_dir(&records)
+        .ok()?
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+    directories.sort_by_key(|entry| entry.file_name());
+    for source_set in directories {
         let path = source_set.path().join(format!("{}.json", current.name));
         let Ok(text) = fs::read_to_string(&path) else {
             continue;
@@ -482,11 +551,21 @@ fn changed_identity_field(catalog: &Path, current: &ArtifactRecord) -> Option<St
 
 fn first_changed_field(current: &Value, stored: &Value) -> Option<String> {
     for (label, keys) in [
+        ("commit", &["commit"][..]),
+        ("profile", &["profile"][..]),
+        ("toolchain", &["toolchain"][..]),
+        (
+            "lockfile",
+            &["lockfile", "lockfileDigest", "lockfile_digest"][..],
+        ),
+        (
+            "dirty",
+            &["dirty", "dirtySource", "dirty_snapshot_id", "dirtySnapshot"][..],
+        ),
         (
             "sourceSet",
             &["sourceSet", "source_set", "source_set_id"][..],
         ),
-        ("toolchain", &["toolchain"][..]),
         ("inputs", &["inputs", "inputDigests"][..]),
     ] {
         let left = identity_value(current, keys);
@@ -738,7 +817,7 @@ fn write_materialize_decision(
         .unwrap_or_default();
     let body = json!({
         "artifact": decision,
-        "cargo": "reused",
+        "cargo": recorded_tool(store, input, "cargo"),
         "changedField": changed,
         "chunks_fetched": 0,
         "chunks_resumed": 0,
@@ -749,11 +828,186 @@ fn write_materialize_decision(
         "physicalHost": record.physical_host,
         "reason": changed,
         "savingsBasis": "unavailable",
-        "sccache": "not-recorded",
+        "sccache": recorded_tool(store, input, "sccache"),
         "task": input,
         "transfer": transfer,
     });
     fs::write(path, format!("{body}\n")).map_err(|err| err.to_string())
+}
+
+fn recorded_tool(store: &Path, input: &str, tool: &str) -> &'static str {
+    let path = store.join("receipts").join(format!("{input}.json"));
+    let Ok(text) = fs::read_to_string(path) else {
+        return "not-recorded";
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return "not-recorded";
+    };
+    if value.get(tool).and_then(Value::as_str) == Some("reused") {
+        "reused"
+    } else {
+        "not-recorded"
+    }
+}
+
+/// Drop unreferenced records past `quota`, quarantine a record whose object
+/// does not verify, and leave an object in place while its materialize lock is held.
+pub fn retain_catalog(catalog: &Path, quota: usize) -> Result<(), String> {
+    quarantine_unverified(catalog)?;
+    let mut records = record_files(catalog)?;
+    records.sort_by(|left, right| {
+        left.modified
+            .cmp(&right.modified)
+            .then(left.path.cmp(&right.path))
+    });
+    let pinned = pinned_digests(catalog);
+    let mut remaining = records.len();
+    for record in records {
+        if remaining <= quota {
+            break;
+        }
+        if pinned.contains(&record.digest) {
+            continue;
+        }
+        fs::remove_file(&record.path).map_err(|err| err.to_string())?;
+        remaining -= 1;
+        if !digest_still_recorded(catalog, &record.digest) {
+            let _ = delete_object_if_unlocked(catalog, &record.digest)?;
+        }
+    }
+    delete_orphan_objects(catalog)
+}
+
+fn delete_orphan_objects(catalog: &Path) -> Result<(), String> {
+    let objects = catalog.join("objects");
+    if !objects.is_dir() {
+        return Ok(());
+    }
+    let recorded = record_files(catalog)?;
+    for entry in fs::read_dir(&objects).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        if !entry.file_type().map_err(|err| err.to_string())?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if recorded.iter().any(|record| record.digest == name) {
+            continue;
+        }
+        delete_object_if_unlocked(catalog, &name)?;
+    }
+    Ok(())
+}
+
+struct CatalogRecordFile {
+    path: std::path::PathBuf,
+    digest: String,
+    modified: std::time::SystemTime,
+}
+
+fn record_files(catalog: &Path) -> Result<Vec<CatalogRecordFile>, String> {
+    let records = catalog.join("records");
+    if !records.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut files = Vec::new();
+    for directory in fs::read_dir(&records).map_err(|err| err.to_string())? {
+        let directory = directory.map_err(|err| err.to_string())?;
+        if !directory
+            .file_type()
+            .map_err(|err| err.to_string())?
+            .is_dir()
+        {
+            continue;
+        }
+        for entry in fs::read_dir(directory.path()).map_err(|err| err.to_string())? {
+            let entry = entry.map_err(|err| err.to_string())?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let text = fs::read_to_string(&path).map_err(|err| err.to_string())?;
+            let value: Value =
+                serde_json::from_str(&text).map_err(|err| format!("catalog record: {err}"))?;
+            let record = ArtifactRecord::from_value(&value)?;
+            let modified = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            files.push(CatalogRecordFile {
+                path,
+                digest: record.content_digest,
+                modified,
+            });
+        }
+    }
+    Ok(files)
+}
+
+fn quarantine_unverified(catalog: &Path) -> Result<(), String> {
+    let records = record_files(catalog)?;
+    for record in records {
+        let object = catalog.join("objects").join(&record.digest);
+        if verify_tree(&object, &record.digest).is_ok() {
+            continue;
+        }
+        let relative = record
+            .path
+            .strip_prefix(catalog.join("records"))
+            .unwrap_or(record.path.as_path());
+        let destination = catalog.join("quarantine").join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        }
+        fs::rename(&record.path, &destination).map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+fn pinned_digests(catalog: &Path) -> std::collections::BTreeSet<String> {
+    let mut digests = std::collections::BTreeSet::new();
+    let pins = catalog.join("pins");
+    let Ok(entries) = fs::read_dir(&pins) else {
+        return digests;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        if let Some(name) = entry.file_name().to_str() {
+            digests.insert(name.to_owned());
+        }
+    }
+    digests
+}
+
+fn digest_still_recorded(catalog: &Path, digest: &str) -> bool {
+    record_files(catalog)
+        .ok()
+        .is_some_and(|records| records.iter().any(|record| record.digest == digest))
+}
+
+fn object_lock_path(catalog: &Path, digest: &str) -> std::path::PathBuf {
+    catalog.join("locks").join(format!("{digest}.lock"))
+}
+
+fn delete_object_if_unlocked(catalog: &Path, digest: &str) -> Result<bool, String> {
+    let lock_path = object_lock_path(catalog, digest);
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|err| err.to_string())?;
+    if file.try_lock_exclusive().is_err() {
+        return Ok(false);
+    }
+    let object = catalog.join("objects").join(digest);
+    if object.exists() {
+        fs::remove_dir_all(&object).map_err(|err| err.to_string())?;
+    }
+    let _ = file.unlock();
+    Ok(true)
 }
 
 fn load_record(store: &Path, name: &str) -> Result<ArtifactRecord, String> {
@@ -1089,6 +1343,7 @@ thread_local! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fs2::FileExt;
 
     fn fixture(dir: &Path, body: &[u8]) -> String {
         fs::create_dir_all(dir).unwrap();
@@ -1808,6 +2063,247 @@ mod tests {
                 .unwrap();
         assert_eq!(estimated["savingsBasis"], "estimated");
         assert_eq!(estimated["savings_ms"], 4000);
+    }
+
+    #[test]
+    fn the_same_catalog_explains_the_same_field() {
+        let root = tempfile::tempdir().unwrap();
+        let catalog = root.path().join("catalog");
+        let current = json!({
+            "commit": "1",
+            "profile": "new",
+            "sourceSet": "same",
+            "toolchain": "rust-1",
+            "inputs": "aaa"
+        });
+        let record = super::ArtifactRecord::from_value(&json!({
+            "contentDigest": "ab".repeat(32),
+            "name": "bundle",
+            "identity": current
+        }))
+        .unwrap();
+        for (dir, identity) in [
+            (
+                "b-commit",
+                json!({"commit": "0", "profile": "new", "sourceSet": "same", "toolchain": "rust-1", "inputs": "aaa"}),
+            ),
+            (
+                "a-profile",
+                json!({"commit": "1", "profile": "old", "sourceSet": "same", "toolchain": "rust-1", "inputs": "aaa"}),
+            ),
+        ] {
+            let path = catalog.join("records").join(dir);
+            fs::create_dir_all(&path).unwrap();
+            fs::write(
+                path.join("bundle.json"),
+                serde_json::to_string(&json!({
+                    "contentDigest": "ab".repeat(32),
+                    "name": "bundle",
+                    "identity": identity
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            super::changed_identity_field(&catalog, &record).as_deref(),
+            Some("profile")
+        );
+        assert_eq!(
+            super::changed_identity_field(&catalog, &record).as_deref(),
+            Some("profile")
+        );
+    }
+
+    #[test]
+    fn cargo_reuse_is_not_recorded_without_a_receipt() {
+        let root = tempfile::tempdir().unwrap();
+        let catalog = root.path().join("catalog");
+        let checkout = root.path().join("checkout");
+        let source = root.path().join("object");
+        let digest = fixture(&source, b"wasm");
+        write_record_identity(checkout.as_path(), &digest, "src-a");
+        let object = checkout.join(".nxr/artifacts/objects").join(&digest);
+        fs::create_dir_all(&object).unwrap();
+        fs::copy(source.join("mod.wasm"), object.join("mod.wasm")).unwrap();
+        fs::copy(source.join("manifest.json"), object.join("manifest.json")).unwrap();
+        super::materialize_inputs_from(
+            &ExecContext {
+                path: String::new(),
+                nix_override: None,
+                cwd: Some(checkout.clone()),
+                env: Default::default(),
+            },
+            &["bundle".to_owned()],
+            Some(catalog.as_path()),
+        )
+        .unwrap();
+        let decision: Value = serde_json::from_str(
+            &fs::read_to_string(checkout.join(".nxr/artifacts/decisions/bundle.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decision["cargo"], "not-recorded");
+        assert_eq!(decision["sccache"], "not-recorded");
+
+        let receipts = checkout.join(".nxr/artifacts/receipts");
+        fs::create_dir_all(&receipts).unwrap();
+        fs::write(receipts.join("bundle.json"), r#"{"cargo":"reused"}"#).unwrap();
+        super::materialize_inputs_from(
+            &ExecContext {
+                path: String::new(),
+                nix_override: None,
+                cwd: Some(checkout.clone()),
+                env: Default::default(),
+            },
+            &["bundle".to_owned()],
+            Some(catalog.as_path()),
+        )
+        .unwrap();
+        let observed: Value = serde_json::from_str(
+            &fs::read_to_string(checkout.join(".nxr/artifacts/decisions/bundle.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(observed["cargo"], "reused");
+    }
+
+    #[test]
+    fn publication_versions_identity_and_rejects_a_bad_producer() {
+        let root = tempfile::tempdir().unwrap();
+        let catalog = root.path().join("catalog");
+        let source = root.path().join("object");
+        let digest = fixture(&source, b"wasm");
+        let object = copy_fixture_object(root.path(), &source, &digest);
+        let mut record = stargate_record(&digest, "commit-a", "lattice-1");
+        super::publish_record_tree(&catalog, &record, &object).unwrap();
+        let stored = fs::read_to_string(
+            catalog
+                .join("records")
+                .join(super::catalog_key(&record).unwrap())
+                .join("bundle.json"),
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(value["identity"]["identitySchema"], 1);
+        let legacy = super::ArtifactRecord::from_value(&json!({
+            "contentDigest": digest,
+            "name": "bundle",
+            "identity": {"sourceSet": "src-a", "toolchain": "rust-1", "inputs": "aaa"}
+        }))
+        .unwrap();
+        assert!(legacy.identity.get("identitySchema").is_none());
+
+        record.identity["producer"] = json!("unknown-kind");
+        let error = super::publish_record_tree(&catalog, &record, &object).unwrap_err();
+        assert!(error.contains("unknown producer kind"), "{error}");
+
+        let mut generic = super::ArtifactRecord::from_value(&json!({
+            "contentDigest": digest,
+            "name": "bundle",
+            "identity": {
+                "producer": "generic",
+                "sourceSet": "src-a",
+                "toolchain": "rust-1",
+                "inputs": {"z": "1", "a": "2"}
+            }
+        }))
+        .unwrap();
+        let error = super::publish_record_tree(&catalog, &generic, &object).unwrap_err();
+        assert!(error.contains("not canonical"), "{error}");
+        generic.identity["inputs"] = json!("a=2\nz=1");
+        super::publish_record_tree(&catalog, &generic, &object).unwrap();
+    }
+
+    #[test]
+    fn a_changed_input_does_not_reuse_the_verified_match() {
+        let root = tempfile::tempdir().unwrap();
+        let catalog = root.path().join("catalog");
+        let first = root.path().join("first");
+        let source = root.path().join("object");
+        let digest = fixture(&source, b"wasm");
+        let object = first.join(".nxr/artifacts/objects").join(&digest);
+        fs::create_dir_all(&object).unwrap();
+        fs::copy(source.join("mod.wasm"), object.join("mod.wasm")).unwrap();
+        fs::copy(source.join("manifest.json"), object.join("manifest.json")).unwrap();
+        write_record_identity(first.as_path(), &digest, "src-a");
+        super::materialize_inputs_from(
+            &ExecContext {
+                path: String::new(),
+                nix_override: None,
+                cwd: Some(first),
+                env: Default::default(),
+            },
+            &["bundle".to_owned()],
+            Some(catalog.as_path()),
+        )
+        .unwrap();
+        let second = root.path().join("second");
+        write_record_identity(second.as_path(), &digest, "src-b");
+        let error = super::materialize_inputs_from(
+            &ExecContext {
+                path: String::new(),
+                nix_override: None,
+                cwd: Some(second.clone()),
+                env: Default::default(),
+            },
+            &["bundle".to_owned()],
+            Some(catalog.as_path()),
+        )
+        .unwrap_err();
+        assert!(error.contains("not available locally"), "{error}");
+        assert!(!second.join(".nxr/artifacts/materialized/bundle").exists());
+    }
+
+    #[test]
+    fn retention_quarantines_a_bad_object_and_skips_a_locked_one() {
+        let root = tempfile::tempdir().unwrap();
+        let catalog = root.path().join("catalog");
+        let source = root.path().join("object");
+        let digest = fixture(&source, b"wasm");
+        let record = stargate_record(&digest, "commit-a", "lattice-1");
+        let object = copy_fixture_object(root.path(), &source, &digest);
+        super::publish_record_tree(&catalog, &record, &object).unwrap();
+        let key = super::catalog_key(&record).unwrap();
+        fs::write(
+            catalog.join("objects").join(&digest).join("mod.wasm"),
+            b"corrupt",
+        )
+        .unwrap();
+        super::retain_catalog(&catalog, 10).unwrap();
+        assert!(
+            !catalog
+                .join("records")
+                .join(&key)
+                .join("bundle.json")
+                .exists()
+        );
+        assert!(
+            catalog
+                .join("quarantine")
+                .join(&key)
+                .join("bundle.json")
+                .is_file()
+        );
+
+        let fresh = root.path().join("fresh");
+        let kept = fixture(&fresh, b"kept");
+        let kept_record = stargate_record(&kept, "commit-b", "lattice-1");
+        let kept_object = copy_fixture_object(root.path(), &fresh, &kept);
+        let live = root.path().join("live");
+        super::publish_record_tree(&live, &kept_record, &kept_object).unwrap();
+        let lock_path = super::object_lock_path(&live, &kept);
+        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        lock.lock_exclusive().unwrap();
+        super::retain_catalog(&live, 0).unwrap();
+        assert!(live.join("objects").join(&kept).join("mod.wasm").is_file());
+        lock.unlock().unwrap();
+        super::retain_catalog(&live, 0).unwrap();
+        assert!(!live.join("objects").join(&kept).exists());
     }
 
     fn stargate_record(digest: &str, commit: &str, source_set: &str) -> super::ArtifactRecord {
