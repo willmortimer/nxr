@@ -45,30 +45,31 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
-    if follow_id.is_none() && std::env::var("NIXPLANE_REATTACH").ok().as_deref() == Some("1") {
-        if let Some(saved) = saved_receipt(&root, name) {
-            match reattach_action(Some(&saved)) {
-                "verify" if saved.get("hash_ok").and_then(Value::as_bool) == Some(true) => {
-                    let attempt = saved
-                        .get("attempt_id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    let code = saved.get("exit_code").and_then(Value::as_i64).unwrap_or(0) as i32;
-                    println!(
-                        "reattach verify attempt {attempt} status={}",
-                        saved.get("terminal").and_then(Value::as_str).unwrap_or("")
-                    );
-                    return Ok(code);
-                }
-                "verify" | "follow" => {
-                    follow_id = saved
-                        .get("attempt_id")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned);
-                    receipt = saved;
-                }
-                _ => {}
+    if follow_id.is_none()
+        && std::env::var("NIXPLANE_REATTACH").ok().as_deref() == Some("1")
+        && let Some(saved) = saved_receipt(&root, name)
+    {
+        match reattach_action(Some(&saved)) {
+            "verify" if saved.get("hash_ok").and_then(Value::as_bool) == Some(true) => {
+                let attempt = saved
+                    .get("attempt_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let code = saved.get("exit_code").and_then(Value::as_i64).unwrap_or(0) as i32;
+                println!(
+                    "reattach verify attempt {attempt} status={}",
+                    saved.get("terminal").and_then(Value::as_str).unwrap_or("")
+                );
+                return Ok(code);
             }
+            "verify" | "follow" => {
+                follow_id = saved
+                    .get("attempt_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                receipt = saved;
+            }
+            _ => {}
         }
     }
     if let Some(follow) = follow_id {
@@ -783,7 +784,34 @@ thread_local! {
     static CRASH_AFTER_STAGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+fn attach_artifact_decision(root: &Path, receipt: &mut Value) {
+    let Some(task) = receipt.get("task_id").and_then(Value::as_str) else {
+        return;
+    };
+    let path = root
+        .join(".nxr")
+        .join("artifacts")
+        .join("decisions")
+        .join(format!("{task}.json"));
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(decision) = serde_json::from_str::<Value>(&text) else {
+        return;
+    };
+    let Some(object) = receipt.as_object_mut() else {
+        return;
+    };
+    for key in ["decision", "digest", "transfer", "identityFields"] {
+        if let Some(value) = decision.get(key).filter(|value| !value.is_null()) {
+            object.insert(format!("artifact_{key}"), value.clone());
+        }
+    }
+}
+
 fn write_receipt(root: &Path, receipt: &Value) -> Result<(), WorkflowError> {
+    let mut receipt = receipt.clone();
+    attach_artifact_decision(root, &mut receipt);
     let directory = std::env::var("NIXPLANE_RECEIPT_DIR")
         .ok()
         .filter(|text| !text.trim().is_empty())
@@ -797,13 +825,13 @@ fn write_receipt(root: &Path, receipt: &Value) -> Result<(), WorkflowError> {
         .filter(|text| !text.is_empty())
         .unwrap_or("unsubmitted");
     let path = directory.join(format!("{attempt}.json"));
-    let text = serde_json::to_string_pretty(receipt)
+    let text = serde_json::to_string_pretty(&receipt)
         .map_err(|error| WorkflowError::new(exit::PROCESS_SUPERVISION, error.to_string()))?;
     fs::write(&path, format!("{text}\n")).map_err(|error| {
         WorkflowError::new(exit::PROCESS_SUPERVISION, format!("write receipt: {error}"))
     })?;
     if let Some(task) = receipt.get("task_id").and_then(Value::as_str) {
-        update_run_record(root, task, receipt)?;
+        update_run_record(root, task, &receipt)?;
     }
     if let Ok(result) = std::env::var("NIXPLANE_RESULT") {
         let _ = fs::write(

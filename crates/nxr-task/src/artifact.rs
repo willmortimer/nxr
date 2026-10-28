@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::execute::ExecContext;
 
 const UNPACK_LIMIT: u64 = 64 * 1024 * 1024;
+const ENTRY_LIMIT: usize = 10_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtifactRecord {
@@ -22,6 +23,8 @@ pub struct ArtifactRecord {
     pub content_digest: String,
     pub producer_run: String,
     pub host: String,
+    pub physical_host: String,
+    pub facet: String,
     pub consumer_input: String,
     pub attempt_id: String,
     pub output: String,
@@ -35,15 +38,23 @@ impl ArtifactRecord {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned();
-        if content_digest.len() != 64 {
+        if !is_hex_digest(&content_digest) {
             return Err("artifact record has no content digest".into());
         }
+        let name = value
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        safe_segment(&name, "artifact name")?;
+        let output = value
+            .get("output")
+            .and_then(Value::as_str)
+            .unwrap_or("bundle.tar")
+            .to_owned();
+        safe_segment(&output, "artifact output")?;
         Ok(Self {
-            name: value
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned(),
+            name,
             identity: value.get("identity").cloned().unwrap_or(json!({})),
             content_digest,
             producer_run: value
@@ -53,6 +64,16 @@ impl ArtifactRecord {
                 .to_owned(),
             host: value
                 .get("host")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned(),
+            physical_host: value
+                .get("physicalHost")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned(),
+            facet: value
+                .get("facet")
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_owned(),
@@ -66,22 +87,31 @@ impl ArtifactRecord {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_owned(),
-            output: value
-                .get("output")
-                .and_then(Value::as_str)
-                .unwrap_or("bundle.tar")
-                .to_owned(),
+            output,
         })
     }
 }
 
-pub fn local_host() -> &'static str {
-    match std::env::consts::OS {
-        "macos" => "macos",
-        "linux" => "linux",
-        "windows" => "windows",
-        other => other,
+fn is_hex_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn safe_segment(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 200
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains("..")
+        || value.contains('\0')
+        || value == "."
+    {
+        return Err(format!("{label} is not a single path segment"));
     }
+    Ok(())
+}
+
+pub fn local_host() -> &'static str {
+    std::env::consts::OS
 }
 
 /// Materialize each named input before the leaf process starts.
@@ -95,19 +125,60 @@ pub fn materialize_inputs(ctx: &ExecContext, inputs: &[String]) -> Result<(), St
         .unwrap_or(std::env::current_dir().map_err(|err| err.to_string())?);
     let store = root.join(".nxr").join("artifacts");
     for input in inputs {
+        safe_segment(input, "artifact input")?;
         let record = load_record(&store, input)?;
         let destination = root
             .join(".nxr")
             .join("artifacts")
             .join("materialized")
             .join(input);
-        if record.host.is_empty() || record.host == local_host() {
+        let object = store.join("objects").join(&record.content_digest);
+        if verify_tree(&object, &record.content_digest).is_ok() {
             restore_local(&store, &record, &destination)?;
-        } else {
+            write_materialize_decision(&store, input, &record, "local")?;
+        } else if object.join("manifest.json").is_file() {
+            verify_tree(&object, &record.content_digest)?;
+        } else if !record.attempt_id.is_empty() {
             fetch_remote(&record, &destination)?;
+            write_materialize_decision(&store, input, &record, "fetch")?;
+        } else {
+            return Err(format!(
+                "artifact {input} is not available locally and has no attempt id"
+            ));
         }
     }
     Ok(())
+}
+
+fn write_materialize_decision(
+    store: &Path,
+    input: &str,
+    record: &ArtifactRecord,
+    transfer: &str,
+) -> Result<(), String> {
+    let path = store.join("decisions").join(format!("{input}.json"));
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let identity_fields = record
+        .identity
+        .as_object()
+        .map(|fields| fields.keys().cloned().collect::<Vec<_>>().join(","))
+        .unwrap_or_default();
+    let body = json!({
+        "artifact": "hit",
+        "cargo": "reused",
+        "decision": "hit",
+        "digest": record.content_digest,
+        "facet": record.facet,
+        "identityFields": identity_fields,
+        "physicalHost": record.physical_host,
+        "reason": "",
+        "sccache": "not-recorded",
+        "task": input,
+        "transfer": transfer,
+    });
+    fs::write(path, format!("{body}\n")).map_err(|err| err.to_string())
 }
 
 fn load_record(store: &Path, name: &str) -> Result<ArtifactRecord, String> {
@@ -122,11 +193,8 @@ fn load_record(store: &Path, name: &str) -> Result<ArtifactRecord, String> {
 fn restore_local(store: &Path, record: &ArtifactRecord, destination: &Path) -> Result<(), String> {
     let source = store.join("objects").join(&record.content_digest);
     verify_tree(&source, &record.content_digest)?;
-    if destination.exists() {
-        match verify_tree(destination, &record.content_digest) {
-            Ok(()) => return Ok(()),
-            Err(_) => {}
-        }
+    if destination.exists() && verify_tree(destination, &record.content_digest).is_ok() {
+        return Ok(());
     }
     publish_tree(&source, destination, &record.content_digest)
 }
@@ -202,6 +270,7 @@ pub fn verify_tree(directory: &Path, expected_digest: &str) -> Result<(), String
     if files.is_empty() {
         return Err("bundle manifest has no files".into());
     }
+    let mut checked = Vec::new();
     for item in files {
         let name = item
             .get("name")
@@ -236,24 +305,130 @@ pub fn verify_tree(directory: &Path, expected_digest: &str) -> Result<(), String
         if actual != expect {
             return Err(format!("{name} sha256 {actual} does not match {expect}"));
         }
+        checked.push((name.to_owned(), expect.to_owned()));
+    }
+    let recomputed = canonical_digest(&body, &checked)?;
+    if recomputed != digest {
+        return Err(format!(
+            "recomputed digest {recomputed} does not match {digest}"
+        ));
     }
     Ok(())
 }
 
+fn canonical_digest(body: &Value, files: &[(String, String)]) -> Result<String, String> {
+    let mut lines = Vec::new();
+    if is_stargate_manifest(body) {
+        let toolchain = body.get("toolchain").and_then(Value::as_object);
+        lines.push(text_field(body, "commit"));
+        lines.push(text_field(body, "profile"));
+        lines.push(toolchain_field(toolchain, "rustc"));
+        lines.push(toolchain_field(toolchain, "wasmBindgen"));
+        lines.push(toolchain_field(toolchain, "binaryen"));
+    } else if body.get("digestAlgorithm").and_then(Value::as_str) == Some("nxr-artifact-v1") {
+        lines.push("nxr-artifact-v1".to_owned());
+    } else {
+        return Err("artifact manifest has no recognized digest algorithm".into());
+    }
+    let mut files = files.to_vec();
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    for (name, digest) in files {
+        lines.push(name);
+        lines.push(digest);
+    }
+    let payload = format!("{}\n", lines.join("\n"));
+    Ok(hex_digest(payload.as_bytes()))
+}
+
+fn is_stargate_manifest(body: &Value) -> bool {
+    [
+        "commit",
+        "profile",
+        "wasm",
+        "glue",
+        "computeWasm",
+        "computeGlue",
+    ]
+    .iter()
+    .all(|field| {
+        body.get(field)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+    }) && body.get("toolchain").and_then(Value::as_object).is_some()
+}
+
+fn text_field(body: &Value, field: &str) -> String {
+    body.get(field)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned()
+}
+
+fn toolchain_field(toolchain: Option<&serde_json::Map<String, Value>>, field: &str) -> String {
+    toolchain
+        .and_then(|fields| fields.get(field))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned()
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn publish_tree(source: &Path, destination: &Path, digest: &str) -> Result<(), String> {
-    if destination.exists() {
-        verify_tree(destination, digest)?;
+    if destination.exists() && verify_tree(destination, digest).is_ok() {
         return Ok(());
     }
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
     let stage = destination.with_extension(format!("stage-{}", std::process::id()));
+    let backup = destination.with_extension(format!("backup-{}", std::process::id()));
     let _ = fs::remove_dir_all(&stage);
     copy_dir(source, &stage)?;
     verify_tree(&stage, digest)?;
-    fs::rename(&stage, destination).map_err(|err| err.to_string())?;
+    let had_previous = destination.exists();
+    if had_previous {
+        let _ = fs::remove_dir_all(&backup);
+        fs::rename(destination, &backup).map_err(|err| err.to_string())?;
+    }
+    if rename_should_fail() {
+        if had_previous {
+            let _ = fs::rename(&backup, destination);
+        }
+        let _ = fs::remove_dir_all(&stage);
+        return Err("stopped before replacing the destination".into());
+    }
+    if let Err(err) = fs::rename(&stage, destination) {
+        if had_previous {
+            let _ = fs::rename(&backup, destination);
+        }
+        return Err(err.to_string());
+    }
+    if let Err(err) = verify_tree(destination, digest) {
+        let _ = fs::remove_dir_all(destination);
+        if had_previous {
+            let _ = fs::rename(&backup, destination);
+        }
+        return Err(err);
+    }
+    if had_previous {
+        let _ = fs::remove_dir_all(&backup);
+    }
     Ok(())
+}
+
+fn rename_should_fail() -> bool {
+    #[cfg(test)]
+    {
+        FAIL_RENAME.with(|flag| flag.get())
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
 }
 
 fn copy_dir(source: &Path, destination: &Path) -> Result<(), String> {
@@ -281,6 +456,7 @@ pub fn safe_extract(archive: &Path, staging: &Path) -> Result<(), String> {
     fs::create_dir_all(staging).map_err(|err| err.to_string())?;
     let root = staging.canonicalize().map_err(|err| err.to_string())?;
     let mut total = 0_u64;
+    let mut entries_seen = 0_usize;
     for entry in entries {
         let mut entry = entry.map_err(|err| format!("archive: {err}"))?;
         let path = entry.path().map_err(|err| err.to_string())?;
@@ -299,10 +475,16 @@ pub fn safe_extract(archive: &Path, staging: &Path) -> Result<(), String> {
         }
         if kind.is_file() {
             total = total.saturating_add(entry.header().size().unwrap_or(0));
-            if total > UNPACK_LIMIT {
+            entries_seen += 1;
+            if entries_seen > ENTRY_LIMIT || total > UNPACK_LIMIT {
                 return Err("archive exceeds the unpack cap".into());
             }
-        } else if !kind.is_dir() {
+        } else if kind.is_dir() {
+            entries_seen += 1;
+            if entries_seen > ENTRY_LIMIT {
+                return Err("archive exceeds the unpack cap".into());
+            }
+        } else {
             return Err(format!("unsafe archive entry {name}"));
         }
         let target = staging.join(&path);
@@ -321,8 +503,12 @@ pub fn safe_extract(archive: &Path, staging: &Path) -> Result<(), String> {
 
 fn sha256_file(path: &Path) -> Result<String, String> {
     let bytes = fs::read(path).map_err(|err| err.to_string())?;
-    let digest = Sha256::digest(bytes);
-    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+    Ok(hex_digest(&bytes))
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -339,15 +525,14 @@ mod tests {
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>()
         };
-        let digest = {
-            let digest = Sha256::digest(file_hash.as_bytes());
-            digest
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        };
+        let digest = canonical_digest(
+            &json!({"digestAlgorithm": "nxr-artifact-v1"}),
+            &[("mod.wasm".to_owned(), file_hash.clone())],
+        )
+        .unwrap();
         let manifest = json!({
             "bundleSha256": digest,
+            "digestAlgorithm": "nxr-artifact-v1",
             "files": [{"name": "mod.wasm", "sha256": file_hash}],
             "version": 1
         });
@@ -438,6 +623,199 @@ mod tests {
         assert_eq!(record.consumer_input, "bundle");
         assert_eq!(record.attempt_id, "att_1");
         assert_eq!(record.output, "bundle.tar");
-        let _ = PathBuf::from(record.name);
+        assert_eq!(record.physical_host, "");
+    }
+
+    #[test]
+    fn a_stale_manifest_digest_is_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let digest = fixture(root.path(), b"wasm");
+        let file_hash = hex_digest(b"changed");
+        fs::write(root.path().join("mod.wasm"), b"changed").unwrap();
+        let manifest = json!({
+            "bundleSha256": digest,
+            "digestAlgorithm": "nxr-artifact-v1",
+            "files": [{"name": "mod.wasm", "sha256": file_hash}],
+            "version": 1
+        });
+        fs::write(
+            root.path().join("manifest.json"),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
+        let error = verify_tree(root.path(), digest.as_str()).unwrap_err();
+        assert!(error.contains("recomputed"), "{error}");
+    }
+
+    #[test]
+    fn a_forged_bundle_digest_is_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let digest = fixture(root.path(), b"wasm");
+        let forged = "f".repeat(64);
+        let text = fs::read_to_string(root.path().join("manifest.json")).unwrap();
+        let mut body: Value = serde_json::from_str(&text).unwrap();
+        body["bundleSha256"] = json!(forged);
+        fs::write(
+            root.path().join("manifest.json"),
+            serde_json::to_string(&body).unwrap(),
+        )
+        .unwrap();
+        let error = verify_tree(root.path(), &forged).unwrap_err();
+        assert!(error.contains("recomputed"), "{error}");
+        let _ = digest;
+    }
+
+    #[test]
+    fn two_linux_hosts_do_not_share_a_missing_object() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("object");
+        let digest = fixture(&source, b"wasm");
+        let present = root.path().join("present");
+        let missing = root.path().join("missing");
+        for (store, include_object) in [(&present, true), (&missing, false)] {
+            let objects = store
+                .join(".nxr")
+                .join("artifacts")
+                .join("objects")
+                .join(&digest);
+            if include_object {
+                fs::create_dir_all(&objects).unwrap();
+                fs::copy(source.join("mod.wasm"), objects.join("mod.wasm")).unwrap();
+                fs::copy(source.join("manifest.json"), objects.join("manifest.json")).unwrap();
+            }
+            let record = json!({
+                "attemptId": "",
+                "bundleSha256": digest,
+                "consumerInput": "bundle",
+                "contentDigest": digest,
+                "host": "linux",
+                "physicalHost": if include_object { "nixdev" } else { "other-linux" },
+                "facet": "system",
+                "identity": {"profile": "wasm-dev"},
+                "name": "bundle",
+                "output": "bundle.tar",
+                "producerRun": "run-1"
+            });
+            fs::create_dir_all(store.join(".nxr").join("artifacts").join("records")).unwrap();
+            fs::write(
+                store
+                    .join(".nxr")
+                    .join("artifacts")
+                    .join("records")
+                    .join("bundle.json"),
+                serde_json::to_string(&record).unwrap(),
+            )
+            .unwrap();
+        }
+        materialize_inputs(
+            &ExecContext {
+                path: String::new(),
+                nix_override: None,
+                cwd: Some(present.clone()),
+                env: Default::default(),
+            },
+            &["bundle".to_owned()],
+        )
+        .unwrap();
+        assert!(
+            present
+                .join(".nxr/artifacts/materialized/bundle/mod.wasm")
+                .is_file()
+        );
+        let error = materialize_inputs(
+            &ExecContext {
+                path: String::new(),
+                nix_override: None,
+                cwd: Some(missing),
+                env: Default::default(),
+            },
+            &["bundle".to_owned()],
+        )
+        .unwrap_err();
+        assert!(error.contains("not available locally"), "{error}");
+    }
+
+    #[test]
+    fn a_damaged_destination_is_replaced_from_the_verified_object() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("object");
+        let digest = fixture(&source, b"wasm");
+        let store = root.path().join(".nxr").join("artifacts");
+        let object = store.join("objects").join(&digest);
+        fs::create_dir_all(&object).unwrap();
+        fs::copy(source.join("mod.wasm"), object.join("mod.wasm")).unwrap();
+        fs::copy(source.join("manifest.json"), object.join("manifest.json")).unwrap();
+        let destination = store.join("materialized").join("bundle");
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(destination.join("previous.txt"), "damaged").unwrap();
+        write_record(root.path(), &digest);
+        materialize_inputs(
+            &ExecContext {
+                path: String::new(),
+                nix_override: None,
+                cwd: Some(root.path().to_path_buf()),
+                env: Default::default(),
+            },
+            &["bundle".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(fs::read(destination.join("mod.wasm")).unwrap(), b"wasm");
+        assert!(!destination.join("previous.txt").exists());
+    }
+
+    #[test]
+    fn a_failed_replace_restores_the_previous_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("object");
+        let digest = fixture(&source, b"wasm");
+        let store = root.path().join(".nxr").join("artifacts");
+        let object = store.join("objects").join(&digest);
+        fs::create_dir_all(&object).unwrap();
+        fs::copy(source.join("mod.wasm"), object.join("mod.wasm")).unwrap();
+        fs::copy(source.join("manifest.json"), object.join("manifest.json")).unwrap();
+        let destination = store.join("materialized").join("bundle");
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(destination.join("previous.txt"), "stay").unwrap();
+        write_record(root.path(), &digest);
+        FAIL_RENAME.with(|flag| flag.set(true));
+        let error = materialize_inputs(
+            &ExecContext {
+                path: String::new(),
+                nix_override: None,
+                cwd: Some(root.path().to_path_buf()),
+                env: Default::default(),
+            },
+            &["bundle".to_owned()],
+        )
+        .unwrap_err();
+        FAIL_RENAME.with(|flag| flag.set(false));
+        assert!(error.contains("stopped before replacing"), "{error}");
+        assert_eq!(
+            fs::read_to_string(destination.join("previous.txt")).unwrap(),
+            "stay"
+        );
+    }
+
+    fn write_record(root: &Path, digest: &str) {
+        let record = json!({
+            "attemptId": "",
+            "bundleSha256": digest,
+            "consumerInput": "bundle",
+            "contentDigest": digest,
+            "host": "linux",
+            "physicalHost": "nixdev",
+            "facet": "system",
+            "identity": {"profile": "wasm-dev"},
+            "name": "bundle",
+            "output": "bundle.tar",
+            "producerRun": "run-1"
+        });
+        let records = root.join(".nxr").join("artifacts").join("records");
+        fs::create_dir_all(&records).unwrap();
+        fs::write(
+            records.join("bundle.json"),
+            serde_json::to_string(&record).unwrap(),
+        )
+        .unwrap();
     }
 }

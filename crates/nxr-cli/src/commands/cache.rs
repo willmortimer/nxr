@@ -611,6 +611,20 @@ fn artifact_decision_lines(task: &str) -> Vec<String> {
         && !reason.is_empty()
     {
         lines.push(format!("reason: {reason}"));
+        lines.push(format!("identity: {reason}"));
+    }
+    if let Some(fields) = decision
+        .get("identityFields")
+        .and_then(serde_json::Value::as_str)
+        && !fields.is_empty()
+        && !lines.iter().any(|line| line.starts_with("identity:"))
+    {
+        lines.push(format!("identity: {fields}"));
+    }
+    if let Some(transfer) = decision.get("transfer").and_then(serde_json::Value::as_str)
+        && !transfer.is_empty()
+    {
+        lines.push(format!("transfer: {transfer}"));
     }
     lines.push(format!(
         "cargo: {}",

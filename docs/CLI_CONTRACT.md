@@ -497,10 +497,15 @@ artifact digest, and journal cursor. Updates take an exclusive lock and write a
 unique temporary file, then rename it over `run.json`. A crash before that
 rename leaves the previous record readable. Before a leaf starts, each `inputs`
 entry is materialized from `.nxr/artifacts/` and every file named by the
-manifest is hashed. A failed check leaves the previous destination in place.
-Same-host reuse reads that store. A different host calls `nixplane execution
-fetch` and then the same verifier. `NIXPLANE_STOP_AFTER_ADMIT=1` writes that
-record and returns before local verification.
+manifest is hashed. The verifier recomputes the bundle digest from the canonical
+lines and rejects a stale or forged `bundleSha256`. A verified local object is
+reused on any machine. A missing object is fetched when the record has an
+attempt id. A damaged destination is replaced from that verified object, and a
+failed replace moves the previous tree back. `nxr cache explain <task>` prints
+the artifact decision, the identity field that changed, the transfer, and
+separate cargo and sccache lines. The run receipt records the decision, digest,
+transfer, and compared identity fields.
+`NIXPLANE_STOP_AFTER_ADMIT=1` writes that record and returns before local verification.
 `NIXPLANE_ACTIVE_ATTEMPT` remains the single-attempt path and is not written
 when the run has more than one leaf. Two runs of the same task do not share
 attempt files. Cancelling or finishing one leaf removes only the pointer whose
@@ -508,8 +513,8 @@ contents are that attempt id. `NIXPLANE_REATTACH=1` with `NXR_RUN_ID` set to
 the original run keeps that attempt id, source set, artifact digest, journal
 cursor, and terminal status. A finished attempt is fetched or verified again.
 It is not submitted a second time. Independent leaves in one wave share the
-`--jobs` slots (the default is 4). Same-host artifact reuse reads the local
-store. A consumer on another host uses `nixplane execution fetch`. `nxr cache
+`--jobs` slots (the default is 4). A verified artifact object is reused wherever
+it is already stored. A missing object uses `nixplane execution fetch`. `nxr cache
 explain <task>` prints the artifact decision (`hit`, `miss`, `rebuild`, or
 `not-cacheable`), the identity field that caused it, and separate cargo and
 sccache lines. Flake executors run through `nix run`. Native
