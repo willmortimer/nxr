@@ -101,6 +101,13 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
             "admitted attempt {attempt} status={}",
             accepted.get("status").and_then(Value::as_str).unwrap_or("")
         );
+        if std::env::var("NIXPLANE_STOP_AFTER_ADMIT").ok().as_deref() == Some("1") {
+            receipt["journal_cursor"] = json!(0);
+            write_receipt(&root, &receipt)?;
+            println!("stopped after admission");
+            drop(scratch);
+            return Ok(0);
+        }
     }
     let attempt = receipt
         .get("attempt_id")
@@ -213,6 +220,9 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
         }
     }
     receipt["output_hashes"] = json!(published);
+    if let Some((_, digest)) = published.iter().next() {
+        receipt["artifact_digest"] = digest.clone();
+    }
     receipt["chunks_resumed"] = json!(resumed);
     receipt["chunks_fetched"] = json!(fetched);
     if let Some(object) = receipt.as_object_mut() {
@@ -633,6 +643,72 @@ fn receipt_root() -> Result<PathBuf, WorkflowError> {
     std::env::current_dir().map_err(|error| WorkflowError::new(exit::DISCOVERY, error.to_string()))
 }
 
+fn update_run_record(root: &Path, task: &str, receipt: &Value) -> Result<(), WorkflowError> {
+    let context = run_context();
+    let run_id = std::env::var("NXR_RUN_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| context.as_ref().map(|item| item.run_id.clone()))
+        .unwrap_or_default();
+    if run_id.is_empty() {
+        return Ok(());
+    }
+    let record = root
+        .join(".nxr")
+        .join("runs")
+        .join(file_token(&run_id))
+        .join("run.json");
+    if let Some(parent) = record.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            WorkflowError::new(exit::PROCESS_SUPERVISION, format!("run dir: {error}"))
+        })?;
+    }
+    let mut body: Value = fs::read_to_string(&record)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({ "run_id": run_id }));
+    let Some(object) = body.as_object_mut() else {
+        return Ok(());
+    };
+    object.insert("run_id".to_owned(), json!(run_id));
+    let leaves = object
+        .entry("leaves")
+        .or_insert_with(|| json!({}))
+        .as_object_mut();
+    let Some(leaves) = leaves else {
+        return Ok(());
+    };
+    let admitted = receipt
+        .get("attempt_id")
+        .and_then(Value::as_str)
+        .is_some_and(|attempt| !attempt.is_empty());
+    let status = receipt
+        .get("terminal")
+        .and_then(Value::as_str)
+        .filter(|status| !status.is_empty())
+        .unwrap_or(if admitted { "admitted" } else { "pending" });
+    leaves.insert(
+        task.to_owned(),
+        json!({
+            "attempt_id": receipt.get("attempt_id").cloned().unwrap_or(json!("")),
+            "status": status,
+            "source_set": receipt.get("source_set_id").cloned().unwrap_or(json!("")),
+            "artifact_digest": receipt.get("artifact_digest").cloned().unwrap_or(json!("")),
+            "journal_cursor": receipt.get("journal_cursor").cloned().unwrap_or(json!(0)),
+        }),
+    );
+    let text = serde_json::to_string_pretty(&body)
+        .map_err(|error| WorkflowError::new(exit::PROCESS_SUPERVISION, error.to_string()))?;
+    let temporary = record.with_extension("tmp");
+    fs::write(&temporary, format!("{text}\n")).map_err(|error| {
+        WorkflowError::new(exit::PROCESS_SUPERVISION, format!("run record: {error}"))
+    })?;
+    fs::rename(&temporary, &record).map_err(|error| {
+        WorkflowError::new(exit::PROCESS_SUPERVISION, format!("run record: {error}"))
+    })
+}
+
 fn write_receipt(root: &Path, receipt: &Value) -> Result<(), WorkflowError> {
     let directory = std::env::var("NIXPLANE_RECEIPT_DIR")
         .ok()
@@ -652,6 +728,9 @@ fn write_receipt(root: &Path, receipt: &Value) -> Result<(), WorkflowError> {
     fs::write(&path, format!("{text}\n")).map_err(|error| {
         WorkflowError::new(exit::PROCESS_SUPERVISION, format!("write receipt: {error}"))
     })?;
+    if let Some(task) = receipt.get("task_id").and_then(Value::as_str) {
+        update_run_record(root, task, receipt)?;
+    }
     if let Ok(result) = std::env::var("NIXPLANE_RESULT") {
         let _ = fs::write(
             result,
@@ -997,5 +1076,47 @@ mod tests {
         });
         assert_eq!(reattach_action(Some(&interrupted)), "follow");
         assert_eq!(reattach_action(None), "submit");
+    }
+
+    #[test]
+    fn one_run_record_keeps_both_leaves() {
+        let root = tempfile::tempdir().expect("root");
+        let run = unique_run_id();
+        set_run_context(run.clone(), 2);
+        update_run_record(
+            root.path(),
+            "probe-linux",
+            &json!({
+                "attempt_id": "att_linux",
+                "source_set_id": "src_linux",
+                "journal_cursor": 0
+            }),
+        )
+        .expect("linux");
+        update_run_record(
+            root.path(),
+            "probe-windows",
+            &json!({
+                "attempt_id": "att_windows",
+                "source_set_id": "src_windows",
+                "terminal": "exited",
+                "artifact_digest": "abc",
+                "journal_cursor": 3
+            }),
+        )
+        .expect("windows");
+        let record = root
+            .path()
+            .join(".nxr")
+            .join("runs")
+            .join(file_token(&run))
+            .join("run.json");
+        let body: Value =
+            serde_json::from_str(&fs::read_to_string(record).expect("record")).expect("json");
+        assert_eq!(body["leaves"]["probe-linux"]["status"], "admitted");
+        assert_eq!(body["leaves"]["probe-linux"]["attempt_id"], "att_linux");
+        assert_eq!(body["leaves"]["probe-windows"]["status"], "exited");
+        assert_eq!(body["leaves"]["probe-windows"]["artifact_digest"], "abc");
+        assert_eq!(body["leaves"]["probe-windows"]["journal_cursor"], 3);
     }
 }

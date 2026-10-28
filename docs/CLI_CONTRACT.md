@@ -492,6 +492,9 @@ execution spec through `nixplane execution` submit, poll, and fetch, writes the
 receipt, and returns the remote exit code. It does not schedule work and it
 does not add a remote content store. The default remains local. Each workflow run gets its own id.
 Attempt files are written by rename under `.nxr/runs/<run>/tasks/<task>/`.
+`.nxr/runs/<run>/run.json` records each leaf's attempt id, status, source set,
+artifact digest, and journal cursor. `NIXPLANE_STOP_AFTER_ADMIT=1` writes that
+record and returns before local verification.
 `NIXPLANE_ACTIVE_ATTEMPT` remains the single-attempt path and is not written
 when the run has more than one leaf. Two runs of the same task do not share
 attempt files. Cancelling or finishing one leaf removes only the pointer whose
