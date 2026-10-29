@@ -408,4 +408,202 @@ mod tests {
         assert!(String::from_utf8_lossy(&listed.stdout).trim().is_empty());
         let _ = call(&socket, "shutdown", json!({}));
     }
+
+    fn nxr_bin() -> std::path::PathBuf {
+        if let Ok(path) = std::env::var("CARGO_BIN_EXE_nxr") {
+            return std::path::PathBuf::from(path);
+        }
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/nxr")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn starter_cli_exit_leaves_the_run_for_a_new_process() {
+        use std::process::{Command, Stdio};
+
+        let (_dir, socket) = boot();
+        let nxr = nxr_bin();
+        assert!(
+            nxr.is_file(),
+            "nxr binary missing at {}; run cargo build -p nxr-cli first",
+            nxr.display()
+        );
+        let mut starter = Command::new(&nxr)
+            .env("NXR_DAEMON_SOCKET", &socket)
+            .env("NXR_LOCAL_CPU", "2")
+            .env("NXR_LOCAL_MEMORY_MIB", "64")
+            .args([
+                "session",
+                "start",
+                "wave5",
+                "--cpu",
+                "1",
+                "--memory-mib",
+                "8",
+                "--",
+                "/bin/sh",
+                "-c",
+                "echo wave5-alive; sleep 30; exit 7",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start cli");
+        let starter_pid = starter.id();
+        // Wait until the supervisor has the run before killing the CLI. A
+        // 200ms race on a cold binary can kill start before run.start lands.
+        let mut id = None;
+        for _ in 0..100 {
+            if let Ok(listed) = call(&socket, "run.list", json!({}))
+                && let Some(first) = listed.as_array().and_then(|runs| runs.first())
+                && let Some(run_id) = first["id"].as_str()
+            {
+                id = Some(run_id.to_owned());
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let _ = starter.kill();
+        let waited = starter.wait_with_output().expect("starter wait");
+        assert!(
+            Command::new("ps")
+                .args(["-p", &starter_pid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .ok()
+                .is_none_or(|status| !status.success()),
+            "the initiating CLI must be gone"
+        );
+        let id = id.unwrap_or_else(|| {
+            panic!(
+                "supervisor never stored the run; starter status={} stdout={} stderr={}",
+                waited.status,
+                String::from_utf8_lossy(&waited.stdout),
+                String::from_utf8_lossy(&waited.stderr)
+            )
+        });
+        let inspected = Command::new(&nxr)
+            .env("NXR_DAEMON_SOCKET", &socket)
+            .args(["session", "inspect", &id])
+            .output()
+            .expect("inspect");
+        // RunnerOutput::info writes the JSON record to stderr, not stdout.
+        let inspect_text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&inspected.stdout),
+            String::from_utf8_lossy(&inspected.stderr)
+        );
+        assert!(inspected.status.success(), "inspect failed: {inspect_text}");
+        assert!(
+            inspect_text.contains("running")
+                || inspect_text.contains("exited")
+                || inspect_text.contains(&id),
+            "{inspect_text}"
+        );
+        let record = call(&socket, "run.inspect", json!({ "id": id })).unwrap();
+        assert!(record.get("pid").and_then(|v| v.as_u64()).is_some());
+        assert!(record.get("start_time").is_some());
+        let refused = Command::new(&nxr)
+            .env("NXR_DAEMON_SOCKET", &socket)
+            .env("NXR_LOCAL_CPU", "1")
+            .env("NXR_LOCAL_MEMORY_MIB", "8")
+            .args([
+                "session",
+                "start",
+                "wave5-refuse",
+                "--cpu",
+                "1",
+                "--memory-mib",
+                "8",
+                "--",
+                "/bin/sleep",
+                "5",
+            ])
+            .output()
+            .expect("second start");
+        assert!(
+            !refused.status.success(),
+            "budget 1 must refuse a second start while the first still holds the reservation"
+        );
+        let cancel = Command::new(&nxr)
+            .env("NXR_DAEMON_SOCKET", &socket)
+            .args(["session", "cancel", &id])
+            .output()
+            .expect("cancel");
+        assert!(
+            cancel.status.success(),
+            "{}",
+            String::from_utf8_lossy(&cancel.stderr)
+        );
+        thread::sleep(Duration::from_millis(200));
+        let stopped = call(&socket, "run.inspect", json!({ "id": id })).unwrap();
+        assert_eq!(stopped["status"], "cancelled");
+        let pid = stopped["pid"].as_u64().unwrap();
+        let orphans = Command::new("ps")
+            .args(["-o", "pid=", "-g", &pid.to_string()])
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&orphans.stdout).trim().is_empty());
+        let _ = call(&socket, "shutdown", json!({}));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_starts_serialize_on_the_admission_lock() {
+        use std::process::{Command, Stdio};
+
+        let (_dir, socket) = boot();
+        let nxr = nxr_bin();
+        let spawn = || {
+            Command::new(&nxr)
+                .env("NXR_DAEMON_SOCKET", &socket)
+                .env("NXR_LOCAL_CPU", "1")
+                .env("NXR_LOCAL_MEMORY_MIB", "8")
+                .args([
+                    "session",
+                    "start",
+                    "race",
+                    "--cpu",
+                    "1",
+                    "--memory-mib",
+                    "8",
+                    "--",
+                    "/bin/sh",
+                    "-c",
+                    "sleep 20",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("race start")
+        };
+        let mut first = spawn();
+        let mut second = spawn();
+        let first_status = first.wait().expect("first");
+        let second_status = second.wait().expect("second");
+        assert!(
+            first_status.success() ^ second_status.success(),
+            "exactly one concurrent start may pass a budget of 1"
+        );
+        let listed = call(&socket, "run.list", json!({})).unwrap();
+        let running = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|run| run["status"] == "running")
+            .count();
+        assert_eq!(running, 1);
+        let id = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|run| run["status"] == "running")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        call(&socket, "run.cancel", json!({ "id": id })).unwrap();
+        let _ = call(&socket, "shutdown", json!({}));
+    }
 }
