@@ -17,9 +17,13 @@
 //! a monotonic `sequence`, then materializes `{run_id}.json`. A per-run lock
 //! serializes writers in-process; cross-host coordination is out of scope here.
 //!
-//! A truncated final journal line (crash mid-write) is quarantined and removed
-//! on read; corrupt earlier lines fail hard. Terminal transitions carry a stable
-//! `transition_id` so a snapshot retry does not append a second completion line.
+//! An **unterminated** final physical line (crash mid-write, no trailing newline)
+//! is quarantined and removed on read. A **complete** final line that is invalid
+//! JSON (including a committed line ending in `\n`) is corruption and fails load.
+//! Earlier bad lines also fail hard. Journal repair rewrites via a temp file,
+//! `fsync`, and `rename` under the per-run lock. Each supervisor attempt gets an
+//! immutable `transition_id` at start; terminal lines reuse it so snapshot retries
+//! do not append a second completion event.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -61,6 +65,9 @@ pub struct DurableRunRecord {
     pub event_sequence: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    /// Immutable attempt id assigned when the supervisor run starts (terminal reuse).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_transition_id: Option<String>,
 }
 
 impl DurableRunRecord {
@@ -75,6 +82,7 @@ impl DurableRunRecord {
             operation: OperationIrEnvelope::new(operation),
             event_sequence: 0,
             exit_code: None,
+            attempt_transition_id: None,
         }
     }
 
@@ -191,7 +199,9 @@ pub fn sync_supervisor_started(run_id: &str, command: &[String]) -> io::Result<(
     with_run_lock(run_id, || {
         let mut record = DurableRunRecord::pending(run_id, &operation);
         record.status = DurableRunStatus::Running;
-        let sequence = next_journal_sequence(run_id)?;
+        let sequence = next_journal_sequence_under_run_lock(run_id)?;
+        let attempt_transition_id = new_supervisor_attempt_transition_id(run_id, sequence);
+        record.attempt_transition_id = Some(attempt_transition_id.clone());
         append_journal_line(
             run_id,
             DurableRunJournalLine {
@@ -201,7 +211,7 @@ pub fn sync_supervisor_started(run_id: &str, command: &[String]) -> io::Result<(
                 status: Some(DurableRunStatus::Running),
                 exit_code: None,
                 command: Some(command.to_vec()),
-                transition_id: None,
+                transition_id: Some(attempt_transition_id),
             },
         )?;
         record.event_sequence = sequence;
@@ -216,20 +226,30 @@ pub fn sync_supervisor_terminal(
     exit_code: Option<i32>,
 ) -> io::Result<()> {
     validate_run_id(run_id)?;
-    let transition_id = supervisor_terminal_transition_id(status, exit_code);
     with_run_lock(run_id, || {
-        let mut record = load_durable_run_or_default(run_id)?;
+        let mut record = load_durable_run_or_default_under_run_lock(run_id)?;
         record.status = status;
         record.exit_code = exit_code;
-        let lines = read_journal_lines(run_id)?;
+        let lines = read_journal_lines_under_run_lock(run_id)?;
+        let transition_id = record
+            .attempt_transition_id
+            .clone()
+            .or_else(|| supervisor_attempt_transition_id_from_journal(&lines))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "supervisor attempt transition id missing",
+                )
+            })?;
+        record.attempt_transition_id = Some(transition_id.clone());
         if let Some(existing) = lines.iter().find(|line| {
             line.kind == "supervisor_terminal"
-                && line.transition_id.as_deref() == Some(&transition_id)
+                && line.transition_id.as_deref() == Some(transition_id.as_str())
         }) {
             record.event_sequence = existing.sequence;
             return store_durable_run(&record);
         }
-        let sequence = next_journal_sequence(run_id)?;
+        let sequence = next_journal_sequence_under_run_lock(run_id)?;
         append_journal_line(
             run_id,
             DurableRunJournalLine {
@@ -305,11 +325,36 @@ fn with_run_lock<T>(run_id: &str, operation: impl FnOnce() -> io::Result<T>) -> 
     result
 }
 
-fn supervisor_terminal_transition_id(status: DurableRunStatus, exit_code: Option<i32>) -> String {
-    format!("supervisor_terminal:{status:?}:{exit_code:?}")
+fn new_supervisor_attempt_transition_id(run_id: &str, sequence: u64) -> String {
+    format!("supervisor_attempt:{run_id}:{sequence}")
+}
+
+fn supervisor_attempt_transition_id_from_journal(
+    lines: &[DurableRunJournalLine],
+) -> Option<String> {
+    lines
+        .iter()
+        .filter(|line| line.kind == "supervisor_started")
+        .max_by_key(|line| line.sequence)
+        .and_then(|line| {
+            line.transition_id
+                .clone()
+                .or_else(|| Some(format!("supervisor_attempt:legacy:{}", line.sequence)))
+        })
 }
 
 fn read_journal_lines(run_id: &str) -> io::Result<Vec<DurableRunJournalLine>> {
+    read_journal_lines_impl(run_id, false)
+}
+
+fn read_journal_lines_under_run_lock(run_id: &str) -> io::Result<Vec<DurableRunJournalLine>> {
+    read_journal_lines_impl(run_id, true)
+}
+
+fn read_journal_lines_impl(
+    run_id: &str,
+    under_run_lock: bool,
+) -> io::Result<Vec<DurableRunJournalLine>> {
     validate_run_id(run_id)?;
     let dir = durable_runs_dir();
     let path = durable_events_path(&dir, run_id);
@@ -318,44 +363,68 @@ fn read_journal_lines(run_id: &str) -> io::Result<Vec<DurableRunJournalLine>> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err),
     };
-    parse_journal_text(run_id, &path, &text)
+    parse_journal_text(run_id, &path, &text, under_run_lock)
+}
+
+fn split_physical_journal_lines(text: &str) -> (Vec<&str>, bool) {
+    if text.is_empty() {
+        return (Vec::new(), false);
+    }
+    let ends_with_newline = text.ends_with('\n');
+    let mut lines: Vec<&str> = text.split('\n').collect();
+    if ends_with_newline && lines.last() == Some(&"") {
+        lines.pop();
+    }
+    let unterminated_final = !ends_with_newline;
+    (lines, unterminated_final)
 }
 
 fn parse_journal_text(
     run_id: &str,
     path: &Path,
     text: &str,
+    under_run_lock: bool,
 ) -> io::Result<Vec<DurableRunJournalLine>> {
-    if text.is_empty() {
-        return Ok(Vec::new());
-    }
-    let physical_lines: Vec<&str> = text
-        .lines()
+    let (physical_lines, unterminated_final) = split_physical_journal_lines(text);
+    let physical_lines: Vec<&str> = physical_lines
+        .into_iter()
         .filter(|line| !line.trim().is_empty())
         .collect();
     if physical_lines.is_empty() {
         return Ok(Vec::new());
     }
+
+    let corrupt = |err: serde_json::Error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("corrupt durable run journal line: {err}"),
+        )
+    };
+
     let mut parsed = Vec::with_capacity(physical_lines.len());
-    for line in &physical_lines[..physical_lines.len() - 1] {
-        parsed.push(parse_journal_line(line).map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("corrupt durable run journal line: {err}"),
-            )
-        })?);
-    }
-    let last = physical_lines[physical_lines.len() - 1];
-    match parse_journal_line(last) {
-        Ok(entry) => {
-            parsed.push(entry);
-            Ok(parsed)
+
+    if unterminated_final {
+        let last_index = physical_lines.len() - 1;
+        for line in &physical_lines[..last_index] {
+            parsed.push(parse_journal_line(line).map_err(corrupt)?);
         }
-        Err(_err) => {
-            quarantine_truncated_journal_tail(run_id, path, last)?;
-            rewrite_journal_file(path, &parsed)?;
-            Ok(parsed)
+        let last = physical_lines[last_index];
+        match parse_journal_line(last) {
+            Ok(entry) => {
+                parsed.push(entry);
+                Ok(parsed)
+            }
+            Err(_err) => {
+                quarantine_truncated_journal_tail(run_id, path, last)?;
+                rewrite_journal_file(run_id, path, &parsed, under_run_lock)?;
+                Ok(parsed)
+            }
         }
+    } else {
+        for line in &physical_lines {
+            parsed.push(parse_journal_line(line).map_err(corrupt)?);
+        }
+        Ok(parsed)
     }
 }
 
@@ -373,7 +442,21 @@ fn quarantine_truncated_journal_tail(
     fs::write(quarantine_path, body)
 }
 
-fn rewrite_journal_file(path: &Path, lines: &[DurableRunJournalLine]) -> io::Result<()> {
+fn rewrite_journal_file(
+    run_id: &str,
+    path: &Path,
+    lines: &[DurableRunJournalLine],
+    under_run_lock: bool,
+) -> io::Result<()> {
+    let rewrite = || rewrite_journal_file_locked(path, lines);
+    if under_run_lock {
+        rewrite()
+    } else {
+        with_run_lock(run_id, rewrite)
+    }
+}
+
+fn rewrite_journal_file_locked(path: &Path, lines: &[DurableRunJournalLine]) -> io::Result<()> {
     if lines.is_empty() {
         let _ = fs::remove_file(path);
         return Ok(());
@@ -385,11 +468,20 @@ fn rewrite_journal_file(path: &Path, lines: &[DurableRunJournalLine]) -> io::Res
         body.push_str(&json);
         body.push('\n');
     }
-    fs::write(path, body)
+    let temporary = path.with_extension("jsonl.tmp");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&temporary)?;
+    file.write_all(body.as_bytes())?;
+    file.sync_all()?;
+    fs::rename(&temporary, path)?;
+    Ok(())
 }
 
-fn next_journal_sequence(run_id: &str) -> io::Result<u64> {
-    let lines = read_journal_lines(run_id)?;
+fn next_journal_sequence_under_run_lock(run_id: &str) -> io::Result<u64> {
+    let lines = read_journal_lines_under_run_lock(run_id)?;
     Ok(lines
         .iter()
         .map(|line| line.sequence)
@@ -398,26 +490,40 @@ fn next_journal_sequence(run_id: &str) -> io::Result<u64> {
         .saturating_add(1))
 }
 
-fn load_durable_run_or_default(run_id: &str) -> io::Result<DurableRunRecord> {
-    match load_durable_run(run_id) {
-        Ok(record) => Ok(record),
+fn load_durable_run_or_default_under_run_lock(run_id: &str) -> io::Result<DurableRunRecord> {
+    validate_run_id(run_id)?;
+    let dir = durable_runs_dir();
+    let path = durable_run_path(&dir, run_id);
+    match fs::read_to_string(&path) {
+        Ok(text) => {
+            let record: DurableRunRecord = serde_json::from_str(&text)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+            reconcile_record_with_journal_under_run_lock(run_id, record)
+        }
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            let operation = Operation::NativeCommand { argv: Vec::new() };
-            let mut pending = DurableRunRecord::pending(run_id, &operation);
-            pending.status = DurableRunStatus::Running;
-            Ok(pending)
+            materialize_record_from_journal_under_run_lock(run_id)
         }
         Err(err) => Err(err),
     }
 }
 
-fn reconcile_record_with_journal(
+fn reconcile_record_with_journal_under_run_lock(
     run_id: &str,
     mut record: DurableRunRecord,
 ) -> io::Result<DurableRunRecord> {
-    let lines = read_journal_lines(run_id)?;
+    let lines = read_journal_lines_under_run_lock(run_id)?;
+    apply_journal_tail_to_record(&mut record, &lines);
+    Ok(record)
+}
+
+fn materialize_record_from_journal_under_run_lock(run_id: &str) -> io::Result<DurableRunRecord> {
+    let lines = read_journal_lines_under_run_lock(run_id)?;
+    materialize_record_from_journal_lines(run_id, &lines)
+}
+
+fn apply_journal_tail_to_record(record: &mut DurableRunRecord, lines: &[DurableRunJournalLine]) {
     let Some(last) = lines.iter().max_by_key(|line| line.sequence) else {
-        return Ok(record);
+        return;
     };
     if last.sequence > record.event_sequence {
         record.event_sequence = last.sequence;
@@ -428,11 +534,29 @@ fn reconcile_record_with_journal(
             record.exit_code = last.exit_code;
         }
     }
+    if record.attempt_transition_id.is_none() {
+        record.attempt_transition_id = supervisor_attempt_transition_id_from_journal(lines);
+    }
+}
+
+fn reconcile_record_with_journal(
+    run_id: &str,
+    mut record: DurableRunRecord,
+) -> io::Result<DurableRunRecord> {
+    let lines = read_journal_lines(run_id)?;
+    apply_journal_tail_to_record(&mut record, &lines);
     Ok(record)
 }
 
 fn materialize_record_from_journal(run_id: &str) -> io::Result<DurableRunRecord> {
     let lines = read_journal_lines(run_id)?;
+    materialize_record_from_journal_lines(run_id, &lines)
+}
+
+fn materialize_record_from_journal_lines(
+    run_id: &str,
+    lines: &[DurableRunJournalLine],
+) -> io::Result<DurableRunRecord> {
     if lines.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -458,6 +582,7 @@ fn materialize_record_from_journal(run_id: &str) -> io::Result<DurableRunRecord>
         .first()
         .map(|line| line.at)
         .unwrap_or_else(unix_now_secs);
+    record.attempt_transition_id = supervisor_attempt_transition_id_from_journal(lines);
     Ok(record)
 }
 
@@ -591,24 +716,39 @@ mod tests {
         with_temp_runs_dir(|| {
             sync_supervisor_started("run-journal", &["echo".into(), "hi".into()]).unwrap();
             sync_supervisor_terminal("run-journal", DurableRunStatus::Succeeded, Some(0)).unwrap();
-            sync_supervisor_terminal("run-journal", DurableRunStatus::Failed, Some(2)).unwrap();
 
             let path = durable_events_path(&durable_runs_dir(), "run-journal");
+            let text = fs::read_to_string(&path).unwrap();
+            let lines: Vec<DurableRunJournalLine> = text
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(lines.len(), 2);
+            assert_eq!(lines[0].kind, "supervisor_started");
+            assert_eq!(lines[0].sequence, 1);
+            assert_eq!(
+                lines[0].transition_id.as_deref(),
+                Some("supervisor_attempt:run-journal:1")
+            );
+            assert_eq!(lines[1].kind, "supervisor_terminal");
+            assert_eq!(lines[1].sequence, 2);
+            assert_eq!(
+                lines[1].transition_id.as_deref(),
+                lines[0].transition_id.as_deref()
+            );
+
+            sync_supervisor_terminal("run-journal", DurableRunStatus::Failed, Some(2)).unwrap();
             let text = fs::read_to_string(path).unwrap();
             let lines: Vec<DurableRunJournalLine> = text
                 .lines()
                 .map(|line| serde_json::from_str(line).unwrap())
                 .collect();
-            assert_eq!(lines.len(), 3);
-            assert_eq!(lines[0].kind, "supervisor_started");
-            assert_eq!(lines[0].sequence, 1);
-            assert_eq!(lines[1].kind, "supervisor_terminal");
-            assert_eq!(lines[1].sequence, 2);
-            assert_eq!(lines[2].sequence, 3);
-            assert!(lines[1].sequence < lines[2].sequence);
+            assert_eq!(lines.len(), 2, "terminal reuses attempt transition id");
 
             let record = load_durable_run("run-journal").unwrap();
-            assert_eq!(record.event_sequence, 3);
+            assert_eq!(record.event_sequence, 2);
+            assert_eq!(record.status, DurableRunStatus::Failed);
+            assert_eq!(record.exit_code, Some(2));
         });
     }
 
@@ -681,6 +821,39 @@ mod tests {
     }
 
     #[test]
+    fn load_fails_when_committed_final_journal_line_is_corrupt() {
+        with_temp_runs_dir(|| {
+            sync_supervisor_started("run-bad-tail", &["true".into()]).unwrap();
+            let journal = durable_events_path(&durable_runs_dir(), "run-bad-tail");
+            let mut text = fs::read_to_string(&journal).unwrap();
+            text.push_str("not-json\n");
+            fs::write(&journal, text).unwrap();
+
+            let err = load_durable_run("run-bad-tail").unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        });
+    }
+
+    #[test]
+    fn journal_rewrite_is_atomic_and_leaves_no_temp_file() {
+        with_temp_runs_dir(|| {
+            sync_supervisor_started("run-atomic", &["echo".into(), "x".into()]).unwrap();
+            let journal = durable_events_path(&durable_runs_dir(), "run-atomic");
+            let temp = journal.with_extension("jsonl.tmp");
+            let mut text = fs::read_to_string(&journal).unwrap();
+            text.push_str("{\"sequence\":2,\"kind\":\"partial");
+            fs::write(&journal, text).unwrap();
+
+            load_durable_run("run-atomic").unwrap();
+            assert!(!temp.exists(), "rewrite temp file must not remain");
+            assert!(journal.is_file());
+            let repaired = fs::read_to_string(&journal).unwrap();
+            assert!(repaired.ends_with('\n'));
+            assert_eq!(repaired.lines().count(), 1);
+        });
+    }
+
+    #[test]
     fn load_fails_when_committed_journal_line_is_corrupt() {
         with_temp_runs_dir(|| {
             sync_supervisor_started("run-bad", &["true".into()]).unwrap();
@@ -720,7 +893,7 @@ mod tests {
             assert_eq!(lines[1].kind, "supervisor_terminal");
             assert_eq!(
                 lines[1].transition_id.as_deref(),
-                Some("supervisor_terminal:Succeeded:Some(0)")
+                Some("supervisor_attempt:run-replay:1")
             );
 
             let record = load_durable_run("run-replay").unwrap();
