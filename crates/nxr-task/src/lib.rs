@@ -12,6 +12,7 @@
 pub mod action_key;
 pub mod artifact;
 pub mod ci_metadata;
+pub mod compiler_cache;
 pub mod context;
 pub mod duration;
 pub mod events;

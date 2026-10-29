@@ -702,8 +702,29 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             }
         },
         Some(Command::Session { action }) => match action {
-            SessionSubcommand::Start { label } => {
-                session::start(label, runner).map_err(RunError::Usage)?;
+            SessionSubcommand::Start {
+                label,
+                remote,
+                cpu,
+                memory_mib,
+                exec,
+            } => {
+                session::start(
+                    &session::SessionStart {
+                        label: label.clone(),
+                        command: exec.clone(),
+                        remote: remote.clone(),
+                        cpu: *cpu,
+                        memory_mib: *memory_mib,
+                    },
+                    session::LocalBudget::from_process(),
+                    runner,
+                )
+                .map_err(RunError::Usage)?;
+                Ok(exit::SUCCESS)
+            }
+            SessionSubcommand::List => {
+                session::list(runner).map_err(RunError::Usage)?;
                 Ok(exit::SUCCESS)
             }
             SessionSubcommand::Events { run, after } => {

@@ -277,6 +277,16 @@ mod tests {
     }
 
     #[test]
+    fn a_windows_flake_app_is_nix_run_and_not_wsl() {
+        let args = nix_run_args(".", "hello", &[] as &[String]);
+        assert_eq!(args, vec!["run".to_owned(), ".#hello".to_owned()]);
+        assert!(
+            args.iter()
+                .all(|arg| arg != "wsl" && !arg.contains("wsl.exe"))
+        );
+    }
+
+    #[test]
     fn nix_run_argv_with_forwarded_args_inserts_separator() {
         assert_eq!(
             nix_run_args(

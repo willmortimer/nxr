@@ -909,6 +909,10 @@ fn list_relative(dir: std::path::PathBuf) -> Result<Vec<String>, String> {
 }
 
 pub fn retain_catalog(catalog: &Path, quota: usize) -> Result<(), String> {
+    quarantine_corrupt_records(catalog)?;
+    if pinned_digests(catalog).len() > quota {
+        return Err("quota refuses to expire pinned catalog records".into());
+    }
     quarantine_unverified(catalog)?;
     let mut records = record_files(catalog)?;
     records.sort_by(|left, right| {
@@ -997,6 +1001,44 @@ fn record_files(catalog: &Path) -> Result<Vec<CatalogRecordFile>, String> {
         }
     }
     Ok(files)
+}
+
+fn quarantine_corrupt_records(catalog: &Path) -> Result<(), String> {
+    let records = catalog.join("records");
+    if !records.is_dir() {
+        return Ok(());
+    }
+    for directory in fs::read_dir(&records).map_err(|err| err.to_string())? {
+        let directory = directory.map_err(|err| err.to_string())?;
+        if !directory
+            .file_type()
+            .map_err(|err| err.to_string())?
+            .is_dir()
+        {
+            continue;
+        }
+        for entry in fs::read_dir(directory.path()).map_err(|err| err.to_string())? {
+            let entry = entry.map_err(|err| err.to_string())?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let text = fs::read_to_string(&path).unwrap_or_default();
+            let parsed = serde_json::from_str::<Value>(&text)
+                .ok()
+                .and_then(|value| ArtifactRecord::from_value(&value).ok());
+            if parsed.is_some() {
+                continue;
+            }
+            let relative = path.strip_prefix(&records).unwrap_or(path.as_path());
+            let destination = catalog.join("quarantine").join(relative);
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+            }
+            fs::rename(&path, &destination).map_err(|err| err.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 fn quarantine_unverified(catalog: &Path) -> Result<(), String> {
@@ -2350,6 +2392,7 @@ mod tests {
         fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
         let lock = std::fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&lock_path)
@@ -2360,6 +2403,97 @@ mod tests {
         lock.unlock().unwrap();
         super::retain_catalog(&live, 0).unwrap();
         assert!(!live.join("objects").join(&kept).exists());
+    }
+
+    #[test]
+    fn a_held_lock_keeps_the_object_while_another_retain_runs() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("object");
+        let digest = fixture(&source, b"locked");
+        let record = stargate_record(&digest, "commit-lock", "lattice-1");
+        let object = copy_fixture_object(root.path(), &source, &digest);
+        let live = root.path().join("live");
+        super::publish_record_tree(&live, &record, &object).unwrap();
+        let lock_path = super::object_lock_path(&live, &digest);
+        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            lock.lock_exclusive().unwrap();
+            ready_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            lock.unlock().unwrap();
+        });
+        ready_rx.recv().unwrap();
+        super::retain_catalog(&live, 0).unwrap();
+        assert!(
+            live.join("objects")
+                .join(&digest)
+                .join("mod.wasm")
+                .is_file()
+        );
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+    }
+
+    #[test]
+    fn quota_refuses_to_expire_a_pinned_record() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("object");
+        let digest = fixture(&source, b"pinned");
+        let record = stargate_record(&digest, "commit-pin", "lattice-1");
+        let object = copy_fixture_object(root.path(), &source, &digest);
+        let catalog = root.path().join("catalog");
+        super::publish_record_tree(&catalog, &record, &object).unwrap();
+        let pins = catalog.join("pins");
+        fs::create_dir_all(&pins).unwrap();
+        fs::write(pins.join(&digest), b"").unwrap();
+        let error = super::retain_catalog(&catalog, 0).unwrap_err();
+        assert!(error.contains("quota refuses"), "{error}");
+        assert!(
+            catalog
+                .join("objects")
+                .join(&digest)
+                .join("mod.wasm")
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn a_corrupt_catalog_record_is_quarantined_and_retain_continues() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("object");
+        let digest = fixture(&source, b"good");
+        let record = stargate_record(&digest, "commit-good", "lattice-1");
+        let object = copy_fixture_object(root.path(), &source, &digest);
+        let catalog = root.path().join("catalog");
+        super::publish_record_tree(&catalog, &record, &object).unwrap();
+        let broken = catalog.join("records").join("broken");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(broken.join("bundle.json"), b"{").unwrap();
+        super::retain_catalog(&catalog, 10).unwrap();
+        assert!(
+            catalog
+                .join("quarantine")
+                .join("broken")
+                .join("bundle.json")
+                .is_file()
+        );
+        assert!(
+            catalog
+                .join("objects")
+                .join(&digest)
+                .join("mod.wasm")
+                .is_file()
+        );
+        assert!(!broken.join("bundle.json").exists());
     }
 
     fn stargate_record(digest: &str, commit: &str, source_set: &str) -> super::ArtifactRecord {

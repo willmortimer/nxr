@@ -252,6 +252,11 @@ pub fn execute_spec_locally(
     for (key, value) in &spec.environment.ordinary {
         command.env(key, value);
     }
+    crate::compiler_cache::apply_compiler_cache(
+        &mut command,
+        &crate::compiler_cache::compiler_cache_from_process(),
+        &spec.environment.ordinary,
+    );
     let mut child = command.spawn().map_err(|err| format!("spawn: {err}"))?;
     let stdout = child
         .stdout

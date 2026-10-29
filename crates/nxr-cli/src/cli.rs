@@ -252,14 +252,28 @@ pub enum CatalogSubcommand {
     },
 }
 
-/// `nxr session` stores a run id and events. It does not launch or cancel a process.
+/// `nxr session` starts, inspects, and cancels a local process.
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 pub enum SessionSubcommand {
-    /// Record a session id and label. This does not launch a task.
+    /// Launch a command and store the run. A `--remote` host marks a submit.
     Start {
         /// Label stored with the run.
         label: String,
+        /// Host name recorded for a remote submit. The command is still local.
+        #[arg(long = "remote", value_name = "HOST")]
+        remote: Option<String>,
+        /// CPU tokens this run reserves on this machine.
+        #[arg(long = "cpu", default_value_t = 0)]
+        cpu: u32,
+        /// Memory, in MiB, this run reserves on this machine.
+        #[arg(long = "memory-mib", default_value_t = 0)]
+        memory_mib: u64,
+        /// Command to run. This is the submit client when `--remote` is set.
+        #[arg(value_name = "ARG", trailing_var_arg = true, num_args = 0..)]
+        exec: Vec<String>,
     },
+    /// Print stored runs.
+    List,
     /// Print events after a cursor.
     Events {
         /// Run id.
@@ -273,7 +287,7 @@ pub enum SessionSubcommand {
         /// Run id.
         run: String,
     },
-    /// Mark the record cancelled. This does not terminate a process.
+    /// Stop the run's process and record the cancellation.
     Cancel {
         /// Run id.
         run: String,
@@ -567,7 +581,7 @@ pub enum Command {
         #[command(subcommand)]
         action: CatalogSubcommand,
     },
-    /// Session metadata. These commands store a record and do not launch or cancel a process.
+    /// Start, list, inspect, and cancel local runs.
     Session {
         #[command(subcommand)]
         action: SessionSubcommand,

@@ -663,6 +663,11 @@ fn spawn_argv(
     for (key, value) in &ctx.env {
         command.env(key, value);
     }
+    crate::compiler_cache::apply_compiler_cache(
+        &mut command,
+        &crate::compiler_cache::compiler_cache_from_process(),
+        &ctx.env,
+    );
     if let Some(cwd) = &ctx.cwd {
         command.current_dir(cwd);
     }
@@ -804,6 +809,29 @@ mod tests {
         assert!(!nix_marker.exists(), "winbuild must not locate nix");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_native_flake_app_fixture_runs_without_wsl() {
+        let trap_dir = tempfile::tempdir().expect("trap dir");
+        let wsl_marker = trap_dir.path().join("wsl-ran");
+        let app_marker = trap_dir.path().join("app-ran");
+        write_trap(trap_dir.path(), "wsl", &wsl_marker);
+        write_trap(trap_dir.path(), "hello", &app_marker);
+        let operation = Operation::NativeCommand {
+            argv: vec!["hello".to_owned()],
+        };
+        let ctx = ExecContext {
+            path: trap_dir.path().display().to_string(),
+            nix_override: None,
+            cwd: None,
+            env: BTreeMap::new(),
+        };
+        let result = execute_operation(&operation, &ctx).expect("fixture app");
+        assert!(matches!(result, OperationResult::Exited { code: 0, .. }));
+        assert!(app_marker.is_file(), "the flake-app fixture must run");
+        assert!(!wsl_marker.exists(), "the fixture must not start WSL");
+    }
+
     #[test]
     fn remote_is_unavailable_without_dialing() {
         let operation = Operation::Remote {
@@ -849,7 +877,7 @@ mod tests {
     fn write_trap(dir: &std::path::Path, name: &str, marker: &std::path::Path) {
         use std::os::unix::fs::PermissionsExt;
         let program = dir.join(name);
-        let script = format!("#!/bin/sh\ntouch '{}'\n", marker.display());
+        let script = format!("#!/bin/sh\n/usr/bin/touch '{}'\n", marker.display());
         std::fs::write(&program, script).expect("write trap");
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
             .expect("chmod trap");
