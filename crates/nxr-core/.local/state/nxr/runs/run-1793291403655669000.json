@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "run_id": "run-1793291403655669000",
+  "status": "succeeded",
+  "created_at": 1793291403,
+  "operation": {
+    "schema_version": 1,
+    "operation": {
+      "kind": "native_command",
+      "argv": []
+    }
+  },
+  "event_sequence": 1,
+  "exit_code": 0
+}
