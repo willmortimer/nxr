@@ -67,6 +67,94 @@ pub fn replay_execution(
     )
 }
 
+/// In-process JSON execution service for tests and local wiring.
+///
+/// This is not a Fake stub: it implements the same method surface a remote
+/// coordinator would expose over HTTP.
+#[derive(Clone, Debug)]
+pub struct InProcessExecutionClient {
+    state: std::sync::Arc<std::sync::Mutex<InProcessExecutionState>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct InProcessExecutionState {
+    submitted: Vec<Value>,
+    cancelled: Vec<String>,
+    journal: std::collections::BTreeMap<String, u64>,
+}
+
+impl InProcessExecutionClient {
+    /// Start one coordinator reachable only inside this process.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            state: std::sync::Arc::new(std::sync::Mutex::new(InProcessExecutionState::default())),
+        }
+    }
+
+    /// Whether `cancel` was accepted for `attempt_id`.
+    #[must_use]
+    pub fn cancel_seen(&self, attempt_id: &str) -> bool {
+        self.state
+            .lock()
+            .expect("in-process execution")
+            .cancelled
+            .iter()
+            .any(|id| id == attempt_id)
+    }
+}
+
+impl Default for InProcessExecutionClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ExecutionTransport for InProcessExecutionClient {
+    fn call(&self, method: &str, body: &Value) -> Result<Value, String> {
+        let mut state = self.state.lock().expect("in-process execution");
+        match method {
+            "submit" => {
+                state.submitted.push(body.clone());
+                Ok(json!({ "attempt_id": "att_inproc_1", "accepted": true }))
+            }
+            "status" => {
+                let attempt_id = body
+                    .get("attempt_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "status needs attempt_id".to_owned())?;
+                Ok(json!({ "attempt_id": attempt_id, "phase": "running" }))
+            }
+            "cancel" => {
+                let attempt_id = body
+                    .get("attempt_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "cancel needs attempt_id".to_owned())?;
+                state.cancelled.push(attempt_id.to_owned());
+                Ok(json!({ "attempt_id": attempt_id, "cancelled": true }))
+            }
+            "replay" => {
+                let attempt_id = body
+                    .get("attempt_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "replay needs attempt_id".to_owned())?;
+                let after = body
+                    .get("after_sequence")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let sequence = state.journal.get(attempt_id).copied().unwrap_or(0);
+                Ok(json!({
+                    "attempt_id": attempt_id,
+                    "after_sequence": after,
+                    "next_sequence": sequence,
+                    "events": []
+                }))
+            }
+            other => Err(format!("unknown execution method `{other}`")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -108,5 +196,12 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(methods, ["submit", "status", "cancel", "replay"]);
         assert_eq!(calls[3].1["after_sequence"], 3);
+    }
+
+    #[test]
+    fn in_process_transport_accepts_cancel_before_local_stop() {
+        let transport = InProcessExecutionClient::new();
+        cancel_execution(&transport, "att_remote_7").expect("cancel");
+        assert!(transport.cancel_seen("att_remote_7"));
     }
 }

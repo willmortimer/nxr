@@ -146,6 +146,7 @@ absolute ban):
 ### Later — V4+ and distributed fabric
 
 Ordered vision: [vision/V4_EXECUTION_PROTOCOL.md](vision/V4_EXECUTION_PROTOCOL.md).
+Hub inspector scaffolding: [vision/V4_HUB_INSPECTOR.md](vision/V4_HUB_INSPECTOR.md).
 Older speculative prose: [vision/FUTURE_CONTROL_PLANE.md](vision/FUTURE_CONTROL_PLANE.md).
 
 - V4.0 operation IR + event envelope / run protocol

@@ -26,6 +26,28 @@ pub enum Operation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         interpreter: Option<String>,
     },
+    /// Supervised long-lived process (desugared from process tasks).
+    Process {
+        app: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        readiness: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        restart: Option<ProcessRestartPolicy>,
+    },
+    /// WASI component leaf (V4.5 scaffolding; not executed yet).
+    WasiComponent {
+        component: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        world: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        capabilities: Vec<String>,
+    },
+    /// External adapter hook (Hub inspector, deploy guard, …).
+    Adapter {
+        adapter_kind: String,
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        configuration: serde_json::Value,
+    },
     /// Windows build-task id. This variant does not start WSL.
     ///
     /// `manifest` is relative to the selected workspace and defaults to
@@ -61,6 +83,15 @@ pub enum Operation {
     },
 }
 
+/// Restart policy for [`Operation::Process`] (V4 scaffolding).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessRestartPolicy {
+    Never,
+    OnFailure,
+    Always,
+}
+
 fn default_winbuild_manifest() -> String {
     ".winbuild.json".to_owned()
 }
@@ -80,6 +111,9 @@ impl Operation {
             Self::NixBuild { .. } => "nix_build",
             Self::NativeCommand { .. } => "native_command",
             Self::WorkspaceScript { .. } => "workspace_script",
+            Self::Process { .. } => "process",
+            Self::WasiComponent { .. } => "wasi_component",
+            Self::Adapter { .. } => "adapter",
             Self::WinBuildTask { .. } => "win_build_task",
             Self::Remote { .. } => "remote",
         }
@@ -93,8 +127,21 @@ impl Operation {
     pub const fn requires_nix(&self) -> bool {
         matches!(
             self,
-            Self::FlakeApp { .. } | Self::NixBuild { .. } | Self::WorkspaceScript { .. }
+            Self::FlakeApp { .. }
+                | Self::NixBuild { .. }
+                | Self::WorkspaceScript { .. }
+                | Self::Process { .. }
         )
+    }
+
+    /// Desugar a process task app name into a supervised process operation.
+    #[must_use]
+    pub fn from_process_app(app: impl Into<String>) -> Self {
+        Self::Process {
+            app: app.into(),
+            readiness: String::new(),
+            restart: None,
+        }
     }
 }
 
@@ -144,6 +191,20 @@ mod tests {
             }
             .requires_nix()
         );
+    }
+
+    #[test]
+    fn process_and_adapter_round_trip_in_operation_ir_envelope() {
+        use crate::operation_ir::{OperationIrEnvelope, OPERATION_IR_SCHEMA_VERSION};
+
+        let operation = Operation::Process {
+            app: "api".to_owned(),
+            readiness: "http://127.0.0.1:8080/health".to_owned(),
+            restart: Some(ProcessRestartPolicy::OnFailure),
+        };
+        let envelope = OperationIrEnvelope::new(&operation);
+        assert_eq!(envelope.schema_version, OPERATION_IR_SCHEMA_VERSION);
+        assert_eq!(envelope.operation, operation);
     }
 
     #[test]

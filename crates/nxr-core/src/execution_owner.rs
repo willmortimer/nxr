@@ -19,6 +19,9 @@ use std::os::unix::process::CommandExt;
 
 const CACHE_KEYS: [&str; 3] = ["SCCACHE_ENDPOINT", "SCCACHE_BUCKET", "CARGO_INCREMENTAL"];
 
+/// Upper bound on reconcile passes per admission call (crash/restart safety valve).
+const MAX_RECONCILE_PASSES: u32 = 8;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct OwnedRun {
     id: String,
@@ -69,6 +72,7 @@ pub fn runs_dir(socket: &Path) -> PathBuf {
 /// reserve capacity.
 pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
     fs::create_dir_all(dir).map_err(|err| err.to_string())?;
+    reconcile_with_limit(dir, MAX_RECONCILE_PASSES)?;
     let command = string_list(params, "command")?;
     if command.is_empty() {
         return Err("session start needs the command to run".into());
@@ -240,6 +244,7 @@ pub fn logs(dir: &Path, id: &str) -> Result<Value, String> {
 ///
 /// Returns an error when a record cannot be read.
 pub fn list(dir: &Path) -> Result<Value, String> {
+    reconcile_with_limit(dir, MAX_RECONCILE_PASSES)?;
     let records = records(dir)?;
     serde_json::to_value(records).map_err(|err| err.to_string())
 }
@@ -254,6 +259,7 @@ pub fn list(dir: &Path) -> Result<Value, String> {
 /// Returns an error when the run is missing, the remote cancel was not
 /// confirmed, or the signal fails.
 pub fn cancel(dir: &Path, id: &str, remote_confirmed: bool) -> Result<Value, String> {
+    reconcile_with_limit(dir, MAX_RECONCILE_PASSES)?;
     with_lock(dir, || {
         let mut record = load(dir, id)?;
         if record.attempt_id.is_some() && !remote_confirmed {
@@ -279,10 +285,25 @@ pub fn cancel(dir: &Path, id: &str, remote_confirmed: bool) -> Result<Value, Str
 ///
 /// Returns an error when a record cannot be read or written.
 pub fn reconcile(dir: &Path) -> Result<(), String> {
+    reconcile_with_limit(dir, MAX_RECONCILE_PASSES)
+}
+
+fn reconcile_with_limit(dir: &Path, max_passes: u32) -> Result<(), String> {
     if !dir.is_dir() {
         return Ok(());
     }
+    for _ in 0..max_passes {
+        let changed = reconcile_once(dir)?;
+        if !changed {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn reconcile_once(dir: &Path) -> Result<bool, String> {
     with_lock(dir, || {
+        let mut changed = false;
         for mut record in records(dir)? {
             if record.status != "running" {
                 continue;
@@ -299,9 +320,10 @@ pub fn reconcile(dir: &Path) -> Result<(), String> {
                 record.exit_code = None;
                 push_event(&mut record, "lost");
                 store(dir, &record)?;
+                changed = true;
             }
         }
-        Ok(())
+        Ok(changed)
     })
 }
 
@@ -651,5 +673,47 @@ mod tests {
         let updated = inspect(root.path(), "run-stale").unwrap();
         assert_eq!(updated["status"], "lost");
         assert!(updated["exit_code"].is_null());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stale_running_record_is_marked_lost_and_frees_the_budget() {
+        let root = tempfile::tempdir().unwrap();
+        let blocked = start(
+            root.path(),
+            &json!({
+                "label": "local",
+                "command": ["/bin/sh", "-c", "sleep 60"],
+                "cpu": 1,
+                "memory_mib": 16,
+                "cpu_budget": 1,
+                "memory_budget": 16
+            }),
+        )
+        .unwrap();
+        let id = blocked["id"].as_str().unwrap();
+        cancel(root.path(), id, false).unwrap();
+        let mut orphan = load(root.path(), id).unwrap();
+        orphan.id = "run-orphan".into();
+        orphan.status = "running".into();
+        orphan.pid = Some(9_876_543);
+        orphan.start_time = Some(42);
+        orphan.exit_code = None;
+        store(root.path(), &orphan).unwrap();
+        reconcile(root.path()).unwrap();
+        let lost = inspect(root.path(), "run-orphan").unwrap();
+        assert_eq!(lost["status"], "lost");
+        start(
+            root.path(),
+            &json!({
+                "label": "local",
+                "command": ["/bin/echo", "after-lost"],
+                "cpu": 1,
+                "memory_mib": 16,
+                "cpu_budget": 1,
+                "memory_budget": 16
+            }),
+        )
+        .expect("budget must return after reconcile marks the orphan lost");
     }
 }

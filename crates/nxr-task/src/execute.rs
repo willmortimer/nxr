@@ -35,6 +35,10 @@ pub enum ExecutorName {
     Winbuild,
     /// Remote execution, which phase 1.1 does not dial.
     Remote,
+    /// WASI component tier (V4.5 scaffolding).
+    Wasi,
+    /// External adapter hook (Hub inspector, deploy guard, …).
+    Adapter,
 }
 
 impl ExecutorName {
@@ -45,6 +49,8 @@ impl ExecutorName {
             Self::Nix => "nix",
             Self::Winbuild => "winbuild",
             Self::Remote => "remote",
+            Self::Wasi => "wasi",
+            Self::Adapter => "adapter",
         }
     }
 
@@ -56,7 +62,9 @@ impl ExecutorName {
     pub const fn exit_code(self) -> i32 {
         match self {
             Self::Nix => exit::NIX_CAPABILITY,
-            Self::Winbuild | Self::Remote => exit::PROCESS_SUPERVISION,
+            Self::Winbuild | Self::Remote | Self::Wasi | Self::Adapter => {
+                exit::PROCESS_SUPERVISION
+            }
         }
     }
 }
@@ -206,7 +214,16 @@ pub fn execute_operation(
         Operation::WinBuildTask { task_id, manifest } => execute_winbuild(task_id, manifest, ctx),
         Operation::FlakeApp { .. }
         | Operation::NixBuild { .. }
-        | Operation::WorkspaceScript { .. } => execute_nix_backed(ctx),
+        | Operation::WorkspaceScript { .. }
+        | Operation::Process { .. } => execute_nix_backed(ctx),
+        Operation::WasiComponent { component, .. } => Err(ExecuteError::unavailable(
+            ExecutorName::Wasi,
+            format!("WASI component `{component}` is not available"),
+        )),
+        Operation::Adapter { adapter_kind, .. } => Err(ExecuteError::unavailable(
+            ExecutorName::Adapter,
+            format!("adapter `{adapter_kind}` is not available"),
+        )),
         Operation::Remote { target, .. } => Err(ExecuteError::unavailable(
             ExecutorName::Remote,
             format!("remote executor `{target}` is not available"),

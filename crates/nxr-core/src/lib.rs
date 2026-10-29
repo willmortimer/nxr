@@ -8,6 +8,7 @@ pub mod dev_env_cache;
 pub mod diagnostics;
 pub mod digest_cache;
 pub mod disk_cache_status;
+pub mod durable_run;
 pub mod ecosystem;
 pub mod env_policy;
 pub mod eval_worker;
@@ -17,6 +18,7 @@ pub mod log_broker;
 pub mod merkle_index;
 pub mod model;
 pub mod operation;
+pub mod operation_ir;
 pub mod osc52;
 pub mod perf;
 pub mod plan;
@@ -28,6 +30,7 @@ pub mod sanitize;
 pub mod source_identity;
 pub mod store_exe_cache;
 pub mod trust;
+pub mod worker_schedule;
 
 pub use action::{
     ActionTier, cache_mode_enabled, cache_mode_shared_unimplemented, classify_action_tier,
@@ -95,6 +98,14 @@ pub use merkle_index::{
 };
 pub use model::{App, AppList, FlakeOutput, FlakeRef, ListApp, OutputList};
 pub use operation::Operation;
+pub use operation_ir::{OperationIrEnvelope, OPERATION_IR_SCHEMA_VERSION};
+pub use durable_run::{
+    DurableRunRecord, DurableRunStatus, DURABLE_RUN_SCHEMA_VERSION, durable_runs_dir,
+    hub_inspector_operation_preview, load_durable_run, store_durable_run,
+};
+pub use worker_schedule::{
+    LocalWorkerRegistry, WorkerDescriptor, WorkerRequirements, WorkerScheduler,
+};
 pub use osc52::{
     FailureLine, OSC52_ENV, emit_failure_clipboard, format_failure_summary,
     maybe_emit_failure_clipboard, osc52_clipboard_sequence, osc52_enabled,

@@ -15,7 +15,8 @@ members = [
 default-members = ["crates/nxr-cli"]
 
 [workspace.package]
-version = "3.8.0"
+# Post-v3.8.0 Track C / Wave 8 work. Do not move the v3.8.0 tag.
+version = "3.9.0-rc.1"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT"

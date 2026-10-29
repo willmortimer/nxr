@@ -249,24 +249,10 @@ mod tests {
     use std::time::Duration;
 
     use nxr_core::{DaemonState, serve};
-    use nxr_task::remote_execution::ExecutionTransport;
-    use serde_json::{Value, json};
+    use nxr_task::remote_execution::InProcessExecutionClient;
+    use serde_json::json;
 
     use super::*;
-
-    struct Fake {
-        calls: Mutex<Vec<(String, Value)>>,
-    }
-
-    impl ExecutionTransport for Fake {
-        fn call(&self, method: &str, body: &Value) -> Result<Value, String> {
-            self.calls
-                .lock()
-                .expect("calls")
-                .push((method.to_owned(), body.clone()));
-            Ok(json!({ "cancelled": true }))
-        }
-    }
 
     fn quiet() -> RunnerOutput {
         use crate::output_options::{ColorWhen, LogFormat, OutputOptions};
@@ -360,9 +346,7 @@ mod tests {
         assert_eq!(record["exit_code"], 3);
         let text = call(&socket, "run.logs", json!({ "id": id })).unwrap();
         assert!(text["text"].as_str().unwrap().contains("from-supervisor"));
-        let transport = Fake {
-            calls: Mutex::new(Vec::new()),
-        };
+        let transport = InProcessExecutionClient::new();
         start_on(
             &socket,
             &SessionStart {
@@ -391,12 +375,11 @@ mod tests {
             .as_str()
             .unwrap()
             .to_owned();
-        let denied = cancel_with::<Fake>(&socket, &remote_id, None, quiet()).unwrap_err();
+        let denied = cancel_with::<InProcessExecutionClient>(&socket, &remote_id, None, quiet())
+            .unwrap_err();
         assert!(denied.contains("not enough"), "{denied}");
         cancel_with(&socket, &remote_id, Some(&transport), quiet()).unwrap();
-        let calls = transport.calls.lock().expect("calls");
-        assert_eq!(calls[0].0, "cancel");
-        assert_eq!(calls[0].1["attempt_id"], "attempt-9");
+        assert!(transport.cancel_seen("attempt-9"));
         thread::sleep(Duration::from_millis(200));
         let stopped = call(&socket, "run.inspect", json!({ "id": remote_id })).unwrap();
         assert_eq!(stopped["status"], "cancelled");
