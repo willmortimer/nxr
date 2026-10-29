@@ -62,9 +62,7 @@ impl ExecutorName {
     pub const fn exit_code(self) -> i32 {
         match self {
             Self::Nix => exit::NIX_CAPABILITY,
-            Self::Winbuild | Self::Remote | Self::Wasi | Self::Adapter => {
-                exit::PROCESS_SUPERVISION
-            }
+            Self::Winbuild | Self::Remote | Self::Wasi | Self::Adapter => exit::PROCESS_SUPERVISION,
         }
     }
 }
