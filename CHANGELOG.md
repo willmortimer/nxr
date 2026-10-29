@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Durable run supervisor sync is journal-first (JSONL event, then `{run_id}.json` snapshot) with per-run file locks in-process.
+- Default nxr state directory falls back to `$HOME/.local/state/nxr` instead of a cwd-relative `.local/state/nxr` when platform dirs are unavailable.
+
+### Notes
+
+- `LocalWorkerRegistry::select_and_reserve` is local/in-process only; it is not a distributed worker lease.
+
 ## [3.8.0-rc.3] - 2026-10-27
 
 ### Changed

@@ -3,6 +3,10 @@
 //! Nix remote builders remain Nix-owned. This registry selects NXR workers for
 //! mutable or interactive leaves ([`Operation::Remote`]) without storing NixPlane
 //! fleet Assignments ([ADR-0174](../../../docs/adr/0174-nixplane-fleet-state-boundary.md)).
+//!
+//! [`WorkerScheduler::select_and_reserve`] on [`LocalWorkerRegistry`] is
+//! **local and in-process only**: it does not coordinate across daemons or hosts.
+//! Production remote scheduling must add an external lease or coordinator.
 
 use std::collections::BTreeMap;
 
@@ -59,6 +63,9 @@ pub trait WorkerScheduler {
     fn reserve_worker(&mut self, worker_id: &str, now: u64, ttl_secs: u64) -> Result<(), String>;
 
     /// Select one eligible worker and reserve it until `now + ttl_secs` in one step.
+    ///
+    /// Implementations such as [`LocalWorkerRegistry`] are in-process only; callers
+    /// must not treat this as a distributed lock.
     ///
     /// # Errors
     ///

@@ -1,3 +1,7 @@
+# --- nxr local state (never commit) ---
+**/.local/state/
+.local/
+
 # --- Build / Rust ---
 /target/
 **/*.rs.bk

@@ -24,6 +24,18 @@ const CACHE_KEYS: [&str; 3] = ["SCCACHE_ENDPOINT", "SCCACHE_BUCKET", "CARGO_INCR
 /// Upper bound on reconcile passes per admission call (crash/restart safety valve).
 const MAX_RECONCILE_PASSES: u32 = 8;
 
+#[cfg(test)]
+static TEST_WAIT_THREADS: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub(crate) fn join_test_wait_threads() {
+    let handles = std::mem::take(&mut *TEST_WAIT_THREADS.lock().expect("wait thread mutex"));
+    for handle in handles {
+        let _ = handle.join();
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct OwnedRun {
     id: String,
@@ -188,7 +200,7 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
         })?;
         let wait_dir = dir.to_path_buf();
         let wait_id = id.clone();
-        thread::spawn(move || {
+        let wait_handle = thread::spawn(move || {
             let code = spawned
                 .wait()
                 .ok()
@@ -217,6 +229,11 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
                 Ok(())
             });
         });
+        #[cfg(test)]
+        TEST_WAIT_THREADS
+            .lock()
+            .expect("wait thread mutex")
+            .push(wait_handle);
         Ok(json!({ "id": id }))
     })
 }
@@ -577,6 +594,7 @@ mod tests {
 
     impl Drop for IsolatedDurableRuns {
         fn drop(&mut self) {
+            join_test_wait_threads();
             crate::durable_run::set_test_durable_runs_dir(None);
         }
     }

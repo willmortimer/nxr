@@ -95,13 +95,19 @@ pub fn state_dir() -> PathBuf {
         return state_home.join("nxr");
     }
     directories::ProjectDirs::from("", "", "nxr").map_or_else(
-        || PathBuf::from(".local/state/nxr"),
+        default_state_dir_under_home,
         |dirs| {
             dirs.state_dir()
                 .map(std::path::Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from(".local/state/nxr"))
+                .unwrap_or_else(default_state_dir_under_home)
         },
     )
+}
+
+fn default_state_dir_under_home() -> PathBuf {
+    directories::BaseDirs::new()
+        .map(|dirs| dirs.home_dir().join(".local/state/nxr"))
+        .unwrap_or_else(|| PathBuf::from(".local/state/nxr"))
 }
 
 /// Load `config.toml` when present; otherwise return defaults.

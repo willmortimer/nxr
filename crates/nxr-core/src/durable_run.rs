@@ -4,11 +4,16 @@
 //! `nxr session`. This module defines the on-disk shape for longer-lived runs
 //! (`nxr runs`, reconnect, chunked logs) without requiring `nxrd` for direct
 //! `nix run`.
+//!
+//! Persistence is **journal-first**: each transition appends one JSONL line with
+//! a monotonic `sequence`, then materializes `{run_id}.json`. A per-run lock
+//! serializes writers in-process; cross-host coordination is out of scope here.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -99,6 +104,10 @@ pub fn durable_runs_dir() -> PathBuf {
 /// Returns [`io::Error`] when the directory or file cannot be written.
 pub fn store_durable_run(record: &DurableRunRecord) -> io::Result<()> {
     validate_run_id(&record.run_id)?;
+    #[cfg(test)]
+    if TEST_FAIL_AFTER_JOURNAL.with(|cell| cell.get()) {
+        return Err(io::Error::other("injected snapshot failure"));
+    }
     let dir = durable_runs_dir();
     fs::create_dir_all(&dir)?;
     let path = durable_run_path(&dir, &record.run_id);
@@ -107,6 +116,9 @@ pub fn store_durable_run(record: &DurableRunRecord) -> io::Result<()> {
 
 /// Load one durable run record.
 ///
+/// When `{run_id}.json` is missing but the events journal exists, the record is
+/// rebuilt from journal lines (crash between journal append and snapshot write).
+///
 /// # Errors
 ///
 /// Returns [`io::Error`] when the record is missing or invalid JSON.
@@ -114,8 +126,17 @@ pub fn load_durable_run(run_id: &str) -> io::Result<DurableRunRecord> {
     validate_run_id(run_id)?;
     let dir = durable_runs_dir();
     let path = durable_run_path(&dir, run_id);
-    let text = fs::read_to_string(path)?;
-    serde_json::from_str(&text).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
+    match fs::read_to_string(&path) {
+        Ok(text) => {
+            let record: DurableRunRecord = serde_json::from_str(&text)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+            reconcile_record_with_journal(run_id, record)
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            materialize_record_from_journal(run_id)
+        }
+        Err(err) => Err(err),
+    }
 }
 
 /// One append-only journal line beside `{run_id}.json` (JSONL).
@@ -128,6 +149,8 @@ pub struct DurableRunJournalLine {
     pub status: Option<DurableRunStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
 }
 
 /// Remove durable metadata and journal for one run (best-effort cleanup).
@@ -138,6 +161,7 @@ pub fn remove_durable_run_artifacts(run_id: &str) {
     let dir = durable_runs_dir();
     let _ = fs::remove_file(durable_run_path(&dir, run_id));
     let _ = fs::remove_file(durable_events_path(&dir, run_id));
+    let _ = fs::remove_file(run_lock_path(&dir, run_id));
 }
 
 /// Create or replace a durable record when the session supervisor starts a run.
@@ -149,20 +173,24 @@ pub fn sync_supervisor_started(run_id: &str, command: &[String]) -> io::Result<(
     let operation = Operation::NativeCommand {
         argv: command.to_vec(),
     };
-    let mut record = DurableRunRecord::pending(run_id, &operation);
-    record.status = DurableRunStatus::Running;
-    record.bump_event_sequence();
-    store_durable_run(&record)?;
-    append_journal_line(
-        run_id,
-        DurableRunJournalLine {
-            sequence: record.event_sequence,
-            kind: "supervisor_started".into(),
-            at: unix_now_secs(),
-            status: Some(DurableRunStatus::Running),
-            exit_code: None,
-        },
-    )
+    with_run_lock(run_id, || {
+        let mut record = DurableRunRecord::pending(run_id, &operation);
+        record.status = DurableRunStatus::Running;
+        let sequence = next_journal_sequence(run_id)?;
+        append_journal_line(
+            run_id,
+            DurableRunJournalLine {
+                sequence,
+                kind: "supervisor_started".into(),
+                at: unix_now_secs(),
+                status: Some(DurableRunStatus::Running),
+                exit_code: None,
+                command: Some(command.to_vec()),
+            },
+        )?;
+        record.event_sequence = sequence;
+        store_durable_run(&record)
+    })
 }
 
 /// Update durable lifecycle when the supervisor run finishes or is cancelled.
@@ -172,30 +200,25 @@ pub fn sync_supervisor_terminal(
     exit_code: Option<i32>,
 ) -> io::Result<()> {
     validate_run_id(run_id)?;
-    let mut record = match load_durable_run(run_id) {
-        Ok(existing) => existing,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            let operation = Operation::NativeCommand { argv: Vec::new() };
-            let mut pending = DurableRunRecord::pending(run_id, &operation);
-            pending.status = DurableRunStatus::Running;
-            pending
-        }
-        Err(err) => return Err(err),
-    };
-    record.status = status;
-    record.exit_code = exit_code;
-    record.bump_event_sequence();
-    store_durable_run(&record)?;
-    append_journal_line(
-        run_id,
-        DurableRunJournalLine {
-            sequence: record.event_sequence,
-            kind: "supervisor_terminal".into(),
-            at: unix_now_secs(),
-            status: Some(status),
-            exit_code,
-        },
-    )
+    with_run_lock(run_id, || {
+        let mut record = load_durable_run_or_default(run_id)?;
+        record.status = status;
+        record.exit_code = exit_code;
+        let sequence = next_journal_sequence(run_id)?;
+        append_journal_line(
+            run_id,
+            DurableRunJournalLine {
+                sequence,
+                kind: "supervisor_terminal".into(),
+                at: unix_now_secs(),
+                status: Some(status),
+                exit_code,
+                command: None,
+            },
+        )?;
+        record.event_sequence = sequence;
+        store_durable_run(&record)
+    })
 }
 
 /// Log terminal sync failure once, then retry a single reconcile write.
@@ -237,6 +260,116 @@ fn durable_events_path(dir: &Path, run_id: &str) -> PathBuf {
     dir.join(format!("{run_id}.events.jsonl"))
 }
 
+fn run_lock_path(dir: &Path, run_id: &str) -> PathBuf {
+    dir.join(format!("{run_id}.lock"))
+}
+
+fn with_run_lock<T>(run_id: &str, operation: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    validate_run_id(run_id)?;
+    let dir = durable_runs_dir();
+    fs::create_dir_all(&dir)?;
+    let lock_path = run_lock_path(&dir, run_id);
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)?;
+    lock_file.lock_exclusive()?;
+    let result = operation();
+    let _ = lock_file.unlock();
+    result
+}
+
+fn read_journal_lines(run_id: &str) -> io::Result<Vec<DurableRunJournalLine>> {
+    validate_run_id(run_id)?;
+    let dir = durable_runs_dir();
+    let path = durable_events_path(&dir, run_id);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str(line)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
+        })
+        .collect()
+}
+
+fn next_journal_sequence(run_id: &str) -> io::Result<u64> {
+    let lines = read_journal_lines(run_id)?;
+    Ok(lines
+        .iter()
+        .map(|line| line.sequence)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1))
+}
+
+fn load_durable_run_or_default(run_id: &str) -> io::Result<DurableRunRecord> {
+    match load_durable_run(run_id) {
+        Ok(record) => Ok(record),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            let operation = Operation::NativeCommand { argv: Vec::new() };
+            let mut pending = DurableRunRecord::pending(run_id, &operation);
+            pending.status = DurableRunStatus::Running;
+            Ok(pending)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn reconcile_record_with_journal(
+    run_id: &str,
+    mut record: DurableRunRecord,
+) -> io::Result<DurableRunRecord> {
+    let lines = read_journal_lines(run_id)?;
+    let Some(last) = lines.iter().max_by_key(|line| line.sequence) else {
+        return Ok(record);
+    };
+    if last.sequence > record.event_sequence {
+        record.event_sequence = last.sequence;
+        if let Some(status) = last.status {
+            record.status = status;
+        }
+        if last.exit_code.is_some() {
+            record.exit_code = last.exit_code;
+        }
+    }
+    Ok(record)
+}
+
+fn materialize_record_from_journal(run_id: &str) -> io::Result<DurableRunRecord> {
+    let lines = read_journal_lines(run_id)?;
+    if lines.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "durable run record missing",
+        ));
+    }
+    let last = lines
+        .iter()
+        .max_by_key(|line| line.sequence)
+        .expect("non-empty journal");
+    let started = lines
+        .iter()
+        .find(|line| line.kind == "supervisor_started")
+        .and_then(|line| line.command.as_ref());
+    let operation = Operation::NativeCommand {
+        argv: started.cloned().unwrap_or_default(),
+    };
+    let mut record = DurableRunRecord::pending(run_id, &operation);
+    record.status = last.status.unwrap_or(DurableRunStatus::Running);
+    record.exit_code = last.exit_code;
+    record.event_sequence = last.sequence;
+    record.created_at = lines
+        .first()
+        .map(|line| line.at)
+        .unwrap_or_else(unix_now_secs);
+    Ok(record)
+}
+
 fn append_journal_line(run_id: &str, line: DurableRunJournalLine) -> io::Result<()> {
     validate_run_id(run_id)?;
     let dir = durable_runs_dir();
@@ -273,8 +406,18 @@ thread_local! {
 }
 
 #[cfg(test)]
+thread_local! {
+    static TEST_FAIL_AFTER_JOURNAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
 pub(crate) fn set_test_durable_runs_dir(path: Option<PathBuf>) {
     TEST_DURABLE_RUNS_DIR.with(|cell| *cell.borrow_mut() = path);
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_fail_durable_snapshot_after_journal(fail: bool) {
+    TEST_FAIL_AFTER_JOURNAL.with(|cell| cell.set(fail));
 }
 
 #[cfg(test)]
@@ -375,6 +518,45 @@ mod tests {
 
             let record = load_durable_run("run-journal").unwrap();
             assert_eq!(record.event_sequence, 3);
+        });
+    }
+
+    #[test]
+    fn load_recovers_from_journal_when_json_snapshot_missing() {
+        with_temp_runs_dir(|| {
+            sync_supervisor_started("run-recover", &["echo".into(), "ok".into()]).unwrap();
+            sync_supervisor_terminal("run-recover", DurableRunStatus::Succeeded, Some(0)).unwrap();
+            let json_path = durable_run_path(&durable_runs_dir(), "run-recover");
+            fs::remove_file(json_path).unwrap();
+            let record = load_durable_run("run-recover").unwrap();
+            assert_eq!(record.event_sequence, 2);
+            assert_eq!(record.status, DurableRunStatus::Succeeded);
+            assert_eq!(record.exit_code, Some(0));
+            match &record.operation.operation {
+                Operation::NativeCommand { argv } => {
+                    assert_eq!(argv, &["echo".to_owned(), "ok".to_owned()]);
+                }
+                other => panic!("unexpected operation {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn journal_line_precedes_snapshot_on_disk() {
+        with_temp_runs_dir(|| {
+            set_test_fail_durable_snapshot_after_journal(true);
+            let err = sync_supervisor_started("run-crash", &["true".into()]).unwrap_err();
+            set_test_fail_durable_snapshot_after_journal(false);
+            assert!(err.to_string().contains("injected snapshot failure"), "{err}");
+
+            let journal = durable_events_path(&durable_runs_dir(), "run-crash");
+            assert!(journal.is_file());
+            let json_path = durable_run_path(&durable_runs_dir(), "run-crash");
+            assert!(!json_path.exists());
+
+            let record = load_durable_run("run-crash").unwrap();
+            assert_eq!(record.status, DurableRunStatus::Running);
+            assert_eq!(record.event_sequence, 1);
         });
     }
 }
