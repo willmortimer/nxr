@@ -1,13 +1,25 @@
 //! Durable run record hooks (V4.1 scaffolding).
 //!
-//! Session supervisor records under `supervisor/` remain the live owner for
-//! `nxr session`. This module defines the on-disk shape for longer-lived runs
-//! (`nxr runs`, reconnect, chunked logs) without requiring `nxrd` for direct
-//! `nix run`.
+//! **Sources of truth**
+//!
+//! - The append-only `{run_id}.events.jsonl` journal is the durable source of
+//!   truth for lifecycle transitions.
+//! - `{run_id}.json` is a materialized projection rebuilt from the journal
+//!   (and reconciled on load when the snapshot lags or is missing).
+//! - Session supervisor JSON under `supervisor/` remains the live process owner
+//!   for `nxr session`; durable metadata must stay consistent on start/terminal
+//!   sync but does not replace supervisor pid/wait ownership.
+//!
+//! [`crate::worker_schedule::LocalWorkerRegistry::select_and_reserve`] is
+//! local and in-process only; it is not a distributed worker lease.
 //!
 //! Persistence is **journal-first**: each transition appends one JSONL line with
 //! a monotonic `sequence`, then materializes `{run_id}.json`. A per-run lock
 //! serializes writers in-process; cross-host coordination is out of scope here.
+//!
+//! A truncated final journal line (crash mid-write) is quarantined and removed
+//! on read; corrupt earlier lines fail hard. Terminal transitions carry a stable
+//! `transition_id` so a snapshot retry does not append a second completion line.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -151,6 +163,9 @@ pub struct DurableRunJournalLine {
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<Vec<String>>,
+    /// Idempotency key for one logical transition (terminal retries reuse this).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition_id: Option<String>,
 }
 
 /// Remove durable metadata and journal for one run (best-effort cleanup).
@@ -166,8 +181,8 @@ pub fn remove_durable_run_artifacts(run_id: &str) {
 
 /// Create or replace a durable record when the session supervisor starts a run.
 ///
-/// Supervisor JSON remains authoritative for the live process; durable metadata and
-/// the events journal must stay consistent or callers fail the start.
+/// Supervisor JSON remains the live process owner; durable metadata and the events
+/// journal must stay consistent or callers fail the start.
 pub fn sync_supervisor_started(run_id: &str, command: &[String]) -> io::Result<()> {
     validate_run_id(run_id)?;
     let operation = Operation::NativeCommand {
@@ -186,6 +201,7 @@ pub fn sync_supervisor_started(run_id: &str, command: &[String]) -> io::Result<(
                 status: Some(DurableRunStatus::Running),
                 exit_code: None,
                 command: Some(command.to_vec()),
+                transition_id: None,
             },
         )?;
         record.event_sequence = sequence;
@@ -200,10 +216,19 @@ pub fn sync_supervisor_terminal(
     exit_code: Option<i32>,
 ) -> io::Result<()> {
     validate_run_id(run_id)?;
+    let transition_id = supervisor_terminal_transition_id(status, exit_code);
     with_run_lock(run_id, || {
         let mut record = load_durable_run_or_default(run_id)?;
         record.status = status;
         record.exit_code = exit_code;
+        let lines = read_journal_lines(run_id)?;
+        if let Some(existing) = lines.iter().find(|line| {
+            line.kind == "supervisor_terminal"
+                && line.transition_id.as_deref() == Some(&transition_id)
+        }) {
+            record.event_sequence = existing.sequence;
+            return store_durable_run(&record);
+        }
         let sequence = next_journal_sequence(run_id)?;
         append_journal_line(
             run_id,
@@ -214,6 +239,7 @@ pub fn sync_supervisor_terminal(
                 status: Some(status),
                 exit_code,
                 command: None,
+                transition_id: Some(transition_id),
             },
         )?;
         record.event_sequence = sequence;
@@ -279,6 +305,10 @@ fn with_run_lock<T>(run_id: &str, operation: impl FnOnce() -> io::Result<T>) -> 
     result
 }
 
+fn supervisor_terminal_transition_id(status: DurableRunStatus, exit_code: Option<i32>) -> String {
+    format!("supervisor_terminal:{status:?}:{exit_code:?}")
+}
+
 fn read_journal_lines(run_id: &str) -> io::Result<Vec<DurableRunJournalLine>> {
     validate_run_id(run_id)?;
     let dir = durable_runs_dir();
@@ -288,13 +318,74 @@ fn read_journal_lines(run_id: &str) -> io::Result<Vec<DurableRunJournalLine>> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err),
     };
-    text.lines()
+    parse_journal_text(run_id, &path, &text)
+}
+
+fn parse_journal_text(
+    run_id: &str,
+    path: &Path,
+    text: &str,
+) -> io::Result<Vec<DurableRunJournalLine>> {
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let physical_lines: Vec<&str> = text
+        .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            serde_json::from_str(line)
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
-        })
-        .collect()
+        .collect();
+    if physical_lines.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut parsed = Vec::with_capacity(physical_lines.len());
+    for line in &physical_lines[..physical_lines.len() - 1] {
+        parsed.push(parse_journal_line(line).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("corrupt durable run journal line: {err}"),
+            )
+        })?);
+    }
+    let last = physical_lines[physical_lines.len() - 1];
+    match parse_journal_line(last) {
+        Ok(entry) => {
+            parsed.push(entry);
+            Ok(parsed)
+        }
+        Err(_err) => {
+            quarantine_truncated_journal_tail(run_id, path, last)?;
+            rewrite_journal_file(path, &parsed)?;
+            Ok(parsed)
+        }
+    }
+}
+
+fn parse_journal_line(line: &str) -> Result<DurableRunJournalLine, serde_json::Error> {
+    serde_json::from_str(line)
+}
+
+fn quarantine_truncated_journal_tail(
+    run_id: &str,
+    journal_path: &Path,
+    bad_line: &str,
+) -> io::Result<()> {
+    let quarantine_path = journal_path.with_extension("jsonl.truncated-tail");
+    let body = format!("run_id={run_id}\n--- truncated tail ---\n{bad_line}\n");
+    fs::write(quarantine_path, body)
+}
+
+fn rewrite_journal_file(path: &Path, lines: &[DurableRunJournalLine]) -> io::Result<()> {
+    if lines.is_empty() {
+        let _ = fs::remove_file(path);
+        return Ok(());
+    }
+    let mut body = String::new();
+    for line in lines {
+        let json = serde_json::to_string(line)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        body.push_str(&json);
+        body.push('\n');
+    }
+    fs::write(path, body)
 }
 
 fn next_journal_sequence(run_id: &str) -> io::Result<u64> {
@@ -547,7 +638,10 @@ mod tests {
             set_test_fail_durable_snapshot_after_journal(true);
             let err = sync_supervisor_started("run-crash", &["true".into()]).unwrap_err();
             set_test_fail_durable_snapshot_after_journal(false);
-            assert!(err.to_string().contains("injected snapshot failure"), "{err}");
+            assert!(
+                err.to_string().contains("injected snapshot failure"),
+                "{err}"
+            );
 
             let journal = durable_events_path(&durable_runs_dir(), "run-crash");
             assert!(journal.is_file());
@@ -557,6 +651,82 @@ mod tests {
             let record = load_durable_run("run-crash").unwrap();
             assert_eq!(record.status, DurableRunStatus::Running);
             assert_eq!(record.event_sequence, 1);
+        });
+    }
+
+    #[test]
+    fn load_repairs_truncated_final_journal_line() {
+        with_temp_runs_dir(|| {
+            sync_supervisor_started("run-tail", &["echo".into(), "x".into()]).unwrap();
+            let journal = durable_events_path(&durable_runs_dir(), "run-tail");
+            let mut text = fs::read_to_string(&journal).unwrap();
+            text.push_str("{\"sequence\":2,\"kind\":\"supervisor_terminal\",\"at\":1,\"stat");
+            fs::write(&journal, text).unwrap();
+
+            let quarantine = journal.with_extension("jsonl.truncated-tail");
+            assert!(!quarantine.exists());
+
+            let record = load_durable_run("run-tail").unwrap();
+            assert_eq!(record.status, DurableRunStatus::Running);
+            assert_eq!(record.event_sequence, 1);
+            assert!(quarantine.is_file());
+
+            let repaired = fs::read_to_string(&journal).unwrap();
+            let lines: Vec<DurableRunJournalLine> = repaired
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(lines.len(), 1);
+        });
+    }
+
+    #[test]
+    fn load_fails_when_committed_journal_line_is_corrupt() {
+        with_temp_runs_dir(|| {
+            sync_supervisor_started("run-bad", &["true".into()]).unwrap();
+            let journal = durable_events_path(&durable_runs_dir(), "run-bad");
+            let mut text = fs::read_to_string(&journal).unwrap();
+            text.push_str("not-json\n");
+            text.push_str("{\"sequence\":2,\"kind\":\"supervisor_terminal\",\"at\":1}\n");
+            fs::write(&journal, text).unwrap();
+
+            let err = load_durable_run("run-bad").unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        });
+    }
+
+    #[test]
+    fn terminal_sync_is_idempotent_after_snapshot_failure() {
+        with_temp_runs_dir(|| {
+            sync_supervisor_started("run-replay", &["true".into()]).unwrap();
+            set_test_fail_durable_snapshot_after_journal(true);
+            let err = sync_supervisor_terminal("run-replay", DurableRunStatus::Succeeded, Some(0))
+                .unwrap_err();
+            set_test_fail_durable_snapshot_after_journal(false);
+            assert!(
+                err.to_string().contains("injected snapshot failure"),
+                "{err}"
+            );
+
+            sync_supervisor_terminal("run-replay", DurableRunStatus::Succeeded, Some(0)).unwrap();
+
+            let journal = durable_events_path(&durable_runs_dir(), "run-replay");
+            let lines: Vec<DurableRunJournalLine> = fs::read_to_string(journal)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(lines.len(), 2);
+            assert_eq!(lines[1].kind, "supervisor_terminal");
+            assert_eq!(
+                lines[1].transition_id.as_deref(),
+                Some("supervisor_terminal:Succeeded:Some(0)")
+            );
+
+            let record = load_durable_run("run-replay").unwrap();
+            assert_eq!(record.event_sequence, 2);
+            assert_eq!(record.status, DurableRunStatus::Succeeded);
+            assert_eq!(record.exit_code, Some(0));
         });
     }
 }
