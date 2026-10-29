@@ -5,8 +5,8 @@
 //! (`nxr runs`, reconnect, chunked logs) without requiring `nxrd` for direct
 //! `nix run`.
 
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::config::state_dir;
 use crate::operation::Operation;
-use crate::operation_ir::{OperationIrEnvelope, OPERATION_IR_SCHEMA_VERSION};
+use crate::operation_ir::{OPERATION_IR_SCHEMA_VERSION, OperationIrEnvelope};
 
 /// Schema version for durable run metadata files.
 pub const DURABLE_RUN_SCHEMA_VERSION: u32 = 1;
@@ -118,9 +118,32 @@ pub fn load_durable_run(run_id: &str) -> io::Result<DurableRunRecord> {
     serde_json::from_str(&text).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
 }
 
+/// One append-only journal line beside `{run_id}.json` (JSONL).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DurableRunJournalLine {
+    pub sequence: u64,
+    pub kind: String,
+    pub at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<DurableRunStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+}
+
+/// Remove durable metadata and journal for one run (best-effort cleanup).
+pub fn remove_durable_run_artifacts(run_id: &str) {
+    if validate_run_id(run_id).is_err() {
+        return;
+    }
+    let dir = durable_runs_dir();
+    let _ = fs::remove_file(durable_run_path(&dir, run_id));
+    let _ = fs::remove_file(durable_events_path(&dir, run_id));
+}
+
 /// Create or replace a durable record when the session supervisor starts a run.
 ///
-/// Best-effort for reconnect metadata; supervisor JSON remains authoritative for the process.
+/// Supervisor JSON remains authoritative for the live process; durable metadata and
+/// the events journal must stay consistent or callers fail the start.
 pub fn sync_supervisor_started(run_id: &str, command: &[String]) -> io::Result<()> {
     validate_run_id(run_id)?;
     let operation = Operation::NativeCommand {
@@ -128,7 +151,18 @@ pub fn sync_supervisor_started(run_id: &str, command: &[String]) -> io::Result<(
     };
     let mut record = DurableRunRecord::pending(run_id, &operation);
     record.status = DurableRunStatus::Running;
-    store_durable_run(&record)
+    record.bump_event_sequence();
+    store_durable_run(&record)?;
+    append_journal_line(
+        run_id,
+        DurableRunJournalLine {
+            sequence: record.event_sequence,
+            kind: "supervisor_started".into(),
+            at: unix_now_secs(),
+            status: Some(DurableRunStatus::Running),
+            exit_code: None,
+        },
+    )
 }
 
 /// Update durable lifecycle when the supervisor run finishes or is cancelled.
@@ -150,7 +184,35 @@ pub fn sync_supervisor_terminal(
     };
     record.status = status;
     record.exit_code = exit_code;
-    store_durable_run(&record)
+    record.bump_event_sequence();
+    store_durable_run(&record)?;
+    append_journal_line(
+        run_id,
+        DurableRunJournalLine {
+            sequence: record.event_sequence,
+            kind: "supervisor_terminal".into(),
+            at: unix_now_secs(),
+            status: Some(status),
+            exit_code,
+        },
+    )
+}
+
+/// Log terminal sync failure once, then retry a single reconcile write.
+pub fn sync_supervisor_terminal_with_reconcile(
+    run_id: &str,
+    status: DurableRunStatus,
+    exit_code: Option<i32>,
+) -> io::Result<()> {
+    match sync_supervisor_terminal(run_id, status, exit_code) {
+        Ok(()) => Ok(()),
+        Err(first) => {
+            eprintln!(
+                "nxr durable run terminal sync failed for `{run_id}`: {first}; reconciling once"
+            );
+            sync_supervisor_terminal(run_id, status, exit_code)
+        }
+    }
 }
 
 /// Hub inspector hook: lossless JSON preview of one run's operation IR.
@@ -169,6 +231,24 @@ pub fn hub_inspector_operation_preview(record: &DurableRunRecord) -> Value {
 
 fn durable_run_path(dir: &Path, run_id: &str) -> PathBuf {
     dir.join(format!("{run_id}.json"))
+}
+
+fn durable_events_path(dir: &Path, run_id: &str) -> PathBuf {
+    dir.join(format!("{run_id}.events.jsonl"))
+}
+
+fn append_journal_line(run_id: &str, line: DurableRunJournalLine) -> io::Result<()> {
+    validate_run_id(run_id)?;
+    let dir = durable_runs_dir();
+    fs::create_dir_all(&dir)?;
+    let path = durable_events_path(&dir, run_id);
+    let body = serde_json::to_string(&line)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+    file.write_all(body.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_data()?;
+    Ok(())
 }
 
 fn write_atomic_json(path: &Path, record: &DurableRunRecord) -> io::Result<()> {
@@ -212,22 +292,31 @@ mod tests {
     #[test]
     fn durable_run_round_trip_uses_operation_ir_envelope() {
         with_temp_runs_dir(|| {
-            let record = DurableRunRecord::pending("run-test-1", &Operation::FlakeApp {
-                name: "lint".to_owned(),
-            });
+            let record = DurableRunRecord::pending(
+                "run-test-1",
+                &Operation::FlakeApp {
+                    name: "lint".to_owned(),
+                },
+            );
             store_durable_run(&record).unwrap();
             let restored = load_durable_run("run-test-1").unwrap();
             assert_eq!(restored.schema_version, DURABLE_RUN_SCHEMA_VERSION);
-            assert_eq!(restored.operation.schema_version, OPERATION_IR_SCHEMA_VERSION);
+            assert_eq!(
+                restored.operation.schema_version,
+                OPERATION_IR_SCHEMA_VERSION
+            );
             assert_eq!(restored.status, DurableRunStatus::Pending);
         });
     }
 
     #[test]
     fn hub_preview_does_not_embed_fleet_assignment_fields() {
-        let record = DurableRunRecord::pending("run-preview", &Operation::NixBuild {
-            installable: ".#checks".to_owned(),
-        });
+        let record = DurableRunRecord::pending(
+            "run-preview",
+            &Operation::NixBuild {
+                installable: ".#checks".to_owned(),
+            },
+        );
         let preview = hub_inspector_operation_preview(&record);
         let text = preview.to_string();
         assert_eq!(preview["operation"], "nix_build");
@@ -237,25 +326,20 @@ mod tests {
     #[test]
     fn store_and_load_reject_path_traversal_run_ids() {
         with_temp_runs_dir(|| {
-            let record = DurableRunRecord::pending("../escape", &Operation::FlakeApp {
-                name: "x".to_owned(),
-            });
+            let record = DurableRunRecord::pending(
+                "../escape",
+                &Operation::FlakeApp {
+                    name: "x".to_owned(),
+                },
+            );
             let err = store_durable_run(&record).unwrap_err();
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
 
             for bad in ["", "a/b", "..", "run/../other"] {
                 let err = load_durable_run(bad).unwrap_err();
-                assert_eq!(
-                    err.kind(),
-                    io::ErrorKind::InvalidInput,
-                    "load {bad:?}"
-                );
+                assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "load {bad:?}");
                 let err = validate_run_id(bad).unwrap_err();
-                assert_eq!(
-                    err.kind(),
-                    io::ErrorKind::InvalidInput,
-                    "validate {bad:?}"
-                );
+                assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "validate {bad:?}");
             }
         });
     }
@@ -265,6 +349,32 @@ mod tests {
         with_temp_runs_dir(|| {
             let path = durable_runs_dir();
             assert!(path.is_dir() || path.parent().is_some());
+        });
+    }
+
+    #[test]
+    fn supervisor_sync_appends_monotonic_events_jsonl() {
+        with_temp_runs_dir(|| {
+            sync_supervisor_started("run-journal", &["echo".into(), "hi".into()]).unwrap();
+            sync_supervisor_terminal("run-journal", DurableRunStatus::Succeeded, Some(0)).unwrap();
+            sync_supervisor_terminal("run-journal", DurableRunStatus::Failed, Some(2)).unwrap();
+
+            let path = durable_events_path(&durable_runs_dir(), "run-journal");
+            let text = fs::read_to_string(path).unwrap();
+            let lines: Vec<DurableRunJournalLine> = text
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(lines.len(), 3);
+            assert_eq!(lines[0].kind, "supervisor_started");
+            assert_eq!(lines[0].sequence, 1);
+            assert_eq!(lines[1].kind, "supervisor_terminal");
+            assert_eq!(lines[1].sequence, 2);
+            assert_eq!(lines[2].sequence, 3);
+            assert!(lines[1].sequence < lines[2].sequence);
+
+            let record = load_durable_run("run-journal").unwrap();
+            assert_eq!(record.event_sequence, 3);
         });
     }
 }

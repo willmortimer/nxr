@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn process_and_adapter_round_trip_in_operation_ir_envelope() {
-        use crate::operation_ir::{OperationIrEnvelope, OPERATION_IR_SCHEMA_VERSION};
+        use crate::operation_ir::{OPERATION_IR_SCHEMA_VERSION, OperationIrEnvelope};
 
         let operation = Operation::Process {
             app: "api".to_owned(),

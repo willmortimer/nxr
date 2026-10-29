@@ -179,7 +179,13 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
         }
         store(dir, &record)?;
         let command_for_durable = record.command.clone();
-        let _ = durable_run::sync_supervisor_started(&id, &command_for_durable);
+        durable_run::sync_supervisor_started(&id, &command_for_durable).map_err(|err| {
+            let _ = stop_group(pid);
+            let _ = fs::remove_file(dir.join(format!("{id}.json")));
+            let _ = fs::remove_file(&log_path);
+            durable_run::remove_durable_run_artifacts(&id);
+            format!("durable run sync: {err}")
+        })?;
         let wait_dir = dir.to_path_buf();
         let wait_id = id.clone();
         thread::spawn(move || {
@@ -203,7 +209,7 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
                 } else {
                     DurableRunStatus::Failed
                 };
-                let _ = durable_run::sync_supervisor_terminal(
+                let _ = durable_run::sync_supervisor_terminal_with_reconcile(
                     &wait_id,
                     durable_status,
                     stored.exit_code,
@@ -289,7 +295,11 @@ pub fn cancel(dir: &Path, id: &str, remote_confirmed: bool) -> Result<Value, Str
             record.status = "cancelled".into();
             push_event(&mut record, "cancelled");
             store(dir, &record)?;
-            let _ = durable_run::sync_supervisor_terminal(id, DurableRunStatus::Cancelled, None);
+            let _ = durable_run::sync_supervisor_terminal_with_reconcile(
+                id,
+                DurableRunStatus::Cancelled,
+                None,
+            );
         }
         serde_json::to_value(record).map_err(|err| err.to_string())
     })
@@ -752,5 +762,40 @@ mod tests {
             }),
         )
         .expect("budget must return after reconcile marks the orphan lost");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn start_fails_when_durable_run_sync_cannot_persist() {
+        let blocking = tempfile::NamedTempFile::new().unwrap();
+        crate::durable_run::set_test_durable_runs_dir(Some(blocking.path().to_path_buf()));
+        let root = tempfile::tempdir().unwrap();
+        let error = start(
+            root.path(),
+            &json!({
+                "label": "local",
+                "command": ["/bin/sh", "-c", "exit 0"],
+                "cpu": 1,
+                "memory_mib": 16,
+                "cpu_budget": 2,
+                "memory_budget": 32
+            }),
+        )
+        .unwrap_err();
+        crate::durable_run::set_test_durable_runs_dir(None);
+        assert!(
+            error.contains("durable run sync"),
+            "expected fail-loud durable sync, got: {error}"
+        );
+        let listed = list(root.path()).unwrap();
+        assert!(
+            listed.as_array().unwrap().is_empty()
+                || listed
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|entry| entry["status"] != "running"),
+            "start failure must not leave a running reservation"
+        );
     }
 }

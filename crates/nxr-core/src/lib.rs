@@ -44,8 +44,8 @@ pub use cas::{
 };
 pub use config::{
     BindingProvider, ConfigError, NXR_CONFIG_DIR_ENV, NXR_STATE_DIR_ENV, SecretBinding,
-    SecretBindings, TrustedProject, UserConfig, config_dir, load_secret_bindings,
-    load_user_config, state_dir,
+    SecretBindings, TrustedProject, UserConfig, config_dir, load_secret_bindings, load_user_config,
+    state_dir,
 };
 pub use daemon::{
     DAEMON_ENV, DAEMON_MAX_CACHE_ENTRIES_PER_MAP, DAEMON_PROTOCOL_VERSION, DAEMON_ROLE,
@@ -73,6 +73,10 @@ pub use disk_cache_status::{
     TimedDiskCacheSummary, is_valid_timed_json_entry_stem, prune_timed_json_cache,
     remove_timed_json_entry, summarize_timed_json_cache,
 };
+pub use durable_run::{
+    DURABLE_RUN_SCHEMA_VERSION, DurableRunRecord, DurableRunStatus, durable_runs_dir,
+    hub_inspector_operation_preview, load_durable_run, store_durable_run, validate_run_id,
+};
 pub use ecosystem::{
     AdapterError, ECOSYSTEM_GRAPH_SCHEMA_VERSION, EcosystemGraph, EcosystemGraphAdapter,
     EdgeConfidence, EdgeKind, GraphEdge, GraphNode, StaticJsonAdapter,
@@ -99,14 +103,7 @@ pub use merkle_index::{
 };
 pub use model::{App, AppList, FlakeOutput, FlakeRef, ListApp, OutputList};
 pub use operation::Operation;
-pub use operation_ir::{OperationIrEnvelope, OPERATION_IR_SCHEMA_VERSION};
-pub use durable_run::{
-    DurableRunRecord, DurableRunStatus, DURABLE_RUN_SCHEMA_VERSION, durable_runs_dir,
-    hub_inspector_operation_preview, load_durable_run, store_durable_run, validate_run_id,
-};
-pub use worker_schedule::{
-    LocalWorkerRegistry, WorkerDescriptor, WorkerRequirements, WorkerScheduler,
-};
+pub use operation_ir::{OPERATION_IR_SCHEMA_VERSION, OperationIrEnvelope};
 pub use osc52::{
     FailureLine, OSC52_ENV, emit_failure_clipboard, format_failure_summary,
     maybe_emit_failure_clipboard, osc52_clipboard_sequence, osc52_enabled,
@@ -156,6 +153,9 @@ pub use store_exe_cache::{
 pub use trust::{
     NXR_TRUST_PROJECT_ENV, TrustDatabase, TrustError, canonical_project_key, enforce_project_trust,
     project_trust_key, trust_project_env_enabled,
+};
+pub use worker_schedule::{
+    LocalWorkerRegistry, WorkerDescriptor, WorkerRequirements, WorkerScheduler,
 };
 
 #[cfg(test)]

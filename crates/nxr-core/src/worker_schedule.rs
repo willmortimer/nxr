@@ -57,6 +57,18 @@ pub trait WorkerScheduler {
     ///
     /// Returns an error when the worker is unknown or already reserved.
     fn reserve_worker(&mut self, worker_id: &str, now: u64, ttl_secs: u64) -> Result<(), String>;
+
+    /// Select one eligible worker and reserve it until `now + ttl_secs` in one step.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reservation cannot be recorded.
+    fn select_and_reserve(
+        &mut self,
+        requirements: &WorkerRequirements,
+        now: u64,
+        ttl_secs: u64,
+    ) -> Result<Option<WorkerDescriptor>, String>;
 }
 
 /// In-memory registry used in tests and future `worker.register` wiring.
@@ -71,6 +83,15 @@ impl LocalWorkerRegistry {
         self.reservations
             .get(worker_id)
             .is_some_and(|reservation| reservation.expires_at > now)
+    }
+
+    fn worker_satisfies(worker: &WorkerDescriptor, requirements: &WorkerRequirements) -> bool {
+        requirements
+            .tags
+            .iter()
+            .all(|tag| worker.tags.iter().any(|t| t == tag))
+            && worker.cpu >= requirements.cpu
+            && worker.memory_mib >= requirements.memory_mib
     }
 
     fn prune_expired(&mut self, now: u64) {
@@ -101,12 +122,7 @@ impl WorkerScheduler for LocalWorkerRegistry {
         let now = unix_now_secs();
         self.workers.iter().find(|worker| {
             !self.reservation_active(&worker.id, now)
-                && requirements
-                    .tags
-                    .iter()
-                    .all(|tag| worker.tags.iter().any(|t| t == tag))
-                && worker.cpu >= requirements.cpu
-                && worker.memory_mib >= requirements.memory_mib
+                && Self::worker_satisfies(worker, requirements)
         })
     }
 
@@ -125,6 +141,32 @@ impl WorkerScheduler for LocalWorkerRegistry {
             },
         );
         Ok(())
+    }
+
+    fn select_and_reserve(
+        &mut self,
+        requirements: &WorkerRequirements,
+        now: u64,
+        ttl_secs: u64,
+    ) -> Result<Option<WorkerDescriptor>, String> {
+        self.prune_expired(now);
+        let picked_id = self
+            .workers
+            .iter()
+            .find(|worker| {
+                !self.reservation_active(&worker.id, now)
+                    && Self::worker_satisfies(worker, requirements)
+            })
+            .map(|worker| worker.id.clone());
+        let Some(worker_id) = picked_id else {
+            return Ok(None);
+        };
+        self.reserve_worker(&worker_id, now, ttl_secs)?;
+        Ok(self
+            .workers
+            .iter()
+            .find(|worker| worker.id == worker_id)
+            .cloned())
     }
 }
 
@@ -220,5 +262,49 @@ mod tests {
         registry
             .reserve_worker("linux-b", 200, 10)
             .expect("prior reservation expired");
+    }
+
+    #[test]
+    fn select_and_reserve_prevents_double_overcommit() {
+        let mut registry = LocalWorkerRegistry::default();
+        sample_workers(&mut registry);
+        let requirements = WorkerRequirements {
+            tags: vec!["winbuild".to_owned()],
+            cpu: 2,
+            memory_mib: 2048,
+        };
+        let now = 5_000_u64;
+        let first = registry
+            .select_and_reserve(&requirements, now, 120)
+            .unwrap()
+            .expect("first reservation");
+        assert_eq!(first.id, "linux-a");
+        let second = registry
+            .select_and_reserve(&requirements, now, 120)
+            .unwrap();
+        assert!(
+            second.is_none(),
+            "second select must not overcommit linux-a"
+        );
+    }
+
+    #[test]
+    fn split_select_then_reserve_allows_overcommit_race() {
+        let mut registry = LocalWorkerRegistry::default();
+        sample_workers(&mut registry);
+        let requirements = WorkerRequirements {
+            tags: vec!["linux".to_owned()],
+            cpu: 1,
+            memory_mib: 1024,
+        };
+        let now = 9_000_u64;
+        let picked = registry.select_worker(&requirements).unwrap().id.clone();
+        let also = registry.select_worker(&requirements).unwrap().id.clone();
+        assert_eq!(picked, also, "non-atomic path may pick the same worker");
+        registry.reserve_worker(&picked, now, 30).unwrap();
+        let err = registry
+            .reserve_worker(&also, now, 30)
+            .expect_err("second reserve must fail");
+        assert!(err.contains("already reserved"), "{err}");
     }
 }
