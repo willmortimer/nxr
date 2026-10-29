@@ -66,6 +66,9 @@ pub enum ConfigError {
 /// Environment variable overriding the nxr config directory (tests).
 pub const NXR_CONFIG_DIR_ENV: &str = "NXR_CONFIG_DIR";
 
+/// Environment variable overriding the nxr state directory (tests).
+pub const NXR_STATE_DIR_ENV: &str = "NXR_STATE_DIR";
+
 /// Resolve the nxr config directory (`$XDG_CONFIG_HOME/nxr` or platform default).
 #[must_use]
 pub fn config_dir() -> PathBuf {
@@ -77,6 +80,27 @@ pub fn config_dir() -> PathBuf {
     directories::ProjectDirs::from("", "", "nxr").map_or_else(
         || PathBuf::from(".config/nxr"),
         |dirs| dirs.config_dir().to_path_buf(),
+    )
+}
+
+/// Resolve the nxr state directory (`$XDG_STATE_HOME/nxr` or platform default).
+#[must_use]
+pub fn state_dir() -> PathBuf {
+    if let Ok(override_dir) = std::env::var(NXR_STATE_DIR_ENV)
+        && !override_dir.is_empty()
+    {
+        return PathBuf::from(override_dir);
+    }
+    if let Some(state_home) = std::env::var_os("XDG_STATE_HOME").map(PathBuf::from) {
+        return state_home.join("nxr");
+    }
+    directories::ProjectDirs::from("", "", "nxr").map_or_else(
+        || PathBuf::from(".local/state/nxr"),
+        |dirs| {
+            dirs.state_dir()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from(".local/state/nxr"))
+        },
     )
 }
 

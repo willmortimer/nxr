@@ -43,8 +43,9 @@ pub use cas::{
     workspace_cas_dir, workspace_cas_enabled, workspace_cas_status,
 };
 pub use config::{
-    BindingProvider, ConfigError, NXR_CONFIG_DIR_ENV, SecretBinding, SecretBindings,
-    TrustedProject, UserConfig, config_dir, load_secret_bindings, load_user_config,
+    BindingProvider, ConfigError, NXR_CONFIG_DIR_ENV, NXR_STATE_DIR_ENV, SecretBinding,
+    SecretBindings, TrustedProject, UserConfig, config_dir, load_secret_bindings,
+    load_user_config, state_dir,
 };
 pub use daemon::{
     DAEMON_ENV, DAEMON_MAX_CACHE_ENTRIES_PER_MAP, DAEMON_PROTOCOL_VERSION, DAEMON_ROLE,
@@ -101,7 +102,7 @@ pub use operation::Operation;
 pub use operation_ir::{OperationIrEnvelope, OPERATION_IR_SCHEMA_VERSION};
 pub use durable_run::{
     DurableRunRecord, DurableRunStatus, DURABLE_RUN_SCHEMA_VERSION, durable_runs_dir,
-    hub_inspector_operation_preview, load_durable_run, store_durable_run,
+    hub_inspector_operation_preview, load_durable_run, store_durable_run, validate_run_id,
 };
 pub use worker_schedule::{
     LocalWorkerRegistry, WorkerDescriptor, WorkerRequirements, WorkerScheduler,

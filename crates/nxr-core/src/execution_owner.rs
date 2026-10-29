@@ -14,6 +14,8 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::durable_run::{self, DurableRunStatus};
+
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
@@ -176,6 +178,8 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
             push_event(&mut record, &format!("compiler-cache {cache_mode}"));
         }
         store(dir, &record)?;
+        let command_for_durable = record.command.clone();
+        let _ = durable_run::sync_supervisor_started(&id, &command_for_durable);
         let wait_dir = dir.to_path_buf();
         let wait_id = id.clone();
         thread::spawn(move || {
@@ -193,7 +197,18 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
                     stored.status = "exited".into();
                     push_event(&mut stored, "exited");
                 }
-                store(&wait_dir, &stored)
+                store(&wait_dir, &stored)?;
+                let durable_status = if code == 0 {
+                    DurableRunStatus::Succeeded
+                } else {
+                    DurableRunStatus::Failed
+                };
+                let _ = durable_run::sync_supervisor_terminal(
+                    &wait_id,
+                    durable_status,
+                    stored.exit_code,
+                );
+                Ok(())
             });
         });
         Ok(json!({ "id": id }))
@@ -274,6 +289,7 @@ pub fn cancel(dir: &Path, id: &str, remote_confirmed: bool) -> Result<Value, Str
             record.status = "cancelled".into();
             push_event(&mut record, "cancelled");
             store(dir, &record)?;
+            let _ = durable_run::sync_supervisor_terminal(id, DurableRunStatus::Cancelled, None);
         }
         serde_json::to_value(record).map_err(|err| err.to_string())
     })
@@ -537,6 +553,24 @@ fn stop_group(pid: u32) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    struct IsolatedDurableRuns {
+        _dir: tempfile::TempDir,
+    }
+
+    impl IsolatedDurableRuns {
+        fn install() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            crate::durable_run::set_test_durable_runs_dir(Some(dir.path().to_path_buf()));
+            Self { _dir: dir }
+        }
+    }
+
+    impl Drop for IsolatedDurableRuns {
+        fn drop(&mut self) {
+            crate::durable_run::set_test_durable_runs_dir(None);
+        }
+    }
+
     fn params(command: Vec<String>, cpu_budget: u32) -> Value {
         json!({
             "label": "local",
@@ -553,6 +587,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_finished_command_keeps_its_exit_code_and_log_after_start_returns() {
+        let _durable = IsolatedDurableRuns::install();
         let root = tempfile::tempdir().unwrap();
         let started = start(
             root.path(),
@@ -605,6 +640,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn one_lock_refuses_the_second_start_and_cancel_clears_the_group() {
+        let _durable = IsolatedDurableRuns::install();
         let root = tempfile::tempdir().unwrap();
         let started = start(
             root.path(),
@@ -678,6 +714,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_stale_running_record_is_marked_lost_and_frees_the_budget() {
+        let _durable = IsolatedDurableRuns::install();
         let root = tempfile::tempdir().unwrap();
         let blocked = start(
             root.path(),

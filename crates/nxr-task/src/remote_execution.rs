@@ -123,7 +123,12 @@ impl ExecutionTransport for InProcessExecutionClient {
                     .get("attempt_id")
                     .and_then(Value::as_str)
                     .ok_or_else(|| "status needs attempt_id".to_owned())?;
-                Ok(json!({ "attempt_id": attempt_id, "phase": "running" }))
+                let phase = if state.cancelled.iter().any(|id| id == attempt_id) {
+                    "cancelled"
+                } else {
+                    "running"
+                };
+                Ok(json!({ "attempt_id": attempt_id, "phase": phase }))
             }
             "cancel" => {
                 let attempt_id = body
@@ -203,5 +208,13 @@ mod tests {
         let transport = InProcessExecutionClient::new();
         cancel_execution(&transport, "att_remote_7").expect("cancel");
         assert!(transport.cancel_seen("att_remote_7"));
+    }
+
+    #[test]
+    fn in_process_status_reports_cancelled_after_cancel() {
+        let transport = InProcessExecutionClient::new();
+        cancel_execution(&transport, "att_remote_7").expect("cancel");
+        let status = execution_status(&transport, "att_remote_7").expect("status");
+        assert_eq!(status["phase"], "cancelled");
     }
 }

@@ -20,7 +20,7 @@ Assignments or PhysicalHost inventory.
 ## Intended inspector flow (later)
 
 1. Operator starts a durable run (`nxr runs` family — not shipped yet).
-2. NXR persists `DurableRunRecord` under the user config `runs/` directory.
+2. NXR persists `DurableRunRecord` under the user state dir (`$XDG_STATE_HOME/nxr/runs/`).
 3. Hub inspector (or a CLI bridge) reads the preview JSON and links to chunked
    logs/events when event protocol v2 lands ([V4_EXECUTION_PROTOCOL.md](V4_EXECUTION_PROTOCOL.md)).
 4. Cancel/rerun continue to use execution transport + supervisor paths already

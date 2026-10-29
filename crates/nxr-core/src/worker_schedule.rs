@@ -4,6 +4,8 @@
 //! mutable or interactive leaves ([`Operation::Remote`]) without storing NixPlane
 //! fleet Assignments ([ADR-0174](../../../docs/adr/0174-nixplane-fleet-state-boundary.md)).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Capability tags advertised by one worker enrollment.
@@ -29,6 +31,12 @@ pub struct WorkerRequirements {
     pub memory_mib: u64,
 }
 
+/// One worker held for a single in-flight remote attempt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorkerReservation {
+    expires_at: u64,
+}
+
 /// Minimal scheduling surface for a future coordinator role.
 pub trait WorkerScheduler {
     /// Register or replace one worker advertisement.
@@ -39,13 +47,41 @@ pub trait WorkerScheduler {
     fn register_worker(&mut self, worker: WorkerDescriptor) -> Result<(), String>;
 
     /// Pick a worker that satisfies `requirements`, if any.
+    ///
+    /// Workers with a non-expired reservation are skipped.
     fn select_worker(&self, requirements: &WorkerRequirements) -> Option<&WorkerDescriptor>;
+
+    /// Hold `worker_id` until `now + ttl_secs`. At most one active reservation per worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker is unknown or already reserved.
+    fn reserve_worker(&mut self, worker_id: &str, now: u64, ttl_secs: u64) -> Result<(), String>;
 }
 
 /// In-memory registry used in tests and future `worker.register` wiring.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct LocalWorkerRegistry {
     workers: Vec<WorkerDescriptor>,
+    reservations: BTreeMap<String, WorkerReservation>,
+}
+
+impl LocalWorkerRegistry {
+    fn reservation_active(&self, worker_id: &str, now: u64) -> bool {
+        self.reservations
+            .get(worker_id)
+            .is_some_and(|reservation| reservation.expires_at > now)
+    }
+
+    fn prune_expired(&mut self, now: u64) {
+        self.reservations
+            .retain(|_, reservation| reservation.expires_at > now);
+    }
+
+    /// Release a reservation early (for example after the attempt finishes).
+    pub fn release_worker(&mut self, worker_id: &str) {
+        self.reservations.remove(worker_id);
+    }
 }
 
 impl WorkerScheduler for LocalWorkerRegistry {
@@ -62,21 +98,48 @@ impl WorkerScheduler for LocalWorkerRegistry {
     }
 
     fn select_worker(&self, requirements: &WorkerRequirements) -> Option<&WorkerDescriptor> {
+        let now = unix_now_secs();
         self.workers.iter().find(|worker| {
-            requirements.tags.iter().all(|tag| worker.tags.iter().any(|t| t == tag))
+            !self.reservation_active(&worker.id, now)
+                && requirements
+                    .tags
+                    .iter()
+                    .all(|tag| worker.tags.iter().any(|t| t == tag))
                 && worker.cpu >= requirements.cpu
                 && worker.memory_mib >= requirements.memory_mib
         })
     }
+
+    fn reserve_worker(&mut self, worker_id: &str, now: u64, ttl_secs: u64) -> Result<(), String> {
+        self.prune_expired(now);
+        if !self.workers.iter().any(|worker| worker.id == worker_id) {
+            return Err(format!("unknown worker `{worker_id}`"));
+        }
+        if self.reservation_active(worker_id, now) {
+            return Err(format!("worker `{worker_id}` is already reserved"));
+        }
+        self.reservations.insert(
+            worker_id.to_owned(),
+            WorkerReservation {
+                expires_at: now.saturating_add(ttl_secs),
+            },
+        );
+        Ok(())
+    }
+}
+
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn registry_selects_by_tags_and_capacity() {
-        let mut registry = LocalWorkerRegistry::default();
+    fn sample_workers(registry: &mut LocalWorkerRegistry) {
         registry
             .register_worker(WorkerDescriptor {
                 id: "linux-a".to_owned(),
@@ -93,6 +156,12 @@ mod tests {
                 memory_mib: 4096,
             })
             .unwrap();
+    }
+
+    #[test]
+    fn registry_selects_by_tags_and_capacity() {
+        let mut registry = LocalWorkerRegistry::default();
+        sample_workers(&mut registry);
         let requirements = WorkerRequirements {
             tags: vec!["winbuild".to_owned()],
             cpu: 2,
@@ -114,5 +183,42 @@ mod tests {
             })
             .unwrap_err();
         assert!(error.contains("empty"), "{error}");
+    }
+
+    #[test]
+    fn reserve_refuses_overcommit_on_one_worker() {
+        let mut registry = LocalWorkerRegistry::default();
+        sample_workers(&mut registry);
+        let now = 1_000_u64;
+        registry.reserve_worker("linux-a", now, 60).expect("first");
+        let err = registry
+            .reserve_worker("linux-a", now, 60)
+            .expect_err("second");
+        assert!(err.contains("already reserved"), "{err}");
+    }
+
+    #[test]
+    fn select_skips_reserved_worker() {
+        let mut registry = LocalWorkerRegistry::default();
+        sample_workers(&mut registry);
+        let requirements = WorkerRequirements {
+            tags: vec!["winbuild".to_owned()],
+            cpu: 2,
+            memory_mib: 2048,
+        };
+        let now = unix_now_secs();
+        registry.reserve_worker("linux-a", now, 3600).unwrap();
+        let picked = registry.select_worker(&requirements);
+        assert!(picked.is_none(), "only matching worker was reserved");
+    }
+
+    #[test]
+    fn expired_reservation_allows_re_reserve() {
+        let mut registry = LocalWorkerRegistry::default();
+        sample_workers(&mut registry);
+        registry.reserve_worker("linux-b", 100, 10).unwrap();
+        registry
+            .reserve_worker("linux-b", 200, 10)
+            .expect("prior reservation expired");
     }
 }
