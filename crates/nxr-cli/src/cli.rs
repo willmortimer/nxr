@@ -262,6 +262,9 @@ pub enum SessionSubcommand {
         /// Host name recorded for a remote submit. The command is still local.
         #[arg(long = "remote", value_name = "HOST")]
         remote: Option<String>,
+        /// Attempt id stored for a remote submit. Cancel calls the execution transport with this id.
+        #[arg(long = "attempt", value_name = "ID")]
+        attempt_id: Option<String>,
         /// CPU tokens this run reserves on this machine.
         #[arg(long = "cpu", default_value_t = 0)]
         cpu: u32,

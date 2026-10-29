@@ -1,48 +1,16 @@
-//! Local run records. A start launches the given command, or records a remote
-//! submit that is that same command. These records are not fleet Profile
-//! Assignments.
+//! `nxr session` submits a run to the per-user supervisor.
+//!
+//! The CLI is not the parent of the child. `nix run` does not use this path
+//! and still works when the supervisor is absent.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use nxr_core::{daemon_socket_path, try_connect};
+use nxr_task::remote_execution::{ExecutionTransport, cancel_execution};
 
 use crate::runner_output::RunnerOutput;
-
-#[cfg(unix)]
-use nix::sys::signal::{Signal, kill, killpg};
-#[cfg(unix)]
-use nix::unistd::Pid;
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct SessionRecord {
-    id: String,
-    label: String,
-    status: String,
-    #[serde(default)]
-    kind: String,
-    #[serde(default)]
-    command: Vec<String>,
-    #[serde(default)]
-    remote: Option<String>,
-    #[serde(default)]
-    pid: Option<u32>,
-    #[serde(default)]
-    cpu: u32,
-    #[serde(default)]
-    memory_mib: u64,
-    events: Vec<SessionEvent>,
-    artifacts: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct SessionEvent {
-    cursor: u64,
-    message: String,
-}
 
 /// What `nxr session start` should run.
 #[derive(Clone, Debug)]
@@ -50,6 +18,7 @@ pub struct SessionStart {
     pub label: String,
     pub command: Vec<String>,
     pub remote: Option<String>,
+    pub attempt_id: Option<String>,
     pub cpu: u32,
     pub memory_mib: u64,
 }
@@ -78,164 +47,57 @@ impl LocalBudget {
     }
 }
 
-fn session_dir() -> Result<PathBuf, String> {
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("state"))
-        })
-        .ok_or_else(|| "session state directory is not set".to_owned())?;
-    let dir = base.join("nxr").join("sessions");
-    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
-    Ok(dir)
-}
-
-fn session_path(dir: &Path, id: &str) -> Result<PathBuf, String> {
-    if id.trim().is_empty() || id.contains('/') || id.contains("..") {
-        return Err("run id is not a session name".into());
-    }
-    Ok(dir.join(format!("{id}.json")))
-}
-
-fn load(dir: &Path, id: &str) -> Result<SessionRecord, String> {
-    let text =
-        fs::read_to_string(session_path(dir, id)?).map_err(|err| format!("session {id}: {err}"))?;
-    serde_json::from_str(&text).map_err(|err| format!("session json: {err}"))
-}
-
-fn store(dir: &Path, record: &SessionRecord) -> Result<(), String> {
-    let path = session_path(dir, &record.id)?;
-    let body = serde_json::to_string_pretty(record).map_err(|err| err.to_string())?;
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, body).map_err(|err| err.to_string())?;
-    fs::rename(&temporary, &path).map_err(|err| err.to_string())
-}
-
-fn records(dir: &Path) -> Result<Vec<SessionRecord>, String> {
-    let mut loaded = Vec::new();
-    if !dir.is_dir() {
-        return Ok(loaded);
-    }
-    let mut names = Vec::new();
-    for entry in fs::read_dir(dir).map_err(|err| err.to_string())? {
-        let entry = entry.map_err(|err| err.to_string())?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.ends_with(".json") {
-            names.push(name);
-        }
-    }
-    names.sort();
-    for name in names {
-        let id = name.trim_end_matches(".json");
-        loaded.push(load(dir, id)?);
-    }
-    Ok(loaded)
-}
-
-fn pid_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        kill(Pid::from_raw(pid as i32), None).is_ok()
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        false
-    }
-}
-
-fn refresh(record: &mut SessionRecord) {
-    let Some(pid) = record.pid else {
-        return;
-    };
-    if record.status != "running" && record.status != "submitted" {
-        return;
-    }
-    if !pid_alive(pid) {
-        record.status = "exited".into();
-        push_event(record, "exited");
-        record.pid = None;
-    }
-}
-
-fn push_event(record: &mut SessionRecord, message: &str) {
-    let cursor = record.events.last().map(|event| event.cursor).unwrap_or(0) + 1;
-    record.events.push(SessionEvent {
-        cursor,
-        message: message.to_owned(),
-    });
-}
-
-fn reserved(dir: &Path) -> Result<(u32, u64), String> {
-    let mut cpu = 0_u32;
-    let mut memory = 0_u64;
-    for mut record in records(dir)? {
-        refresh(&mut record);
-        if record.status == "running" || record.status == "submitted" {
-            cpu = cpu.saturating_add(record.cpu);
-            memory = memory.saturating_add(record.memory_mib);
-            store(dir, &record)?;
-        } else if record.status == "exited" {
-            store(dir, &record)?;
-        }
-    }
-    Ok((cpu, memory))
-}
-
-fn spawn_command(
-    command: &[String],
-    cache_env: &std::collections::BTreeMap<String, String>,
-) -> Result<std::process::Child, String> {
-    let Some(program) = command.first() else {
-        return Err("session start needs the command to run".into());
-    };
-    let mut child = Command::new(program);
-    child.args(&command[1..]);
-    child.stdin(Stdio::null());
-    child.stdout(Stdio::null());
-    child.stderr(Stdio::null());
-    nxr_task::compiler_cache::apply_compiler_cache(
-        &mut child,
-        cache_env,
-        &std::collections::BTreeMap::new(),
-    );
-    #[cfg(unix)]
-    {
-        child.process_group(0);
-    }
-    child
-        .spawn()
-        .map_err(|err| format!("spawn {program}: {err}"))
-}
-
-fn watch_exit(dir: PathBuf, id: String, mut child: std::process::Child) {
-    std::thread::spawn(move || {
-        let _ = child.wait();
-        let Ok(mut record) = load(&dir, &id) else {
-            return;
-        };
-        if record.status == "running" || record.status == "submitted" {
-            record.status = "exited".into();
-            record.pid = None;
-            push_event(&mut record, "exited");
-            let _ = store(&dir, &record);
-        }
-    });
-}
-
-/// Launch `request` under `budget` and store the run under the session directory.
+/// Submit `request` to the supervisor on `socket`.
 ///
 /// # Errors
 ///
-/// Returns an error when the command is missing, the local budget would be
-/// exceeded, or the process cannot be spawned.
+/// Returns an error when the supervisor is down, the command is missing, or
+/// the budget refuses the run. This function does not spawn the child.
+pub fn start_on(
+    socket: &Path,
+    request: &SessionStart,
+    budget: LocalBudget,
+    cache_env: &std::collections::BTreeMap<String, String>,
+    runner: RunnerOutput,
+) -> Result<(), String> {
+    let mode = nxr_task::compiler_cache::compiler_cache_mode(cache_env);
+    let assignments: std::collections::BTreeMap<String, String> =
+        nxr_task::compiler_cache::compiler_cache_assignments(cache_env)
+            .into_iter()
+            .collect();
+    let value = call(
+        socket,
+        "run.start",
+        json!({
+            "label": request.label,
+            "command": request.command,
+            "remote": request.remote,
+            "attempt_id": request.attempt_id,
+            "cpu": request.cpu,
+            "memory_mib": request.memory_mib,
+            "cpu_budget": budget.cpu,
+            "memory_budget": budget.memory_mib,
+            "cache_mode": mode,
+            "cache_env": assignments,
+        }),
+    )?;
+    let id = value["id"].as_str().unwrap_or("session");
+    runner.info(id).map_err(|err| err.to_string())
+}
+
+/// Submit using the default supervisor socket.
+///
+/// # Errors
+///
+/// Returns an error when the supervisor is down or the run is refused.
 pub fn start(
     request: &SessionStart,
     budget: LocalBudget,
     runner: RunnerOutput,
 ) -> Result<(), String> {
-    start_at(
-        &session_dir()?,
+    let socket = daemon_socket_path();
+    start_on(
+        &socket,
         request,
         budget,
         &nxr_task::compiler_cache::compiler_cache_from_process(),
@@ -243,223 +105,171 @@ pub fn start(
     )
 }
 
-pub(crate) fn start_at(
-    dir: &Path,
-    request: &SessionStart,
-    budget: LocalBudget,
-    cache_env: &std::collections::BTreeMap<String, String>,
-    runner: RunnerOutput,
-) -> Result<(), String> {
-    fs::create_dir_all(dir).map_err(|err| err.to_string())?;
-    if request.command.is_empty() {
-        return Err("session start needs the command to run".into());
-    }
-    let id = format!(
-        "run-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0)
-    );
-    let (used_cpu, used_memory) = reserved(dir)?;
-    if used_cpu.saturating_add(request.cpu) > budget.cpu
-        || used_memory.saturating_add(request.memory_mib) > budget.memory_mib
-    {
-        let mut refused = SessionRecord {
-            id: id.clone(),
-            label: request.label.clone(),
-            status: "refused".into(),
-            kind: if request.remote.is_some() {
-                "remote".into()
-            } else {
-                "local".into()
-            },
-            command: request.command.clone(),
-            remote: request.remote.clone(),
-            pid: None,
-            cpu: request.cpu,
-            memory_mib: request.memory_mib,
-            events: Vec::new(),
-            artifacts: Vec::new(),
-        };
-        push_event(&mut refused, "refused");
-        store(dir, &refused)?;
-        runner.info(&id).map_err(|err| err.to_string())?;
-        return Err("local budget exceeded".into());
-    }
-    let child = spawn_command(&request.command, cache_env)?;
-    let pid = child.id();
-    let kind = if request.remote.is_some() {
-        "remote"
-    } else {
-        "local"
-    };
-    let mut record = SessionRecord {
-        id: id.clone(),
-        label: request.label.clone(),
-        status: "running".into(),
-        kind: kind.into(),
-        command: request.command.clone(),
-        remote: request.remote.clone(),
-        pid: Some(pid),
-        cpu: request.cpu,
-        memory_mib: request.memory_mib,
-        events: Vec::new(),
-        artifacts: Vec::new(),
-    };
-    let started = if request.remote.is_some() {
-        "submitted"
-    } else {
-        "started"
-    };
-    push_event(&mut record, started);
-    push_event(
-        &mut record,
-        &format!(
-            "compiler-cache {}",
-            nxr_task::compiler_cache::compiler_cache_mode(cache_env)
-        ),
-    );
-    store(dir, &record)?;
-    watch_exit(dir.to_path_buf(), id.clone(), child);
-    runner.info(&id).map_err(|err| err.to_string())
-}
-
-/// Print one line for each stored run.
+/// Print stored runs.
 ///
 /// # Errors
 ///
-/// Returns an error when a session file cannot be read.
+/// Returns an error when the supervisor is down.
 pub fn list(runner: RunnerOutput) -> Result<(), String> {
-    list_at(&session_dir()?, runner)
+    let socket = daemon_socket_path();
+    let value = call(&socket, "run.list", json!({}))?;
+    runner
+        .info(serde_json::to_string(&value).map_err(|err| err.to_string())?)
+        .map_err(|err| err.to_string())
 }
 
-pub(crate) fn list_at(dir: &Path, runner: RunnerOutput) -> Result<(), String> {
-    let mut loaded = records(dir)?;
-    for record in &mut loaded {
-        refresh(record);
-        store(dir, record)?;
-        runner
-            .info(format!("{} {} {}", record.id, record.status, record.label))
-            .map_err(|err| err.to_string())?;
-    }
-    Ok(())
-}
-
-/// Print events whose cursor is greater than `after`.
+/// Print events after `after`.
 ///
 /// # Errors
 ///
-/// Returns an error when the run cannot be read.
+/// Returns an error when the supervisor is down or the run is missing.
 pub fn events(id: &str, after: u64, runner: RunnerOutput) -> Result<(), String> {
-    events_at(&session_dir()?, id, after, runner)
+    let socket = daemon_socket_path();
+    let value = call(&socket, "run.events", json!({ "id": id, "after": after }))?;
+    runner
+        .info(serde_json::to_string(&value).map_err(|err| err.to_string())?)
+        .map_err(|err| err.to_string())
 }
 
-pub(crate) fn events_at(
-    dir: &Path,
+/// Print one run.
+///
+/// # Errors
+///
+/// Returns an error when the supervisor is down or the run is missing.
+pub fn inspect(id: &str, runner: RunnerOutput) -> Result<(), String> {
+    let socket = daemon_socket_path();
+    let value = call(&socket, "run.inspect", json!({ "id": id }))?;
+    runner
+        .info(serde_json::to_string(&value).map_err(|err| err.to_string())?)
+        .map_err(|err| err.to_string())
+}
+
+/// Cancel a run. A stored attempt id is cancelled on `transport` before the
+/// local process group is signalled.
+///
+/// # Errors
+///
+/// Returns an error when the supervisor is down, the remote cancel fails, or
+/// the local stop fails. Stopping only the local client is not success for a
+/// remote submit.
+pub fn cancel_with<T: ExecutionTransport>(
+    socket: &Path,
     id: &str,
-    after: u64,
+    transport: Option<&T>,
     runner: RunnerOutput,
 ) -> Result<(), String> {
-    let mut record = load(dir, id)?;
-    refresh(&mut record);
-    store(dir, &record)?;
-    for event in record.events.iter().filter(|event| event.cursor > after) {
-        runner
-            .info(format!("{} {}", event.cursor, event.message))
-            .map_err(|err| err.to_string())?;
-    }
-    Ok(())
-}
-
-/// Print the run status, declared resources, and artifact references.
-///
-/// # Errors
-///
-/// Returns an error when the run cannot be read.
-pub fn inspect(id: &str, runner: RunnerOutput) -> Result<(), String> {
-    inspect_at(&session_dir()?, id, runner)
-}
-
-pub(crate) fn inspect_at(dir: &Path, id: &str, runner: RunnerOutput) -> Result<(), String> {
-    let mut record = load(dir, id)?;
-    refresh(&mut record);
-    store(dir, &record)?;
+    let record = call(socket, "run.inspect", json!({ "id": id }))?;
+    let confirmed = if let Some(attempt) = record["attempt_id"].as_str() {
+        let transport = transport.ok_or_else(|| {
+            "remote cancel needs an execution transport; killing the local client is not enough"
+                .to_owned()
+        })?;
+        cancel_execution(transport, attempt)?;
+        true
+    } else if record["kind"] == "remote" {
+        return Err("remote run has no stored attempt id".into());
+    } else {
+        false
+    };
+    let value = call(
+        socket,
+        "run.cancel",
+        json!({ "id": id, "remote_confirmed": confirmed }),
+    )?;
     runner
-        .info(format!(
-            "{} {} cpu {} memory {} artifacts {}",
-            record.status,
-            record.label,
-            record.cpu,
-            record.memory_mib,
-            if record.artifacts.is_empty() {
-                "none".into()
-            } else {
-                record.artifacts.join(",")
-            }
-        ))
+        .info(value["status"].as_str().unwrap_or("cancelled"))
         .map_err(|err| err.to_string())
 }
 
-/// Stop the run's process and record `cancelled`.
+/// Cancel using the default socket and `NXR_EXECUTION_URL` when the run has an attempt id.
 ///
 /// # Errors
 ///
-/// Returns an error when the run is not running or the signal cannot be sent.
+/// Returns an error when the supervisor is down or a remote cancel cannot be completed.
 pub fn cancel(id: &str, runner: RunnerOutput) -> Result<(), String> {
-    cancel_at(&session_dir()?, id, runner)
+    let socket = daemon_socket_path();
+    let record = call(&socket, "run.inspect", json!({ "id": id }))?;
+    if record["attempt_id"].as_str().is_some() {
+        let url = std::env::var("NXR_EXECUTION_URL").map_err(|_| {
+            "remote cancel needs NXR_EXECUTION_URL; killing the local client is not enough"
+                .to_owned()
+        })?;
+        let transport = CurlTransport { url };
+        cancel_with(&socket, id, Some(&transport), runner)
+    } else {
+        cancel_with::<CurlTransport>(&socket, id, None, runner)
+    }
 }
 
-pub(crate) fn cancel_at(dir: &Path, id: &str, runner: RunnerOutput) -> Result<(), String> {
-    let mut record = load(dir, id)?;
-    refresh(&mut record);
-    if record.status != "running" && record.status != "submitted" {
-        store(dir, &record)?;
-        return Err(format!("run {id} is {}", record.status));
-    }
-    if let Some(pid) = record.pid {
-        stop_pid(pid)?;
-    }
-    record.status = "cancelled".into();
-    record.pid = None;
-    push_event(&mut record, "cancelled");
-    store(dir, &record)?;
-    runner
-        .info(format!("{id} cancelled"))
-        .map_err(|err| err.to_string())
+struct CurlTransport {
+    url: String,
 }
 
-fn stop_pid(pid: u32) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        let group = Pid::from_raw(pid as i32);
-        let _ = killpg(group, Signal::SIGTERM);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-        while std::time::Instant::now() < deadline {
-            if killpg(group, None).is_err() {
-                return Ok(());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+impl ExecutionTransport for CurlTransport {
+    fn call(&self, method: &str, body: &Value) -> Result<Value, String> {
+        let mut payload = body.clone();
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("method".into(), json!(method));
         }
-        let _ = killpg(group, Signal::SIGKILL);
-        Ok(())
+        let output = std::process::Command::new("curl")
+            .args([
+                "--silent",
+                "--show-error",
+                "--fail",
+                "-X",
+                "POST",
+                "-H",
+                "content-type: application/json",
+                "--data",
+                &payload.to_string(),
+                &self.url,
+            ])
+            .output()
+            .map_err(|err| format!("execution transport: {err}"))?;
+        if !output.status.success() {
+            return Err("execution transport rejected the cancel".into());
+        }
+        serde_json::from_slice(&output.stdout).map_err(|err| format!("execution transport: {err}"))
     }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        Err("process cancellation is not available on this build".into())
-    }
+}
+
+fn call(socket: &Path, method: &str, params: Value) -> Result<Value, String> {
+    let mut connection = try_connect(socket).map_err(|_| {
+        "execution supervisor is not running; nxr session start does not own the child".to_owned()
+    })?;
+    connection
+        .call(method, Some(params))
+        .map_err(|err| err.to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    use nxr_core::{DaemonState, serve};
+    use nxr_task::remote_execution::ExecutionTransport;
+    use serde_json::{Value, json};
 
     use super::*;
-    use crate::output_options::{ColorWhen, LogFormat, OutputOptions};
+
+    struct Fake {
+        calls: Mutex<Vec<(String, Value)>>,
+    }
+
+    impl ExecutionTransport for Fake {
+        fn call(&self, method: &str, body: &Value) -> Result<Value, String> {
+            self.calls
+                .lock()
+                .expect("calls")
+                .push((method.to_owned(), body.clone()));
+            Ok(json!({ "cancelled": true }))
+        }
+    }
 
     fn quiet() -> RunnerOutput {
+        use crate::output_options::{ColorWhen, LogFormat, OutputOptions};
         RunnerOutput::new(OutputOptions::new(
             1,
             0,
@@ -470,132 +280,132 @@ mod tests {
         ))
     }
 
-    fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
-        let path = dir.join(name);
-        let mut file = fs::File::create(&path).unwrap();
-        write!(file, "{body}").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    fn boot() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("nxrd.sock");
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let serve_socket = socket.clone();
+        thread::spawn(move || {
+            let _ = serve(&serve_socket, state);
+        });
+        for _ in 0..50 {
+            if try_connect(&socket).is_ok() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
         }
-        path
+        (dir, socket)
     }
 
     #[test]
-    fn a_local_command_exits_and_a_cursor_replays_after_restart() {
-        let root = tempfile::tempdir().unwrap();
-        let marker = root.path().join("ran");
-        let program = script(
-            root.path(),
-            "app.sh",
-            &format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
-        );
-        let mut cache = BTreeMap::new();
-        cache.insert("CI".to_owned(), "true".to_owned());
-        cache.insert(
-            "SCCACHE_ENDPOINT".to_owned(),
-            "https://cache.example".to_owned(),
-        );
-        start_at(
-            root.path(),
+    fn session_start_fails_closed_when_the_supervisor_is_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = start_on(
+            &dir.path().join("missing.sock"),
             &SessionStart {
                 label: "local".into(),
-                command: vec![program.display().to_string()],
+                command: vec!["/bin/echo".into(), "hi".into()],
                 remote: None,
+                attempt_id: None,
+                cpu: 0,
+                memory_mib: 0,
+            },
+            LocalBudget {
                 cpu: 1,
+                memory_mib: 1,
+            },
+            &std::collections::BTreeMap::new(),
+            quiet(),
+        )
+        .unwrap_err();
+        assert!(error.contains("not running"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_client_sees_the_exit_code_after_the_starter_returns() {
+        let (_dir, socket) = boot();
+        start_on(
+            &socket,
+            &SessionStart {
+                label: "local".into(),
+                command: vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "echo from-supervisor; exit 3".into(),
+                ],
+                remote: None,
+                attempt_id: None,
+                cpu: 1,
+                memory_mib: 8,
+            },
+            LocalBudget {
+                cpu: 2,
                 memory_mib: 32,
+            },
+            &std::collections::BTreeMap::new(),
+            quiet(),
+        )
+        .unwrap();
+        let listed = call(&socket, "run.list", json!({})).unwrap();
+        let id = listed[0]["id"].as_str().unwrap().to_owned();
+        let mut record = call(&socket, "run.inspect", json!({ "id": id })).unwrap();
+        for _ in 0..50 {
+            if record["status"] == "exited" {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+            record = call(&socket, "run.inspect", json!({ "id": id })).unwrap();
+        }
+        assert_eq!(record["exit_code"], 3);
+        let text = call(&socket, "run.logs", json!({ "id": id })).unwrap();
+        assert!(text["text"].as_str().unwrap().contains("from-supervisor"));
+        let transport = Fake {
+            calls: Mutex::new(Vec::new()),
+        };
+        start_on(
+            &socket,
+            &SessionStart {
+                label: "remote".into(),
+                command: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()],
+                remote: Some("fixture-host".into()),
+                attempt_id: Some("attempt-9".into()),
+                cpu: 1,
+                memory_mib: 8,
             },
             LocalBudget {
                 cpu: 2,
                 memory_mib: 64,
             },
-            &cache,
+            &std::collections::BTreeMap::new(),
             quiet(),
         )
         .unwrap();
-        let id = records(root.path()).unwrap()[0].id.clone();
-        let mut record = load(root.path(), &id).unwrap();
-        for _ in 0..50 {
-            if marker.is_file() && record.status == "exited" {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            record = load(root.path(), &id).unwrap();
-        }
-        assert!(marker.is_file());
-        assert_eq!(record.status, "exited");
-        assert!(record.events.iter().any(|event| event.message == "started"));
-        assert!(
-            record
-                .events
-                .iter()
-                .any(|event| event.message == "compiler-cache sccache+remote")
-        );
-        assert!(
-            record
-                .events
-                .iter()
-                .all(|event| !event.message.contains("cache.example"))
-        );
-        events_at(root.path(), &id, 1, quiet()).unwrap();
-        let replayed = load(root.path(), &id).unwrap();
-        assert!(replayed.events.iter().any(|event| event.cursor > 1));
-    }
-
-    #[test]
-    fn a_remote_submit_can_be_cancelled_and_a_second_start_can_be_refused() {
-        let root = tempfile::tempdir().unwrap();
-        let program = script(root.path(), "sleep.sh", "#!/bin/sh\nsleep 30\n");
-        start_at(
-            root.path(),
-            &SessionStart {
-                label: "remote".into(),
-                command: vec![program.display().to_string()],
-                remote: Some("fixture-host".into()),
-                cpu: 1,
-                memory_mib: 16,
-            },
-            LocalBudget {
-                cpu: 1,
-                memory_mib: 16,
-            },
-            &BTreeMap::new(),
-            quiet(),
-        )
-        .unwrap();
-        let id = records(root.path()).unwrap()[0].id.clone();
-        let running = load(root.path(), &id).unwrap();
-        assert_eq!(running.kind, "remote");
-        assert_eq!(running.status, "running");
-        assert!(
-            running
-                .events
-                .iter()
-                .any(|event| event.message == "submitted")
-        );
-        let error = start_at(
-            root.path(),
-            &SessionStart {
-                label: "overflow".into(),
-                command: vec![program.display().to_string()],
-                remote: None,
-                cpu: 1,
-                memory_mib: 1,
-            },
-            LocalBudget {
-                cpu: 1,
-                memory_mib: 16,
-            },
-            &BTreeMap::new(),
-            quiet(),
-        )
-        .unwrap_err();
-        assert!(error.contains("local budget exceeded"), "{error}");
-        cancel_at(root.path(), &id, quiet()).unwrap();
-        let cancelled = load(root.path(), &id).unwrap();
-        assert_eq!(cancelled.status, "cancelled");
-        assert!(cancelled.pid.is_none());
-        list_at(root.path(), quiet()).unwrap();
+        let again = call(&socket, "run.list", json!({})).unwrap();
+        let remote_id = again
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|run| run["attempt_id"] == "attempt-9")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let denied = cancel_with::<Fake>(&socket, &remote_id, None, quiet()).unwrap_err();
+        assert!(denied.contains("not enough"), "{denied}");
+        cancel_with(&socket, &remote_id, Some(&transport), quiet()).unwrap();
+        let calls = transport.calls.lock().expect("calls");
+        assert_eq!(calls[0].0, "cancel");
+        assert_eq!(calls[0].1["attempt_id"], "attempt-9");
+        thread::sleep(Duration::from_millis(200));
+        let stopped = call(&socket, "run.inspect", json!({ "id": remote_id })).unwrap();
+        assert_eq!(stopped["status"], "cancelled");
+        let pid = stopped["pid"].as_u64().unwrap();
+        let listed = std::process::Command::new("ps")
+            .args(["-o", "pid=", "-g", &pid.to_string()])
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&listed.stdout).trim().is_empty());
+        let _ = call(&socket, "shutdown", json!({}));
     }
 }

@@ -130,6 +130,7 @@ Rejected   considered and explicitly not chosen
 | ADR-0172 | Nom-style Nix progress for interactive build ops | Accepted | 3.4.0 |
 | ADR-0173 | Operator TUI watch, attach, and browser | Accepted | Unreleased |
 | ADR-0174 | NixPlane owns fleet desired state; NXR remains the operator DAG | Accepted | n/a |
+| ADR-0175 | Session runs are owned by `nxrd`; `nix run` stays independent | Accepted | Unreleased |
 
 Full write-ups: [`0143-mio-pipe-drain.md`](0143-mio-pipe-drain.md),
 [`0144-auto-schema-v2.md`](0144-auto-schema-v2.md),

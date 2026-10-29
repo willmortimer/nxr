@@ -705,6 +705,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             SessionSubcommand::Start {
                 label,
                 remote,
+                attempt_id,
                 cpu,
                 memory_mib,
                 exec,
@@ -714,6 +715,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                         label: label.clone(),
                         command: exec.clone(),
                         remote: remote.clone(),
+                        attempt_id: attempt_id.clone(),
                         cpu: *cpu,
                         memory_mib: *memory_mib,
                     },

@@ -3,11 +3,11 @@
 //! Retains warm discovery, prepared-plan, fingerprint, Merkle invalidation,
 //! recent action-key material, an optional process-log broker, and an
 //! experimental eval-result worker across CLI invocations over a per-user Unix
-//! socket. The daemon is **not** an execution authority and is never required
-//! for correctness
-//! ([ADR-0157](../../../docs/adr/0157-optional-nxrd.md);
-//! [ADR-0164](../../../docs/adr/0164-process-log-broker.md);
-//! [ADR-0168](../../../docs/adr/0168-experimental-eval-worker.md); ADR-0301 spirit).
+//! socket. Cache, plan, and log methods are never required for `nix run`
+//! ([ADR-0157](../../../docs/adr/0157-optional-nxrd.md)). `nxr session` submits
+//! its child to this process ([ADR-0175](../../../docs/adr/0175-session-supervisor.md),
+//! [ADR-0164](../../../docs/adr/0164-process-log-broker.md),
+//! [ADR-0168](../../../docs/adr/0168-experimental-eval-worker.md)).
 //! Kill-switch: [`DAEMON_ENV`]=`off`. Log broker follow kill-switch:
 //! [`crate::log_broker::LOG_BROKER_ENV`]. Eval worker opt-in:
 //! [`crate::eval_worker::EVAL_WORKER_ENV`].
@@ -692,6 +692,80 @@ pub fn handle_request(
                 Err(message) => error_response(request, "invalid_params", message),
             }
         }
+        "run.start" => {
+            let params = request.params.clone().unwrap_or(Value::Null);
+            match crate::execution_owner::start(&crate::execution_owner::runs_dir(socket), &params)
+            {
+                Ok(value) => ok_json(request, &value),
+                Err(message) => error_response(request, "run_rejected", message),
+            }
+        }
+        "run.inspect" => {
+            let id = match param_str(request, "id") {
+                Ok(id) => id,
+                Err(resp) => return resp,
+            };
+            match crate::execution_owner::inspect(&crate::execution_owner::runs_dir(socket), &id) {
+                Ok(value) => ok_json(request, &value),
+                Err(message) => error_response(request, "not_found", message),
+            }
+        }
+        "run.events" => {
+            let id = match param_str(request, "id") {
+                Ok(id) => id,
+                Err(resp) => return resp,
+            };
+            let after = request
+                .params
+                .as_ref()
+                .and_then(|params| params.get("after"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            match crate::execution_owner::events(
+                &crate::execution_owner::runs_dir(socket),
+                &id,
+                after,
+            ) {
+                Ok(value) => ok_json(request, &value),
+                Err(message) => error_response(request, "not_found", message),
+            }
+        }
+        "run.logs" => {
+            let id = match param_str(request, "id") {
+                Ok(id) => id,
+                Err(resp) => return resp,
+            };
+            match crate::execution_owner::logs(&crate::execution_owner::runs_dir(socket), &id) {
+                Ok(value) => ok_json(request, &value),
+                Err(message) => error_response(request, "not_found", message),
+            }
+        }
+        "run.list" => {
+            match crate::execution_owner::list(&crate::execution_owner::runs_dir(socket)) {
+                Ok(value) => ok_json(request, &value),
+                Err(message) => error_response(request, "run_rejected", message),
+            }
+        }
+        "run.cancel" => {
+            let id = match param_str(request, "id") {
+                Ok(id) => id,
+                Err(resp) => return resp,
+            };
+            let confirmed = request
+                .params
+                .as_ref()
+                .and_then(|params| params.get("remote_confirmed"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            match crate::execution_owner::cancel(
+                &crate::execution_owner::runs_dir(socket),
+                &id,
+                confirmed,
+            ) {
+                Ok(value) => ok_json(request, &value),
+                Err(message) => error_response(request, "run_rejected", message),
+            }
+        }
         // Reserved for future remote-worker registry — refuse so clients fall back.
         "worker.register" => error_response(
             request,
@@ -1295,6 +1369,8 @@ pub fn serve(socket: &Path, state: SharedDaemonState) -> io::Result<()> {
             let _ = fs::set_permissions(socket, fs::Permissions::from_mode(0o600));
         }
         write_pid_file(socket)?;
+        crate::execution_owner::reconcile(&crate::execution_owner::runs_dir(socket))
+            .map_err(|message| io::Error::other(format!("session reconcile: {message}")))?;
 
         // Accept loop: spawn per connection; poll stop between accepts with a
         // short timeout so shutdown does not wait forever for a new client.

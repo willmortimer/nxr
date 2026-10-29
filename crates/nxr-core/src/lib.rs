@@ -11,6 +11,7 @@ pub mod disk_cache_status;
 pub mod ecosystem;
 pub mod env_policy;
 pub mod eval_worker;
+pub mod execution_owner;
 pub mod incremental_digest;
 pub mod log_broker;
 pub mod merkle_index;
