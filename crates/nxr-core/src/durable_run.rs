@@ -318,6 +318,7 @@ fn with_run_lock<T>(run_id: &str, operation: impl FnOnce() -> io::Result<T>) -> 
     let lock_file = OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(false)
         .open(&lock_path)?;
     lock_file.lock_exclusive()?;
     let result = operation();
@@ -900,6 +901,139 @@ mod tests {
             assert_eq!(record.event_sequence, 2);
             assert_eq!(record.status, DurableRunStatus::Succeeded);
             assert_eq!(record.exit_code, Some(0));
+        });
+    }
+
+    #[test]
+    fn attempt_transition_id_survives_start_snapshot_crash() {
+        with_temp_runs_dir(|| {
+            set_test_fail_durable_snapshot_after_journal(true);
+            let err = sync_supervisor_started("run-tid", &["true".into()]).unwrap_err();
+            set_test_fail_durable_snapshot_after_journal(false);
+            assert!(
+                err.to_string().contains("injected snapshot failure"),
+                "{err}"
+            );
+
+            let record = load_durable_run("run-tid").unwrap();
+            assert_eq!(
+                record.attempt_transition_id.as_deref(),
+                Some("supervisor_attempt:run-tid:1")
+            );
+
+            // Terminal recovers the attempt id from the journal when the snapshot
+            // never landed, then replay must not append a second terminal line.
+            set_test_fail_durable_snapshot_after_journal(true);
+            let err = sync_supervisor_terminal("run-tid", DurableRunStatus::Succeeded, Some(0))
+                .unwrap_err();
+            set_test_fail_durable_snapshot_after_journal(false);
+            assert!(
+                err.to_string().contains("injected snapshot failure"),
+                "{err}"
+            );
+
+            let mid = load_durable_run("run-tid").unwrap();
+            assert_eq!(
+                mid.attempt_transition_id.as_deref(),
+                Some("supervisor_attempt:run-tid:1")
+            );
+            assert_eq!(mid.status, DurableRunStatus::Succeeded);
+
+            sync_supervisor_terminal("run-tid", DurableRunStatus::Succeeded, Some(0)).unwrap();
+            sync_supervisor_terminal("run-tid", DurableRunStatus::Succeeded, Some(0)).unwrap();
+
+            let journal = durable_events_path(&durable_runs_dir(), "run-tid");
+            let lines: Vec<DurableRunJournalLine> = fs::read_to_string(journal)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(lines.len(), 2);
+            assert_eq!(
+                lines[0].transition_id.as_deref(),
+                lines[1].transition_id.as_deref()
+            );
+            assert_eq!(
+                lines[1].transition_id.as_deref(),
+                Some("supervisor_attempt:run-tid:1")
+            );
+        });
+    }
+
+    #[test]
+    fn multi_attempt_crash_between_journal_and_snapshot() {
+        with_temp_runs_dir(|| {
+            // Attempt 1: journal start lands; snapshot write fails.
+            set_test_fail_durable_snapshot_after_journal(true);
+            let err = sync_supervisor_started("run-multi", &["true".into()]).unwrap_err();
+            set_test_fail_durable_snapshot_after_journal(false);
+            assert!(
+                err.to_string().contains("injected snapshot failure"),
+                "{err}"
+            );
+
+            let attempt1 = load_durable_run("run-multi")
+                .unwrap()
+                .attempt_transition_id
+                .expect("attempt 1 transition id");
+            assert_eq!(attempt1, "supervisor_attempt:run-multi:1");
+
+            sync_supervisor_terminal("run-multi", DurableRunStatus::Failed, Some(7)).unwrap();
+
+            // Attempt 2: fresh start with a new immutable transition id.
+            sync_supervisor_started("run-multi", &["echo".into(), "retry".into()]).unwrap();
+            let attempt2 = load_durable_run("run-multi")
+                .unwrap()
+                .attempt_transition_id
+                .expect("attempt 2 transition id");
+            assert_eq!(attempt2, "supervisor_attempt:run-multi:3");
+            assert_ne!(attempt1, attempt2);
+
+            // Attempt 2 terminal: journal line first, then injected snapshot crash.
+            set_test_fail_durable_snapshot_after_journal(true);
+            let err = sync_supervisor_terminal("run-multi", DurableRunStatus::Succeeded, Some(0))
+                .unwrap_err();
+            set_test_fail_durable_snapshot_after_journal(false);
+            assert!(
+                err.to_string().contains("injected snapshot failure"),
+                "{err}"
+            );
+
+            let recovered = load_durable_run("run-multi").unwrap();
+            assert_eq!(
+                recovered.attempt_transition_id.as_deref(),
+                Some(attempt2.as_str())
+            );
+            assert_eq!(recovered.status, DurableRunStatus::Succeeded);
+            assert_eq!(recovered.exit_code, Some(0));
+
+            // Replay must reuse attempt2 and not duplicate the terminal line.
+            sync_supervisor_terminal("run-multi", DurableRunStatus::Succeeded, Some(0)).unwrap();
+
+            let journal = durable_events_path(&durable_runs_dir(), "run-multi");
+            let lines: Vec<DurableRunJournalLine> = fs::read_to_string(journal)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(lines.len(), 4);
+            assert_eq!(lines[0].kind, "supervisor_started");
+            assert_eq!(lines[0].transition_id.as_deref(), Some(attempt1.as_str()));
+            assert_eq!(lines[1].kind, "supervisor_terminal");
+            assert_eq!(lines[1].transition_id.as_deref(), Some(attempt1.as_str()));
+            assert_eq!(lines[2].kind, "supervisor_started");
+            assert_eq!(lines[2].transition_id.as_deref(), Some(attempt2.as_str()));
+            assert_eq!(lines[3].kind, "supervisor_terminal");
+            assert_eq!(lines[3].transition_id.as_deref(), Some(attempt2.as_str()));
+
+            let terminals_for_attempt2 = lines
+                .iter()
+                .filter(|line| {
+                    line.kind == "supervisor_terminal"
+                        && line.transition_id.as_deref() == Some(attempt2.as_str())
+                })
+                .count();
+            assert_eq!(terminals_for_attempt2, 1);
         });
     }
 }

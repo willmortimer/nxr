@@ -655,10 +655,10 @@ fn annotate_decision_from(
         .to_owned();
     let record = load_checkout_record(root, task);
     let observed = task_ms.and_then(json_u64);
-    if decision_kind == "rebuild" {
-        if let (Some(catalog), Some(record), Some(elapsed)) = (catalog, record.as_ref(), observed) {
-            record_rebuild_sample(catalog, task, record, elapsed)?;
-        }
+    if decision_kind == "rebuild"
+        && let (Some(catalog), Some(record), Some(elapsed)) = (catalog, record.as_ref(), observed)
+    {
+        record_rebuild_sample(catalog, task, record, elapsed)?;
     }
     let (basis, savings) = if transfer == "local" && decision_kind == "hit" {
         match (catalog, record.as_ref(), observed) {

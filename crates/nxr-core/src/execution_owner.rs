@@ -200,6 +200,8 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
         })?;
         let wait_dir = dir.to_path_buf();
         let wait_id = id.clone();
+        // Retained under test so suites can join; detached in non-test builds.
+        #[cfg_attr(not(test), allow(unused_variables))]
         let wait_handle = thread::spawn(move || {
             let code = spawned
                 .wait()

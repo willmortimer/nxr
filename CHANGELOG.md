@@ -7,11 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-10-29
+
 ### Changed
 
 - Durable run supervisor sync is journal-first (JSONL event, then `{run_id}.json` snapshot) with per-run file locks in-process.
-- Durable run journal is the source of truth; `{run_id}.json` is a projection. An unterminated final JSONL line (no trailing newline) is quarantined and removed on read; a complete final line that is invalid JSON fails load, as do corrupt earlier lines. Journal repair rewrites atomically (temp file, fsync, rename) under the per-run lock. Supervisor attempts receive an immutable `transition_id` at start; terminal lines reuse it so snapshot retries do not duplicate completion events.
+- Durable run journal is the source of truth; `{run_id}.json` is a projection. An unterminated final JSONL line (no trailing newline) is quarantined and removed on read; a complete final line that is invalid JSON fails load, as do corrupt earlier lines. Journal repair rewrites atomically (temp file, fsync, rename) under the per-run lock. Supervisor attempts receive an immutable `transition_id` at start; terminal lines reuse it so snapshot retries do not duplicate completion events. Multi-attempt crash/replay coverage proves a second attempt gets a new `transition_id` and terminal snapshot retries stay idempotent.
 - Default nxr state directory falls back to `$HOME/.local/state/nxr` instead of a cwd-relative `.local/state/nxr` when platform dirs are unavailable.
+- Workspace and Nix package version **3.9.0**. The `v3.9.0-rc.1` tag is unchanged.
 
 ### Notes
 
