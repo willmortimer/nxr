@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Notes
 
-- `LocalWorkerRegistry::select_and_reserve` is local/in-process only; it is not a distributed worker lease.
+- **Stable in 3.9.0:** local/in-process worker scheduling via `LocalWorkerRegistry::select_and_reserve` (not a distributed worker lease).
+- **Not stable in 3.9.0:** distributed workers remain experimental; do not treat local reservation as a cluster lease. The optional `nxrd` eval worker ([ADR-0168](docs/adr/0168-experimental-eval-worker.md)) stays opt-in and experimental.
 
 ## [3.8.0-rc.3] - 2026-10-27
 
