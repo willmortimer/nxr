@@ -13,8 +13,8 @@ Product and architecture contract for `nxr`. Prefer these docs over inventing st
 | [TECH_STACK_AND_REPO_SHAPE.md](TECH_STACK_AND_REPO_SHAPE.md) | Languages, crates, and repository layout |
 | [RELEASE.md](RELEASE.md) | Tag releases, artifacts, Cosign, checksums, and SBOM |
 | [PATTERNS.md](PATTERNS.md) | Decisions (`--set`/TTY), watch (`--log-dir`), promote boundaries |
-| [ROADMAP.md](ROADMAP.md) | Shipped through 3.5.0; active V4+ plan |
-| [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) | Post-2.5 expansion: contexts, secrets, HM, processes |
+| [ROADMAP.md](ROADMAP.md) | Shipped through 3.9.0; active V4+ plan |
+| [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) | Contexts, secrets, HM, processes (shipped by 3.9; V4+ is the plan) |
 | [vision/V4_EXECUTION_PROTOCOL.md](vision/V4_EXECUTION_PROTOCOL.md) | Post-3.4 V4/V5 vision (operation IR, runs, IDE/agents) |
 | [vision/FUTURE_CONTROL_PLANE.md](vision/FUTURE_CONTROL_PLANE.md) | Legacy speculative V3 control-plane prose (mine, don't schedule) |
 
@@ -58,7 +58,7 @@ From [CONTRACT_SUMMARY.md](CONTRACT_SUMMARY.md):
 2. Canonical leaf operation: `apps.<system>.<name>`; V1 `nxr <app>` ≈ `nix run .#<app> -- …`.
 3. Discover flake root upward; preserve invocation CWD; inherit caller environment by default.
 4. After the app name, arguments belong to the app; one `--` is removed; no shell evaluation.
-5. No mandatory `nxr.toml` / YAML / JSON project file in V1.
+5. No mandatory project manifest. Optional `.nxr/workflows.toml` is only for `nxr workflow` / `nxr task workflow`.
 6. Dev shells are optional interactive environments; apps are not auto-executed inside them.
 7. V2 tasks coordinate apps; they do not replace apps.
 8. Human and versioned machine output are both first-class.

@@ -453,32 +453,32 @@ nxr inspect shell default
 
 The command reports normalized configuration after defaults and capability resolution.
 
-## 3. Planned expansion (committed roadmap)
+## 3. Shipped through 3.9, and what is next
 
-Scheduled work is in [ROADMAP.md](ROADMAP.md) (2.7 → 3.1) with full design in
-[EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md):
+Detail is [ROADMAP.md](ROADMAP.md). Design background is
+[EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).
 
-Shipped in **2.6** (see [ROADMAP.md](ROADMAP.md)):
+Shipped:
 
-- Home Manager module (`homeManagerModules.default`);
-- `nxr fmt`, `nxr in`, `nxr envrc`, `nxr doctor env` / `cache` / `builders`;
-- generic `nxr build` installables / `--attr`;
-- read-only configuration adapters (`list` / `inspect` / `build`).
+- **2.6** — Home Manager module (`homeManagerModules.default`); `nxr fmt`, `nxr in`, `nxr envrc`, `nxr doctor env` / `cache` / `builders`; generic `nxr build`; read-only configuration adapters.
+- **3.0–3.2** — contexts, processes, local orchestration performance.
+- **3.4** — `nxr script`, file-backed apps, materialized dev environments (ADR-0169–0172).
+- **3.5–3.6** — `--set` / `--log-dir`, operator TUI (`nxr ui`, `--output tui`, `nxr attach`).
+- **3.7–3.8** — `.nxr/workflows.toml`, native and WinBuild leaves, `execution-spec-v2`, `nxr catalog retain`.
+- **3.9** — journal-first sessions. `nxr session start` requires `nxrd`. `nix run` does not.
 
-Still planned for a later 2.6.x cut:
+Still open inside older cuts, not a 3.9 blocker:
 
-- shell-entry command menu; treefmt / git-hooks recognition in inspect/doctor.
+- shell-entry command menu; treefmt / git-hooks recognition in inspect/doctor;
+- coverage and benchmark reports remain scaffold stubs.
 
-Upcoming major releases:
-- **3.0**–**3.2** shipped (contexts, processes, local orchestration performance);
-- **3.3** workspace scripting (`nxr script`, file-backed apps);
-- **3.4** materialized process-compatible development environments.
+Next (V4+), not current:
 
-Speculative post-3.4 protocol ideas live in
-[vision/V4_EXECUTION_PROTOCOL.md](vision/V4_EXECUTION_PROTOCOL.md). Older V3
-control-plane prose remains in
-[vision/FUTURE_CONTROL_PLANE.md](vision/FUTURE_CONTROL_PLANE.md) (mine for
-requirements; do not treat as the schedule).
+- IDE/DAP broker and an agent/CI operational API;
+- remote workspace CAS (this is what unblocks `shared` / `shared-read`);
+- distributed workers (experimental only today);
+- Nix-native deploy/fleet adapters that do not store NixPlane Assignments.
 
-Near-term (3.3–3.4): workspace scripts, file-backed apps, materialized process
-environments — see [ROADMAP.md](ROADMAP.md) and ADR-0169–0171.
+[vision/V4_EXECUTION_PROTOCOL.md](vision/V4_EXECUTION_PROTOCOL.md) is the vision.
+[vision/FUTURE_CONTROL_PLANE.md](vision/FUTURE_CONTROL_PLANE.md) is older prose:
+mine it, do not schedule from it.

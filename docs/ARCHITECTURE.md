@@ -26,19 +26,25 @@ Its V2 responsibilities extend to orchestration:
 6. run and restart watched tasks;
 7. optionally execute nodes within named development shells.
 
-Planned expansion (contexts, secret delivery, Home Manager, process nodes) is
-specified in [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) and scheduled in
-[ROADMAP.md](ROADMAP.md). `nxr` does not replace Nix evaluation, direnv, devenv,
+Contexts, secret delivery, Home Manager hooks, process nodes, the operator TUI,
+optional `.nxr/workflows.toml`, and journal-first sessions have shipped through
+**3.9.0**. Design background is [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).
+What is still later is [ROADMAP.md](ROADMAP.md) (V4+: IDE/DAP, remote CAS,
+distributed workers). `nxr` does not replace Nix evaluation, direnv, devenv,
 Home Manager, or secret stores.
 
-The Nix CLI remains the execution backend.
+Flake apps and flake tasks execute through the Nix CLI. A workflow leaf may
+use a native or WinBuild executor and does not look up Nix for that leaf.
+`nix run` remains the escape hatch for flake apps and does not require `nxrd`.
+`nxr session start` does: the daemon owns that process group
+([ADR-0175](adr/0175-session-supervisor.md)).
 
 ## 2. Layer model
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
 │ User interfaces                                             │
-│ CLI, completion, fuzzy picker, JSON output, event stream    │
+│ CLI, TUI, completion, fuzzy picker, JSON, event stream      │
 ├─────────────────────────────────────────────────────────────┤
 │ nxr orchestration                                           │
 │ discovery, resolution, policy, process supervision, DAG     │
@@ -124,7 +130,7 @@ V1 reads standard app metadata where available:
 meta.description = "Run the test suite";
 ```
 
-V2 may define an additive output:
+V2 defines an additive output (current; not a second required manifest):
 
 ```nix
 nxr.${system} = {

@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-28
-- **Target release:** Unreleased (does not move `v3.8.0`)
+- **Target release:** 3.9.0 (does not move `v3.8.0`)
 - **Related ADRs:** ADR-0157, ADR-0164
 
 ## Context

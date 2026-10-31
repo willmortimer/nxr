@@ -34,7 +34,7 @@ nxr <command> --help
     --log-format <FORMAT>  human|plain|json (runner stderr diagnostics)
     --no-color             Disable runner color
     --color <WHEN>         auto|always|never
-    --output <MODE>        live|grouped|failures|summary|raw (task mux)
+    --output <MODE>        live|grouped|failures|summary|raw|tui (task mux; tui falls back to live off a TTY)
     --events <FORMAT>      jsonl
     --log-dir <PATH>       Tee per-node stdout/stderr under PATH
 -h, --help                 Show help
@@ -101,6 +101,19 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr watch <name> [--debounce <ms>] [--include <glob>]… [--exclude <glob>]… [--clear]` | Watch flake root; kill+rerun app or task |
 | `nxr run <app> --watch [--debounce <ms>]` | Alias into watch for a single app |
 | `nxr task <name> --watch [--debounce <ms>]` | Alias into watch for a task (serial chain) |
+| `nxr script <path\|name>` / `nxr script --list` | Run or list a workspace script (`.nxr/scripts/` or a path) |
+| `nxr ui` | Browse apps, tasks, and scripts; Enter runs the selection |
+| `nxr --output tui task <name>` | Ratatui DAG watch; non-TTY falls back to `live` |
+| `nxr attach [RUN]` | Reopen a recorded TUI watch (omit `RUN` for the latest) |
+| `nxr context list\|inspect\|run` | Named execution contexts (schema v2) |
+| `nxr up` / `status` / `logs` / `down` | Supervise long-running process nodes |
+| `nxr daemon start\|stop\|status` | Optional `nxrd`. Required for `nxr session`; not for `nix run` |
+| `nxr session start\|list\|events\|inspect\|cancel` | Journal-first run owned by `nxrd` (3.9) |
+| `nxr catalog retain` | Expire catalog records only with an explicit quota |
+| `nxr workflow list\|plan\|spec\|run\|attach` | Optional `.nxr/workflows.toml` graph (`execution-spec-v2`) |
+| `nxr ci plan [--json]` | Provider-neutral CI plan |
+| `nxr history` | Recent run summaries under XDG state |
+| `nxr trust` / `nxr inventory` | Project trust, and schema-described flake inventory outputs |
 
 When `nxr watch` / name resolution finds both a task and an app with the same name, the **task** wins. Disambiguate with `app:<name>` or `task:<name>` (apps-only snapshot for `app:`; `nxr run --watch` also skips task discovery). Unprefixed app-only names use the discovery cache task-name set when present (or an empty task document when the flake has no `nxr` output) so watch avoids task `eval` until task metadata is needed.
 

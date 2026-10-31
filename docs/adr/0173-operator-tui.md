@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-31
-- **Target release:** Unreleased (operator ergonomics sprint)
+- **Target release:** 3.6.0 (operator TUI; shipped)
 - **Related ADRs:** ADR-0172, ADR-0148, ADR-0011, ADR-0014
 
 ## Context

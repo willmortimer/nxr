@@ -484,7 +484,7 @@ resolves through the flake task document and does not consult the workflow file.
 `workflow plan` prints the graph, including Windows-only leaves, and does not
 execute them. A task may declare `artifacts` (files or directories it produces)
 and `inputs` (dependency task names whose stored outputs it consumes). An input
-that is not a dependency is rejected. `workflow spec` prints the `execution-spec-v1` envelope for one
+that is not a dependency is rejected. `workflow spec` prints the `execution-spec-v2` envelope for one
 leaf. The operation id is stable for that leaf and is independent of a CI
 idempotency key. `workflow run` skips a leaf whose platform or architecture does
 not match the host and says why. `--execution remote` submits that same
@@ -636,15 +636,16 @@ Existing target paths are never overwritten.
 fragment (`nxr.apps` and optional `nxr.tasks`). It never executes migrated recipes.
 Output is best-effort; review limitations in the generated comments before committing.
 
-## 16. Planned command surface (not yet shipped)
+## 16. Shipped after V2 (3.0–3.9)
 
 Design authority: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md) and [ROADMAP.md](ROADMAP.md).
-Do not treat these as stable until the named release ships.
 
 ### 3.0 execution contexts
 
 ```bash
-nxr context <name> <app|task …>
+nxr context list
+nxr context inspect <name>
+nxr context run <name> <task…>
 nxr context run <name> script <path-or-name> [--] [args...]
 ```
 
@@ -657,10 +658,41 @@ only—never plaintext.
 ```bash
 nxr up [name…]
 nxr status
-nxr logs <name>
+nxr logs <name> [--follow]
+nxr down [name…]
 ```
 
-### Optional cache daemon (perf Wave 4a)
+### 3.6 operator TUI
+
+```bash
+nxr ui
+nxr --output tui task <name>
+nxr attach [RUN]
+```
+
+Non-TTY falls back to `live`. See [ADR-0173](adr/0173-operator-tui.md).
+
+### 3.7–3.8 workflows and catalog
+
+```bash
+nxr workflow list|plan|spec|run|attach
+nxr catalog retain
+```
+
+`workflow spec` emits `execution-spec-v2`. `nxr task <name>` does not read
+`.nxr/workflows.toml`.
+
+### 3.9 session supervisor
+
+```bash
+nxr session start|list|events|inspect|cancel
+```
+
+`nxr session start` submits to `nxrd` and fails closed when the supervisor is
+down ([ADR-0175](adr/0175-session-supervisor.md)). `nix run` does not require
+the daemon.
+
+### Optional cache daemon
 
 ```bash
 nxr daemon start [--foreground] [--socket PATH]
@@ -668,6 +700,13 @@ nxr daemon stop [--socket PATH]
 nxr daemon status [--socket PATH]
 ```
 
-Optional; never required for `nxr list` / `plan` / `run`. See
+Optional for `nxr list` / `plan` / `run`. Required for `nxr session`. See
 [ADR-0157](adr/0157-optional-nxrd.md) and [PERFORMANCE.md](PERFORMANCE.md).
-`NXR_DAEMON=off` refuses connect. Not the V3.3 control plane (ADR-0301/0302).
+`NXR_DAEMON=off` refuses connect.
+
+## 17. Not this release (V4+)
+
+IDE/DAP broker, agent operational API, remote workspace CAS, and honest
+`shared` / `shared-read` cache modes. Distributed workers stay experimental.
+See [ROADMAP.md](ROADMAP.md) and
+[vision/V4_EXECUTION_PROTOCOL.md](vision/V4_EXECUTION_PROTOCOL.md).

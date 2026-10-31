@@ -13,7 +13,7 @@ Reasons:
 - mature CLI ecosystem;
 - straightforward JSON and event modeling;
 - safe argument-vector construction;
-- suitable foundation for a future TUI without requiring one in V1.
+- the operator TUI (`ratatui` / `crossterm` in `nxr-cli`, since 3.6).
 
 ## 2. Core crates
 
@@ -40,14 +40,16 @@ indicatif             optional progress rendering, used carefully
 anstyle              color and styling abstraction
 shell-words          only for display/parsing controlled text, never execution
 nix                  Unix signals/process primitives if needed
-windows               Windows job objects in later platform work
+ratatui              operator TUI (3.6+)
+crossterm            TUI terminal backend
+windows               Windows job objects for native/WinBuild workflow leaves
 insta                snapshot tests
 assert_cmd            CLI integration tests
 predicates            test assertions
 tempfile              fixture workspaces
 ```
 
-Crate selection should remain conservative. Avoid adding a full TUI stack until the selector or process dashboard clearly needs it.
+The TUI stack is in-tree for `nxr ui`, `--output tui`, and `nxr attach`. Do not add a second UI toolkit for the same job.
 
 ## 3. Nix integration strategy
 
@@ -135,6 +137,8 @@ nxr/
 │   │       ├── graph.rs
 │   │       ├── planner.rs
 │   │       └── scheduler.rs
+│   ├── nxr-affected/
+│   │   └── src/
 │   └── nxr-watch/
 │       └── src/
 │           ├── lib.rs
@@ -157,11 +161,14 @@ nxr/
 │   ├── nxr.zsh
 │   └── nxr.fish
 ├── docs/
-│   ├── architecture.md
-│   ├── cli.md
-│   ├── app-authoring.md
-│   ├── task-schema.md
-│   ├── shell-integration.md
+│   ├── INDEX.md
+│   ├── ARCHITECTURE.md
+│   ├── CLI_CONTRACT.md
+│   ├── CLI_REFERENCE.md
+│   ├── FEATURES.md
+│   ├── APP_AUTHORING.md
+│   ├── TASKS.md
+│   ├── ROADMAP.md
 │   └── adr/
 │       ├── README.md
 │       ├── template.md
@@ -261,6 +268,11 @@ V2 crate owning:
 - planning;
 - scheduler;
 - task result calculation.
+
+### nxr-affected
+
+Owns path→app/task classification for `nxr affected`, `task --affected`, and
+`plan --affected`.
 
 ### nxr-watch
 

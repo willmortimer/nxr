@@ -11,8 +11,10 @@ standard Nix leaves (`apps`, `devShells`, `nix run`).
 It does not pin runtimes, replace Nix, own secret storage, construct development
 shells, manage system activation, or require another project task manifest
 (YAML/TOML). Task graphs, parameters, matrices, contexts, and processes are
-expressed through flake modules / `flake.nxr` documents, not a separate DSL
-owned outside Nix.
+expressed through flake modules / `flake.nxr` documents. An optional
+`.nxr/workflows.toml` graph exists for `nxr workflow` and `nxr task workflow`
+only. A bare `nxr task <name>` does not read that file. The file is not
+required.
 
 Expanded design: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md).
 
@@ -83,8 +85,8 @@ One explicit `--` separator is removed.
 No shell evaluation occurs.
 
 Runner options must not move after the app/task name (for example,
-`nxr test --shell backend` is rejected as a design; use `nxr --shell backend test`
-or planned `nxr in backend test`).
+`nxr test --shell backend` is rejected; use `nxr --shell backend test`
+or `nxr in backend test`).
 
 ## Exit behavior
 
@@ -107,7 +109,8 @@ An app is not automatically executed inside it.
 `use flake` may load a shell that includes `nxr` and session-local completion.
 
 No global shell files are modified by the project flake alone.
-User-level hooks may be installed via Home Manager (planned).
+User-level hooks may be installed via Home Manager
+(`homeManagerModules.default`).
 
 Do not decrypt project secrets automatically from `.envrc`. Use execution
 contexts for secret-bearing process launches.
@@ -133,12 +136,13 @@ Parallel groups, watchers, and DAGs are fully supervised:
 - output is attributable;
 - exit policy is deterministic.
 
-## Execution contexts and secrets (planned)
+## Execution contexts and secrets (3.0)
 
-Named contexts may bind shell, environment policy, secret **references**, and
-confirmation. Secret **values** are resolved at spawn via user/CI provider
-bindings (Home Manager or local config)—never during flake evaluation, and never
-serialized into plans or events.
+`nxr context list|inspect|run` is current. Named contexts bind shell,
+environment policy, secret **references**, and confirmation. Secret **values**
+are resolved at spawn via user/CI provider bindings (Home Manager or local
+config)—never during flake evaluation, and never serialized into plans or
+events.
 
 Task document **schema v2** is required for execution-affecting fields
 (`context`, secrets, inputs/outputs, dependency states). Unknown execution or
@@ -156,7 +160,10 @@ Nix caches derivations and realizations.
 
 Native tools cache incremental work.
 
-`nxr` may cache discovery metadata, not silently invent a general task artifact cache.
+`nxr` caches discovery metadata and an explicit artifact catalog
+(`nxr catalog retain` only expires under an operator quota). It does not
+silently invent a shared task cache. `cache.mode` `shared` / `shared-read`
+stay rejected until a remote CAS transport exists (V4+/V5).
 
 ## Compatibility guarantee
 

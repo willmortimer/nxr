@@ -89,6 +89,10 @@ Decision-style flows stay **wizard flake apps → `nxr task …`** (no schema
 | `nxr affected …` | Conservative path→app/task analysis for CI |
 | `nxr ci plan [--json]` | Provider-neutral CI execution plan |
 | `nxr migrate justfile\|mise` | Suggest `perSystem.nxr.*` (never runs recipes) |
+| `nxr workflow run <task>` | `.nxr/workflows.toml` graph (`execution-spec-v2`) |
+| `nxr session start\|list\|inspect\|cancel` | Durable run owned by `nxrd` |
+| `nxr catalog retain` | Expire catalog records under an explicit quota |
+| `nxr script <path\|name>` | Workspace script (not a bare `nxr <name>` winner) |
 
 Useful globals: `--flake`, `--cwd` / `--root`, `--shell` / `--shell-mode`,
 `--output live|grouped|failures|summary|raw|tui`, `--events jsonl`.
@@ -143,11 +147,21 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status
 
-**3.8.0-rc.3** — artifact digests are recomputed, and a verified object is reused
-on any machine. Remote workflow runs still follow the journal from a cursor and
-can hand fetched outputs to `NXR_OUTPUT_VERIFY`. Workflow leaves still emit
-`execution-spec-v2` envelopes from `.nxr/workflows.toml`. `nxr task` still
-uses the flake task document. A sibling repository is not part of the default
-source identity. Operator archives stay Darwin and Linux.
+**3.9.0** — journal-first durable runs. `nxr session start` submits to `nxrd`
+and fails closed when that supervisor is down. The daemon owns the process
+group, logs, and exit code. `nix run` and ordinary flake apps do not require
+it. `nxr session cancel` of a remote submit calls `cancel_execution` with the
+stored attempt id. Local/in-process worker scheduling is stable; distributed
+workers stay experimental.
+
+Carried from 3.8: workflow leaves emit `execution-spec-v2` from
+`.nxr/workflows.toml`. `nxr task` still uses the flake task document. A sibling
+repository is not part of the default source identity. `nxr catalog retain`
+expires records only when an operator passes an explicit quota. Operator
+archives stay Darwin and Linux.
+
+Next is V4+ (operation IR already started as `execution-spec-v2`; IDE/DAP
+broker, agent API, and remote workspace CAS are not this release). See
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 History: [CHANGELOG.md](CHANGELOG.md) · roadmap: [docs/ROADMAP.md](docs/ROADMAP.md).
