@@ -50,19 +50,19 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
         && let Some(saved) = saved_receipt(&root, name)
     {
         match reattach_action(Some(&saved)) {
-            "verify" if saved.get("hash_ok").and_then(Value::as_bool) == Some(true) => {
+            "verify" => {
                 let attempt = saved
                     .get("attempt_id")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                let code = saved.get("exit_code").and_then(Value::as_i64).unwrap_or(0) as i32;
+                let code = verified_reattach_exit(&saved)?;
                 println!(
                     "reattach verify attempt {attempt} status={}",
                     saved.get("terminal").and_then(Value::as_str).unwrap_or("")
                 );
                 return Ok(code);
             }
-            "verify" | "follow" => {
+            "follow" => {
                 follow_id = saved
                     .get("attempt_id")
                     .and_then(Value::as_str)
@@ -1045,6 +1045,30 @@ fn remember_pointer(path: &Path, attempt: &str) -> Result<(), WorkflowError> {
     })
 }
 
+/// Exit code for a terminal receipt that claims verified retrieval.
+///
+/// A missing exit code is not success. A verify action also requires `hash_ok`.
+pub(crate) fn verified_reattach_exit(saved: &Value) -> Result<i32, WorkflowError> {
+    let Some(code) = saved.get("exit_code").and_then(Value::as_i64) else {
+        return Err(WorkflowError::new(
+            exit::PROCESS_SUPERVISION,
+            "terminal receipt has no exit code",
+        ));
+    };
+    if saved.get("hash_ok").and_then(Value::as_bool) != Some(true) {
+        return Err(WorkflowError::new(
+            exit::PROCESS_SUPERVISION,
+            "terminal receipt is missing artifact verification",
+        ));
+    }
+    i32::try_from(code).map_err(|_| {
+        WorkflowError::new(
+            exit::PROCESS_SUPERVISION,
+            "terminal receipt exit code is out of range",
+        )
+    })
+}
+
 /// What a stopped run should do with an attempt it already admitted.
 ///
 /// A terminal attempt is checked again. An attempt that has not finished is
@@ -1229,6 +1253,35 @@ mod tests {
         });
         assert_eq!(reattach_action(Some(&interrupted)), "follow");
         assert_eq!(reattach_action(None), "submit");
+    }
+
+    #[test]
+    fn a_terminal_receipt_without_an_exit_code_is_not_success() {
+        let saved = json!({
+            "attempt_id": "att_done",
+            "terminal": "exited",
+            "hash_ok": true
+        });
+        let err = verified_reattach_exit(&saved).expect_err("missing exit");
+        assert_ne!(err.exit_code(), 0);
+        assert!(err.to_string().contains("exit code"), "{err}");
+
+        let unverified = json!({
+            "attempt_id": "att_done",
+            "terminal": "exited",
+            "exit_code": 0
+        });
+        let err = verified_reattach_exit(&unverified).expect_err("missing hash");
+        assert_ne!(err.exit_code(), 0);
+        assert!(err.to_string().contains("verification"), "{err}");
+
+        let failed = json!({
+            "attempt_id": "att_done",
+            "terminal": "exited",
+            "exit_code": 1,
+            "hash_ok": true
+        });
+        assert_eq!(verified_reattach_exit(&failed).expect("exit"), 1);
     }
 
     #[test]

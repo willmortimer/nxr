@@ -244,7 +244,7 @@ in
           };
       in
       {
-        systemd.user.services.nxrd = lib.mkIf pkgs.stdenv.isLinux {
+        systemd.user.services.nxrd = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
           Unit = {
             Description = "nxr local cache/coordination daemon (nxrd)";
             Documentation = "https://github.com/willmortimer/nxr";
@@ -257,7 +257,7 @@ in
           Install.WantedBy = [ "default.target" ];
         };
 
-        launchd.agents.nxrd = lib.mkIf pkgs.stdenv.isDarwin {
+        launchd.agents.nxrd = lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
           enable = true;
           config = {
             Label = "dev.nxr.nxrd";
