@@ -796,6 +796,20 @@ fn dry_run_execute(
     Ok(exit::SUCCESS)
 }
 
+fn emit_reuses(scheduler: &mut nxr_task::Scheduler, sink: &mut dyn EventSink) {
+    let run_id = std::env::var("NXR_RUN_ID").unwrap_or_else(|_| "local".to_owned());
+    for reuse in scheduler.take_reuses() {
+        sink.emit(Event::ArtifactReused {
+            run_id: run_id.clone(),
+            node: reuse.node,
+            digest: reuse.digest,
+            producer_attempt: reuse.producer_attempt,
+            verification_receipt: reuse.verification_receipt,
+            storage_layer: reuse.storage_layer,
+        });
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn run_plan(
     request: &TaskRequest<'_>,
@@ -827,6 +841,7 @@ fn run_plan(
     preparer.try_apply_one_shell(&plan.serial_order)?;
 
     let mut to_start = scheduler.schedule_ready();
+    emit_reuses(&mut scheduler, sink);
     loop {
         if let Some(codes) = supervisor
             .handle_interrupt(&interrupts, SHUTDOWN_GRACE)
@@ -942,6 +957,7 @@ fn run_plan(
                 first_failure = Some(code);
             }
             to_start.extend(scheduler.complete(&id, code)?);
+            emit_reuses(&mut scheduler, sink);
             if scheduler.failure_policy() == FailurePolicy::FailFast && !supervisor.is_empty() {
                 let shut = supervisor
                     .shutdown_all(SHUTDOWN_GRACE)
@@ -1029,6 +1045,7 @@ fn run_plan(
                     seq: None,
                 });
                 to_start.extend(scheduler.complete(&node_id, exit::SUCCESS)?);
+                emit_reuses(&mut scheduler, sink);
                 continue;
             }
 
@@ -1142,6 +1159,7 @@ fn run_plan(
             }
 
             to_start = scheduler.complete(&id, code)?;
+            emit_reuses(&mut scheduler, sink);
 
             if scheduler.failure_policy() == FailurePolicy::FailFast
                 && code != exit::SUCCESS

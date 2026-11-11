@@ -96,6 +96,8 @@ pub struct ScheduleOutcome {
     pub cancelled_nodes: Vec<String>,
     /// Nodes skipped because a required dependency failed (keep-going).
     pub skipped_nodes: Vec<String>,
+    /// Nodes satisfied by a verified artifact instead of a process.
+    pub reused_nodes: Vec<String>,
 }
 
 /// Ready-queue scheduler with a global in-flight job limit.
@@ -121,6 +123,14 @@ pub struct Scheduler {
     fail_fast_tripped: bool,
     /// When set, ready nodes with a verified artifact record may be skipped.
     artifact_root: Option<std::path::PathBuf>,
+    /// Nodes whose task opted into artifact reuse.
+    artifact_reuse: BTreeSet<String>,
+    /// Requirements from the current plan. Absent means reuse stays unmeasured.
+    requirements: Option<crate::CurrentRequirements>,
+    /// Reuses accepted since the last [`Self::take_reuses`] call.
+    reuses: Vec<crate::ArtifactReuse>,
+    /// Every node reused during this scheduler, including ones already emitted.
+    reused_nodes: Vec<String>,
 }
 
 impl Scheduler {
@@ -174,6 +184,12 @@ impl Scheduler {
             }
         }
 
+        let artifact_reuse = plan
+            .nodes
+            .iter()
+            .filter(|node| node.artifact_reuse && !node.interactive)
+            .map(|node| node.id.clone())
+            .collect();
         let scheduler = Self {
             failure_policy: plan.failure_policy,
             jobs,
@@ -190,6 +206,10 @@ impl Scheduler {
             memory_in_use: 0,
             fail_fast_tripped: false,
             artifact_root: None,
+            artifact_reuse,
+            requirements: None,
+            reuses: Vec::new(),
+            reused_nodes: Vec::new(),
         };
         scheduler.validate_schedulability()?;
         Ok(scheduler)
@@ -265,14 +285,33 @@ impl Scheduler {
         self.artifact_root = Some(root.to_owned());
     }
 
+    /// Supply the requirements of this run. They are not read from the artifact receipt.
+    pub fn set_requirements(&mut self, requirements: crate::CurrentRequirements) {
+        self.requirements = Some(requirements);
+    }
+
+    /// Reuses accepted since the previous call.
+    pub fn take_reuses(&mut self) -> Vec<crate::ArtifactReuse> {
+        std::mem::take(&mut self.reuses)
+    }
+
     fn promote_recorded_reuse(&mut self) {
         let Some(root) = self.artifact_root.clone() else {
             return;
         };
+        let requirements = self.requirements.clone().unwrap_or_default();
         let ready: Vec<String> = self.ready.iter().cloned().collect();
         for id in ready {
-            let availability = crate::resolve_availability(&root, &id);
-            let _ = self.reuse_verified(&id, &availability);
+            if !self.artifact_reuse.contains(&id) {
+                continue;
+            }
+            let (availability, note) = crate::resolve_availability(&root, &id, &requirements);
+            if self.reuse_verified(&id, &availability).unwrap_or(false)
+                && let Some(note) = note
+            {
+                self.reused_nodes.push(note.node.clone());
+                self.reuses.push(note);
+            }
         }
     }
 
@@ -467,6 +506,7 @@ impl Scheduler {
         ScheduleOutcome {
             success: all_succeeded,
             cancelled: self.fail_fast_tripped,
+            reused_nodes: self.reused_nodes.clone(),
             failed,
             cancelled_nodes,
             skipped_nodes,

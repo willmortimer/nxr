@@ -10,6 +10,7 @@
     { "$ref": "#/$defs/stdout_chunk" },
     { "$ref": "#/$defs/stderr_chunk" },
     { "$ref": "#/$defs/node_exited" },
+    { "$ref": "#/$defs/artifact_reused" },
     { "$ref": "#/$defs/client_detached" },
     { "$ref": "#/$defs/phase" },
     { "$ref": "#/$defs/run_completed" },
@@ -177,6 +178,20 @@
           "minimum": 0,
           "description": "Optional monotonic sequence number within the run."
         }
+      }
+    },
+    "artifact_reused": {
+      "type": "object",
+      "required": ["type", "run_id", "node", "digest", "producer_attempt", "verification_receipt", "storage_layer"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "artifact_reused" },
+        "run_id": { "type": "string" },
+        "node": { "type": "string" },
+        "digest": { "type": "string" },
+        "producer_attempt": { "type": "string" },
+        "verification_receipt": { "type": "string" },
+        "storage_layer": { "type": "string" }
       }
     },
     "client_detached": {

@@ -91,6 +91,9 @@ pub struct PlanNode {
     /// Required CPU architecture (`x86_64`, `aarch64`, …). Omitted when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub architecture: Option<String>,
+    /// When true, a verified artifact may satisfy this node without running it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub artifact_reuse: bool,
     /// Process environment applied to this node on top of the runner context.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub environment: BTreeMap<String, String>,
@@ -153,6 +156,19 @@ impl ExecutionPlan {
     pub fn has_interactive_nodes(&self) -> bool {
         self.nodes.iter().any(|n| n.interactive)
     }
+}
+
+fn artifact_reuse_allowed(definition: &TaskDefinition) -> bool {
+    if !definition.artifact_reuse || definition.interactive {
+        return false;
+    }
+    let marked = |value: &str| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "migration" | "migrate" | "deploy" | "state-changing" | "state_changing"
+        )
+    };
+    !definition.category.as_deref().is_some_and(marked) && !marked(&definition.app)
 }
 
 /// Build a serial [`ExecutionPlan`] for `root` from task definitions.
@@ -222,6 +238,7 @@ pub fn build_execution_plan_roots(
                 working_directory: None,
                 artifacts: Vec::new(),
                 inputs: Vec::new(),
+                artifact_reuse: artifact_reuse_allowed(definition),
             })
         })
         .collect();

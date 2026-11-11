@@ -167,6 +167,7 @@ mod tests {
                     context: None,
                     parameters: BTreeMap::new(),
                     matrix: None,
+                    artifact_reuse: false,
                 },
             )]),
         };

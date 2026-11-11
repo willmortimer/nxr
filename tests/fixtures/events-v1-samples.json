@@ -39,6 +39,15 @@
     "code": null
   },
   {
+    "type": "artifact_reused",
+    "run_id": "run",
+    "node": "fmt",
+    "digest": "sha256:ab",
+    "producer_attempt": "att",
+    "verification_receipt": ".nxr/artifacts/receipts/fmt.json",
+    "storage_layer": "local_file"
+  },
+  {
     "type": "client_detached",
     "run_id": "run",
     "node": "fmt",

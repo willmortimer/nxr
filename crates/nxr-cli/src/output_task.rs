@@ -4,7 +4,7 @@
 //! Human modes decode chunk bytes with an incremental UTF-8 decoder so 4 KiB
 //! pipe reads never split multi-byte characters into replacement garbage.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufReader, IsTerminal, Seek, SeekFrom, Write};
 
 use clap::ValueEnum;
@@ -199,6 +199,8 @@ struct TaskOutputRendererState {
     grouped: BTreeMap<String, NodeBuffers>,
     /// Compact parallel status (`gh run watch`-style) for live mode on a TTY.
     watch: WatchStatusState,
+    executed: BTreeSet<String>,
+    reused: BTreeSet<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -664,7 +666,16 @@ impl EventSink for TaskOutputRenderer<'_> {
                 self.set_watch_phase(&node, WatchNodePhase::Queued);
             }
             Event::NodeStarted { node, .. } => {
+                self.state.executed.insert(node.clone());
                 self.set_watch_phase(&node, WatchNodePhase::Running);
+            }
+            Event::ArtifactReused { node, digest, .. } => {
+                self.state.reused.insert(node.clone());
+                if matches!(self.mode, TaskOutputMode::Summary) {
+                    let _ = writeln!(self.stdout, "{node:<24} {:<10} -", "reused");
+                } else if !self.watch_enabled() {
+                    let _ = writeln!(self.stderr, "[nxr] {node} artifact_reused {digest}");
+                }
             }
             Event::ClientDetached {
                 node, attempt_id, ..
@@ -689,6 +700,14 @@ impl EventSink for TaskOutputRenderer<'_> {
             }
             Event::RunCompleted { .. } => {
                 self.clear_status_line();
+                if matches!(self.mode, TaskOutputMode::Summary) {
+                    let _ = writeln!(
+                        self.stdout,
+                        "executed {} reused {}",
+                        self.state.executed.len(),
+                        self.state.reused.len()
+                    );
+                }
             }
         }
     }

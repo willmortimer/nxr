@@ -353,6 +353,7 @@ pub fn plan_workflow_document(
                 working_directory: task.working_directory.clone(),
                 artifacts: task.artifacts.clone(),
                 inputs: task.inputs.clone(),
+                artifact_reuse: false,
             })
         })
         .collect();

@@ -273,6 +273,21 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// A ready, opted-in node was satisfied by a verified artifact.
+    ArtifactReused {
+        /// NXR run id.
+        run_id: String,
+        /// Task id.
+        node: String,
+        /// Verified content digest.
+        digest: String,
+        /// Producer attempt that wrote the receipt.
+        producer_attempt: String,
+        /// Where the bytes were read.
+        storage_layer: String,
+        /// Producer receipt checked against the current plan and the object bytes.
+        verification_receipt: String,
+    },
     /// The local client stopped waiting. The remote attempt is still running.
     ClientDetached {
         /// NXR run id. Not the remote attempt id.
@@ -481,6 +496,7 @@ pub fn event_kind(event: &Event) -> &'static str {
         Event::StdoutChunk { .. } => "stdout_chunk",
         Event::StderrChunk { .. } => "stderr_chunk",
         Event::NodeExited { .. } => "node_exited",
+        Event::ArtifactReused { .. } => "artifact_reused",
         Event::ClientDetached { .. } => "client_detached",
         Event::Phase { .. } => "phase",
         Event::RunCompleted { .. } => "run_completed",
@@ -526,6 +542,7 @@ mod tests {
         "stdout_chunk",
         "stderr_chunk",
         "node_exited",
+        "artifact_reused",
         "client_detached",
         "phase",
         "run_completed",
@@ -547,6 +564,14 @@ mod tests {
             },
             Event::node_exited("a".to_owned(), Some(1)),
             Event::node_exited("b".to_owned(), None),
+            Event::ArtifactReused {
+                run_id: "run".to_owned(),
+                node: "a".to_owned(),
+                digest: "sha256:ab".to_owned(),
+                producer_attempt: "att".to_owned(),
+                storage_layer: "local_file".to_owned(),
+                verification_receipt: ".nxr/artifacts/receipts/a.json".to_owned(),
+            },
             Event::ClientDetached {
                 run_id: "run".to_owned(),
                 node: "a".to_owned(),
@@ -813,7 +838,7 @@ mod tests {
     #[test]
     fn fixture_events_round_trip_and_match_schema() {
         let values: Vec<Value> = serde_json::from_str(EVENTS_SAMPLES).expect("parse fixture");
-        assert_eq!(values.len(), 12);
+        assert_eq!(values.len(), 13);
 
         let mut seen = BTreeSet::new();
         for value in values {

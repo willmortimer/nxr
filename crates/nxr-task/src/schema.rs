@@ -460,6 +460,10 @@ pub struct TaskDefinition {
     /// Matrix include expansion (schema v2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matrix: Option<TaskMatrix>,
+
+    /// When true, a verified immutable output may satisfy this task without running it.
+    #[serde(default, rename = "artifactReuse", skip_serializing_if = "std::ops::Not::not")]
+    pub artifact_reuse: bool,
 }
 
 /// Matrix expansion metadata (schema v2).
@@ -709,6 +713,7 @@ impl TaskDefinition {
             context: None,
             parameters: BTreeMap::new(),
             matrix: None,
+                artifact_reuse: false,
         }
     }
 }
@@ -984,6 +989,8 @@ struct TaskDefinitionV2Strict {
     parameters: BTreeMap<String, TaskParameterV2Strict>,
     #[serde(default)]
     matrix: Option<TaskMatrixV2Strict>,
+    #[serde(default, rename = "artifactReuse")]
+    artifact_reuse: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1164,6 +1171,7 @@ impl From<TaskDefinitionV2Strict> for TaskDefinition {
                 .map(|(name, param)| (name, param.into()))
                 .collect(),
             matrix: strict.matrix.map(Into::into),
+            artifact_reuse: strict.artifact_reuse,
         }
     }
 }
@@ -1327,6 +1335,7 @@ mod tests {
                 context: None,
                 parameters: BTreeMap::new(),
                 matrix: None,
+                artifact_reuse: false,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1736,6 +1745,7 @@ mod tests {
                 context: None,
                 parameters: BTreeMap::new(),
                 matrix: None,
+                artifact_reuse: false,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1771,6 +1781,7 @@ mod tests {
                 context: None,
                 parameters: BTreeMap::new(),
                 matrix: None,
+                artifact_reuse: false,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1810,6 +1821,7 @@ mod tests {
                 context: None,
                 parameters: BTreeMap::new(),
                 matrix: None,
+                artifact_reuse: false,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1844,6 +1856,7 @@ mod tests {
                 context: None,
                 parameters: BTreeMap::new(),
                 matrix: None,
+                artifact_reuse: false,
             },
         );
         let value = serde_json::to_value(TaskDocument::new(tasks)).expect("serialize");
