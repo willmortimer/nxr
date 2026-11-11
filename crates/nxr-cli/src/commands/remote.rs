@@ -1266,6 +1266,11 @@ pub(crate) fn unique_run_id() -> String {
     format!("run-{millis}-{}-{sequence}", std::process::id())
 }
 
+/// A producer attempt id. It is not the run id.
+pub(crate) fn unique_attempt_id() -> String {
+    format!("att-{}", unique_run_id().trim_start_matches("run-"))
+}
+
 pub(crate) fn set_run_context(run_id: String, leaves: usize) {
     if let Ok(mut guard) = RUN_CONTEXT.lock() {
         *guard = Some(RunContext { run_id, leaves });

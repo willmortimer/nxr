@@ -19,6 +19,7 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 fs2 = { workspace = true }
+openat = "0.1.21"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tar = "0.4"
 

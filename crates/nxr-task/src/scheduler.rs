@@ -919,7 +919,8 @@ mod tests {
         let plan = build_execution_plan(&tasks, "c", FailurePolicy::FailFast, None).expect("plan");
         let root = tempfile::tempdir().expect("root");
         commit_clean_sources(root.path(), &["a", "b", "c"]);
-        let requirements = crate::requirements_for_plan(root.path(), &tasks, &plan);
+        let programs = reuse_programs(&["a", "b", "c"]);
+        let requirements = crate::requirements_for_plan(root.path(), &tasks, &plan, &programs);
         let outputs = crate::single_output_paths(&tasks, &plan);
         for id in ["a", "b", "c"] {
             let relative = format!("out/{id}.bin");
@@ -948,6 +949,57 @@ mod tests {
         assert_eq!(std::fs::read(root.path().join("out/c.bin")).unwrap(), b"c");
     }
 
+    #[test]
+    fn a_changed_operation_starts_the_producer() {
+        let mut tasks = BTreeMap::new();
+        let mut definition = TaskDefinition::new("a");
+        definition.artifact_reuse = true;
+        definition.paths = vec!["src/a.txt".to_owned()];
+        definition.outputs = vec![crate::schema::TaskOutput {
+            path: "out/a.bin".to_owned(),
+            mode: None,
+            optional: false,
+        }];
+        tasks.insert("a".to_owned(), definition);
+        let plan = build_execution_plan(&tasks, "a", FailurePolicy::FailFast, None).expect("plan");
+        let root = tempfile::tempdir().expect("root");
+        commit_clean_sources(root.path(), &["a"]);
+        let programs = reuse_programs(&["a"]);
+        let mut requirements = crate::requirements_for_plan(root.path(), &tasks, &plan, &programs);
+        std::fs::create_dir_all(root.path().join("out")).expect("out");
+        std::fs::write(root.path().join("out/a.bin"), b"a").expect("output");
+        crate::record_producer_receipt(
+            root.path(),
+            "a",
+            requirements.get("a").expect("requirements"),
+            "out/a.bin",
+            "att-cold",
+        )
+        .expect("receipt");
+        requirements.get_mut("a").expect("a").operation_digest = "sha256:other".to_owned();
+        let mut sched = Scheduler::new(&plan, 1).expect("sched");
+        sched.watch_artifacts(root.path());
+        sched.set_node_requirements(requirements);
+        sched.set_output_paths(crate::single_output_paths(&tasks, &plan));
+        assert_eq!(sched.schedule_ready(), vec!["a".to_owned()]);
+        assert!(sched.reused_nodes.is_empty());
+    }
+
+    fn reuse_programs(ids: &[&str]) -> BTreeMap<String, crate::ResolvedProgram> {
+        ids.iter()
+            .map(|id| {
+                (
+                    (*id).to_owned(),
+                    crate::ResolvedProgram {
+                        system: "aarch64-darwin".to_owned(),
+                        program: "/nix/store/program".to_owned(),
+                        arguments: vec!["run".to_owned(), (*id).to_owned()],
+                    },
+                )
+            })
+            .collect()
+    }
+
     fn commit_clean_sources(root: &std::path::Path, ids: &[&str]) {
         let git = |args: &[&str]| {
             let status = std::process::Command::new("git")
@@ -964,6 +1016,8 @@ mod tests {
             std::fs::write(root.join("src").join(format!("{id}.txt")), *id).expect("source");
         }
         std::fs::write(root.join(".gitignore"), "out/\n.nxr/\n").expect("gitignore");
+        std::fs::write(root.join("flake.nix"), "{ app = \"fixture\"; }\n").expect("flake");
+        std::fs::write(root.join("flake.lock"), "{}\n").expect("lock");
         git(&["add", "."]);
         let status = std::process::Command::new("git")
             .arg("-C")

@@ -821,13 +821,40 @@ fn emit_reuses(scheduler: &mut nxr_task::Scheduler, sink: &mut dyn EventSink, ru
 }
 
 #[allow(clippy::too_many_lines)]
+fn resolved_programs(
+    preparer: &mut TaskNodePreparer<'_>,
+    plan: &ExecutionPlan,
+) -> Result<BTreeMap<String, nxr_task::ResolvedProgram>, TaskError> {
+    let mut programs = BTreeMap::new();
+    for node in &plan.nodes {
+        if !node.artifact_reuse {
+            continue;
+        }
+        let prepared = preparer
+            .ensure_stage(&node.id, NodePrepStage::SpawnPlan)
+            .map_err(TaskError::Prepare)?;
+        let program = prepared.program.as_str();
+        if program.is_empty() || prepared.plan.system.is_empty() {
+            continue;
+        }
+        programs.insert(
+            node.id.clone(),
+            nxr_task::ResolvedProgram {
+                system: prepared.plan.system.clone(),
+                program: program.to_owned(),
+                arguments: prepared.arguments.clone(),
+            },
+        );
+    }
+    Ok(programs)
+}
+
 fn record_opt_in_receipt(
     root: &std::path::Path,
     document: &nxr_task::TaskDocument,
     requirements: &BTreeMap<String, nxr_task::CurrentRequirements>,
     node: &str,
     code: i32,
-    run_id: &str,
 ) -> Result<(), TaskError> {
     if code != exit::SUCCESS {
         return Ok(());
@@ -846,7 +873,7 @@ fn record_opt_in_receipt(
         node,
         requirements,
         &definition.outputs[0].path,
-        run_id,
+        &super::remote::unique_attempt_id(),
     )
     .map_err(TaskError::Io)
 }
@@ -866,7 +893,9 @@ fn run_plan(
     let artifact_root = std::path::PathBuf::from(preparer.flake_root().as_str());
     let mut scheduler = Scheduler::new(plan, request.jobs)?;
     scheduler.watch_artifacts(&artifact_root);
-    let node_requirements = nxr_task::requirements_for_plan(&artifact_root, &document.tasks, plan);
+    let programs = resolved_programs(preparer, plan)?;
+    let node_requirements =
+        nxr_task::requirements_for_plan(&artifact_root, &document.tasks, plan, &programs);
     scheduler.set_node_requirements(node_requirements.clone());
     scheduler.set_output_paths(nxr_task::single_output_paths(&document.tasks, plan));
     let mut supervisor = Supervisor::new();
@@ -1097,7 +1126,6 @@ fn run_plan(
                     &node_requirements,
                     &node_id,
                     exit::SUCCESS,
-                    run_id,
                 )?;
                 to_start.extend(scheduler.complete(&node_id, exit::SUCCESS)?);
                 emit_reuses(&mut scheduler, sink, run_id);
@@ -1213,14 +1241,7 @@ fn run_plan(
                 first_failure = Some(code);
             }
 
-            record_opt_in_receipt(
-                &artifact_root,
-                document,
-                &node_requirements,
-                &id,
-                code,
-                run_id,
-            )?;
+            record_opt_in_receipt(&artifact_root, document, &node_requirements, &id, code)?;
             to_start = scheduler.complete(&id, code)?;
             emit_reuses(&mut scheduler, sink, run_id);
 

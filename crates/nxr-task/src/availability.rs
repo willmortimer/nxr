@@ -65,6 +65,19 @@ pub struct CurrentRequirements {
     pub platform: String,
     /// Source digest the task requires now.
     pub source_digest: String,
+    /// Fingerprint of the producer operation. Empty means unmeasured.
+    pub operation_digest: String,
+}
+
+/// The realized command for one node. This is not the producer output.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedProgram {
+    /// Nix system the command was resolved for.
+    pub system: String,
+    /// Executable path.
+    pub program: String,
+    /// Arguments that belong to that executable.
+    pub arguments: Vec<String>,
 }
 
 /// A reuse the scheduler accepted. The event stream records this separately from success.
@@ -136,39 +149,35 @@ pub fn resolve_availability(
         },
         None => (Availability::NotMeasured, Availability::NotMeasured),
     };
-    let requirements_match = compare_requirement(
-        value.get("consumer").and_then(|item| item.as_str()),
-        &requirements.consumer,
-    )
-    .and_then(|consumer| {
+    let checks = [
+        compare_requirement(
+            value.get("consumer").and_then(|item| item.as_str()),
+            &requirements.consumer,
+        ),
         compare_requirement(
             value.get("toolchain").and_then(|item| item.as_str()),
             &requirements.toolchain,
-        )
-        .map(|toolchain| consumer && toolchain)
-    })
-    .and_then(|so_far| {
+        ),
         compare_requirement(
             value.get("platform").and_then(|item| item.as_str()),
             &requirements.platform,
-        )
-        .map(|platform| so_far && platform)
-    })
-    .and_then(|so_far| {
+        ),
         compare_requirement(
             value.get("source").and_then(|item| item.as_str()),
             &requirements.source_digest,
-        )
-        .map(|source| so_far && source)
-    })
-    .map(|matched| {
-        if matched {
-            Availability::Yes
-        } else {
-            Availability::No
-        }
-    })
-    .unwrap_or(Availability::NotMeasured);
+        ),
+        compare_requirement(
+            value.get("operation").and_then(|item| item.as_str()),
+            &requirements.operation_digest,
+        ),
+    ];
+    let requirements_match = if checks.contains(&Some(false)) {
+        Availability::No
+    } else if checks.contains(&None) {
+        Availability::NotMeasured
+    } else {
+        Availability::Yes
+    };
     let availability = ArtifactAvailability {
         schema: "artifact-availability-v1".to_owned(),
         produced,
@@ -211,14 +220,19 @@ fn hex_sha256(bytes: &[u8]) -> String {
 pub fn current_requirements(
     root: &std::path::Path,
     node: &str,
-    app: &str,
-    shell: Option<&str>,
+    definition: &crate::schema::TaskDefinition,
     platform: Option<&str>,
     paths: &[String],
+    program: Option<&ResolvedProgram>,
 ) -> CurrentRequirements {
-    let toolchain = match shell.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(shell) => format!("{app}+{shell}"),
-        None => app.to_owned(),
+    let toolchain = match definition
+        .shell
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(shell) => format!("{}+{shell}", definition.app),
+        None => definition.app.clone(),
     };
     let platform = platform
         .map(str::trim)
@@ -230,6 +244,7 @@ pub fn current_requirements(
         toolchain,
         platform,
         source_digest: source_digest(root, paths),
+        operation_digest: operation_digest(root, definition, program),
     }
 }
 
@@ -239,6 +254,7 @@ pub fn requirements_for_plan(
     root: &std::path::Path,
     tasks: &std::collections::BTreeMap<String, crate::schema::TaskDefinition>,
     plan: &crate::plan_exec::ExecutionPlan,
+    programs: &std::collections::BTreeMap<String, ResolvedProgram>,
 ) -> std::collections::BTreeMap<String, CurrentRequirements> {
     let mut requirements = std::collections::BTreeMap::new();
     for node in &plan.nodes {
@@ -250,10 +266,10 @@ pub fn requirements_for_plan(
             current_requirements(
                 root,
                 &node.id,
-                &definition.app,
-                definition.shell.as_deref(),
+                definition,
                 node.platform.as_deref(),
                 &definition.paths,
+                programs.get(&node.id),
             ),
         );
     }
@@ -316,6 +332,7 @@ pub fn record_producer_receipt(
         "toolchain": requirements.toolchain,
         "platform": requirements.platform,
         "source": requirements.source_digest,
+        "operation": requirements.operation_digest,
     });
     let receipts = root.join(".nxr").join("artifacts").join("receipts");
     std::fs::create_dir_all(&receipts)?;
@@ -327,6 +344,9 @@ pub fn record_producer_receipt(
 }
 
 /// Copy a verified object onto the declared output when that file is missing or different.
+///
+/// The bytes that are hashed are the bytes that are renamed into place. A symlink
+/// in the output path is refused.
 #[must_use]
 pub fn restore_recorded_output(root: &std::path::Path, node: &str, relative: &str) -> bool {
     if !path_is_safe(relative) {
@@ -346,24 +366,121 @@ pub fn restore_recorded_output(root: &std::path::Path, node: &str, relative: &st
     let Some(location) = value.get("location").and_then(|item| item.as_str()) else {
         return false;
     };
+    let Some(claimed) = value.get("contentDigest").and_then(|item| item.as_str()) else {
+        return false;
+    };
     let Ok(bytes) = std::fs::read(location) else {
         return false;
     };
-    let destination = root.join(relative);
-    if std::fs::read(&destination).ok().as_deref() == Some(bytes.as_slice()) {
-        return true;
-    }
-    if let Some(parent) = destination.parent()
-        && !parent.as_os_str().is_empty()
-        && std::fs::create_dir_all(parent).is_err()
-    {
+    let actual = format!("sha256:{}", hex_sha256(&bytes));
+    if !actual.eq_ignore_ascii_case(claimed) {
         return false;
     }
-    let temporary = destination.with_extension("nxr-restore-tmp");
-    if std::fs::write(&temporary, &bytes).is_err() {
+    install_without_following_links(root, relative, &bytes)
+}
+
+fn install_without_following_links(root: &std::path::Path, relative: &str, bytes: &[u8]) -> bool {
+    let Ok(mut current) = openat::Dir::open(root) else {
+        return false;
+    };
+    let mut parts = relative
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let Some(name) = parts.pop() else {
+        return false;
+    };
+    for part in parts {
+        match current.metadata(part) {
+            Ok(meta) if meta.simple_type() == openat::SimpleType::Symlink => return false,
+            Ok(meta) if meta.simple_type() == openat::SimpleType::Dir => {
+                let Ok(next) = current.sub_dir(part) else {
+                    return false;
+                };
+                current = next;
+            }
+            Ok(_) => return false,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if current.create_dir(part, 0o755).is_err() {
+                    return false;
+                }
+                let Ok(next) = current.sub_dir(part) else {
+                    return false;
+                };
+                current = next;
+            }
+            Err(_) => return false,
+        }
+    }
+    match current.metadata(name) {
+        Ok(meta) if meta.simple_type() == openat::SimpleType::Symlink => return false,
+        Ok(meta) if meta.simple_type() == openat::SimpleType::File => {
+            let Ok(mut existing) = current.open_file(name) else {
+                return false;
+            };
+            let mut present = Vec::new();
+            if std::io::Read::read_to_end(&mut existing, &mut present).is_err() {
+                return false;
+            }
+            if present == bytes {
+                return true;
+            }
+        }
+        Ok(_) => return false,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return false,
+    }
+    let temporary = format!(".{name}.nxr-tmp");
+    let Ok(mut file) = current.write_file(&temporary, 0o644) else {
+        return false;
+    };
+    if std::io::Write::write_all(&mut file, bytes).is_err() {
+        let _ = current.remove_file(&temporary);
         return false;
     }
-    std::fs::rename(&temporary, &destination).is_ok()
+    drop(file);
+    current.local_rename(&temporary, name).is_ok()
+}
+
+fn operation_digest(
+    root: &std::path::Path,
+    definition: &crate::schema::TaskDefinition,
+    program: Option<&ResolvedProgram>,
+) -> String {
+    let Some(program) = program else {
+        return String::new();
+    };
+    if program.system.trim().is_empty() || program.program.trim().is_empty() {
+        return String::new();
+    }
+    let flake_nix = root.join("flake.nix");
+    let flake_lock = root.join("flake.lock");
+    let (Ok(nix_bytes), Ok(lock_bytes)) = (std::fs::read(&flake_nix), std::fs::read(&flake_lock))
+    else {
+        return String::new();
+    };
+    if nix_bytes.is_empty() || lock_bytes.is_empty() {
+        return String::new();
+    }
+    let Ok(task_json) = serde_json::to_string(definition) else {
+        return String::new();
+    };
+    let mut payload = Vec::new();
+    payload.extend_from_slice(b"task\0");
+    payload.extend_from_slice(task_json.as_bytes());
+    payload.extend_from_slice(b"\0nix\0");
+    payload.extend_from_slice(&nix_bytes);
+    payload.extend_from_slice(b"\0lock\0");
+    payload.extend_from_slice(&lock_bytes);
+    payload.extend_from_slice(b"\0system\0");
+    payload.extend_from_slice(program.system.as_bytes());
+    payload.extend_from_slice(b"\0program\0");
+    payload.extend_from_slice(program.program.as_bytes());
+    for argument in &program.arguments {
+        payload.extend_from_slice(b"\0arg\0");
+        payload.extend_from_slice(argument.as_bytes());
+    }
+    format!("sha256:{}", hex_sha256(&payload))
 }
 
 fn host_platform() -> String {
@@ -487,6 +604,7 @@ mod tests {
             toolchain: "wasm-bindgen".into(),
             platform: "wasm32".into(),
             source_digest: "changed".into(),
+            operation_digest: "sha256:op".into(),
         };
         let (availability, _) = resolve_availability(root.path(), "stargate", &changed);
         assert_eq!(availability.produced, Availability::Yes);
@@ -502,6 +620,45 @@ mod tests {
                 .0
                 .produced,
             Availability::NotMeasured
+        );
+    }
+
+    #[test]
+    fn restore_refuses_a_symlinked_parent_and_installs_the_hashed_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("linked")).unwrap();
+        let bytes = b"wasm-bytes";
+        let digest = format!("sha256:{}", hex_sha256(bytes));
+        let objects = root.path().join(".nxr/artifacts/objects");
+        std::fs::create_dir_all(&objects).unwrap();
+        let location = objects.join("object");
+        std::fs::write(&location, bytes).unwrap();
+        let receipts = root.path().join(".nxr/artifacts/receipts");
+        std::fs::create_dir_all(&receipts).unwrap();
+        std::fs::write(
+            receipts.join("worker.json"),
+            serde_json::json!({
+                "contentDigest": digest,
+                "location": location.display().to_string(),
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(!restore_recorded_output(
+            root.path(),
+            "worker",
+            "linked/worker.wasm"
+        ));
+        assert!(!outside.path().join("worker.wasm").exists());
+        assert!(restore_recorded_output(
+            root.path(),
+            "worker",
+            "out/worker.wasm"
+        ));
+        assert_eq!(
+            std::fs::read(root.path().join("out/worker.wasm")).unwrap(),
+            bytes
         );
     }
 }

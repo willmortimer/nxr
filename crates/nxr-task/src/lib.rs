@@ -41,9 +41,9 @@ pub mod workflows;
 
 pub use action_key::{WorkspaceCachePlan, WorkspaceCachePlanOptions, build_workspace_cache_plan};
 pub use availability::{
-    ArtifactAvailability, ArtifactReuse, Availability, CurrentRequirements, ReuseDecision,
-    current_requirements, record_producer_receipt, requirements_for_plan, resolve_availability,
-    restore_recorded_output, reuse_decision, single_output_paths,
+    ArtifactAvailability, ArtifactReuse, Availability, CurrentRequirements, ResolvedProgram,
+    ReuseDecision, current_requirements, record_producer_receipt, requirements_for_plan,
+    resolve_availability, restore_recorded_output, reuse_decision, single_output_paths,
 };
 pub use ci_metadata::{CiRunMetadata, attach_ci_run};
 pub use context::{

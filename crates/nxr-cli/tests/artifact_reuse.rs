@@ -53,6 +53,50 @@ fn second_task_run_skips_the_producer_chain() {
     assert_eq!(counter(root.path(), "b"), "x");
     assert_eq!(counter(root.path(), "c"), "x");
     assert_eq!(fs::read(root.path().join("out/c.bin")).unwrap(), b"c");
+    for (run_id, attempt) in reused_identities(&second.stderr) {
+        assert!(run_id.starts_with("run-"), "{run_id}");
+        assert!(attempt.starts_with("att-"), "{attempt}");
+        assert_ne!(run_id, attempt);
+    }
+
+    let flake = fs::read_to_string(root.path().join("flake.nix")).unwrap();
+    fs::write(
+        root.path().join("flake.nix"),
+        flake.replace("printf a > out/a.bin", "printf A > out/a.bin"),
+    )
+    .unwrap();
+    commit(root.path());
+    let third = nxr(root.path(), home.path());
+    assert!(
+        third.status.success(),
+        "changed flake failed\nstdout: {}\nstderr: {}",
+        third.stdout,
+        third.stderr
+    );
+    assert!(
+        !third.stderr.contains("\"type\":\"artifact_reused\""),
+        "a flake.nix change reused a producer\n{}",
+        third.stderr
+    );
+    assert_eq!(counter(root.path(), "a"), "xx");
+    assert_eq!(counter(root.path(), "b"), "xx");
+    assert_eq!(counter(root.path(), "c"), "xx");
+}
+
+fn reused_identities(stderr: &str) -> Vec<(String, String)> {
+    stderr
+        .lines()
+        .filter_map(|line| {
+            let value: serde_json::Value = serde_json::from_str(line).ok()?;
+            if value.get("type")?.as_str()? != "artifact_reused" {
+                return None;
+            }
+            Some((
+                value.get("run_id")?.as_str()?.to_owned(),
+                value.get("producer_attempt")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect()
 }
 
 fn nxr(root: &Path, home: &Path) -> Run {
