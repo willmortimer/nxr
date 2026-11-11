@@ -125,8 +125,10 @@ pub struct Scheduler {
     artifact_root: Option<std::path::PathBuf>,
     /// Nodes whose task opted into artifact reuse.
     artifact_reuse: BTreeSet<String>,
-    /// Requirements from the current plan. Absent means reuse stays unmeasured.
-    requirements: Option<crate::CurrentRequirements>,
+    /// Per-node requirements from the current plan. A missing node stays unmeasured.
+    requirements: std::collections::BTreeMap<String, crate::CurrentRequirements>,
+    /// Declared output path for nodes with exactly one output.
+    output_paths: std::collections::BTreeMap<String, String>,
     /// Reuses accepted since the last [`Self::take_reuses`] call.
     reuses: Vec<crate::ArtifactReuse>,
     /// Every node reused during this scheduler, including ones already emitted.
@@ -207,7 +209,8 @@ impl Scheduler {
             fail_fast_tripped: false,
             artifact_root: None,
             artifact_reuse,
-            requirements: None,
+            requirements: std::collections::BTreeMap::new(),
+            output_paths: std::collections::BTreeMap::new(),
             reuses: Vec::new(),
             reused_nodes: Vec::new(),
         };
@@ -285,9 +288,17 @@ impl Scheduler {
         self.artifact_root = Some(root.to_owned());
     }
 
-    /// Supply the requirements of this run. They are not read from the artifact receipt.
-    pub fn set_requirements(&mut self, requirements: crate::CurrentRequirements) {
-        self.requirements = Some(requirements);
+    /// Supply per-node requirements. They are not read from the artifact receipt.
+    pub fn set_node_requirements(
+        &mut self,
+        requirements: std::collections::BTreeMap<String, crate::CurrentRequirements>,
+    ) {
+        self.requirements = requirements;
+    }
+
+    /// Relative output paths used to restore a reused artifact before dependents start.
+    pub fn set_output_paths(&mut self, paths: std::collections::BTreeMap<String, String>) {
+        self.output_paths = paths;
     }
 
     /// Reuses accepted since the previous call.
@@ -299,18 +310,33 @@ impl Scheduler {
         let Some(root) = self.artifact_root.clone() else {
             return;
         };
-        let requirements = self.requirements.clone().unwrap_or_default();
-        let ready: Vec<String> = self.ready.iter().cloned().collect();
-        for id in ready {
-            if !self.artifact_reuse.contains(&id) {
-                continue;
+        loop {
+            let ready: Vec<String> = self.ready.iter().cloned().collect();
+            let mut progressed = false;
+            for id in ready {
+                if !self.artifact_reuse.contains(&id) {
+                    continue;
+                }
+                let requirements = self.requirements.get(&id).cloned().unwrap_or_default();
+                let (availability, note) = crate::resolve_availability(&root, &id, &requirements);
+                if crate::reuse_decision(&availability) != crate::ReuseDecision::Skip {
+                    continue;
+                }
+                if let Some(relative) = self.output_paths.get(&id).cloned()
+                    && !crate::restore_recorded_output(&root, &id, &relative)
+                {
+                    continue;
+                }
+                if self.reuse_verified(&id, &availability).unwrap_or(false)
+                    && let Some(note) = note
+                {
+                    self.reused_nodes.push(note.node.clone());
+                    self.reuses.push(note);
+                    progressed = true;
+                }
             }
-            let (availability, note) = crate::resolve_availability(&root, &id, &requirements);
-            if self.reuse_verified(&id, &availability).unwrap_or(false)
-                && let Some(note) = note
-            {
-                self.reused_nodes.push(note.node.clone());
-                self.reuses.push(note);
+            if !progressed {
+                break;
             }
         }
     }
@@ -873,6 +899,80 @@ mod tests {
         let mut sched = Scheduler::new(&plan, 1).expect("sched");
         assert!(!sched.reuse_verified("a", &blocked).expect("no skip"));
         assert_eq!(sched.schedule_ready(), vec!["a".to_owned()]);
+    }
+
+    #[test]
+    fn warm_chain_reuses_every_node_before_any_start() {
+        let mut tasks = BTreeMap::new();
+        for (id, deps) in [("a", &[][..]), ("b", &["a"][..]), ("c", &["b"][..])] {
+            let mut definition = TaskDefinition::new(id);
+            definition.depends_on = deps.iter().map(|dep| (*dep).to_owned()).collect();
+            definition.artifact_reuse = true;
+            definition.paths = vec![format!("src/{id}.txt")];
+            definition.outputs = vec![crate::schema::TaskOutput {
+                path: format!("out/{id}.bin"),
+                mode: None,
+                optional: false,
+            }];
+            tasks.insert(id.to_owned(), definition);
+        }
+        let plan = build_execution_plan(&tasks, "c", FailurePolicy::FailFast, None).expect("plan");
+        let root = tempfile::tempdir().expect("root");
+        commit_clean_sources(root.path(), &["a", "b", "c"]);
+        let requirements = crate::requirements_for_plan(root.path(), &tasks, &plan);
+        let outputs = crate::single_output_paths(&tasks, &plan);
+        for id in ["a", "b", "c"] {
+            let relative = format!("out/{id}.bin");
+            std::fs::create_dir_all(root.path().join("out")).expect("out");
+            std::fs::write(root.path().join(&relative), id).expect("output");
+            crate::record_producer_receipt(
+                root.path(),
+                id,
+                requirements.get(id).expect("requirements"),
+                &relative,
+                "run-cold",
+            )
+            .expect("receipt");
+            std::fs::remove_file(root.path().join(&relative)).expect("clear output");
+        }
+        let mut sched = Scheduler::new(&plan, 2).expect("sched");
+        sched.watch_artifacts(root.path());
+        sched.set_node_requirements(requirements);
+        sched.set_output_paths(outputs);
+        assert!(sched.schedule_ready().is_empty());
+        assert_eq!(
+            sched.reused_nodes,
+            vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]
+        );
+        assert!(sched.is_finished());
+        assert_eq!(std::fs::read(root.path().join("out/c.bin")).unwrap(), b"c");
+    }
+
+    fn commit_clean_sources(root: &std::path::Path, ids: &[&str]) {
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .status()
+                .expect("git");
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init"]);
+        std::fs::create_dir_all(root.join("src")).expect("src");
+        for id in ids {
+            std::fs::write(root.join("src").join(format!("{id}.txt")), *id).expect("source");
+        }
+        std::fs::write(root.join(".gitignore"), "out/\n.nxr/\n").expect("gitignore");
+        git(&["add", "."]);
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["-c", "user.email=nxr@example.com", "-c", "user.name=nxr"])
+            .args(["commit", "--no-verify", "-m", "sources"])
+            .status()
+            .expect("commit");
+        assert!(status.success(), "commit");
     }
 
     #[test]

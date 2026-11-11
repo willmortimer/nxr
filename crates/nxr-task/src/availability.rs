@@ -206,6 +206,213 @@ fn hex_sha256(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// Requirements for one plan node. Empty source means this node is not reused.
+#[must_use]
+pub fn current_requirements(
+    root: &std::path::Path,
+    node: &str,
+    app: &str,
+    shell: Option<&str>,
+    platform: Option<&str>,
+    paths: &[String],
+) -> CurrentRequirements {
+    let toolchain = match shell.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(shell) => format!("{app}+{shell}"),
+        None => app.to_owned(),
+    };
+    let platform = platform
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(host_platform);
+    CurrentRequirements {
+        consumer: node.to_owned(),
+        toolchain,
+        platform,
+        source_digest: source_digest(root, paths),
+    }
+}
+
+/// One requirement record per plan node that still exists in the task document.
+#[must_use]
+pub fn requirements_for_plan(
+    root: &std::path::Path,
+    tasks: &std::collections::BTreeMap<String, crate::schema::TaskDefinition>,
+    plan: &crate::plan_exec::ExecutionPlan,
+) -> std::collections::BTreeMap<String, CurrentRequirements> {
+    let mut requirements = std::collections::BTreeMap::new();
+    for node in &plan.nodes {
+        let Some(definition) = tasks.get(&node.id) else {
+            continue;
+        };
+        requirements.insert(
+            node.id.clone(),
+            current_requirements(
+                root,
+                &node.id,
+                &definition.app,
+                definition.shell.as_deref(),
+                node.platform.as_deref(),
+                &definition.paths,
+            ),
+        );
+    }
+    requirements
+}
+
+/// Relative output path for nodes that declare exactly one output.
+#[must_use]
+pub fn single_output_paths(
+    tasks: &std::collections::BTreeMap<String, crate::schema::TaskDefinition>,
+    plan: &crate::plan_exec::ExecutionPlan,
+) -> std::collections::BTreeMap<String, String> {
+    let mut paths = std::collections::BTreeMap::new();
+    for node in &plan.nodes {
+        let Some(definition) = tasks.get(&node.id) else {
+            continue;
+        };
+        if definition.outputs.len() == 1 {
+            paths.insert(node.id.clone(), definition.outputs[0].path.clone());
+        }
+    }
+    paths
+}
+
+/// Record a successful producer. A missing output, or any count other than one, writes nothing.
+///
+/// # Errors
+///
+/// Returns an error when the output exists but the receipt or object cannot be stored.
+pub fn record_producer_receipt(
+    root: &std::path::Path,
+    node: &str,
+    requirements: &CurrentRequirements,
+    output_relative: &str,
+    producer_attempt: &str,
+) -> std::io::Result<()> {
+    if producer_attempt.is_empty() || !path_is_safe(output_relative) {
+        return Ok(());
+    }
+    let source = root.join(output_relative);
+    let bytes = match std::fs::read(&source) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let digest = format!("sha256:{}", hex_sha256(&bytes));
+    let objects = root.join(".nxr").join("artifacts").join("objects");
+    std::fs::create_dir_all(&objects)?;
+    let name = digest.replace(':', "_");
+    let location = objects.join(&name);
+    let temporary = objects.join(format!(".{name}.tmp"));
+    std::fs::write(&temporary, &bytes)?;
+    std::fs::rename(&temporary, &location)?;
+    let receipt = serde_json::json!({
+        "producerAttempt": producer_attempt,
+        "outcome": "succeeded",
+        "contentDigest": digest,
+        "location": location.display().to_string(),
+        "consumer": requirements.consumer,
+        "toolchain": requirements.toolchain,
+        "platform": requirements.platform,
+        "source": requirements.source_digest,
+    });
+    let receipts = root.join(".nxr").join("artifacts").join("receipts");
+    std::fs::create_dir_all(&receipts)?;
+    let path = receipts.join(format!("{node}.json"));
+    let temporary = receipts.join(format!(".{node}.tmp"));
+    std::fs::write(&temporary, receipt.to_string())?;
+    std::fs::rename(&temporary, &path)?;
+    Ok(())
+}
+
+/// Copy a verified object onto the declared output when that file is missing or different.
+#[must_use]
+pub fn restore_recorded_output(root: &std::path::Path, node: &str, relative: &str) -> bool {
+    if !path_is_safe(relative) {
+        return false;
+    }
+    let receipt_path = root
+        .join(".nxr")
+        .join("artifacts")
+        .join("receipts")
+        .join(format!("{node}.json"));
+    let Ok(text) = std::fs::read_to_string(&receipt_path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    let Some(location) = value.get("location").and_then(|item| item.as_str()) else {
+        return false;
+    };
+    let Ok(bytes) = std::fs::read(location) else {
+        return false;
+    };
+    let destination = root.join(relative);
+    if std::fs::read(&destination).ok().as_deref() == Some(bytes.as_slice()) {
+        return true;
+    }
+    if let Some(parent) = destination.parent()
+        && !parent.as_os_str().is_empty()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return false;
+    }
+    let temporary = destination.with_extension("nxr-restore-tmp");
+    if std::fs::write(&temporary, &bytes).is_err() {
+        return false;
+    }
+    std::fs::rename(&temporary, &destination).is_ok()
+}
+
+fn host_platform() -> String {
+    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn source_digest(root: &std::path::Path, paths: &[String]) -> String {
+    if paths.is_empty() || tree_is_dirty(root) {
+        return String::new();
+    }
+    let mut sorted: Vec<&str> = paths.iter().map(String::as_str).collect();
+    sorted.sort_unstable();
+    let mut payload = Vec::new();
+    for path in sorted {
+        if !path_is_safe(path) {
+            return String::new();
+        }
+        let Ok(bytes) = std::fs::read(root.join(path)) else {
+            return String::new();
+        };
+        payload.extend_from_slice(path.as_bytes());
+        payload.push(0);
+        payload.extend_from_slice(&bytes);
+        payload.push(0);
+    }
+    format!("sha256:{}", hex_sha256(&payload))
+}
+
+fn tree_is_dirty(root: &std::path::Path) -> bool {
+    let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["status", "--porcelain", "--untracked-files=normal"])
+        .output()
+    else {
+        return true;
+    };
+    !output.status.success() || !output.stdout.is_empty()
+}
+
+fn path_is_safe(path: &str) -> bool {
+    let path = std::path::Path::new(path);
+    !path.as_os_str().is_empty()
+        && path.is_relative()
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
 /// Skip only when all four answers are yes.
 #[must_use]
 pub fn reuse_decision(record: &ArtifactAvailability) -> ReuseDecision {

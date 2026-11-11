@@ -469,6 +469,11 @@ pub fn execute_with_control(
         TaskNodePreparer::from_prepared(prepared_nodes, Some(&document))
     };
 
+    let run_id = std::env::var("NXR_RUN_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(super::remote::unique_run_id);
+
     if pipe_stdio {
         let target = format_task_roots(&canonical_roots);
         if matches!(effective_output, Some(TaskOutputMode::Tui)) {
@@ -490,6 +495,8 @@ pub fn execute_with_control(
             let result = run_plan(
                 request,
                 &plan,
+                &document,
+                &run_id,
                 &mut preparer,
                 &mut sink,
                 runner,
@@ -523,6 +530,8 @@ pub fn execute_with_control(
             let result = run_plan(
                 request,
                 &plan,
+                &document,
+                &run_id,
                 &mut preparer,
                 &mut sink,
                 runner,
@@ -542,6 +551,8 @@ pub fn execute_with_control(
         let result = run_plan(
             request,
             &plan,
+            &document,
+            &run_id,
             &mut preparer,
             &mut sink,
             runner,
@@ -796,11 +807,10 @@ fn dry_run_execute(
     Ok(exit::SUCCESS)
 }
 
-fn emit_reuses(scheduler: &mut nxr_task::Scheduler, sink: &mut dyn EventSink) {
-    let run_id = std::env::var("NXR_RUN_ID").unwrap_or_else(|_| "local".to_owned());
+fn emit_reuses(scheduler: &mut nxr_task::Scheduler, sink: &mut dyn EventSink, run_id: &str) {
     for reuse in scheduler.take_reuses() {
         sink.emit(Event::ArtifactReused {
-            run_id: run_id.clone(),
+            run_id: run_id.to_owned(),
             node: reuse.node,
             digest: reuse.digest,
             producer_attempt: reuse.producer_attempt,
@@ -811,17 +821,54 @@ fn emit_reuses(scheduler: &mut nxr_task::Scheduler, sink: &mut dyn EventSink) {
 }
 
 #[allow(clippy::too_many_lines)]
+fn record_opt_in_receipt(
+    root: &std::path::Path,
+    document: &nxr_task::TaskDocument,
+    requirements: &BTreeMap<String, nxr_task::CurrentRequirements>,
+    node: &str,
+    code: i32,
+    run_id: &str,
+) -> Result<(), TaskError> {
+    if code != exit::SUCCESS {
+        return Ok(());
+    }
+    let Some(definition) = document.tasks.get(node) else {
+        return Ok(());
+    };
+    if !definition.artifact_reuse || definition.outputs.len() != 1 {
+        return Ok(());
+    }
+    let Some(requirements) = requirements.get(node) else {
+        return Ok(());
+    };
+    nxr_task::record_producer_receipt(
+        root,
+        node,
+        requirements,
+        &definition.outputs[0].path,
+        run_id,
+    )
+    .map_err(TaskError::Io)
+}
+
+#[allow(clippy::too_many_lines)]
 fn run_plan(
     request: &TaskRequest<'_>,
     plan: &ExecutionPlan,
+    document: &nxr_task::TaskDocument,
+    run_id: &str,
     preparer: &mut TaskNodePreparer<'_>,
     sink: &mut dyn EventSink,
     runner: RunnerOutput,
     control: &mut dyn FnMut() -> io::Result<RunControl>,
     mut watch_prewarm: Option<&mut WatchPrewarm>,
 ) -> Result<i32, TaskError> {
+    let artifact_root = std::path::PathBuf::from(preparer.flake_root().as_str());
     let mut scheduler = Scheduler::new(plan, request.jobs)?;
-    scheduler.watch_artifacts(std::path::Path::new(preparer.flake_root().as_str()));
+    scheduler.watch_artifacts(&artifact_root);
+    let node_requirements = nxr_task::requirements_for_plan(&artifact_root, &document.tasks, plan);
+    scheduler.set_node_requirements(node_requirements.clone());
+    scheduler.set_output_paths(nxr_task::single_output_paths(&document.tasks, plan));
     let mut supervisor = Supervisor::new();
     let mut pipe_io = PipeMultiplexer::new();
     let mut chunk_coalescer = ChunkCoalescer::new(CoalesceLimits::default());
@@ -841,7 +888,7 @@ fn run_plan(
     preparer.try_apply_one_shell(&plan.serial_order)?;
 
     let mut to_start = scheduler.schedule_ready();
-    emit_reuses(&mut scheduler, sink);
+    emit_reuses(&mut scheduler, sink, run_id);
     loop {
         if let Some(codes) = supervisor
             .handle_interrupt(&interrupts, SHUTDOWN_GRACE)
@@ -957,7 +1004,7 @@ fn run_plan(
                 first_failure = Some(code);
             }
             to_start.extend(scheduler.complete(&id, code)?);
-            emit_reuses(&mut scheduler, sink);
+            emit_reuses(&mut scheduler, sink, run_id);
             if scheduler.failure_policy() == FailurePolicy::FailFast && !supervisor.is_empty() {
                 let shut = supervisor
                     .shutdown_all(SHUTDOWN_GRACE)
@@ -1044,8 +1091,16 @@ fn run_plan(
                     reason: Some("cache_hit".to_owned()),
                     seq: None,
                 });
+                record_opt_in_receipt(
+                    &artifact_root,
+                    document,
+                    &node_requirements,
+                    &node_id,
+                    exit::SUCCESS,
+                    run_id,
+                )?;
                 to_start.extend(scheduler.complete(&node_id, exit::SUCCESS)?);
-                emit_reuses(&mut scheduler, sink);
+                emit_reuses(&mut scheduler, sink, run_id);
                 continue;
             }
 
@@ -1158,8 +1213,16 @@ fn run_plan(
                 first_failure = Some(code);
             }
 
+            record_opt_in_receipt(
+                &artifact_root,
+                document,
+                &node_requirements,
+                &id,
+                code,
+                run_id,
+            )?;
             to_start = scheduler.complete(&id, code)?;
-            emit_reuses(&mut scheduler, sink);
+            emit_reuses(&mut scheduler, sink, run_id);
 
             if scheduler.failure_policy() == FailurePolicy::FailFast
                 && code != exit::SUCCESS
@@ -1251,7 +1314,7 @@ fn run_plan(
     };
     sink.emit(Event::RunCompleted {
         success,
-        run_id: None,
+        run_id: Some(run_id.to_owned()),
         status: run_status,
         duration_ms: None,
         started_at: None,

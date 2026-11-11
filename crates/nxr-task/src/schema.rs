@@ -462,7 +462,11 @@ pub struct TaskDefinition {
     pub matrix: Option<TaskMatrix>,
 
     /// When true, a verified immutable output may satisfy this task without running it.
-    #[serde(default, rename = "artifactReuse", skip_serializing_if = "std::ops::Not::not")]
+    #[serde(
+        default,
+        rename = "artifactReuse",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
     pub artifact_reuse: bool,
 }
 
@@ -713,7 +717,7 @@ impl TaskDefinition {
             context: None,
             parameters: BTreeMap::new(),
             matrix: None,
-                artifact_reuse: false,
+            artifact_reuse: false,
         }
     }
 }

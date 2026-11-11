@@ -690,7 +690,7 @@ impl EventSink for TaskOutputRenderer<'_> {
                     let watch = match phase.as_str() {
                         "queued" | "resolving" | "preparing_source" => WatchNodePhase::Queued,
                         "verified" => WatchNodePhase::Succeeded,
-                        "terminal" => WatchNodePhase::Succeeded,
+                        "terminal" => return,
                         _ => WatchNodePhase::Running,
                     };
                     self.set_watch_phase(&node, watch);
