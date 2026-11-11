@@ -119,6 +119,8 @@ pub struct Scheduler {
     memory_in_use: u64,
     /// Fail-fast: stop starting new nodes after the first failure.
     fail_fast_tripped: bool,
+    /// When set, ready nodes with a verified artifact record may be skipped.
+    artifact_root: Option<std::path::PathBuf>,
 }
 
 impl Scheduler {
@@ -187,6 +189,7 @@ impl Scheduler {
             cpu_in_use: 0,
             memory_in_use: 0,
             fail_fast_tripped: false,
+            artifact_root: None,
         };
         scheduler.validate_schedulability()?;
         Ok(scheduler)
@@ -257,6 +260,22 @@ impl Scheduler {
         self.running.len()
     }
 
+    /// Look for `.nxr/artifacts/records/{node}.json` before starting ready nodes.
+    pub fn watch_artifacts(&mut self, root: &std::path::Path) {
+        self.artifact_root = Some(root.to_owned());
+    }
+
+    fn promote_recorded_reuse(&mut self) {
+        let Some(root) = self.artifact_root.clone() else {
+            return;
+        };
+        let ready: Vec<String> = self.ready.iter().cloned().collect();
+        for id in ready {
+            let availability = crate::resolve_availability(&root, &id);
+            let _ = self.reuse_verified(&id, &availability);
+        }
+    }
+
     /// Whether fail-fast has tripped (no further starts will be issued).
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
@@ -282,15 +301,19 @@ impl Scheduler {
         node: &str,
         availability: &crate::ArtifactAvailability,
     ) -> Result<bool, SchedulerError> {
-        if !self.states.contains_key(node) {
-            return Err(SchedulerError::UnknownNode {
-                node: node.to_owned(),
-            });
-        }
-        if crate::reuse_decision(availability) != crate::ReuseDecision::Skip {
+        if self.fail_fast_tripped {
             return Ok(false);
         }
-        if self.running.contains(node) {
+        match self.states.get(node).copied() {
+            Some(NodeState::Ready) => {}
+            Some(_) => return Ok(false),
+            None => {
+                return Err(SchedulerError::UnknownNode {
+                    node: node.to_owned(),
+                });
+            }
+        }
+        if crate::reuse_decision(availability) != crate::ReuseDecision::Skip {
             return Ok(false);
         }
         self.ready.remove(node);
@@ -309,6 +332,7 @@ impl Scheduler {
             self.cancel_all_not_started();
             return Vec::new();
         }
+        self.promote_recorded_reuse();
 
         // Interactive nodes hold the terminal exclusively while running.
         if self.has_interactive_in_flight() {
@@ -809,6 +833,27 @@ mod tests {
         let mut sched = Scheduler::new(&plan, 1).expect("sched");
         assert!(!sched.reuse_verified("a", &blocked).expect("no skip"));
         assert_eq!(sched.schedule_ready(), vec!["a".to_owned()]);
+    }
+
+    #[test]
+    fn reuse_refuses_pending_failed_repeat_and_fail_fast() {
+        let plan = build_serial_plan(&diamond(), "d").expect("plan");
+        let warm = crate::ArtifactAvailability {
+            schema: "artifact-availability-v1".into(),
+            produced: crate::Availability::Yes,
+            digest_verified: crate::Availability::Yes,
+            accessible: crate::Availability::Yes,
+            requirements_match: crate::Availability::Yes,
+        };
+        let mut sched = Scheduler::new(&plan, 1).expect("sched");
+        assert!(!sched.reuse_verified("b", &warm).expect("pending"));
+        assert!(sched.reuse_verified("a", &warm).expect("ready"));
+        assert!(!sched.reuse_verified("a", &warm).expect("already reused"));
+
+        let mut sched = Scheduler::new(&plan, 1).expect("sched");
+        assert_eq!(sched.schedule_ready(), vec!["a".to_owned()]);
+        let _ = sched.complete("a", 1).expect("fail");
+        assert!(!sched.reuse_verified("c", &warm).expect("fail-fast"));
     }
 
     #[test]

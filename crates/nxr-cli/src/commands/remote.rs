@@ -25,7 +25,24 @@ use nxr_core::diagnostics::exit;
 /// before an attempt exists. A remote task that exits nonzero is `Ok(code)`.
 pub fn execute(name: &str, jsonl: bool) -> Result<i32, WorkflowError> {
     let mut last_phase = String::new();
-    let run_id = std::env::var("NXR_RUN_ID").unwrap_or_else(|_| unique_run_id());
+    let saved_for_run = if std::env::var("NIXPLANE_REATTACH").ok().as_deref() == Some("1") {
+        let root = receipt_root()?;
+        saved_receipt(&root, name)
+    } else {
+        None
+    };
+    let run_id = std::env::var("NXR_RUN_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            saved_for_run
+                .as_ref()
+                .and_then(|saved| saved.get("run_id"))
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(unique_run_id);
     let mut status = crate::output_task::PhaseStatus::detect();
     let nixplane = std::env::var("NIXPLANE").unwrap_or_else(|_| "nixplane".to_owned());
     let root = receipt_root()?;
@@ -43,6 +60,7 @@ pub fn execute(name: &str, jsonl: bool) -> Result<i32, WorkflowError> {
         .to_owned();
     let outputs = output_names(&spec);
     let mut receipt = seed_receipt(&root, name, &spec, &commit);
+    receipt["run_id"] = json!(run_id);
     let pointers = attempt_pointers(&root, name)?;
     let mut follow_id = std::env::var("NIXPLANE_FOLLOW")
         .ok()
@@ -459,7 +477,9 @@ pub(crate) fn cancel_reason(event: &Value) -> &'static str {
 /// A dependent may start only after the remote attempt reaches these phases.
 #[must_use]
 pub(crate) fn phase_releases_dependents(phase: &str) -> bool {
-    matches!(phase, "terminal" | "verified")
+    // A terminal phase is not success. Only a verified result releases dependents,
+    // and the scheduler applies that through on_exit or reuse_verified.
+    phase == "verified"
 }
 
 fn journal_evidence(events: &[Value]) -> String {
@@ -468,7 +488,19 @@ fn journal_evidence(events: &[Value]) -> String {
         .filter_map(|event| {
             let kind = event.get("event_type").and_then(Value::as_str)?;
             let sequence = event.get("sequence").and_then(Value::as_u64).unwrap_or(0);
-            Some(format!("seq={sequence} type={kind}"))
+            let class = event
+                .get("failure_class")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .map(|text| format!(" class={text}"))
+                .unwrap_or_default();
+            let log_ref = event
+                .get("log_ref")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .map(|text| format!(" log_ref={text}"))
+                .unwrap_or_default();
+            Some(format!("seq={sequence} type={kind}{class}{log_ref}"))
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -1428,7 +1460,8 @@ mod tests {
             None
         );
         assert!(!phase_releases_dependents("client_detached"));
-        assert!(phase_releases_dependents("terminal"));
+        assert!(!phase_releases_dependents("terminal"));
+        assert!(phase_releases_dependents("verified"));
         assert_eq!(
             cancel_reason(&json!({"event_type": "cancelled"})),
             "unknown"

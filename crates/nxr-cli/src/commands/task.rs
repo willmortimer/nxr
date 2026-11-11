@@ -807,6 +807,7 @@ fn run_plan(
     mut watch_prewarm: Option<&mut WatchPrewarm>,
 ) -> Result<i32, TaskError> {
     let mut scheduler = Scheduler::new(plan, request.jobs)?;
+    scheduler.watch_artifacts(std::path::Path::new(preparer.flake_root().as_str()));
     let mut supervisor = Supervisor::new();
     let mut pipe_io = PipeMultiplexer::new();
     let mut chunk_coalescer = ChunkCoalescer::new(CoalesceLimits::default());

@@ -40,7 +40,9 @@ pub mod selectors;
 pub mod workflows;
 
 pub use action_key::{WorkspaceCachePlan, WorkspaceCachePlanOptions, build_workspace_cache_plan};
-pub use availability::{ArtifactAvailability, Availability, ReuseDecision, reuse_decision};
+pub use availability::{
+    ArtifactAvailability, Availability, ReuseDecision, resolve_availability, reuse_decision,
+};
 pub use ci_metadata::{CiRunMetadata, attach_ci_run};
 pub use context::{
     AppliedTaskContext, ContextError, NXR_ASSUME_YES_ENV, PlanSecretEntry,
