@@ -67,18 +67,24 @@ pub fn execute(
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
     let started = std::time::Instant::now();
+    let mut phases = crate::output_task::PhaseStatus::detect();
+    phases.show(request.app, "resolving", false);
 
     if let LiveFastPathOutcome::Hit(live) =
         resolve_live_file_backed_app(request, true).map_err(RunError::Script)?
     {
         if dry_run {
+            phases.clear();
             let mut stdout = io::stdout().lock();
             write_plan(&mut stdout, &live.plan, json)?;
             return Ok(exit::SUCCESS);
         }
 
+        phases.show(request.app, "running", false);
+        phases.clear();
         let code = script::execute_prepared_script(&live, request.app, runner)
             .map_err(RunError::Script)?;
+        phases.finish(request.app, "terminal");
 
         history::record_completed_run(
             started,
@@ -96,6 +102,7 @@ pub fn execute(
     let prepared = prepare_fast_app_plan(request)?;
 
     if dry_run {
+        phases.clear();
         let mut stdout = io::stdout().lock();
         write_plan(&mut stdout, &prepared.plan, json)?;
         return Ok(exit::SUCCESS);
@@ -128,6 +135,8 @@ pub fn execute(
             .map_err(RunError::Supervision)?;
     }
 
+    phases.show(request.app, "running", false);
+    phases.clear();
     let (code, stderr) = nxr_process::run_in_with_stderr(
         spawn.program.as_std_path(),
         &spawn.arguments,
@@ -156,6 +165,7 @@ pub fn execute(
     );
 
     maybe_emit_app_failure_clipboard(request.app, code);
+    phases.finish(request.app, "terminal");
 
     Ok(code)
 }

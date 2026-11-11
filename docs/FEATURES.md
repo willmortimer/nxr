@@ -440,7 +440,8 @@ test                     failed     19.4s
 ```
 
 Event JSON (`--events jsonl`) may include `status`, `duration_ms`, and related
-optional fields on `node_exited` / `run_completed`.
+optional fields on `node_exited` / `run_completed`. A `phase` event is additive:
+`run_id`, `node`, `phase`, producer `source`, and producer `sequence`.
 
 ### 2.12 Configuration inspection
 

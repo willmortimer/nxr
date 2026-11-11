@@ -24,6 +24,7 @@ use nxr_core::diagnostics::exit;
 /// Returns [`WorkflowError`] when the spec cannot be built or `nixplane` fails
 /// before an attempt exists. A remote task that exits nonzero is `Ok(code)`.
 pub fn execute(name: &str) -> Result<i32, WorkflowError> {
+    let mut last_phase = String::new();
     let nixplane = std::env::var("NIXPLANE").unwrap_or_else(|_| "nixplane".to_owned());
     let root = receipt_root()?;
     let (spec_path, source_path, scratch) = prepare_paths(name)?;
@@ -105,6 +106,14 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
             "admitted attempt {attempt} status={}",
             accepted.get("status").and_then(Value::as_str).unwrap_or("")
         );
+        publish_phase(
+            name,
+            &attempt,
+            "queued",
+            "remote-journal",
+            0,
+            &mut last_phase,
+        );
         if std::env::var("NIXPLANE_STOP_AFTER_ADMIT").ok().as_deref() == Some("1") {
             receipt["journal_cursor"] = json!(0);
             write_receipt(&root, &receipt)?;
@@ -129,6 +138,7 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let mut finished: Option<Value> = None;
+    let mut published_phases = 1_u64;
     if std::env::var("NIXPLANE_REATTACH").ok().as_deref() == Some("1")
         && receipt.get("hash_ok").and_then(Value::as_bool) != Some(true)
         && let Some(terminal) = receipt.get("terminal").and_then(Value::as_str)
@@ -141,15 +151,39 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
     }
     while finished.is_none() {
         if Instant::now() > deadline {
-            let mut cancel_args =
-                vec!["execution".to_owned(), "cancel".to_owned(), attempt.clone()];
-            push_state(&mut cancel_args);
-            let _ = nixplane_output(&nixplane, cancel_args);
-            receipt["error"] = json!("timed out waiting for a terminal result");
+            let stop = classify_wait_stop(
+                std::env::var("NXR_CLIENT_WAIT").ok().as_deref(),
+                false,
+                false,
+            );
+            if stop == WaitStop::Cancel {
+                let mut cancel_args =
+                    vec!["execution".to_owned(), "cancel".to_owned(), attempt.clone()];
+                push_state(&mut cancel_args);
+                let _ = nixplane_output(&nixplane, cancel_args);
+                receipt["error"] = json!("timed out waiting for a terminal result");
+                receipt["journal_cursor"] = json!(cursor);
+                receipt["cancelled"] = json!(true);
+                receipt["wait_stop"] = json!("cancel");
+                write_receipt(&root, &receipt)?;
+                clear_attempts(&pointers, &attempt);
+                return Ok(124);
+            }
+            receipt["error"] = json!("client wait detached; attempt still running");
             receipt["journal_cursor"] = json!(cursor);
-            receipt["cancelled"] = json!(true);
+            receipt["detached"] = json!(true);
+            receipt["wait_stop"] = json!("detach");
             write_receipt(&root, &receipt)?;
-            clear_attempts(&pointers, &attempt);
+            publish_phase(
+                name,
+                &attempt,
+                "terminal",
+                "remote-journal",
+                published_phases,
+                &mut last_phase,
+            );
+            println!("detached attempt {attempt} cursor={cursor}");
+            drop(scratch);
             return Ok(124);
         }
         let page = match collect_journal(&nixplane, &attempt, cursor) {
@@ -157,11 +191,25 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
             Err(error) => {
                 receipt["journal_cursor"] = json!(cursor);
                 receipt["error"] = json!(error.to_string());
+                receipt["wait_stop"] = json!("dropped");
                 write_receipt(&root, &receipt)?;
                 return Err(error);
             }
         };
         cursor = journal_cursor(cursor, &page);
+        for event in &page {
+            if let Some(phase) = journal_phase(event) {
+                publish_phase(
+                    name,
+                    &attempt,
+                    phase,
+                    "remote-journal",
+                    published_phases,
+                    &mut last_phase,
+                );
+                published_phases = published_phases.saturating_add(1);
+            }
+        }
         events.extend(page);
         absorb_marks(&mut receipt, &events);
         finished = terminal_event(&events);
@@ -183,8 +231,20 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
     receipt["journal_cursor"] = json!(cursor);
     write_receipt(&root, &receipt)?;
     if kind == "cancelled" {
+        if receipt.get("cancelled").and_then(Value::as_bool) != Some(true) {
+            receipt["wait_stop"] = json!("server_deadline");
+        }
         write_receipt(&root, &receipt)?;
         clear_attempts(&pointers, &attempt);
+        publish_phase(
+            name,
+            &attempt,
+            "terminal",
+            "remote-journal",
+            published_phases,
+            &mut last_phase,
+        );
+        print_failure_summary(&events);
         println!("terminal attempt {attempt} cancelled exit={code}");
         drop(scratch);
         return Ok(code);
@@ -270,8 +330,30 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
     receipt["journal_cursor"] = json!(cursor);
     write_receipt(&root, &receipt)?;
     clear_attempts(&pointers, &attempt);
+    if hash_ok {
+        publish_phase(
+            name,
+            &attempt,
+            "verified",
+            "remote-journal",
+            published_phases,
+            &mut last_phase,
+        );
+        published_phases = published_phases.saturating_add(1);
+    }
+    publish_phase(
+        name,
+        &attempt,
+        "terminal",
+        "remote-journal",
+        published_phases,
+        &mut last_phase,
+    );
     println!("terminal attempt {attempt} exit={code}");
     println!("chunks resumed={resumed} fetched={fetched} hash_ok={hash_ok}");
+    if code != 0 || !hash_ok {
+        print_failure_summary(&events);
+    }
     for line in &mismatches {
         eprintln!("{line}");
     }
@@ -280,6 +362,117 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
         return Ok(1);
     }
     Ok(code)
+}
+
+/// How a client wait ends. These stay distinct on purpose.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WaitStop {
+    /// Client gave up waiting and left the attempt running.
+    Detach,
+    /// Client asked the Hub to cancel.
+    Cancel,
+    /// The journal read failed. The same attempt is replayed.
+    Dropped,
+    /// The server ended the attempt.
+    ServerDeadline,
+}
+
+/// Agent default is detach. `NXR_CLIENT_WAIT=cancel` restores the old cancel.
+#[must_use]
+pub(crate) fn classify_wait_stop(
+    client_wait: Option<&str>,
+    journal_error: bool,
+    server_cancelled: bool,
+) -> WaitStop {
+    if journal_error {
+        return WaitStop::Dropped;
+    }
+    if server_cancelled {
+        return WaitStop::ServerDeadline;
+    }
+    if client_wait == Some("cancel") {
+        return WaitStop::Cancel;
+    }
+    WaitStop::Detach
+}
+
+/// Map one journal record onto a phase. Unknown records are skipped.
+#[must_use]
+pub(crate) fn journal_phase(event: &Value) -> Option<&'static str> {
+    match event.get("event_type").and_then(Value::as_str) {
+        Some("source") => Some("preparing_source"),
+        Some("queued") | Some("admitted") => Some("queued"),
+        Some("assigned") | Some("started") => Some("assigned"),
+        Some("phase") => Some("running"),
+        Some("output") => {
+            let name = event.get("name").and_then(Value::as_str).unwrap_or("");
+            if name.contains("retriev") {
+                Some("retrieving")
+            } else {
+                Some("publishing")
+            }
+        }
+        Some("verified") => Some("verified"),
+        Some("exited") | Some("cancelled") | Some("failed") => Some("terminal"),
+        _ => None,
+    }
+}
+
+fn journal_evidence(events: &[Value]) -> String {
+    events
+        .iter()
+        .filter_map(|event| {
+            let kind = event.get("event_type").and_then(Value::as_str)?;
+            let detail = ["message", "error", "name", "detail"]
+                .iter()
+                .filter_map(|key| event.get(*key).and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join(" ");
+            Some(format!("{kind} {detail}").trim().to_owned())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn print_failure_summary(events: &[Value]) {
+    let summary = nxr_task::failure_summary("terminal", &journal_evidence(events));
+    if let Ok(line) = serde_json::to_string(&summary) {
+        eprintln!("{line}");
+    }
+}
+
+fn publish_phase(
+    node: &str,
+    attempt: &str,
+    phase: &str,
+    source: &str,
+    sequence: u64,
+    last: &mut String,
+) {
+    if last == phase {
+        return;
+    }
+    last.clear();
+    last.push_str(phase);
+    crate::output_task::emit_phase_jsonl(attempt, node, Some(attempt), phase, source, sequence);
+    let mut status = crate::output_task::PhaseStatus::detect();
+    status.show(node, phase, true);
+}
+
+/// JSONL for the admission transition. The human `admitted attempt` line stays
+/// until this record is what `--events jsonl` prints.
+#[must_use]
+pub(crate) fn admission_phase_json(attempt: &str, node: &str) -> String {
+    let event = nxr_task::Event::Phase {
+        run_id: attempt.to_owned(),
+        node: node.to_owned(),
+        attempt_id: Some(attempt.to_owned()),
+        phase: "queued".to_owned(),
+        source: "remote-journal".to_owned(),
+        sequence: 0,
+        detail: None,
+    };
+    serde_json::to_string(&event).unwrap_or_default()
 }
 
 fn prepare_paths(
@@ -1135,6 +1328,66 @@ mod tests {
     use std::sync::Mutex;
 
     static RUN_RECORD_TEST: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn admission_jsonl_carries_the_queued_phase() {
+        let line = admission_phase_json("att_1", "build");
+        let value: Value = serde_json::from_str(&line).expect("json");
+        assert_eq!(value["type"], "phase");
+        assert_eq!(value["phase"], "queued");
+        assert_eq!(value["attempt_id"], "att_1");
+        assert_eq!(value["sequence"], 0);
+    }
+
+    #[test]
+    fn journal_events_map_onto_one_phase_list() {
+        assert_eq!(
+            journal_phase(&json!({"event_type": "source"})),
+            Some("preparing_source")
+        );
+        assert_eq!(
+            journal_phase(&json!({"event_type": "started"})),
+            Some("assigned")
+        );
+        assert_eq!(
+            journal_phase(&json!({"event_type": "phase", "name": "test"})),
+            Some("running")
+        );
+        assert_eq!(
+            journal_phase(&json!({"event_type": "output", "name": "retrieving"})),
+            Some("retrieving")
+        );
+        assert_eq!(
+            journal_phase(&json!({"event_type": "exited"})),
+            Some("terminal")
+        );
+        assert_eq!(journal_phase(&json!({"event_type": "log"})), None);
+    }
+
+    #[test]
+    fn client_wait_detach_cancel_and_dropped_stay_distinct() {
+        assert_eq!(classify_wait_stop(None, false, false), WaitStop::Detach);
+        assert_eq!(
+            classify_wait_stop(Some("cancel"), false, false),
+            WaitStop::Cancel
+        );
+        assert_eq!(
+            classify_wait_stop(Some("cancel"), true, false),
+            WaitStop::Dropped
+        );
+        assert_eq!(
+            classify_wait_stop(None, false, true),
+            WaitStop::ServerDeadline
+        );
+    }
+
+    #[test]
+    fn failure_summary_uses_journal_evidence() {
+        let events = vec![json!({"event_type": "exited", "message": "sha256 mismatch"})];
+        let summary = nxr_task::failure_summary("terminal", &journal_evidence(&events));
+        assert_eq!(summary.category, "transfer_corruption");
+        assert!(summary.retryable);
+    }
 
     fn test_run_id() -> String {
         std::env::var("NXR_RUN_ID")

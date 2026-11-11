@@ -273,6 +273,29 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// One observed execution phase. Additive: older emitters omit it.
+    ///
+    /// `sequence` is the producer order. Wall-clock stamps stay on the
+    /// surrounding node events; this record carries duration only when a
+    /// caller puts it in `detail`.
+    Phase {
+        /// Opaque run identifier.
+        run_id: String,
+        /// Task or app id this phase belongs to.
+        node: String,
+        /// Remote attempt id, when the phase came from a worker journal.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt_id: Option<String>,
+        /// One of [`KNOWN_PHASES`].
+        phase: String,
+        /// Who produced the observation (`local-run`, `remote-journal`, …).
+        source: String,
+        /// Producer sequence. Order is this number, not arrival time.
+        sequence: u64,
+        /// Optional short context. Not a log dump.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
     /// The overall run finished.
     RunCompleted {
         /// Whether every required node succeeded under the active failure policy.
@@ -447,9 +470,29 @@ pub fn event_kind(event: &Event) -> &'static str {
         Event::StdoutChunk { .. } => "stdout_chunk",
         Event::StderrChunk { .. } => "stderr_chunk",
         Event::NodeExited { .. } => "node_exited",
+        Event::Phase { .. } => "phase",
         Event::RunCompleted { .. } => "run_completed",
         Event::Diagnostic { .. } => "diagnostic",
     }
+}
+
+/// Phases a producer may emit. Anything else is not a phase event.
+pub const KNOWN_PHASES: &[&str] = &[
+    "resolving",
+    "preparing_source",
+    "queued",
+    "assigned",
+    "running",
+    "publishing",
+    "retrieving",
+    "verified",
+    "terminal",
+];
+
+/// Whether `phase` is one of [`KNOWN_PHASES`].
+#[must_use]
+pub fn known_phase(phase: &str) -> bool {
+    KNOWN_PHASES.contains(&phase)
 }
 
 #[cfg(test)]
@@ -471,6 +514,7 @@ mod tests {
         "stdout_chunk",
         "stderr_chunk",
         "node_exited",
+        "phase",
         "run_completed",
         "diagnostic",
     ];
@@ -490,6 +534,15 @@ mod tests {
             },
             Event::node_exited("a".to_owned(), Some(1)),
             Event::node_exited("b".to_owned(), None),
+            Event::Phase {
+                run_id: "run".to_owned(),
+                node: "a".to_owned(),
+                attempt_id: None,
+                phase: "running".to_owned(),
+                source: "local-run".to_owned(),
+                sequence: 1,
+                detail: None,
+            },
             Event::run_completed(false),
             Event::Diagnostic {
                 message: "cycle avoided".to_owned(),
@@ -741,7 +794,7 @@ mod tests {
     #[test]
     fn fixture_events_round_trip_and_match_schema() {
         let values: Vec<Value> = serde_json::from_str(EVENTS_SAMPLES).expect("parse fixture");
-        assert_eq!(values.len(), 10);
+        assert_eq!(values.len(), 11);
 
         let mut seen = BTreeSet::new();
         for value in values {

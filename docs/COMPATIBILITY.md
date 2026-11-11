@@ -126,7 +126,7 @@ for the V2.0 release line:
 |---|---|---|
 | Task document | [`schemas/task-v1.schema.json`](../schemas/task-v1.schema.json) | **Frozen** — `schema_version: 1` on flake output `nxr.<system>` |
 | Execution plan | [`schemas/execution-plan-v1.schema.json`](../schemas/execution-plan-v1.schema.json) | **Frozen** — internal envelope for `nxr plan` task fallback and scheduling |
-| Execution events | [`schemas/events-v1.schema.json`](../schemas/events-v1.schema.json) | **Frozen** — matches the Rust [`Event`](../crates/nxr-task/src/events.rs) enum (`type`-tagged JSON) |
+| Execution events | [`schemas/events-v1.schema.json`](../schemas/events-v1.schema.json) | **Frozen** — matches the Rust [`Event`](../crates/nxr-task/src/events.rs) enum (`type`-tagged JSON). The `phase` variant is additive. |
 
 Policy for V2.x:
 

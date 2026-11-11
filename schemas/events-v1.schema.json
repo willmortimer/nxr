@@ -10,6 +10,7 @@
     { "$ref": "#/$defs/stdout_chunk" },
     { "$ref": "#/$defs/stderr_chunk" },
     { "$ref": "#/$defs/node_exited" },
+    { "$ref": "#/$defs/phase" },
     { "$ref": "#/$defs/run_completed" },
     { "$ref": "#/$defs/diagnostic" }
   ],
@@ -174,6 +175,56 @@
           "type": "integer",
           "minimum": 0,
           "description": "Optional monotonic sequence number within the run."
+        }
+      }
+    },
+    "phase": {
+      "type": "object",
+      "required": ["type", "run_id", "node", "phase", "source", "sequence"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "phase"
+        },
+        "run_id": {
+          "type": "string",
+          "description": "Opaque run identifier."
+        },
+        "node": {
+          "type": "string",
+          "description": "Task or app id this phase belongs to."
+        },
+        "attempt_id": {
+          "type": "string",
+          "description": "Remote attempt id, when the phase came from a worker journal."
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "resolving",
+            "preparing_source",
+            "queued",
+            "assigned",
+            "running",
+            "publishing",
+            "retrieving",
+            "verified",
+            "terminal"
+          ],
+          "description": "Observed phase. Order is the producer sequence."
+        },
+        "source": {
+          "type": "string",
+          "description": "Who produced the observation."
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Producer sequence. This is the order, not a timestamp."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Optional short context."
         }
       }
     },

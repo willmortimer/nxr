@@ -9,6 +9,7 @@ use std::io::{self, BufReader, IsTerminal, Seek, SeekFrom, Write};
 
 use clap::ValueEnum;
 use nxr_task::{ChunkEncoding, Event, EventSink, NullSink, OutputPayload};
+use serde_json;
 use tempfile::NamedTempFile;
 
 /// Multiplexed stdout/stderr presentation for parallel task runs.
@@ -215,6 +216,98 @@ enum WatchNodePhase {
 struct WatchStatusState {
     nodes: BTreeMap<String, WatchNodePhase>,
     line_open: bool,
+    /// Latest execution phase, drawn on the single status line.
+    execution_phase: Option<String>,
+}
+
+/// One status line for a TTY, or one newline per phase change on a pipe.
+///
+/// Local `nxr run` uses [`Self::show`] only when stderr is a terminal, then
+/// [`Self::clear`] before the child inherits stdio. Remote waits pass
+/// `force_text` so a captured log still records the phase change.
+pub struct PhaseStatus {
+    tty: bool,
+    last: Option<String>,
+}
+
+impl PhaseStatus {
+    /// Detect whether stderr is a terminal.
+    #[must_use]
+    pub fn detect() -> Self {
+        Self {
+            tty: io::stderr().is_terminal(),
+            last: None,
+        }
+    }
+
+    /// Record a phase. A repeat of the same phase does not write again.
+    pub fn show(&mut self, node: &str, phase: &str, force_text: bool) {
+        if self.last.as_deref() == Some(phase) {
+            return;
+        }
+        self.last = Some(phase.to_owned());
+        if self.tty {
+            let _ = write!(io::stderr(), "\r[nxr] {phase:<72}");
+            let _ = io::stderr().flush();
+            return;
+        }
+        if force_text {
+            eprintln!("[nxr] {node} {phase}");
+        }
+    }
+
+    /// Erase the status line before child bytes or the next prompt.
+    pub fn clear(&mut self) {
+        if !self.tty || self.last.is_none() {
+            return;
+        }
+        let _ = write!(io::stderr(), "\r{:<80}\r", "");
+        let _ = io::stderr().flush();
+        self.last = None;
+    }
+
+    /// Clear the sticky line and leave one newline when stderr is a terminal.
+    pub fn finish(&mut self, node: &str, phase: &str) {
+        self.clear();
+        if self.tty {
+            eprintln!("[nxr] {node} {phase}");
+        }
+    }
+}
+
+impl Drop for PhaseStatus {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+/// Emit one phase event as JSONL when `NXR_EVENTS=jsonl`.
+pub fn emit_phase_jsonl(
+    run_id: &str,
+    node: &str,
+    attempt_id: Option<&str>,
+    phase: &str,
+    source: &str,
+    sequence: u64,
+) {
+    if std::env::var("NXR_EVENTS").ok().as_deref() != Some("jsonl") {
+        return;
+    }
+    if !nxr_task::known_phase(phase) {
+        return;
+    }
+    let event = Event::Phase {
+        run_id: run_id.to_owned(),
+        node: node.to_owned(),
+        attempt_id: attempt_id.map(str::to_owned),
+        phase: phase.to_owned(),
+        source: source.to_owned(),
+        sequence,
+        detail: None,
+    };
+    if let Ok(line) = serde_json::to_string(&event) {
+        eprintln!("{line}");
+    }
 }
 
 /// Incremental UTF-8 decode + line pending buffer for one node's stream.
@@ -387,8 +480,17 @@ impl<'a> TaskOutputRenderer<'a> {
                 | WatchNodePhase::Skipped => failed += 1,
             }
         }
-        let line =
-            format!("\r[nxr] {running} running · {queued} queued · {done} done · {failed} failed");
+        let phase = self
+            .state
+            .watch
+            .execution_phase
+            .as_deref()
+            .filter(|phase| !phase.is_empty())
+            .map(|phase| format!(" · {phase}"))
+            .unwrap_or_default();
+        let line = format!(
+            "\r[nxr] {running} running · {queued} queued · {done} done · {failed} failed{phase}"
+        );
         let _ = write!(self.stderr, "{line:<96}");
         let _ = self.stderr.flush();
         self.state.watch.line_open = true;
@@ -562,6 +664,20 @@ impl EventSink for TaskOutputRenderer<'_> {
             }
             Event::NodeStarted { node, .. } => {
                 self.set_watch_phase(&node, WatchNodePhase::Running);
+            }
+            Event::Phase { node, phase, .. } => {
+                self.state.watch.execution_phase = Some(phase.clone());
+                if self.watch_enabled() {
+                    let watch = match phase.as_str() {
+                        "queued" | "resolving" | "preparing_source" => WatchNodePhase::Queued,
+                        "verified" => WatchNodePhase::Succeeded,
+                        "terminal" => WatchNodePhase::Succeeded,
+                        _ => WatchNodePhase::Running,
+                    };
+                    self.set_watch_phase(&node, watch);
+                } else {
+                    let _ = writeln!(self.stderr, "[nxr] {node} {phase}");
+                }
             }
             Event::RunCompleted { .. } => {
                 self.clear_status_line();
@@ -1122,5 +1238,38 @@ mod tests {
         }
         assert_eq!(recorder.events().len(), 1);
         assert_eq!(String::from_utf8(stdout).expect("utf-8"), "[api] ok\n");
+    }
+
+    #[test]
+    fn phase_event_is_one_status_line() {
+        let events = vec![Event::Phase {
+            run_id: "run".to_owned(),
+            node: "app".to_owned(),
+            attempt_id: Some("att".to_owned()),
+            phase: "running".to_owned(),
+            source: "remote-journal".to_owned(),
+            sequence: 2,
+            detail: None,
+        }];
+        let (_stdout, stderr) = render_output(TaskOutputMode::Live, &events);
+        assert!(stderr.contains("running"), "{stderr}");
+        assert!(
+            !stderr.contains("att"),
+            "the status line is not the journal"
+        );
+    }
+
+    #[test]
+    fn phase_line_repeat_is_not_a_second_write() {
+        let started = std::time::Instant::now();
+        let mut status = PhaseStatus {
+            tty: false,
+            last: None,
+        };
+        for _ in 0..1_000 {
+            status.show("app", "running", false);
+        }
+        assert!(started.elapsed().as_millis() < 50);
+        assert_eq!(status.last.as_deref(), Some("running"));
     }
 }

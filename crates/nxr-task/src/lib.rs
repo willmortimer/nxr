@@ -18,6 +18,7 @@ pub mod duration;
 pub mod events;
 pub mod execute;
 pub mod execution_spec;
+pub mod failure;
 pub mod graph;
 pub mod identity;
 pub mod matrix;
@@ -48,8 +49,8 @@ pub use context::{
 };
 pub use duration::{format_duration, parse_duration};
 pub use events::{
-    ChunkEncoding, Event, EventSink, NodeOutcome, NullSink, OutputPayload, RecordingSink,
-    RunOutcome, event_kind,
+    ChunkEncoding, Event, EventSink, KNOWN_PHASES, NodeOutcome, NullSink, OutputPayload,
+    RecordingSink, RunOutcome, event_kind, known_phase,
 };
 pub use execute::{
     ExecContext, ExecuteError, ExecutorName, OperationResult, OperationRun, UNAVAILABLE_EXECUTOR,
@@ -60,6 +61,7 @@ pub use execution_spec::{
     execute_spec_locally, execution_spec_for_task, execution_specs_for_document,
     source_set_from_repo, workflow_definition_digest,
 };
+pub use failure::{FailureSummary, failure_summary};
 pub use graph::{GraphError, TaskGraph, render_dot, render_mermaid, render_text};
 pub use identity::{SourceSetV1, operation_id, source_set_digest};
 pub use matrix::{

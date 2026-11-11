@@ -39,6 +39,14 @@
     "code": null
   },
   {
+    "type": "phase",
+    "run_id": "run",
+    "node": "fmt",
+    "phase": "running",
+    "source": "local-run",
+    "sequence": 1
+  },
+  {
     "type": "run_completed",
     "success": true
   },
