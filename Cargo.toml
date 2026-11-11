@@ -15,8 +15,8 @@ members = [
 default-members = ["crates/nxr-cli"]
 
 [workspace.package]
-# 3.9.0 journal-first durable runs. Do not move v3.8.0 or v3.9.0-rc.1.
-version = "3.9.0"
+# 3.9.1 reattach correctness. Do not move v3.8.0, v3.9.0, or v3.9.0-rc.1.
+version = "3.9.1"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT"
