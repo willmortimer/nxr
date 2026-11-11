@@ -283,6 +283,7 @@ impl Drop for PhaseStatus {
 
 /// Emit one phase event as JSONL when `NXR_EVENTS=jsonl`.
 pub fn emit_phase_jsonl(
+    jsonl: bool,
     run_id: &str,
     node: &str,
     attempt_id: Option<&str>,
@@ -290,7 +291,7 @@ pub fn emit_phase_jsonl(
     source: &str,
     sequence: u64,
 ) {
-    if std::env::var("NXR_EVENTS").ok().as_deref() != Some("jsonl") {
+    if !jsonl && std::env::var("NXR_EVENTS").ok().as_deref() != Some("jsonl") {
         return;
     }
     if !nxr_task::known_phase(phase) {
@@ -664,6 +665,13 @@ impl EventSink for TaskOutputRenderer<'_> {
             }
             Event::NodeStarted { node, .. } => {
                 self.set_watch_phase(&node, WatchNodePhase::Running);
+            }
+            Event::ClientDetached {
+                node, attempt_id, ..
+            } => {
+                if !self.watch_enabled() {
+                    let _ = writeln!(self.stderr, "[nxr] {node} client_detached {attempt_id}");
+                }
             }
             Event::Phase { node, phase, .. } => {
                 self.state.watch.execution_phase = Some(phase.clone());

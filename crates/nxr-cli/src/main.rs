@@ -543,7 +543,13 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             runner,
         ),
         Some(Command::Workflow { action }) => {
-            workflow::execute(action, cli.nix.as_deref(), cli.dry_run, cli.json)
+            workflow::execute(
+                action,
+                cli.nix.as_deref(),
+                cli.dry_run,
+                cli.json,
+                cli.events.is_some(),
+            )
                 .map_err(RunError::from)
         }
         Some(Command::External(tokens)) => dispatch_external(cli, &nix_flags, tokens, runner),

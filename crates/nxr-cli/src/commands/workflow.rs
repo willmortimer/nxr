@@ -60,6 +60,7 @@ pub fn execute(
     nix: Option<&str>,
     dry_run: bool,
     json: bool,
+    jsonl: bool,
 ) -> Result<i32, WorkflowError> {
     match action {
         WorkflowSubcommand::List => list_tasks(),
@@ -78,7 +79,7 @@ pub fn execute(
             execution,
         } => {
             if execution == "remote" {
-                return crate::commands::remote::execute(name);
+                return crate::commands::remote::execute(name, jsonl);
             }
             let mode = WorkflowPlanMode::Explicit {
                 root: Some(name.clone()),

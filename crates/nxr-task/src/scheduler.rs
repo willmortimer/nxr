@@ -269,6 +269,36 @@ impl Scheduler {
         self.running.is_empty() && self.ready.is_empty()
     }
 
+    /// Skip a ready node when a verified artifact is reusable for this consumer.
+    ///
+    /// A client detach is not an input. [`crate::reuse_decision`] must say skip.
+    /// Dependents become ready as if the node had exited zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::UnknownNode`] when `node` is not in the plan.
+    pub fn reuse_verified(
+        &mut self,
+        node: &str,
+        availability: &crate::ArtifactAvailability,
+    ) -> Result<bool, SchedulerError> {
+        if !self.states.contains_key(node) {
+            return Err(SchedulerError::UnknownNode {
+                node: node.to_owned(),
+            });
+        }
+        if crate::reuse_decision(availability) != crate::ReuseDecision::Skip {
+            return Ok(false);
+        }
+        if self.running.contains(node) {
+            return Ok(false);
+        }
+        self.ready.remove(node);
+        self.states.insert(node.to_owned(), NodeState::Succeeded);
+        self.unlock_dependents(node);
+        Ok(true)
+    }
+
     /// Start as many ready nodes as free job slots allow.
     ///
     /// Returns newly started node ids in lexicographic start order (ready-set
@@ -756,6 +786,29 @@ mod tests {
 
         assert!(sched.is_finished());
         assert!(sched.outcome().success);
+    }
+
+    #[test]
+    fn warm_reuse_skips_and_an_inaccessible_artifact_does_not() {
+        let plan = build_serial_plan(&diamond(), "d").expect("plan");
+        let warm = crate::ArtifactAvailability {
+            schema: "artifact-availability-v1".into(),
+            produced: crate::Availability::Yes,
+            digest_verified: crate::Availability::Yes,
+            accessible: crate::Availability::Yes,
+            requirements_match: crate::Availability::Yes,
+        };
+        let mut sched = Scheduler::new(&plan, 1).expect("sched");
+        assert!(sched.reuse_verified("wasm-publish", &warm).is_err());
+        assert!(sched.reuse_verified("a", &warm).expect("reuse"));
+        assert_eq!(sched.state("a"), Some(NodeState::Succeeded));
+        assert!(!sched.schedule_ready().contains(&"a".to_owned()));
+
+        let mut blocked = warm;
+        blocked.accessible = crate::Availability::No;
+        let mut sched = Scheduler::new(&plan, 1).expect("sched");
+        assert!(!sched.reuse_verified("a", &blocked).expect("no skip"));
+        assert_eq!(sched.schedule_ready(), vec!["a".to_owned()]);
     }
 
     #[test]

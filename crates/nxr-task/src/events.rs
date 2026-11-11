@@ -273,6 +273,17 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// The local client stopped waiting. The remote attempt is still running.
+    ClientDetached {
+        /// NXR run id. Not the remote attempt id.
+        run_id: String,
+        /// Task or app id.
+        node: String,
+        /// Remote attempt that is still running.
+        attempt_id: String,
+        /// Local observation sequence. Not a remote terminal.
+        sequence: u64,
+    },
     /// One observed execution phase. Additive: older emitters omit it.
     ///
     /// `sequence` is the producer order. Wall-clock stamps stay on the
@@ -470,6 +481,7 @@ pub fn event_kind(event: &Event) -> &'static str {
         Event::StdoutChunk { .. } => "stdout_chunk",
         Event::StderrChunk { .. } => "stderr_chunk",
         Event::NodeExited { .. } => "node_exited",
+        Event::ClientDetached { .. } => "client_detached",
         Event::Phase { .. } => "phase",
         Event::RunCompleted { .. } => "run_completed",
         Event::Diagnostic { .. } => "diagnostic",
@@ -514,6 +526,7 @@ mod tests {
         "stdout_chunk",
         "stderr_chunk",
         "node_exited",
+        "client_detached",
         "phase",
         "run_completed",
         "diagnostic",
@@ -534,6 +547,12 @@ mod tests {
             },
             Event::node_exited("a".to_owned(), Some(1)),
             Event::node_exited("b".to_owned(), None),
+            Event::ClientDetached {
+                run_id: "run".to_owned(),
+                node: "a".to_owned(),
+                attempt_id: "att".to_owned(),
+                sequence: 2,
+            },
             Event::Phase {
                 run_id: "run".to_owned(),
                 node: "a".to_owned(),
@@ -794,7 +813,7 @@ mod tests {
     #[test]
     fn fixture_events_round_trip_and_match_schema() {
         let values: Vec<Value> = serde_json::from_str(EVENTS_SAMPLES).expect("parse fixture");
-        assert_eq!(values.len(), 11);
+        assert_eq!(values.len(), 12);
 
         let mut seen = BTreeSet::new();
         for value in values {

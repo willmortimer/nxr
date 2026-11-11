@@ -23,8 +23,10 @@ use nxr_core::diagnostics::exit;
 ///
 /// Returns [`WorkflowError`] when the spec cannot be built or `nixplane` fails
 /// before an attempt exists. A remote task that exits nonzero is `Ok(code)`.
-pub fn execute(name: &str) -> Result<i32, WorkflowError> {
+pub fn execute(name: &str, jsonl: bool) -> Result<i32, WorkflowError> {
     let mut last_phase = String::new();
+    let run_id = std::env::var("NXR_RUN_ID").unwrap_or_else(|_| unique_run_id());
+    let mut status = crate::output_task::PhaseStatus::detect();
     let nixplane = std::env::var("NIXPLANE").unwrap_or_else(|_| "nixplane".to_owned());
     let root = receipt_root()?;
     let (spec_path, source_path, scratch) = prepare_paths(name)?;
@@ -102,16 +104,21 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
         receipt["submit_status"] = accepted.get("status").cloned().unwrap_or(json!(null));
         receipt["submitted"] = json!(true);
         remember_attempts(&pointers, &attempt)?;
-        println!(
-            "admitted attempt {attempt} status={}",
-            accepted.get("status").and_then(Value::as_str).unwrap_or("")
-        );
+        if !jsonl {
+            println!(
+                "admitted attempt {attempt} status={}",
+                accepted.get("status").and_then(Value::as_str).unwrap_or("")
+            );
+        }
         publish_phase(
+            &run_id,
             name,
             &attempt,
             "queued",
             "remote-journal",
             0,
+            jsonl,
+            &mut status,
             &mut last_phase,
         );
         if std::env::var("NIXPLANE_STOP_AFTER_ADMIT").ok().as_deref() == Some("1") {
@@ -138,7 +145,6 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let mut finished: Option<Value> = None;
-    let mut published_phases = 1_u64;
     if std::env::var("NIXPLANE_REATTACH").ok().as_deref() == Some("1")
         && receipt.get("hash_ok").and_then(Value::as_bool) != Some(true)
         && let Some(terminal) = receipt.get("terminal").and_then(Value::as_str)
@@ -174,15 +180,10 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
             receipt["detached"] = json!(true);
             receipt["wait_stop"] = json!("detach");
             write_receipt(&root, &receipt)?;
-            publish_phase(
-                name,
-                &attempt,
-                "terminal",
-                "remote-journal",
-                published_phases,
-                &mut last_phase,
-            );
-            println!("detached attempt {attempt} cursor={cursor}");
+            emit_client_detached(&run_id, name, &attempt, cursor, jsonl, &mut status);
+            if !jsonl {
+                println!("detached attempt {attempt} cursor={cursor}");
+            }
             drop(scratch);
             return Ok(124);
         }
@@ -199,15 +200,21 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
         cursor = journal_cursor(cursor, &page);
         for event in &page {
             if let Some(phase) = journal_phase(event) {
+                let sequence = event.get("sequence").and_then(Value::as_u64).unwrap_or(0);
                 publish_phase(
+                    &run_id,
                     name,
                     &attempt,
                     phase,
-                    "remote-journal",
-                    published_phases,
+                    event
+                        .get("source")
+                        .and_then(Value::as_str)
+                        .unwrap_or("remote-journal"),
+                    sequence,
+                    jsonl,
+                    &mut status,
                     &mut last_phase,
                 );
-                published_phases = published_phases.saturating_add(1);
             }
         }
         events.extend(page);
@@ -231,21 +238,32 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
     receipt["journal_cursor"] = json!(cursor);
     write_receipt(&root, &receipt)?;
     if kind == "cancelled" {
+        let reason = cancel_reason(&finished);
         if receipt.get("cancelled").and_then(Value::as_bool) != Some(true) {
-            receipt["wait_stop"] = json!("server_deadline");
+            receipt["wait_stop"] = json!(reason);
         }
         write_receipt(&root, &receipt)?;
         clear_attempts(&pointers, &attempt);
-        publish_phase(
-            name,
-            &attempt,
-            "terminal",
-            "remote-journal",
-            published_phases,
-            &mut last_phase,
-        );
-        print_failure_summary(&events);
-        println!("terminal attempt {attempt} cancelled exit={code}");
+        if let Some(phase) = journal_phase(&finished) {
+            publish_phase(
+                &run_id,
+                name,
+                &attempt,
+                phase,
+                "remote-journal",
+                finished
+                    .get("sequence")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                jsonl,
+                &mut status,
+                &mut last_phase,
+            );
+        }
+        print_failure_summary(&events, jsonl);
+        if !jsonl {
+            println!("terminal attempt {attempt} cancelled exit={code} reason={reason}");
+        }
         drop(scratch);
         return Ok(code);
     }
@@ -332,27 +350,47 @@ pub fn execute(name: &str) -> Result<i32, WorkflowError> {
     clear_attempts(&pointers, &attempt);
     if hash_ok {
         publish_phase(
+            &run_id,
             name,
             &attempt,
             "verified",
-            "remote-journal",
-            published_phases,
+            "nxr-client",
+            finished
+                .get("sequence")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            jsonl,
+            &mut status,
             &mut last_phase,
         );
-        published_phases = published_phases.saturating_add(1);
     }
-    publish_phase(
-        name,
-        &attempt,
-        "terminal",
-        "remote-journal",
-        published_phases,
-        &mut last_phase,
-    );
-    println!("terminal attempt {attempt} exit={code}");
-    println!("chunks resumed={resumed} fetched={fetched} hash_ok={hash_ok}");
+    if let Some(phase) = journal_phase(&finished) {
+        publish_phase(
+            &run_id,
+            name,
+            &attempt,
+            phase,
+            "remote-journal",
+            finished
+                .get("sequence")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            jsonl,
+            &mut status,
+            &mut last_phase,
+        );
+    }
+    if jsonl {
+        status.clear();
+    } else {
+        status.finish(name, if hash_ok { "verified" } else { "terminal" });
+    }
+    if !jsonl {
+        println!("terminal attempt {attempt} exit={code}");
+        println!("chunks resumed={resumed} fetched={fetched} hash_ok={hash_ok}");
+    }
     if code != 0 || !hash_ok {
-        print_failure_summary(&events);
+        print_failure_summary(&events, jsonl);
     }
     for line in &mismatches {
         eprintln!("{line}");
@@ -396,26 +434,32 @@ pub(crate) fn classify_wait_stop(
     WaitStop::Detach
 }
 
-/// Map one journal record onto a phase. Unknown records are skipped.
+/// Map one journal record onto a phase. Only an explicit `execution_phase` counts.
 #[must_use]
-pub(crate) fn journal_phase(event: &Value) -> Option<&'static str> {
-    match event.get("event_type").and_then(Value::as_str) {
-        Some("source") => Some("preparing_source"),
-        Some("queued") | Some("admitted") => Some("queued"),
-        Some("assigned") | Some("started") => Some("assigned"),
-        Some("phase") => Some("running"),
-        Some("output") => {
-            let name = event.get("name").and_then(Value::as_str).unwrap_or("");
-            if name.contains("retriev") {
-                Some("retrieving")
-            } else {
-                Some("publishing")
-            }
-        }
-        Some("verified") => Some("verified"),
-        Some("exited") | Some("cancelled") | Some("failed") => Some("terminal"),
-        _ => None,
+pub(crate) fn journal_phase(event: &Value) -> Option<&str> {
+    let phase = event.get("execution_phase").and_then(Value::as_str)?;
+    if nxr_task::known_phase(phase) {
+        Some(phase)
+    } else {
+        None
     }
+}
+
+/// Cancellation cause. A bare `cancelled` event is unknown.
+#[must_use]
+pub(crate) fn cancel_reason(event: &Value) -> &'static str {
+    match event.get("reason").and_then(Value::as_str) {
+        Some("client_cancel") => "client_cancel",
+        Some("server_deadline") => "server_deadline",
+        Some("worker_lost") => "worker_lost",
+        _ => "unknown",
+    }
+}
+
+/// A dependent may start only after the remote attempt reaches these phases.
+#[must_use]
+pub(crate) fn phase_releases_dependents(phase: &str) -> bool {
+    matches!(phase, "terminal" | "verified")
 }
 
 fn journal_evidence(events: &[Value]) -> String {
@@ -423,18 +467,14 @@ fn journal_evidence(events: &[Value]) -> String {
         .iter()
         .filter_map(|event| {
             let kind = event.get("event_type").and_then(Value::as_str)?;
-            let detail = ["message", "error", "name", "detail"]
-                .iter()
-                .filter_map(|key| event.get(*key).and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join(" ");
-            Some(format!("{kind} {detail}").trim().to_owned())
+            let sequence = event.get("sequence").and_then(Value::as_u64).unwrap_or(0);
+            Some(format!("seq={sequence} type={kind}"))
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-fn print_failure_summary(events: &[Value]) {
+fn print_failure_summary(events: &[Value], _jsonl: bool) {
     let summary = nxr_task::failure_summary("terminal", &journal_evidence(events));
     if let Ok(line) = serde_json::to_string(&summary) {
         eprintln!("{line}");
@@ -442,11 +482,14 @@ fn print_failure_summary(events: &[Value]) {
 }
 
 fn publish_phase(
+    run_id: &str,
     node: &str,
     attempt: &str,
     phase: &str,
     source: &str,
     sequence: u64,
+    jsonl: bool,
+    status: &mut crate::output_task::PhaseStatus,
     last: &mut String,
 ) {
     if last == phase {
@@ -454,17 +497,48 @@ fn publish_phase(
     }
     last.clear();
     last.push_str(phase);
-    crate::output_task::emit_phase_jsonl(attempt, node, Some(attempt), phase, source, sequence);
-    let mut status = crate::output_task::PhaseStatus::detect();
-    status.show(node, phase, true);
+    crate::output_task::emit_phase_jsonl(
+        jsonl,
+        run_id,
+        node,
+        Some(attempt),
+        phase,
+        source,
+        sequence,
+    );
+    if !jsonl {
+        status.show(node, phase, true);
+    }
 }
 
-/// JSONL for the admission transition. The human `admitted attempt` line stays
-/// until this record is what `--events jsonl` prints.
+fn emit_client_detached(
+    run_id: &str,
+    node: &str,
+    attempt: &str,
+    sequence: u64,
+    jsonl: bool,
+    status: &mut crate::output_task::PhaseStatus,
+) {
+    let event = nxr_task::Event::ClientDetached {
+        run_id: run_id.to_owned(),
+        node: node.to_owned(),
+        attempt_id: attempt.to_owned(),
+        sequence,
+    };
+    if jsonl {
+        if let Ok(line) = serde_json::to_string(&event) {
+            eprintln!("{line}");
+        }
+        return;
+    }
+    status.show(node, "client_detached", true);
+}
+
+/// JSONL for the admission transition. `run_id` stays distinct from the attempt.
 #[must_use]
 pub(crate) fn admission_phase_json(attempt: &str, node: &str) -> String {
     let event = nxr_task::Event::Phase {
-        run_id: attempt.to_owned(),
+        run_id: "run".to_owned(),
         node: node.to_owned(),
         attempt_id: Some(attempt.to_owned()),
         phase: "queued".to_owned(),
@@ -1342,26 +1416,27 @@ mod tests {
     #[test]
     fn journal_events_map_onto_one_phase_list() {
         assert_eq!(
-            journal_phase(&json!({"event_type": "source"})),
-            Some("preparing_source")
-        );
-        assert_eq!(
-            journal_phase(&json!({"event_type": "started"})),
-            Some("assigned")
-        );
-        assert_eq!(
-            journal_phase(&json!({"event_type": "phase", "name": "test"})),
-            Some("running")
-        );
-        assert_eq!(
             journal_phase(&json!({"event_type": "output", "name": "retrieving"})),
+            None
+        );
+        assert_eq!(
+            journal_phase(&json!({"execution_phase": "retrieving", "sequence": 4})),
             Some("retrieving")
         );
         assert_eq!(
-            journal_phase(&json!({"event_type": "exited"})),
-            Some("terminal")
+            journal_phase(&json!({"execution_phase": "not-a-phase"})),
+            None
         );
-        assert_eq!(journal_phase(&json!({"event_type": "log"})), None);
+        assert!(!phase_releases_dependents("client_detached"));
+        assert!(phase_releases_dependents("terminal"));
+        assert_eq!(
+            cancel_reason(&json!({"event_type": "cancelled"})),
+            "unknown"
+        );
+        assert_eq!(
+            cancel_reason(&json!({"reason": "server_deadline"})),
+            "server_deadline"
+        );
     }
 
     #[test]
@@ -1385,8 +1460,11 @@ mod tests {
     fn failure_summary_uses_journal_evidence() {
         let events = vec![json!({"event_type": "exited", "message": "sha256 mismatch"})];
         let summary = nxr_task::failure_summary("terminal", &journal_evidence(&events));
-        assert_eq!(summary.category, "transfer_corruption");
-        assert!(summary.retryable);
+        assert_eq!(summary.category, "unknown");
+        assert!(summary.evidence.iter().all(|line| line.starts_with("seq=")));
+        let admitted = admission_phase_json("att_1", "build");
+        let admitted: Value = serde_json::from_str(&admitted).unwrap();
+        assert_ne!(admitted["run_id"], admitted["attempt_id"]);
     }
 
     fn test_run_id() -> String {

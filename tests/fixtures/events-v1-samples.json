@@ -39,6 +39,13 @@
     "code": null
   },
   {
+    "type": "client_detached",
+    "run_id": "run",
+    "node": "fmt",
+    "attempt_id": "att",
+    "sequence": 2
+  },
+  {
     "type": "phase",
     "run_id": "run",
     "node": "fmt",

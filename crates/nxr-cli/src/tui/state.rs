@@ -160,7 +160,7 @@ impl WatchState {
             Event::Diagnostic { message } => {
                 self.diagnostic = Some(sanitize_terminal_text(message));
             }
-            Event::Phase { .. } => {}
+            Event::Phase { .. } | Event::ClientDetached { .. } => {}
         }
     }
 

@@ -10,6 +10,7 @@
     { "$ref": "#/$defs/stdout_chunk" },
     { "$ref": "#/$defs/stderr_chunk" },
     { "$ref": "#/$defs/node_exited" },
+    { "$ref": "#/$defs/client_detached" },
     { "$ref": "#/$defs/phase" },
     { "$ref": "#/$defs/run_completed" },
     { "$ref": "#/$defs/diagnostic" }
@@ -176,6 +177,18 @@
           "minimum": 0,
           "description": "Optional monotonic sequence number within the run."
         }
+      }
+    },
+    "client_detached": {
+      "type": "object",
+      "required": ["type", "run_id", "node", "attempt_id", "sequence"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "client_detached" },
+        "run_id": { "type": "string" },
+        "node": { "type": "string" },
+        "attempt_id": { "type": "string" },
+        "sequence": { "type": "integer", "minimum": 0 }
       }
     },
     "phase": {

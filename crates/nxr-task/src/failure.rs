@@ -47,34 +47,22 @@ pub fn failure_summary(phase: &str, evidence_text: &str) -> FailureSummary {
 }
 
 fn classify(phase: &str, text: &str) -> (&'static str, &'static str, bool, String, &'static str) {
-    if contains_any(
-        text,
-        &["sha256 mismatch", "corrupt", "hash mismatch", "checksum"],
-    ) {
+    if contains_any(text, &["class=transfer_corruption", "sha256 mismatch"]) {
         return (
             "transfer_corruption",
-            "broker",
+            "unknown",
             true,
             format!("The object digest did not match during {phase}."),
             "Discard the partial object and resume the granted range transfer.",
         );
     }
-    if contains_any(
-        text,
-        &[
-            "permission denied",
-            "authentication",
-            "403",
-            "could not read",
-            "source permission",
-        ],
-    ) {
+    if text.contains("class=source_permission") {
         return (
             "source_permission",
-            "broker",
-            true,
+            "unknown",
+            false,
             format!("Source access was refused during {phase}."),
-            "Refresh the Hub source grant. Do not copy a repository credential onto the worker.",
+            "Inspect the source grant. A status code alone does not prove it can be refreshed.",
         );
     }
     if contains_any(
@@ -141,8 +129,25 @@ fn evidence_refs(text: &str) -> Vec<String> {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .take(5)
-        .map(ToOwned::to_owned)
+        .map(redact_excerpt)
         .collect()
+}
+
+fn redact_excerpt(line: &str) -> String {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("ghp_")
+        || lower.contains("github_pat_")
+        || lower.contains("bearer ")
+        || lower.contains("token=")
+        || lower.contains("://")
+    {
+        return "[redacted]".to_owned();
+    }
+    let mut excerpt = line.to_owned();
+    if excerpt.len() > 120 {
+        excerpt.truncate(120);
+    }
+    excerpt
 }
 
 #[cfg(test)]
@@ -165,8 +170,17 @@ mod tests {
             "transfer_corruption"
         );
         assert_eq!(
-            failure_summary("preparing_source", "permission denied").category,
+            failure_summary("preparing_source", "403 from the archive").category,
+            "unknown"
+        );
+        assert!(!failure_summary("preparing_source", "403 from the archive").retryable);
+        assert_eq!(
+            failure_summary("preparing_source", "class=source_permission").category,
             "source_permission"
+        );
+        assert_eq!(
+            failure_summary("preparing_source", "token=ghp_example").evidence,
+            vec!["[redacted]".to_owned()]
         );
         assert_eq!(
             failure_summary("running", "command not found: attic").category,
