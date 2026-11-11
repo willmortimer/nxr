@@ -113,6 +113,8 @@ pub struct Scheduler {
     remaining_deps: BTreeMap<String, usize>,
     /// dependency → dependents that list it in `dependsOn`.
     dependents: BTreeMap<String, BTreeSet<String>>,
+    /// node → direct `dependsOn` names.
+    dependencies: BTreeMap<String, Vec<String>>,
     ready: BTreeSet<String>,
     running: BTreeSet<String>,
     /// lock name → holder node id
@@ -127,6 +129,8 @@ pub struct Scheduler {
     artifact_reuse: BTreeSet<String>,
     /// Per-node requirements from the current plan. A missing node stays unmeasured.
     requirements: std::collections::BTreeMap<String, crate::CurrentRequirements>,
+    /// Declared-path digest before dependency outputs are bound.
+    declared_source: std::collections::BTreeMap<String, String>,
     /// Declared output path for nodes with exactly one output.
     output_paths: std::collections::BTreeMap<String, String>,
     /// Reuses accepted since the last [`Self::take_reuses`] call.
@@ -158,6 +162,7 @@ impl Scheduler {
         let mut states = BTreeMap::new();
         let mut remaining_deps = BTreeMap::new();
         let mut dependents: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut dependencies = BTreeMap::new();
         let mut ready = BTreeSet::new();
         let mut interactive = BTreeMap::new();
         let mut node_resources = BTreeMap::new();
@@ -166,6 +171,7 @@ impl Scheduler {
             states.insert(node.id.clone(), NodeState::Pending);
             remaining_deps.insert(node.id.clone(), node.depends_on.len());
             dependents.entry(node.id.clone()).or_default();
+            dependencies.insert(node.id.clone(), node.depends_on.clone());
             interactive.insert(node.id.clone(), node.interactive);
             node_resources.insert(node.id.clone(), node.resources.clone());
         }
@@ -201,6 +207,7 @@ impl Scheduler {
             states,
             remaining_deps,
             dependents,
+            dependencies,
             ready,
             running: BTreeSet::new(),
             held_locks: BTreeMap::new(),
@@ -210,6 +217,7 @@ impl Scheduler {
             artifact_root: None,
             artifact_reuse,
             requirements: std::collections::BTreeMap::new(),
+            declared_source: std::collections::BTreeMap::new(),
             output_paths: std::collections::BTreeMap::new(),
             reuses: Vec::new(),
             reused_nodes: Vec::new(),
@@ -293,7 +301,19 @@ impl Scheduler {
         &mut self,
         requirements: std::collections::BTreeMap<String, crate::CurrentRequirements>,
     ) {
+        self.declared_source = requirements
+            .iter()
+            .map(|(id, requirements)| (id.clone(), requirements.source_digest.clone()))
+            .collect();
         self.requirements = requirements;
+    }
+
+    /// Requirements after dependency outputs have been bound.
+    #[must_use]
+    pub fn node_requirements(
+        &self,
+    ) -> &std::collections::BTreeMap<String, crate::CurrentRequirements> {
+        &self.requirements
     }
 
     /// Relative output paths used to restore a reused artifact before dependents start.
@@ -304,6 +324,43 @@ impl Scheduler {
     /// Reuses accepted since the previous call.
     pub fn take_reuses(&mut self) -> Vec<crate::ArtifactReuse> {
         std::mem::take(&mut self.reuses)
+    }
+
+    fn bind_ready_inputs(&mut self, root: &std::path::Path, id: &str) {
+        let Some(dependencies) = self.dependencies.get(id).cloned() else {
+            return;
+        };
+        if dependencies.is_empty() {
+            return;
+        }
+        let declared = self.declared_source.get(id).cloned().unwrap_or_default();
+        let mut upstream = Vec::new();
+        for dependency in dependencies {
+            let Some(relative) = self.output_paths.get(&dependency) else {
+                self.clear_bound_source(id);
+                return;
+            };
+            let Some(digest) = crate::availability::output_file_digest(&root.join(relative)) else {
+                self.clear_bound_source(id);
+                return;
+            };
+            upstream.push((dependency, digest));
+        }
+        upstream.sort_by(|left, right| left.0.cmp(&right.0));
+        let pairs: Vec<(&str, &str)> = upstream
+            .iter()
+            .map(|(name, digest)| (name.as_str(), digest.as_str()))
+            .collect();
+        let bound = crate::availability::bind_dependency_digests(&declared, &pairs);
+        if let Some(requirements) = self.requirements.get_mut(id) {
+            requirements.source_digest = bound;
+        }
+    }
+
+    fn clear_bound_source(&mut self, id: &str) {
+        if let Some(requirements) = self.requirements.get_mut(id) {
+            requirements.source_digest.clear();
+        }
     }
 
     fn promote_recorded_reuse(&mut self) {
@@ -317,6 +374,7 @@ impl Scheduler {
                 if !self.artifact_reuse.contains(&id) {
                     continue;
                 }
+                self.bind_ready_inputs(&root, &id);
                 let requirements = self.requirements.get(&id).cloned().unwrap_or_default();
                 let (availability, note) = crate::resolve_availability(&root, &id, &requirements);
                 if crate::reuse_decision(&availability) != crate::ReuseDecision::Skip {
@@ -922,14 +980,23 @@ mod tests {
         let programs = reuse_programs(&["a", "b", "c"]);
         let requirements = crate::requirements_for_plan(root.path(), &tasks, &plan, &programs);
         let outputs = crate::single_output_paths(&tasks, &plan);
+        std::fs::create_dir_all(root.path().join("out")).expect("out");
+        for id in ["a", "b", "c"] {
+            std::fs::write(root.path().join(format!("out/{id}.bin")), id).expect("output");
+        }
+        let mut recorded = requirements.clone();
+        bind_recorded_dependencies(
+            root.path(),
+            &mut recorded,
+            &outputs,
+            &[("b", &["a"]), ("c", &["b"])],
+        );
         for id in ["a", "b", "c"] {
             let relative = format!("out/{id}.bin");
-            std::fs::create_dir_all(root.path().join("out")).expect("out");
-            std::fs::write(root.path().join(&relative), id).expect("output");
             crate::record_producer_receipt(
                 root.path(),
                 id,
-                requirements.get(id).expect("requirements"),
+                recorded.get(id).expect("requirements"),
                 &relative,
                 "run-cold",
             )
@@ -947,6 +1014,62 @@ mod tests {
         );
         assert!(sched.is_finished());
         assert_eq!(std::fs::read(root.path().join("out/c.bin")).unwrap(), b"c");
+    }
+
+    #[test]
+    fn a_changed_upstream_output_starts_the_dependent() {
+        let mut tasks = BTreeMap::new();
+        for (id, deps) in [("a", &[][..]), ("b", &["a"][..])] {
+            let mut definition = TaskDefinition::new(id);
+            definition.depends_on = deps.iter().map(|dep| (*dep).to_owned()).collect();
+            definition.artifact_reuse = true;
+            definition.paths = vec![format!("src/{id}.txt")];
+            definition.outputs = vec![crate::schema::TaskOutput {
+                path: format!("out/{id}.bin"),
+                mode: None,
+                optional: false,
+            }];
+            tasks.insert(id.to_owned(), definition);
+        }
+        let plan = build_execution_plan(&tasks, "b", FailurePolicy::FailFast, None).expect("plan");
+        let root = tempfile::tempdir().expect("root");
+        commit_clean_sources(root.path(), &["a", "b"]);
+        let programs = reuse_programs(&["a", "b"]);
+        let requirements = crate::requirements_for_plan(root.path(), &tasks, &plan, &programs);
+        let outputs = crate::single_output_paths(&tasks, &plan);
+        std::fs::create_dir_all(root.path().join("out")).expect("out");
+        std::fs::write(root.path().join("out/a.bin"), b"a").expect("a");
+        std::fs::write(root.path().join("out/b.bin"), b"b").expect("b");
+        let mut recorded = requirements.clone();
+        bind_recorded_dependencies(root.path(), &mut recorded, &outputs, &[("b", &["a"])]);
+        for id in ["a", "b"] {
+            crate::record_producer_receipt(
+                root.path(),
+                id,
+                recorded.get(id).expect("requirements"),
+                &format!("out/{id}.bin"),
+                "att-cold",
+            )
+            .expect("receipt");
+        }
+        let receipt_path = root.path().join(".nxr/artifacts/receipts/a.json");
+        let mut receipt: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&receipt_path).unwrap()).unwrap();
+        let location = receipt["location"].as_str().unwrap().to_owned();
+        std::fs::write(&location, b"A").unwrap();
+        let digest = crate::availability::output_file_digest(std::path::Path::new(&location))
+            .expect("digest");
+        receipt["contentDigest"] = serde_json::Value::String(digest);
+        std::fs::write(&receipt_path, receipt.to_string()).unwrap();
+        std::fs::remove_file(root.path().join("out/a.bin")).unwrap();
+        std::fs::remove_file(root.path().join("out/b.bin")).unwrap();
+        let mut sched = Scheduler::new(&plan, 1).expect("sched");
+        sched.watch_artifacts(root.path());
+        sched.set_node_requirements(requirements);
+        sched.set_output_paths(outputs);
+        assert_eq!(sched.schedule_ready(), vec!["b".to_owned()]);
+        assert_eq!(sched.reused_nodes, vec!["a".to_owned()]);
+        assert_eq!(std::fs::read(root.path().join("out/a.bin")).unwrap(), b"A");
     }
 
     #[test]
@@ -983,6 +1106,30 @@ mod tests {
         sched.set_output_paths(crate::single_output_paths(&tasks, &plan));
         assert_eq!(sched.schedule_ready(), vec!["a".to_owned()]);
         assert!(sched.reused_nodes.is_empty());
+    }
+
+    fn bind_recorded_dependencies(
+        root: &std::path::Path,
+        requirements: &mut BTreeMap<String, crate::CurrentRequirements>,
+        outputs: &BTreeMap<String, String>,
+        edges: &[(&str, &[&str])],
+    ) {
+        for (id, dependencies) in edges {
+            let declared = requirements.get(*id).expect("node").source_digest.clone();
+            let mut pairs = Vec::new();
+            for dependency in *dependencies {
+                let relative = outputs.get(*dependency).expect("output");
+                let digest = crate::availability::output_file_digest(&root.join(relative))
+                    .expect("output digest");
+                pairs.push((*dependency, digest));
+            }
+            let refs: Vec<(&str, &str)> = pairs
+                .iter()
+                .map(|(name, digest)| (*name, digest.as_str()))
+                .collect();
+            requirements.get_mut(*id).expect("node").source_digest =
+                crate::availability::bind_dependency_digests(&declared, &refs);
+        }
     }
 
     fn reuse_programs(ids: &[&str]) -> BTreeMap<String, crate::ResolvedProgram> {

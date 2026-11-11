@@ -894,9 +894,12 @@ fn run_plan(
     let mut scheduler = Scheduler::new(plan, request.jobs)?;
     scheduler.watch_artifacts(&artifact_root);
     let programs = resolved_programs(preparer, plan)?;
-    let node_requirements =
-        nxr_task::requirements_for_plan(&artifact_root, &document.tasks, plan, &programs);
-    scheduler.set_node_requirements(node_requirements.clone());
+    scheduler.set_node_requirements(nxr_task::requirements_for_plan(
+        &artifact_root,
+        &document.tasks,
+        plan,
+        &programs,
+    ));
     scheduler.set_output_paths(nxr_task::single_output_paths(&document.tasks, plan));
     let mut supervisor = Supervisor::new();
     let mut pipe_io = PipeMultiplexer::new();
@@ -1123,7 +1126,7 @@ fn run_plan(
                 record_opt_in_receipt(
                     &artifact_root,
                     document,
-                    &node_requirements,
+                    scheduler.node_requirements(),
                     &node_id,
                     exit::SUCCESS,
                 )?;
@@ -1241,7 +1244,13 @@ fn run_plan(
                 first_failure = Some(code);
             }
 
-            record_opt_in_receipt(&artifact_root, document, &node_requirements, &id, code)?;
+            record_opt_in_receipt(
+                &artifact_root,
+                document,
+                scheduler.node_requirements(),
+                &id,
+                code,
+            )?;
             to_start = scheduler.complete(&id, code)?;
             emit_reuses(&mut scheduler, sink, run_id);
 

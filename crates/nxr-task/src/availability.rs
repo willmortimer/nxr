@@ -487,26 +487,121 @@ fn host_platform() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
+/// Combine a declared-source digest with direct dependency output digests.
+///
+/// An empty declared digest, or an empty dependency digest, stays unmeasured.
+/// No dependencies leaves the declared digest unchanged.
+#[must_use]
+pub fn bind_dependency_digests(declared_source: &str, upstream: &[(&str, &str)]) -> String {
+    if declared_source.is_empty() {
+        return String::new();
+    }
+    if upstream.is_empty() {
+        return declared_source.to_owned();
+    }
+    let mut names: Vec<(&str, &str)> = upstream.to_vec();
+    names.sort_unstable_by(|left, right| left.0.cmp(right.0));
+    let mut payload = Vec::new();
+    payload.extend_from_slice(declared_source.as_bytes());
+    for (name, digest) in names {
+        if name.is_empty() || digest.is_empty() {
+            return String::new();
+        }
+        payload.extend_from_slice(b"\0dep\0");
+        payload.extend_from_slice(name.as_bytes());
+        payload.push(0);
+        payload.extend_from_slice(digest.as_bytes());
+    }
+    format!("sha256:{}", hex_sha256(&payload))
+}
+
+/// Digest of one regular file. A symlink or a directory is not an output identity.
+#[must_use]
+pub fn output_file_digest(path: &std::path::Path) -> Option<String> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.file_type().is_file() {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    Some(format!("sha256:{}", hex_sha256(&bytes)))
+}
+
 fn source_digest(root: &std::path::Path, paths: &[String]) -> String {
     if paths.is_empty() || tree_is_dirty(root) {
         return String::new();
     }
     let mut sorted: Vec<&str> = paths.iter().map(String::as_str).collect();
     sorted.sort_unstable();
-    let mut payload = Vec::new();
+    let mut files = Vec::new();
     for path in sorted {
-        if !path_is_safe(path) {
+        if !path_is_safe(path) || !collect_source(root, path, &mut files) {
             return String::new();
         }
-        let Ok(bytes) = std::fs::read(root.join(path)) else {
-            return String::new();
-        };
+    }
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut payload = Vec::new();
+    for (path, bytes) in files {
         payload.extend_from_slice(path.as_bytes());
         payload.push(0);
         payload.extend_from_slice(&bytes);
         payload.push(0);
     }
     format!("sha256:{}", hex_sha256(&payload))
+}
+
+fn collect_source(
+    root: &std::path::Path,
+    relative: &str,
+    files: &mut Vec<(String, Vec<u8>)>,
+) -> bool {
+    let full = root.join(relative);
+    let Ok(meta) = std::fs::symlink_metadata(&full) else {
+        return false;
+    };
+    let file_type = meta.file_type();
+    if file_type.is_symlink() {
+        return false;
+    }
+    if file_type.is_file() {
+        let Ok(bytes) = std::fs::read(&full) else {
+            return false;
+        };
+        files.push((relative.to_owned(), bytes));
+        return true;
+    }
+    if file_type.is_dir() {
+        return collect_directory(root, std::path::Path::new(relative), files);
+    }
+    false
+}
+
+fn collect_directory(
+    root: &std::path::Path,
+    relative: &std::path::Path,
+    files: &mut Vec<(String, Vec<u8>)>,
+) -> bool {
+    let Ok(entries) = std::fs::read_dir(root.join(relative)) else {
+        return false;
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            return false;
+        };
+        if matches!(name.as_str(), "target" | ".git" | "node_modules") {
+            continue;
+        }
+        let child = relative.join(&name);
+        let Some(child_path) = child.to_str() else {
+            return false;
+        };
+        if !collect_source(root, child_path, files) {
+            return false;
+        }
+    }
+    true
 }
 
 fn tree_is_dirty(root: &std::path::Path) -> bool {
@@ -660,5 +755,103 @@ mod tests {
             std::fs::read(root.path().join("out/worker.wasm")).unwrap(),
             bytes
         );
+    }
+
+    #[test]
+    fn a_directory_digest_hashes_files_and_refuses_a_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        git_commit(root.path());
+        let crate_dir = root.path().join("crates/stargate-wasm/src");
+        std::fs::create_dir_all(&crate_dir).unwrap();
+        std::fs::write(crate_dir.join("lib.rs"), "fn wasm() {}\n").unwrap();
+        std::fs::create_dir_all(root.path().join("crates/stargate-wasm/target")).unwrap();
+        std::fs::write(
+            root.path().join("crates/stargate-wasm/target/skip.rs"),
+            "skip\n",
+        )
+        .unwrap();
+        let first = source_of(root.path(), &["crates/stargate-wasm"]);
+        assert!(first.starts_with("sha256:"), "{first}");
+        std::fs::write(
+            root.path().join("crates/stargate-wasm/target/other.rs"),
+            "other\n",
+        )
+        .unwrap();
+        assert_eq!(source_of(root.path(), &["crates/stargate-wasm"]), first);
+        std::fs::write(crate_dir.join("lib.rs"), "fn wasm() { let _ = 1; }\n").unwrap();
+        let changed = source_of(root.path(), &["crates/stargate-wasm"]);
+        assert_ne!(changed, first);
+        std::os::unix::fs::symlink("lib.rs", crate_dir.join("link.rs")).unwrap();
+        assert_eq!(source_of(root.path(), &["crates/stargate-wasm"]), "");
+    }
+
+    #[test]
+    fn a_single_file_digest_stays_measured() {
+        let root = tempfile::tempdir().unwrap();
+        git_commit(root.path());
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src/lib.rs"), "fn main() {}\n").unwrap();
+        let digest = source_of(root.path(), &["src/lib.rs"]);
+        assert!(digest.starts_with("sha256:"), "{digest}");
+        std::os::unix::fs::symlink("lib.rs", root.path().join("src/link.rs")).unwrap();
+        assert_eq!(source_of(root.path(), &["src/link.rs"]), "");
+    }
+
+    #[test]
+    fn identical_upstream_bytes_keep_the_dependency_key() {
+        let same = bind_dependency_digests("sha256:declared", &[("wasm", "sha256:tar")]);
+        let again = bind_dependency_digests("sha256:declared", &[("wasm", "sha256:tar")]);
+        let changed = bind_dependency_digests("sha256:declared", &[("wasm", "sha256:other")]);
+        assert_eq!(same, again);
+        assert_ne!(same, changed);
+        assert_eq!(
+            bind_dependency_digests("sha256:declared", &[]),
+            "sha256:declared"
+        );
+        assert_eq!(bind_dependency_digests("", &[("wasm", "sha256:tar")]), "");
+        assert_eq!(
+            bind_dependency_digests("sha256:declared", &[("wasm", "")]),
+            ""
+        );
+    }
+
+    fn source_of(root: &std::path::Path, paths: &[&str]) -> String {
+        let mut definition = crate::schema::TaskDefinition::new("wasm");
+        definition.paths = paths.iter().map(|path| (*path).to_owned()).collect();
+        let declared = definition.paths.clone();
+        current_requirements(
+            root,
+            "wasm",
+            &definition,
+            Some("aarch64-darwin"),
+            &declared,
+            None,
+        )
+        .source_digest
+    }
+
+    fn git_commit(root: &std::path::Path) {
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .status()
+                .expect("git");
+            assert!(status.success(), "{args:?}");
+        };
+        git(&["init"]);
+        std::fs::write(root.join(".gitignore"), "target/\ncrates/\nsrc/\n").unwrap();
+        std::fs::write(root.join("flake.nix"), "{}\n").unwrap();
+        std::fs::write(root.join("flake.lock"), "{}\n").unwrap();
+        git(&["add", "."]);
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["-c", "user.email=nxr@example.com", "-c", "user.name=nxr"])
+            .args(["commit", "--no-verify", "-m", "sources"])
+            .status()
+            .expect("commit");
+        assert!(status.success());
     }
 }
