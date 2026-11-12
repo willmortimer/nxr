@@ -21,6 +21,8 @@ pub struct SessionStart {
     pub attempt_id: Option<String>,
     pub cpu: u32,
     pub memory_mib: u64,
+    /// Working directory for the child. Empty means the supervisor's directory.
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 /// CPU tokens and memory the local machine will admit. This is not a cluster pool.
@@ -59,7 +61,7 @@ pub fn start_on(
     budget: LocalBudget,
     cache_env: &std::collections::BTreeMap<String, String>,
     runner: RunnerOutput,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let mode = nxr_task::compiler_cache::compiler_cache_mode(cache_env);
     let assignments: std::collections::BTreeMap<String, String> =
         nxr_task::compiler_cache::compiler_cache_assignments(cache_env)
@@ -79,10 +81,16 @@ pub fn start_on(
             "memory_budget": budget.memory_mib,
             "cache_mode": mode,
             "cache_env": assignments,
+            "cwd": request.cwd.as_ref().map(|path| path.display().to_string()),
         }),
     )?;
-    let id = value["id"].as_str().unwrap_or("session");
-    runner.info(id).map_err(|err| err.to_string())
+    let id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "supervisor did not return a run id".to_owned())?
+        .to_owned();
+    runner.info(&id).map_err(|err| err.to_string())?;
+    Ok(id)
 }
 
 /// Submit using the default supervisor socket.
@@ -94,7 +102,7 @@ pub fn start(
     request: &SessionStart,
     budget: LocalBudget,
     runner: RunnerOutput,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let socket = daemon_socket_path();
     start_on(
         &socket,
@@ -102,6 +110,37 @@ pub fn start(
         budget,
         &nxr_task::compiler_cache::compiler_cache_from_process(),
         runner,
+    )
+}
+
+/// Runs owned by the supervisor on `socket`.
+///
+/// # Errors
+///
+/// Returns an error when the supervisor is down.
+pub fn list_on(socket: &Path) -> Result<Value, String> {
+    call(socket, "run.list", json!({}))
+}
+
+/// One run owned by the supervisor on `socket`.
+///
+/// # Errors
+///
+/// Returns an error when the supervisor is down or the run is missing.
+pub fn inspect_on(socket: &Path, id: &str) -> Result<Value, String> {
+    call(socket, "run.inspect", json!({ "id": id }))
+}
+
+/// Ask the supervisor on `socket` to cancel `id`.
+///
+/// # Errors
+///
+/// Returns an error when the supervisor is down or the cancel is rejected.
+pub fn cancel_on(socket: &Path, id: &str) -> Result<Value, String> {
+    call(
+        socket,
+        "run.cancel",
+        json!({ "id": id, "remote_confirmed": false }),
     )
 }
 
@@ -295,6 +334,7 @@ mod tests {
                 attempt_id: None,
                 cpu: 0,
                 memory_mib: 0,
+                cwd: None,
             },
             LocalBudget {
                 cpu: 1,
@@ -324,6 +364,7 @@ mod tests {
                 attempt_id: None,
                 cpu: 1,
                 memory_mib: 8,
+                cwd: None,
             },
             LocalBudget {
                 cpu: 2,
@@ -356,6 +397,7 @@ mod tests {
                 attempt_id: Some("attempt-9".into()),
                 cpu: 1,
                 memory_mib: 8,
+                cwd: None,
             },
             LocalBudget {
                 cpu: 2,

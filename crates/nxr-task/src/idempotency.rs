@@ -116,6 +116,22 @@ pub fn admit(
     }))
 }
 
+/// Put a bound reservation back into `admitting` so a later start can find the owned run.
+///
+/// # Errors
+///
+/// Returns an error when the database cannot be updated.
+pub fn mark_bind_incomplete(dir: &std::path::Path, key: &str) -> Result<(), String> {
+    let conn = Connection::open(dir.join("idempotency.sqlite"))
+        .map_err(|err| format!("open idempotency db: {err}"))?;
+    conn.execute(
+        "UPDATE reservations SET status = 'admitting' WHERE idempotency_key = ?1",
+        [key],
+    )
+    .map_err(|err| format!("mark bind incomplete: {err}"))?;
+    Ok(())
+}
+
 /// Record that admission has started and no process is owned yet.
 ///
 /// # Errors

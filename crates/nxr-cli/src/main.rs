@@ -752,6 +752,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                         attempt_id: attempt_id.clone(),
                         cpu: *cpu,
                         memory_mib: *memory_mib,
+                        cwd: None,
                     },
                     session::LocalBudget::from_process(),
                     runner,

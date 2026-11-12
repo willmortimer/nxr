@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "nxr": {
-      "command": "nxr",
-      "args": ["mcp"]
+      "command": "nix",
+      "args": ["run", ".#nxr", "--", "mcp"]
     }
   }
 }

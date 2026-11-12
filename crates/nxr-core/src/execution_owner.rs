@@ -151,6 +151,11 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
         let stderr = log.try_clone().map_err(|err| err.to_string())?;
         let mut child = Command::new(&command[0]);
         child.args(&command[1..]);
+        if let Some(cwd) = params.get("cwd").and_then(Value::as_str) {
+            if !cwd.is_empty() {
+                child.current_dir(cwd);
+            }
+        }
         child.stdin(Stdio::null());
         child.stdout(log);
         child.stderr(stderr);

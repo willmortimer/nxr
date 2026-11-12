@@ -59,3 +59,20 @@ The adoption gate is 95 percent of these trials passing, and zero fleet activati
 | 22 | nxr | ci | Run the CI task | `nxr:task:ci` |
 
 `lattice:task:rust-test-pkgs` and `nixplane:task:test` stay different operations even when both checkouts contain a task named `test`.
+
+## Record
+
+Stage one is covered by the MCP tests: policy for one operation id, an app launched with `run`, daemon ownership, an interrupted bind, separate cancel results, a bounded log, and a dirty directory input. The CLI-and-rules baseline has not been compared.
+
+Stage two has not been run.
+
+| Field | Value |
+| --- | --- |
+| Trials passed | — |
+| Trials required | 21 of 22 |
+| Score | — |
+| Time to first diagnostic | — |
+| Extra compiler launches | — |
+| Manual interventions | — |
+| Unauthorized fleet changes | 0 |
+| Supervisor run ids | — |

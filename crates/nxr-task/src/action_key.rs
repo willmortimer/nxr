@@ -500,6 +500,33 @@ fn digest_repo_path_cached(
     }
 }
 
+/// Digest declared inputs in stable path order.
+///
+/// Directories, globs, symlink boundaries, and a missing path use the same
+/// resolution as the workspace cache key. A path that does not exist is an error.
+///
+/// # Errors
+///
+/// Returns an error when a pattern is invalid, escapes the workspace, or cannot be read.
+pub fn declared_input_digests(
+    root: &std::path::Path,
+    patterns: &[String],
+) -> Result<BTreeMap<String, String>, String> {
+    let root = Utf8Path::from_path(root).ok_or_else(|| "workspace path is not utf-8".to_owned())?;
+    let mut cache = None;
+    let digests =
+        expand_path_input_digests(root, patterns, &mut cache).map_err(|err| err.to_string())?;
+    for path in digests.keys() {
+        if !root.join(path).exists() {
+            return Err(format!("declared input cannot be read: {path}"));
+        }
+    }
+    if digests.is_empty() && !patterns.is_empty() {
+        return Err("declared input cannot be read".to_owned());
+    }
+    Ok(digests)
+}
+
 fn expand_path_input_digests(
     flake_root: &Utf8Path,
     patterns: &[String],

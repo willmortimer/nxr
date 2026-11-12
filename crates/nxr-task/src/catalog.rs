@@ -111,6 +111,8 @@ pub enum PolicySource {
     Explicit,
     /// No authorization was declared.
     Unset,
+    /// The exact operation id is listed in `.nxr/execution-policy.toml`.
+    Project,
 }
 
 const LOCAL_CHECK_ALLOWLIST: &[&str] = &["test", "fmt", "fmt-check", "lint", "ci", "deny"];
@@ -132,6 +134,104 @@ pub fn execution_decision(
         PolicySource::Unset
     };
     (explicit, source, allowlisted)
+}
+
+/// Exact operation ids a trusted checkout may start, with the parameter names each id accepts.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProjectExecutionPolicy {
+    operations: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct PolicyFile {
+    #[serde(default)]
+    operation: Vec<PolicyOperation>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct PolicyOperation {
+    id: String,
+    #[serde(default)]
+    parameters: Vec<String>,
+}
+
+impl ProjectExecutionPolicy {
+    /// Load `.nxr/execution-policy.toml`. A missing file authorizes nothing beyond the allowlist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file exists and cannot be read or parsed.
+    pub fn load(root: &std::path::Path) -> Result<Self, String> {
+        let path = root.join(".nxr").join("execution-policy.toml");
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let text = std::fs::read_to_string(&path)
+            .map_err(|_| "execution policy cannot be read".to_owned())?;
+        let file: PolicyFile =
+            toml::from_str(&text).map_err(|_| "execution policy cannot be parsed".to_owned())?;
+        let mut operations = std::collections::BTreeMap::new();
+        for operation in file.operation {
+            if operation.id.is_empty() {
+                return Err("execution policy operation id is empty".to_owned());
+            }
+            operations.insert(operation.id, operation.parameters);
+        }
+        Ok(Self { operations })
+    }
+
+    /// Parameter names this policy allows for `operation_id`.
+    #[must_use]
+    pub fn parameters(&self, operation_id: &str) -> &[String] {
+        self.operations
+            .get(operation_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+}
+
+/// Apply a trusted project policy. Deploy, remote, and `reset-db` stay refused.
+#[must_use]
+pub fn apply_project_policy(
+    record: &OperationRecord,
+    policy: &ProjectExecutionPolicy,
+) -> OperationRecord {
+    if record.execution_allowed || !policy.operations.contains_key(&record.operation_id) {
+        return record.clone();
+    }
+    if !matches!(record.kind, OperationKind::App | OperationKind::Task) {
+        return record.clone();
+    }
+    if matches!(
+        record.inferred_effect,
+        EffectClass::Deploy | EffectClass::Remote
+    ) || record.name == "reset-db"
+    {
+        return record.clone();
+    }
+    let mut authorized = record.clone();
+    authorized.execution_allowed = true;
+    authorized.policy_source = PolicySource::Project;
+    authorized
+}
+
+/// Reject parameter names the project policy did not list.
+///
+/// # Errors
+///
+/// Returns an error when a provided name is absent from the policy entry.
+pub fn validate_policy_parameters(
+    policy: &ProjectExecutionPolicy,
+    operation_id: &str,
+    provided: &std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    let allowed = policy.parameters(operation_id);
+    for name in provided.keys() {
+        if !allowed.iter().any(|candidate| candidate == name) {
+            return Err(format!("parameter `{name}` is not authorized"));
+        }
+    }
+    Ok(())
 }
 
 /// Stable workspace name. An explicit id wins, then the git remote repository, then the directory.
@@ -301,6 +401,150 @@ fn matches_query(record: &OperationRecord, query: &str) -> bool {
             .any(|alias| alias.to_ascii_lowercase().contains(query))
 }
 
+/// One ranked suggestion. Exact [`search`] is unchanged.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct OperationSuggestion {
+    pub operation_id: String,
+    pub match_reason: Vec<String>,
+    pub execution_allowed: bool,
+}
+
+/// Rank operations for a natural-language query.
+///
+/// Matching is lexical. The bound workspace, changed paths, and current policy
+/// raise a result. No embedding model is used.
+#[must_use]
+pub fn suggest(
+    records: &[OperationRecord],
+    query: &str,
+    workspace_id: &str,
+    changed_paths: &[String],
+) -> Vec<OperationSuggestion> {
+    let tokens = tokenize(query);
+    let documents: Vec<Vec<String>> = records.iter().map(document_tokens).collect();
+    let average = if documents.is_empty() {
+        0.0
+    } else {
+        documents
+            .iter()
+            .map(|tokens| tokens.len() as f64)
+            .sum::<f64>()
+            / documents.len() as f64
+    };
+    let mut ranked = records
+        .iter()
+        .zip(documents.iter())
+        .filter_map(|(record, document)| {
+            let mut score = bm25(&tokens, document, &documents, average);
+            let mut reasons = Vec::new();
+            if score > 0.0 {
+                reasons.push("matches the query".to_owned());
+            }
+            if record.workspace_id == workspace_id {
+                score += 0.35;
+                reasons.push("in the bound workspace".to_owned());
+            }
+            if path_applies(record, changed_paths) {
+                score += 0.75;
+                reasons.push("applicable to a changed path".to_owned());
+            }
+            if record.execution_allowed {
+                score += 0.25;
+                reasons.push("executable under the current policy".to_owned());
+            }
+            if record.shell.is_some() {
+                reasons.push("runs in the pinned environment".to_owned());
+            }
+            if score <= 0.0 || reasons.is_empty() {
+                return None;
+            }
+            Some((
+                score,
+                OperationSuggestion {
+                    operation_id: record.operation_id.clone(),
+                    match_reason: reasons,
+                    execution_allowed: record.execution_allowed,
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .0
+            .partial_cmp(&left.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.1.operation_id.cmp(&right.1.operation_id))
+    });
+    ranked
+        .into_iter()
+        .map(|(_, suggestion)| suggestion)
+        .collect()
+}
+
+fn tokenize(text: &str) -> Vec<String> {
+    text.split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| token.len() > 1)
+        .map(|token| token.to_ascii_lowercase())
+        .collect()
+}
+
+fn document_tokens(record: &OperationRecord) -> Vec<String> {
+    let mut text = format!(
+        "{} {} {}",
+        record.operation_id,
+        record.name,
+        record.description.as_deref().unwrap_or("")
+    );
+    for alias in &record.aliases {
+        text.push(' ');
+        text.push_str(alias);
+    }
+    for input in &record.inputs {
+        text.push(' ');
+        text.push_str(input);
+    }
+    tokenize(&text)
+}
+
+fn path_applies(record: &OperationRecord, changed_paths: &[String]) -> bool {
+    changed_paths.iter().any(|path| {
+        record.inputs.iter().any(|input| {
+            path.starts_with(input.trim_end_matches('*').trim_end_matches('/'))
+                || input.contains(path)
+        }) || tokenize(path).iter().any(|token| {
+            record.name.contains(token.as_str())
+                || record
+                    .description
+                    .as_deref()
+                    .is_some_and(|description| description.to_ascii_lowercase().contains(token))
+        })
+    })
+}
+
+fn bm25(query: &[String], document: &[String], corpus: &[Vec<String>], average: f64) -> f64 {
+    const K1: f64 = 1.2;
+    const B: f64 = 0.75;
+    if query.is_empty() || document.is_empty() || corpus.is_empty() || average == 0.0 {
+        return 0.0;
+    }
+    let mut score = 0.0;
+    for token in query {
+        let frequency = document.iter().filter(|item| item == &token).count() as f64;
+        if frequency == 0.0 {
+            continue;
+        }
+        let docs = corpus
+            .iter()
+            .filter(|document| document.iter().any(|item| item == token))
+            .count() as f64;
+        let idf = ((corpus.len() as f64 - docs + 0.5) / (docs + 0.5) + 1.0).ln();
+        let length = document.len() as f64;
+        score +=
+            idf * (frequency * (K1 + 1.0)) / (frequency + K1 * (1.0 - B + B * length / average));
+    }
+    score
+}
+
 /// The record with this portable id.
 #[must_use]
 pub fn describe<'a>(
@@ -449,6 +693,35 @@ pub fn execution_fingerprint(record: &OperationRecord, input_contents: &[(&str, 
     nxr_core::digest_bytes(material.as_bytes())
 }
 
+/// Fingerprint from resolved input digests and validated parameter values.
+#[must_use]
+pub fn execution_fingerprint_with_inputs(
+    record: &OperationRecord,
+    digests: &std::collections::BTreeMap<String, String>,
+    parameters: &std::collections::BTreeMap<String, String>,
+) -> String {
+    let mut material = String::new();
+    material.push_str(&record.operation_id);
+    material.push('\n');
+    for (name, value) in parameters {
+        material.push_str(name);
+        material.push('=');
+        material.push_str(value);
+        material.push('\n');
+    }
+    material.push_str(record.shell.as_deref().unwrap_or(""));
+    material.push('\n');
+    material.push_str(record.rustc_wrapper.as_deref().unwrap_or(""));
+    material.push('\n');
+    for (path, digest) in digests {
+        material.push_str(path);
+        material.push(' ');
+        material.push_str(digest);
+        material.push('\n');
+    }
+    nxr_core::digest_bytes(material.as_bytes())
+}
+
 /// Same key and fingerprint repeats. A changed fingerprint conflicts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FingerprintDecision {
@@ -519,6 +792,25 @@ mod tests {
         let found = search(&records, "rust-test-pkgs");
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].operation_id, "lattice:task:rust-test-pkgs");
+        let mut rust = found[0].clone();
+        rust.description = Some("Rust verification for changed packages".to_owned());
+        rust.inputs = vec!["crates/foo".to_owned()];
+        rust.shell = Some("rust".to_owned());
+        let other = sample("lattice", "reset-db");
+        let suggestions = suggest(
+            &[rust, other],
+            "test my changed Rust code",
+            "lattice",
+            &["crates/foo/src/lib.rs".to_owned()],
+        );
+        assert_eq!(suggestions[0].operation_id, "lattice:task:rust-test-pkgs");
+        assert!(suggestions[0].execution_allowed || !suggestions[0].match_reason.is_empty());
+        assert!(
+            suggestions[0]
+                .match_reason
+                .iter()
+                .any(|reason| reason.contains("changed"))
+        );
         assert_eq!(
             describe(&[found[0].clone()], "lattice:task:rust-test-pkgs")
                 .map(|record| record.operation_id.as_str()),
@@ -549,6 +841,37 @@ mod tests {
         );
         assert!(!destructive.execution_allowed);
         assert_eq!(destructive.policy_source, PolicySource::Unset);
+        let root = tempfile::tempdir().unwrap();
+        let policy_dir = root.path().join(".nxr");
+        std::fs::create_dir_all(&policy_dir).unwrap();
+        std::fs::write(
+            policy_dir.join("execution-policy.toml"),
+            "[[operation]]\nid = \"lattice:task:rust-test-pkgs\"\nparameters = [\"package\", \"filter\"]\n\n[[operation]]\nid = \"nixplane:task:reset-db\"\n",
+        )
+        .unwrap();
+        let policy = ProjectExecutionPolicy::load(root.path()).unwrap();
+        let authorized = apply_project_policy(&sample("lattice", "rust-test-pkgs"), &policy);
+        assert!(authorized.execution_allowed);
+        assert_eq!(authorized.policy_source, PolicySource::Project);
+        let other = operation_record(
+            &workspace("other"),
+            &Declaration::named(OperationKind::Task, "rust-test-pkgs", "flake.nix"),
+        );
+        assert!(!apply_project_policy(&other, &policy).execution_allowed);
+        let reset = operation_record(
+            &workspace("nixplane"),
+            &Declaration::named(OperationKind::Task, "reset-db", "flake.nix"),
+        );
+        assert!(!apply_project_policy(&reset, &policy).execution_allowed);
+        let mut values = std::collections::BTreeMap::new();
+        values.insert("package".to_owned(), "lattice-core".to_owned());
+        assert!(
+            validate_policy_parameters(&policy, "lattice:task:rust-test-pkgs", &values).is_ok()
+        );
+        values.insert("shell".to_owned(), "bash".to_owned());
+        assert!(
+            validate_policy_parameters(&policy, "lattice:task:rust-test-pkgs", &values).is_err()
+        );
     }
 
     #[test]

@@ -41,7 +41,10 @@ pub mod secrets;
 pub mod selectors;
 pub mod workflows;
 
-pub use action_key::{WorkspaceCachePlan, WorkspaceCachePlanOptions, build_workspace_cache_plan};
+pub use action_key::{
+    WorkspaceCachePlan, WorkspaceCachePlanOptions, build_workspace_cache_plan,
+    declared_input_digests,
+};
 pub use availability::{
     ArtifactAvailability, ArtifactReuse, Availability, CurrentRequirements, ResolvedProgram,
     ReuseDecision, current_requirements, record_producer_receipt, requirements_for_plan,
@@ -49,9 +52,11 @@ pub use availability::{
 };
 pub use catalog::{
     Declaration, EffectClass, EnvironmentExplanation, EnvironmentMismatch, EnvironmentView,
-    FingerprintDecision, OperationKind, OperationPlan, OperationRecord, PolicySource,
-    WorkspaceInstance, describe, execution_decision, execution_fingerprint, explain,
-    fingerprint_decision, operation_record, plan, search, workspace_id,
+    FingerprintDecision, OperationKind, OperationPlan, OperationRecord, OperationSuggestion,
+    PolicySource, ProjectExecutionPolicy, WorkspaceInstance, apply_project_policy, describe,
+    execution_decision, execution_fingerprint, execution_fingerprint_with_inputs, explain,
+    fingerprint_decision, operation_record, plan, search, suggest, validate_policy_parameters,
+    workspace_id,
 };
 pub use ci_metadata::{CiRunMetadata, attach_ci_run};
 pub use context::{
@@ -79,7 +84,7 @@ pub use failure::{FailureSummary, failure_summary};
 pub use graph::{GraphError, TaskGraph, render_dot, render_mermaid, render_text};
 pub use idempotency::{
     Admission, Reservation, admit, bind_supervisor, cancel, inspect, mark_admitting,
-    mark_reconciliation, mark_started,
+    mark_bind_incomplete, mark_reconciliation, mark_started,
 };
 pub use identity::{SourceSetV1, operation_id, source_set_digest};
 pub use matrix::{

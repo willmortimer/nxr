@@ -7,14 +7,20 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use nxr_nix::OptionalNixFlags;
+use std::collections::BTreeMap;
+
 use nxr_task::{
-    OperationRecord, admit, bind_supervisor, cancel, execution_fingerprint, inspect,
-    mark_admitting, mark_reconciliation,
+    OperationKind, OperationRecord, ProjectExecutionPolicy, admit, apply_project_policy,
+    bind_supervisor, cancel, declared_input_digests, execution_fingerprint_with_inputs, inspect,
+    mark_admitting, mark_reconciliation, validate_policy_parameters,
 };
 use serde_json::{Value, json};
 
 use crate::commands::affected::{AffectedPathSources, select_for_flake};
 use crate::commands::op::load_records;
+use crate::commands::session::{
+    LocalBudget, SessionStart, cancel_on, inspect_on, list_on, start_on,
+};
 use crate::output_options::{ColorWhen, LogFormat, OutputOptions};
 use crate::runner_output::RunnerOutput;
 
@@ -77,6 +83,7 @@ pub fn serve(
             &workspace_root,
             &run_dir,
             &supervisor_dir,
+            &nxr_core::daemon_socket_path(),
             trusted,
             flake,
             nix_override,
@@ -101,6 +108,7 @@ pub fn handle_line(
     workspace_root: &Path,
     run_dir: &Path,
     supervisor_dir: &Path,
+    supervisor_socket: &Path,
     trusted: bool,
     flake: Option<&str>,
     nix_override: Option<&str>,
@@ -135,6 +143,7 @@ pub fn handle_line(
         workspace_root,
         run_dir,
         supervisor_dir,
+        supervisor_socket,
         trusted,
         flake,
         nix_override,
@@ -154,6 +163,7 @@ fn respond(
     workspace_root: &Path,
     run_dir: &Path,
     supervisor_dir: &Path,
+    supervisor_socket: &Path,
     trusted: bool,
     flake: Option<&str>,
     nix_override: Option<&str>,
@@ -169,7 +179,11 @@ fn respond(
         "initialize" => json!({
             "protocolVersion": "2024-11-05",
             "capabilities": { "tools": {} },
-            "serverInfo": { "name": "nxr", "version": "0.1.0" }
+            "serverInfo": {
+                "name": "nxr",
+                "version": "0.1.0",
+                "executable": std::env::current_exe().map(|path| path.display().to_string()).unwrap_or_default()
+            }
         }),
         "tools/list" => json!({ "tools": tools() }),
         "tools/call" => match call_tool(
@@ -179,6 +193,7 @@ fn respond(
             workspace_root,
             run_dir,
             supervisor_dir,
+            supervisor_socket,
             trusted,
             flake,
             nix_override,
@@ -216,6 +231,15 @@ fn tools() -> Vec<Value> {
             json!({"query": {"type": "string", "description": "Text matched against name, alias, or id"}}),
         ),
         tool(
+            "operations_suggest",
+            "Rank operations for a natural-language query",
+            &["query"],
+            json!({
+                "query": {"type": "string", "description": "What the caller wants to do"},
+                "paths": {"type": "array", "items": {"type": "string"}, "description": "Changed repository-relative paths"}
+            }),
+        ),
+        tool(
             "operations_describe",
             "Show one operation record",
             &["id"],
@@ -245,7 +269,8 @@ fn tools() -> Vec<Value> {
             &["id", "idempotency_key"],
             json!({
                 "id": {"type": "string", "description": "Portable operation id"},
-                "idempotency_key": {"type": "string", "description": "Caller key for this attempt"}
+                "idempotency_key": {"type": "string", "description": "Caller key for this attempt"},
+                "parameters": {"type": "object", "description": "Parameter names listed for this operation id"}
             }),
         ),
         tool(
@@ -293,6 +318,7 @@ pub fn call_tool(
     workspace_root: &Path,
     run_dir: &Path,
     supervisor_dir: &Path,
+    supervisor_socket: &Path,
     trusted: bool,
     flake: Option<&str>,
     nix_override: Option<&str>,
@@ -322,17 +348,39 @@ pub fn call_tool(
             let matched = nxr_task::search(records, query);
             Ok(json!(matched))
         }
+        "operations_suggest" => {
+            let query = arguments.get("query").and_then(Value::as_str).unwrap_or("");
+            let paths = arguments
+                .get("paths")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            Ok(json!({
+                "query": query,
+                "results": nxr_task::suggest(records, query, workspace_id, &paths)
+            }))
+        }
         "operations_describe" => {
             let id = required_id(&arguments)?;
-            nxr_task::describe(records, id)
-                .map(|record| json!(record))
-                .ok_or_else(|| format!("unknown operation {id}"))
+            let record =
+                nxr_task::describe(records, id).ok_or_else(|| format!("unknown operation {id}"))?;
+            Ok(json!(visible_record(record, workspace_root, trusted)?))
         }
         "operations_plan" => {
             let id = required_id(&arguments)?;
             let record =
                 nxr_task::describe(records, id).ok_or_else(|| format!("unknown operation {id}"))?;
-            Ok(json!(nxr_task::plan(record)))
+            Ok(json!(nxr_task::plan(&visible_record(
+                record,
+                workspace_root,
+                trusted,
+            )?)))
         }
         "workspace_affected" => affected_ids(
             flake,
@@ -349,28 +397,13 @@ pub fn call_tool(
                 .unwrap_or("");
             Ok(json!(inspect(run_dir, run_id, workspace_id)?))
         }
-        "runs_get_logs" => {
-            let run_id = arguments
-                .get("run_id")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let found = inspect(run_dir, run_id, workspace_id)?;
-            let offset = arguments.get("offset").and_then(Value::as_u64).unwrap_or(0);
-            let limit = arguments
-                .get("limit")
-                .and_then(Value::as_u64)
-                .unwrap_or(4096)
-                .min(65536) as usize;
-            let (log, next) = read_log(supervisor_dir, run_id, offset, limit);
-            let durable = nxr_core::load_durable_run(run_id).ok();
-            Ok(json!({
-                "run_id": run_id,
-                "status": durable.as_ref().map(|row| format!("{:?}", row.status)).or_else(|| found.as_ref().map(|row| row.status.clone())),
-                "exit_code": durable.as_ref().and_then(|row| row.exit_code),
-                "log": log,
-                "next_offset": next
-            }))
-        }
+        "runs_get_logs" => read_run_log(
+            &arguments,
+            run_dir,
+            supervisor_dir,
+            supervisor_socket,
+            workspace_id,
+        ),
         "operations_start" => start(
             &arguments,
             records,
@@ -378,6 +411,7 @@ pub fn call_tool(
             workspace_root,
             run_dir,
             supervisor_dir,
+            supervisor_socket,
             trusted,
             flake,
             nix_override,
@@ -386,19 +420,13 @@ pub fn call_tool(
             launch,
             reload,
         ),
-        "runs_cancel" => {
-            let run_id = arguments
-                .get("run_id")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let owned = inspect(run_dir, run_id, workspace_id)?;
-            if owned.is_none() {
-                return Ok(json!({ "cancelled": false }));
-            }
-            let stopped = nxr_core::execution_owner::cancel(supervisor_dir, run_id, false).is_ok();
-            let marked = cancel(run_dir, run_id, workspace_id)?;
-            Ok(json!({ "cancelled": stopped || marked }))
-        }
+        "runs_cancel" => cancel_run(
+            run_dir,
+            supervisor_dir,
+            supervisor_socket,
+            workspace_id,
+            &arguments,
+        ),
         _ => Err(format!("unknown tool {name}")),
     }
 }
@@ -410,7 +438,8 @@ fn start(
     workspace_id: &str,
     workspace_root: &Path,
     run_dir: &Path,
-    supervisor_dir: &Path,
+    _supervisor_dir: &Path,
+    supervisor_socket: &Path,
     trusted: bool,
     flake: Option<&str>,
     nix_override: Option<&str>,
@@ -435,33 +464,46 @@ fn start(
     } else {
         records.to_vec()
     };
-    let record = nxr_task::describe(&fresh, id).ok_or_else(|| format!("unknown operation {id}"))?;
-    if record.workspace_id != workspace_id {
+    let policy = ProjectExecutionPolicy::load(workspace_root)?;
+    let stored = nxr_task::describe(&fresh, id).ok_or_else(|| format!("unknown operation {id}"))?;
+    if stored.workspace_id != workspace_id {
         return Err("operation is not in the bound workspace".to_owned());
     }
-    let contents = read_inputs(workspace_root, &record.inputs)?;
-    let borrowed = contents
-        .iter()
-        .map(|(name, bytes)| (*name, bytes.as_slice()))
-        .collect::<Vec<_>>();
-    let fingerprint = execution_fingerprint(record, &borrowed);
-    match admit(run_dir, key, record, &fingerprint)? {
+    let record = if trusted {
+        apply_project_policy(stored, &policy)
+    } else {
+        stored.clone()
+    };
+    if !record.execution_allowed {
+        return Err("operation is not executable".to_owned());
+    }
+    let parameters = parameter_map(arguments)?;
+    validate_policy_parameters(&policy, &record.operation_id, &parameters)?;
+    let digests = declared_input_digests(workspace_root, &record.inputs)?;
+    let fingerprint = execution_fingerprint_with_inputs(&record, &digests, &parameters);
+    match admit(run_dir, key, &record, &fingerprint)? {
         nxr_task::Admission::Reserved(_) => {
             mark_admitting(run_dir, key)?;
-            let command = match launch {
-                Launch::Task => vec!["nxr".to_owned(), "task".to_owned(), record.name.clone()],
-                Launch::Command(argv) => argv.clone(),
-            };
-            match nxr_core::execution_owner::start(
-                supervisor_dir,
-                &json!({"command": command, "label": record.operation_id}),
+            let (command, cwd) = command_for(launch, &record, &parameters, workspace_root)?;
+            match start_on(
+                supervisor_socket,
+                &SessionStart {
+                    label: key.to_owned(),
+                    command,
+                    remote: None,
+                    attempt_id: None,
+                    cpu: 0,
+                    memory_mib: 0,
+                    cwd: Some(cwd),
+                },
+                LocalBudget {
+                    cpu: u32::MAX,
+                    memory_mib: u64::MAX,
+                },
+                &BTreeMap::new(),
+                runner,
             ) {
-                Ok(value) => {
-                    let run_id = value
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| "supervisor did not return a run id".to_owned())?
-                        .to_owned();
+                Ok(run_id) => {
                     let durable =
                         nxr_core::load_durable_run(&run_id).map_err(|err| err.to_string())?;
                     if durable.status != nxr_core::DurableRunStatus::Running
@@ -485,6 +527,23 @@ fn start(
                 }
             }
         }
+        nxr_task::Admission::Existing(reservation) if reservation.status == "admitting" => {
+            if let Some(run_id) = owned_run_id(supervisor_socket, key) {
+                bind_supervisor(run_dir, key, &run_id)?;
+                return Ok(json!({
+                    "run_id": run_id,
+                    "started": false,
+                    "replayed": true,
+                    "status": "started"
+                }));
+            }
+            Ok(json!({
+                "run_id": reservation.run_id,
+                "started": false,
+                "replayed": true,
+                "status": reservation.status
+            }))
+        }
         nxr_task::Admission::Existing(reservation) => Ok(json!({
             "run_id": reservation.run_id,
             "started": false,
@@ -499,17 +558,181 @@ fn start(
     }
 }
 
-fn read_inputs<'a>(root: &Path, inputs: &'a [String]) -> Result<Vec<(&'a str, Vec<u8>)>, String> {
-    let mut contents = Vec::new();
-    for input in inputs {
-        if input.starts_with('/') || input.split('/').any(|part| part == "..") {
-            return Err(format!("input path is not inside the workspace: {input}"));
-        }
-        let bytes = std::fs::read(root.join(input))
-            .map_err(|_| format!("declared input cannot be read: {input}"))?;
-        contents.push((input.as_str(), bytes));
+fn visible_record(
+    record: &OperationRecord,
+    root: &Path,
+    trusted: bool,
+) -> Result<OperationRecord, String> {
+    if !trusted {
+        return Ok(record.clone());
     }
-    Ok(contents)
+    Ok(apply_project_policy(
+        record,
+        &ProjectExecutionPolicy::load(root)?,
+    ))
+}
+
+fn parameter_map(arguments: &Value) -> Result<BTreeMap<String, String>, String> {
+    let Some(value) = arguments.get("parameters") else {
+        return Ok(BTreeMap::new());
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| "parameters must be an object".to_owned())?;
+    let mut parameters = BTreeMap::new();
+    for (name, item) in object {
+        let text = item
+            .as_str()
+            .ok_or_else(|| format!("parameter `{name}` must be a string"))?;
+        parameters.insert(name.clone(), text.to_owned());
+    }
+    Ok(parameters)
+}
+
+fn command_for(
+    launch: &Launch,
+    record: &OperationRecord,
+    parameters: &BTreeMap<String, String>,
+    root: &Path,
+) -> Result<(Vec<String>, PathBuf), String> {
+    let cwd = working_directory(root, &record.working_directory)?;
+    match launch {
+        Launch::Command(argv) => Ok((argv.clone(), cwd)),
+        Launch::Task => {
+            let executable = std::env::current_exe().map_err(|err| err.to_string())?;
+            let verb = match record.kind {
+                OperationKind::App => "run",
+                OperationKind::Task => "task",
+                _ => return Err("operation is not executable".to_owned()),
+            };
+            let mut command = vec![
+                executable.display().to_string(),
+                verb.to_owned(),
+                record.name.clone(),
+            ];
+            if !parameters.is_empty() {
+                command.push("--".to_owned());
+                for (name, value) in parameters {
+                    command.push(format!("{name}={value}"));
+                }
+            }
+            Ok((command, cwd))
+        }
+    }
+}
+
+fn working_directory(root: &Path, working: &str) -> Result<PathBuf, String> {
+    if working.is_empty() || working == "." {
+        return Ok(root.to_path_buf());
+    }
+    if working.starts_with('/') || working.split(['/', '\\']).any(|part| part == "..") {
+        return Err("working directory is not inside the workspace".to_owned());
+    }
+    Ok(root.join(working))
+}
+
+fn owned_run_id(socket: &Path, key: &str) -> Option<String> {
+    let runs = list_on(socket).ok()?;
+    runs.as_array().and_then(|rows| {
+        rows.iter().find_map(|row| {
+            (row.get("label").and_then(Value::as_str) == Some(key))
+                .then(|| row.get("id").and_then(Value::as_str).map(str::to_owned))
+                .flatten()
+        })
+    })
+}
+
+fn supervisor_record(socket: &Path, dir: &Path, run_id: &str) -> Result<Value, String> {
+    inspect_on(socket, run_id).or_else(|_| nxr_core::execution_owner::inspect(dir, run_id))
+}
+
+fn read_run_log(
+    arguments: &Value,
+    run_dir: &Path,
+    supervisor_dir: &Path,
+    supervisor_socket: &Path,
+    workspace_id: &str,
+) -> Result<Value, String> {
+    let run_id = arguments
+        .get("run_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    nxr_core::validate_run_id(run_id).map_err(|err| err.to_string())?;
+    let found = inspect(run_dir, run_id, workspace_id)?;
+    if found.is_none() {
+        return Err("run is not in this workspace".to_owned());
+    }
+    let record = supervisor_record(supervisor_socket, supervisor_dir, run_id)?;
+    let log_path = record
+        .get("log_path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| "log is not available".to_owned())?;
+    let offset = arguments.get("offset").and_then(Value::as_u64).unwrap_or(0);
+    let limit = arguments
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(4096)
+        .min(65536) as usize;
+    let (log, next) = read_log_slice(Path::new(log_path), offset, limit)?;
+    let durable = nxr_core::load_durable_run(run_id).ok();
+    Ok(json!({
+        "run_id": run_id,
+        "status": durable.as_ref().map(|row| format!("{:?}", row.status)).or_else(|| found.as_ref().map(|row| row.status.clone())),
+        "exit_code": durable.as_ref().and_then(|row| row.exit_code),
+        "log": log,
+        "next_offset": next
+    }))
+}
+
+fn cancel_run(
+    run_dir: &Path,
+    supervisor_dir: &Path,
+    supervisor_socket: &Path,
+    workspace_id: &str,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let run_id = arguments
+        .get("run_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    nxr_core::validate_run_id(run_id).map_err(|err| err.to_string())?;
+    let owned = inspect(run_dir, run_id, workspace_id)?;
+    if owned.is_none() {
+        return Ok(json!({ "process_cancelled": false, "reservation_cancelled": false }));
+    }
+    let was_running = supervisor_record(supervisor_socket, supervisor_dir, run_id)
+        .ok()
+        .and_then(|record| {
+            record
+                .get("status")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .is_some_and(|status| status == "running");
+    let process_cancelled = was_running
+        && cancel_on(supervisor_socket, run_id)
+            .or_else(|_| nxr_core::execution_owner::cancel(supervisor_dir, run_id, false))
+            .is_ok();
+    let reservation_cancelled = cancel(run_dir, run_id, workspace_id)?;
+    Ok(json!({
+        "process_cancelled": process_cancelled,
+        "reservation_cancelled": reservation_cancelled
+    }))
+}
+
+fn read_log_slice(path: &Path, offset: u64, limit: usize) -> Result<(String, u64), String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).map_err(|_| "log is not available".to_owned())?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|err| err.to_string())?;
+    let mut buffer = vec![0; limit];
+    let read = file.read(&mut buffer).map_err(|err| err.to_string())?;
+    buffer.truncate(read);
+    Ok((
+        String::from_utf8_lossy(&buffer).into_owned(),
+        offset.saturating_add(read as u64),
+    ))
 }
 
 fn required_id(arguments: &Value) -> Result<&str, String> {
@@ -523,10 +746,11 @@ fn required_id(arguments: &Value) -> Result<&str, String> {
 fn known_arguments(name: &str) -> Option<&'static [&'static str]> {
     Some(match name {
         "operations_search" => &["query"],
+        "operations_suggest" => &["query", "paths"],
         "operations_describe" | "operations_plan" => &["id"],
         "runs_inspect" | "runs_cancel" => &["run_id"],
         "workspace_affected" => &["paths"],
-        "operations_start" => &["id", "idempotency_key"],
+        "operations_start" => &["id", "idempotency_key", "parameters"],
         "runs_get_logs" => &["run_id", "offset", "limit"],
         _ => return None,
     })
@@ -573,19 +797,6 @@ fn affected_ids(
         .map(|name| format!("{workspace_id}:task:{name}"))
         .collect::<Vec<_>>();
     Ok(json!(ids))
-}
-
-fn read_log(dir: &Path, run_id: &str, offset: u64, limit: usize) -> (String, u64) {
-    let path = dir.join(format!("{run_id}.log"));
-    let bytes = std::fs::read(path).unwrap_or_default();
-    let start = usize::try_from(offset)
-        .unwrap_or(usize::MAX)
-        .min(bytes.len());
-    let end = start.saturating_add(limit).min(bytes.len());
-    (
-        String::from_utf8_lossy(&bytes[start..end]).into_owned(),
-        end as u64,
-    )
 }
 
 fn reservation_dir(workspace_id: &str, workspace_root: &Path) -> PathBuf {
@@ -639,11 +850,34 @@ mod tests {
         }
     }
 
+    fn boot(dir: &std::path::Path) -> std::path::PathBuf {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+        use std::time::Duration;
+
+        use nxr_core::{DaemonState, serve, try_connect};
+
+        let socket = dir.join("nxrd.sock");
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let serve_socket = socket.clone();
+        thread::spawn(move || {
+            let _ = serve(&serve_socket, state);
+        });
+        for _ in 0..50 {
+            if try_connect(&socket).is_ok() {
+                return socket;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        socket
+    }
+
     fn invoke(
         params: &Value,
         records: &[OperationRecord],
         root: &std::path::Path,
         dir: &std::path::Path,
+        socket: &std::path::Path,
         trusted: bool,
         launch: &Launch,
     ) -> Result<Value, String> {
@@ -654,6 +888,7 @@ mod tests {
             root,
             dir,
             &dir.join("supervisor"),
+            socket,
             trusted,
             None,
             None,
@@ -673,6 +908,7 @@ mod tests {
             &records,
             root,
             std::path::Path::new("/tmp/unused"),
+            std::path::Path::new("/tmp/missing.sock"),
             true,
             &Launch::Task,
         )
@@ -680,12 +916,15 @@ mod tests {
         assert_eq!(described["operation_id"], "lattice:task:test");
         assert_eq!(described["execution_allowed"], true);
         let dir = tempfile::tempdir().unwrap();
+        let socket = boot(dir.path());
+        let root = dir.path();
         let launch = Launch::Command(vec!["/bin/echo".into(), "ok".into()]);
         let started = invoke(
             &json!({"name": "operations_start", "arguments": {"id": "lattice:task:test", "idempotency_key": "once"}}),
             &records,
             root,
             dir.path(),
+            &socket,
             true,
             &launch,
         )
@@ -696,6 +935,7 @@ mod tests {
             &records,
             root,
             dir.path(),
+            &socket,
             true,
             &launch,
         )
@@ -708,6 +948,7 @@ mod tests {
             &records,
             root,
             dir.path(),
+            &socket,
             true,
             &launch,
         );
@@ -717,6 +958,7 @@ mod tests {
             &records,
             root,
             dir.path(),
+            &socket,
             true,
             &launch,
         );
@@ -726,6 +968,7 @@ mod tests {
             &records,
             root,
             dir.path(),
+            &socket,
             false,
             &launch,
         );
@@ -753,6 +996,7 @@ mod tests {
                 std::path::Path::new("/tmp/lattice"),
                 dir.path(),
                 &dir.path().join("supervisor"),
+                &dir.path().join("nxrd.sock"),
                 true,
                 None,
                 None,
@@ -766,7 +1010,12 @@ mod tests {
         }
         assert_eq!(responses.len(), 4);
         let listed: Value = serde_json::from_str(&responses[1]).unwrap();
-        let schema = &listed["result"]["tools"][5]["inputSchema"];
+        let tools = listed["result"]["tools"].as_array().unwrap();
+        let start = tools
+            .iter()
+            .find(|tool| tool["name"] == "operations_start")
+            .unwrap();
+        let schema = &start["inputSchema"];
         assert!(
             schema["required"]
                 .as_array()
@@ -782,7 +1031,8 @@ mod tests {
     #[test]
     fn an_edited_input_conflicts_and_a_failure_returns_its_log() {
         let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("lib.rs"), b"one").unwrap();
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src/lib.rs"), b"one").unwrap();
         let workspace = WorkspaceInstance {
             workspace_id: "lattice".to_owned(),
             workspace_root: root.path().display().to_string(),
@@ -792,9 +1042,10 @@ mod tests {
             &workspace,
             &Declaration::named(OperationKind::Task, "test", "flake.nix"),
         );
-        record.inputs = vec!["lib.rs".to_owned()];
+        record.inputs = vec!["src".to_owned()];
         let records = vec![record];
         let dir = tempfile::tempdir().unwrap();
+        let socket = boot(dir.path());
         let launch = Launch::Command(vec![
             "/bin/sh".into(),
             "-c".into(),
@@ -805,16 +1056,18 @@ mod tests {
             &records,
             root.path(),
             dir.path(),
+            &socket,
             true,
             &launch,
         )
         .unwrap();
-        std::fs::write(root.path().join("lib.rs"), b"two").unwrap();
+        std::fs::write(root.path().join("src/lib.rs"), b"two").unwrap();
         let conflict = invoke(
             &json!({"name": "operations_start", "arguments": {"id": "lattice:task:test", "idempotency_key": "edit"}}),
             &records,
             root.path(),
             dir.path(),
+            &socket,
             true,
             &launch,
         );
@@ -827,6 +1080,7 @@ mod tests {
                 &records,
                 root.path(),
                 dir.path(),
+                &socket,
                 true,
                 &launch,
             )
@@ -845,6 +1099,7 @@ mod tests {
             &broken,
             root.path(),
             dir.path(),
+            &socket,
             true,
             &launch,
         );
@@ -856,12 +1111,15 @@ mod tests {
     fn cancel_stops_the_running_process() {
         let records = records();
         let dir = tempfile::tempdir().unwrap();
+        let socket = boot(dir.path());
+        let root = dir.path();
         let launch = Launch::Command(vec!["/bin/sleep".into(), "30".into()]);
         let started = invoke(
             &json!({"name": "operations_start", "arguments": {"id": "lattice:task:test", "idempotency_key": "sleep"}}),
             &records,
-            std::path::Path::new("/tmp/lattice"),
+            root,
             dir.path(),
+            &socket,
             true,
             &launch,
         )
@@ -870,13 +1128,15 @@ mod tests {
         let cancelled = invoke(
             &json!({"name": "runs_cancel", "arguments": {"run_id": run_id}}),
             &records,
-            std::path::Path::new("/tmp/lattice"),
+            root,
             dir.path(),
+            &socket,
             true,
             &launch,
         )
         .unwrap();
-        assert_eq!(cancelled["cancelled"], true);
+        assert_eq!(cancelled["process_cancelled"], true);
+        assert_eq!(cancelled["reservation_cancelled"], true);
         forget_run(run_id);
     }
 
@@ -884,12 +1144,15 @@ mod tests {
     fn a_failed_admission_does_not_launch_a_second_process() {
         let records = records();
         let dir = tempfile::tempdir().unwrap();
+        let socket = boot(dir.path());
+        let root = dir.path();
         let launch = Launch::Command(vec!["/no/such/nxr-command".into()]);
         let first = invoke(
             &json!({"name": "operations_start", "arguments": {"id": "lattice:task:test", "idempotency_key": "crash"}}),
             &records,
-            std::path::Path::new("/tmp/lattice"),
+            root,
             dir.path(),
+            &socket,
             true,
             &launch,
         );
@@ -897,13 +1160,120 @@ mod tests {
         let again = invoke(
             &json!({"name": "operations_start", "arguments": {"id": "lattice:task:test", "idempotency_key": "crash"}}),
             &records,
-            std::path::Path::new("/tmp/lattice"),
+            root,
             dir.path(),
+            &socket,
             true,
             &launch,
         )
         .unwrap();
         assert_eq!(again["started"], false);
         assert_eq!(again["status"], "reconciliation-required");
+    }
+
+    #[test]
+    fn an_app_is_launched_with_run_and_an_interrupted_bind_is_reused() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = WorkspaceInstance {
+            workspace_id: "lattice".to_owned(),
+            workspace_root: root.path().display().to_string(),
+            source_revision: None,
+        };
+        let records = vec![operation_record(
+            &workspace,
+            &Declaration::named(OperationKind::App, "test", "flake.nix"),
+        )];
+        let (command, _) =
+            command_for(&Launch::Task, &records[0], &BTreeMap::new(), root.path()).unwrap();
+        assert_eq!(command[1], "run");
+        assert_ne!(command[0], "nxr");
+        let dir = tempfile::tempdir().unwrap();
+        let socket = boot(dir.path());
+        let launch = Launch::Command(vec!["/bin/echo".into(), "ok".into()]);
+        let started = invoke(
+            &json!({"name": "operations_start", "arguments": {"id": "lattice:app:test", "idempotency_key": "app"}}),
+            &records,
+            root.path(),
+            dir.path(),
+            &socket,
+            true,
+            &launch,
+        )
+        .unwrap();
+        let run_id = started["run_id"].as_str().unwrap();
+        nxr_task::mark_bind_incomplete(dir.path(), "app").unwrap();
+        let again = invoke(
+            &json!({"name": "operations_start", "arguments": {"id": "lattice:app:test", "idempotency_key": "app"}}),
+            &records,
+            root.path(),
+            dir.path(),
+            &socket,
+            true,
+            &launch,
+        )
+        .unwrap();
+        assert_eq!(again["run_id"], run_id);
+        assert_eq!(again["started"], false);
+        let listed = list_on(&socket).unwrap();
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        forget_run(run_id);
+    }
+
+    #[test]
+    fn project_policy_authorizes_one_operation_id() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".nxr")).unwrap();
+        std::fs::write(
+            root.path().join(".nxr/execution-policy.toml"),
+            "[[operation]]\nid = \"lattice:task:rust-test-pkgs\"\nparameters = [\"package\"]\n\n[[operation]]\nid = \"lattice:task:reset-db\"\n",
+        )
+        .unwrap();
+        let workspace = WorkspaceInstance {
+            workspace_id: "lattice".to_owned(),
+            workspace_root: root.path().display().to_string(),
+            source_revision: None,
+        };
+        let records = vec![
+            operation_record(
+                &workspace,
+                &Declaration::named(OperationKind::Task, "rust-test-pkgs", "flake.nix"),
+            ),
+            operation_record(
+                &workspace,
+                &Declaration::named(OperationKind::Task, "reset-db", "flake.nix"),
+            ),
+        ];
+        let described = invoke(
+            &json!({"name": "operations_describe", "arguments": {"id": "lattice:task:rust-test-pkgs"}}),
+            &records,
+            root.path(),
+            root.path(),
+            &root.path().join("missing.sock"),
+            true,
+            &Launch::Task,
+        )
+        .unwrap();
+        assert_eq!(described["execution_allowed"], true);
+        assert_eq!(described["policy_source"], "project");
+        let refused = invoke(
+            &json!({"name": "operations_start", "arguments": {"id": "lattice:task:reset-db", "idempotency_key": "db", "parameters": {"package": "x"}}}),
+            &records,
+            root.path(),
+            root.path(),
+            &root.path().join("missing.sock"),
+            true,
+            &Launch::Task,
+        );
+        assert!(refused.unwrap_err().contains("not executable"));
+        let extra = invoke(
+            &json!({"name": "operations_start", "arguments": {"id": "lattice:task:rust-test-pkgs", "idempotency_key": "pkgs", "parameters": {"shell": "bash"}}}),
+            &records,
+            root.path(),
+            root.path(),
+            &root.path().join("missing.sock"),
+            true,
+            &Launch::Task,
+        );
+        assert!(extra.unwrap_err().contains("not authorized"));
     }
 }
