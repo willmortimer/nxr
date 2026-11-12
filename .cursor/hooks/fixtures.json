@@ -19,5 +19,10 @@
   {"command": "nxr task fabric-sync", "permission": "deny"},
   {"command": "nxr task test -- -p foo", "permission": "allow"},
   {"command": "nxr task test && cargo test", "permission": "ask"},
-  {"command": "nxr task test | cat", "permission": "ask"}
+  {"command": "nxr task test | cat", "permission": "ask"},
+  {"command": "nxr trust approve-policy", "permission": "deny"},
+  {"command": "nxr trust add", "permission": "deny"},
+  {"command": "nxr trust revoke", "permission": "deny"},
+  {"command": "nxr task test && nxr trust approve-policy", "permission": "deny"},
+  {"command": "cp trusted-projects.json /tmp/trusted-projects.json", "permission": "deny"}
 ]

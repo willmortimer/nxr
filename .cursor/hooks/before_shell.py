@@ -52,6 +52,18 @@ def generation_switch(text: str) -> bool:
     return "switch-to-configuration" in text
 
 
+def trust_mutation(text: str) -> bool:
+    """An agent must not approve or rewrite its own project trust."""
+    if "trusted-projects.json" in text:
+        return True
+    return bool(
+        re.search(
+            r"(^|[;&|`(]\s*)nxr\s+trust\s+(approve-policy|add|revoke)\b",
+            text,
+        )
+    )
+
+
 def is_compound(text: str) -> bool:
     """A second command must not inherit the first command's permission."""
     if any(token in text for token in (";", "&&", "||", "`", "$(")):
@@ -76,6 +88,10 @@ def decide(command: str) -> dict:
     if fleet_activation(text):
         return deny(
             "Do not activate SYS-5, staging, Hub 6420, nixdev, or gmkdev from an automatic task."
+        )
+    if trust_mutation(text):
+        return deny(
+            "Do not change project trust or approve an execution policy from an automatic task."
         )
     if generation_switch(text):
         return ask(

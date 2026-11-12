@@ -41,6 +41,10 @@ The task scheduler and the supervisor append one versioned stream: run id, seque
 
 `runs_get_diagnostics` names the failed node, the most useful diagnostic, and whether the failure looks like source, environment, infrastructure, or policy. An agent can identify that node without reading the whole log.
 
+## Execution evidence
+
+B2 and B3 write one versioned receipt. B2 contributes the verified shell, compiler, wrapper, target directory, and cache identity. B3 contributes the run events and the parsed Rust, Nix, and test diagnostics. The CLI, MCP, and Lattice's harness read that receipt. They do not keep a second log parser. Implementation still waits for the frozen A4 score. B2.0 and B3.0 remain the first slices. No embedding model.
+
 ## B3.2 — Artifacts and reruns
 
 `runs_get_artifacts` returns digest-checked outputs. A rerun keeps the same provenance. An infrastructure failure is not rerun as if it were a compiler error.

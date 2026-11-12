@@ -29,7 +29,9 @@ Also record, without using them as the pass gate yet:
 - Milliseconds until the first useful diagnostic.
 - How many compiler or `cargo` processes start.
 
-The adoption gate is 95 percent of these trials passing, and zero fleet activations. Run the same set against the CLI-and-rules baseline and against the MCP path. This file does not contain a score.
+The adoption gate is 95 percent of these trials passing, and zero fleet activations. Run the CLI-and-rules baseline first, then the MCP path, with no agent-facing tool changes between them. The candidate executable is the Nix build of `8d65888a523be3bfd0812437df8faa070c77833a`.
+
+A trial passes only when Cursor selects the operation named below, runs it, interprets the result, and cites that run. A task that correctly exits non-zero, including the NixPlane format check and the deliberate Lattice assertion, is not an agent failure. A trial whose criteria need the compiler, wrapper, or target directory fails or stays unverified when the receipt says the environment was not verified. Do not award that trial a pass. The score stays blank until these 22 Cursor trials are actually run.
 
 ## Trials
 

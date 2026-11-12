@@ -2,6 +2,8 @@
 
 **Status:** the sprint after B2/B3. Do not implement it in the A4 slice. v0.2.14 stays the deployed fabric. gmkdev stays deferred. Do not add a second scheduler or a new source-transfer design.
 
+C1 and C2 both cite the versioned execution receipt from B2/B3. A remote start refuses a dirty tree that was not the admitted SourceSet snapshot. NXR keeps the graph. NixPlane admits the attempt.
+
 ## C1 — Source identity
 
 Extend `SourceSetV1` and `source_set_digest`. Do not add another source list.

@@ -2,9 +2,19 @@
 
 These rows are real supervisor runs. They are not the MCP unit tests. Phase A4.2 has not been run, so the 22-trial score stays blank. No fleet host was activated. The Lattice and NixPlane flake pins remain `github:willmortimer/nxr/v3.9.0` (`d0e4e759504bc676121a00ca8cd9c6bb7d20bbbe` in Lattice's lock).
 
-The development executable for every row below is `/Users/willmortimer/Developer/nxr/target/debug/nxr`, `nxr-cli 3.9.1`, sha256 `4bd49c21f6a29b06f256b43e00d022545375faf06762436663b7de4c8f5bcbce`. `initialize` reported that path. It is not the v3.9.0 pin.
+The Cargo development binary below is history. The immutable candidate is the Nix build of `8d65888a523be3bfd0812437df8faa070c77833a`.
 
-`nix build --override-input nxr path:/Users/willmortimer/Developer/nxr .#nxr` from Lattice failed while copying the dirty NXR tree (`target/debug/deps/rustcIckHJs` was missing). The runs used the Cargo development binary instead. `path:../nxr` stays the development override until v3.9.1.
+## Immutable candidate
+
+`nix build --override-input nxr github:willmortimer/nxr/8d65888a523be3bfd0812437df8faa070c77833a .#nxr` from Lattice produced `/nix/store/mv161ycs05gygf8m3hjaxgsd8nvmr5jg-nxr-3.9.0`. The binary is `bin/nxr`, `nxr-cli 3.9.1`, sha256 `7a5a0204d9a11a8e0b142a583009de9376826766242687d51868fb2cdc8c7a04`. This is not `4bd49c21…`.
+
+`initialize` in NXR, Lattice, and NixPlane reported that store path. Lattice and NixPlane MCP configs now override `nxr` to `github:willmortimer/nxr/8d65888a523be3bfd0812437df8faa070c77833a`. The flake pins remain v3.9.0. The earlier `path:` build failure is unchanged history.
+
+## Historical Cargo binary
+
+The development executable for the operation rows below is `/Users/willmortimer/Developer/nxr/target/debug/nxr`, `nxr-cli 3.9.1`, sha256 `4bd49c21f6a29b06f256b43e00d022545375faf06762436663b7de4c8f5bcbce`. `initialize` reported that path. It is not the v3.9.0 pin.
+
+`nix build --override-input nxr path:/Users/willmortimer/Developer/nxr .#nxr` from Lattice failed while copying the dirty NXR tree (`target/debug/deps/rustcIckHJs` was missing). Those runs used the Cargo development binary.
 
 Environment identity was not verified. `operations_describe` reported `shell: null` for both tasks. The Lattice log shows Nextest ran the filtered test. That is not a verified toolchain report.
 
