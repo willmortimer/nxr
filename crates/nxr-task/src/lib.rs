@@ -12,6 +12,7 @@
 pub mod action_key;
 pub mod artifact;
 pub mod availability;
+pub mod catalog;
 pub mod ci_metadata;
 pub mod compiler_cache;
 pub mod context;
@@ -44,6 +45,11 @@ pub use availability::{
     ArtifactAvailability, ArtifactReuse, Availability, CurrentRequirements, ResolvedProgram,
     ReuseDecision, current_requirements, record_producer_receipt, requirements_for_plan,
     resolve_availability, restore_recorded_output, reuse_decision, single_output_paths,
+};
+pub use catalog::{
+    Declaration, EffectClass, EnvironmentExplanation, EnvironmentMismatch, OperationKind,
+    OperationPlan, OperationRecord, WorkspaceInstance, describe, explain, operation_record, plan,
+    search,
 };
 pub use ci_metadata::{CiRunMetadata, attach_ci_run};
 pub use context::{

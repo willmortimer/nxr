@@ -52,8 +52,18 @@ def generation_switch(text: str) -> bool:
     return "switch-to-configuration" in text
 
 
+def is_compound(text: str) -> bool:
+    """A second command must not inherit the first command's permission."""
+    if any(token in text for token in (";", "&&", "||", "`", "$(")):
+        return True
+    without_or = text.replace("||", "")
+    return "|" in without_or
+
+
 def local_nxr_task(text: str) -> bool:
-    match = re.match(r"^nxr task (\S+)", text)
+    if is_compound(text):
+        return False
+    match = re.fullmatch(r"nxr task (\S+)(?:\s+.*)?", text)
     return bool(match and match.group(1) in LOCAL_TASKS)
 
 

@@ -16,5 +16,8 @@
   {"command": "nxr task hub-update", "permission": "deny"},
   {"command": "nxr list; sudo switch-to-configuration switch", "permission": "ask"},
   {"command": "nxr workflow run --execution remote", "permission": "ask"},
-  {"command": "nxr task fabric-sync", "permission": "deny"}
+  {"command": "nxr task fabric-sync", "permission": "deny"},
+  {"command": "nxr task test -- -p foo", "permission": "allow"},
+  {"command": "nxr task test && cargo test", "permission": "ask"},
+  {"command": "nxr task test | cat", "permission": "ask"}
 ]

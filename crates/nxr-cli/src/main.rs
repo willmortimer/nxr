@@ -35,8 +35,8 @@ use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
     affected, attach, cache, catalog, ci, complete, completion, configurations, context, daemon,
     doctor, doctor_builders, doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt,
-    graph, history, init, inspect, inventory, list, manpage, migrate, nix_op, plan, process_cmd,
-    run, script, select, selectors, session, task, trust, ui, watch, workflow,
+    graph, history, init, inspect, inventory, list, manpage, migrate, nix_op, op, plan,
+    process_cmd, run, script, select, selectors, session, task, trust, ui, watch, workflow,
 };
 use crate::error_format::format_error_message;
 use crate::flake::{ParseFlakeAppRefError, parse_flake_app_ref};
@@ -162,6 +162,8 @@ enum RunError {
     Process(#[from] process_cmd::ProcessError),
     #[error(transparent)]
     Workflow(#[from] workflow::WorkflowError),
+    #[error("{0}")]
+    Message(String),
 }
 
 impl RunError {
@@ -204,7 +206,9 @@ impl RunError {
             Self::Inventory(error) => error.exit_code(),
             Self::Process(error) => error.exit_code(),
             Self::Workflow(error) => error.exit_code(),
-            Self::MissingAppName | Self::Usage(_) | Self::FlakeAppRef(_) => exit::USAGE,
+            Self::Message(_) | Self::MissingAppName | Self::Usage(_) | Self::FlakeAppRef(_) => {
+                exit::USAGE
+            }
         }
     }
 }
@@ -542,16 +546,14 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             args,
             runner,
         ),
-        Some(Command::Workflow { action }) => {
-            workflow::execute(
-                action,
-                cli.nix.as_deref(),
-                cli.dry_run,
-                cli.json,
-                cli.events.is_some(),
-            )
-                .map_err(RunError::from)
-        }
+        Some(Command::Workflow { action }) => workflow::execute(
+            action,
+            cli.nix.as_deref(),
+            cli.dry_run,
+            cli.json,
+            cli.events.is_some(),
+        )
+        .map_err(RunError::from),
         Some(Command::External(tokens)) => dispatch_external(cli, &nix_flags, tokens, runner),
         Some(Command::Completion { shell }) => {
             completion::run(*shell)?;
@@ -572,6 +574,28 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 &nix_flags,
             )?;
             Ok(exit::SUCCESS)
+        }
+        Some(Command::Op { command }) => {
+            return op::run_op(
+                cli.flake.as_deref(),
+                cli.nix.as_deref(),
+                cli.json,
+                &nix_flags,
+                command,
+                runner,
+            )
+            .map_err(RunError::Message);
+        }
+        Some(Command::Env { command }) => {
+            return op::run_env(
+                cli.flake.as_deref(),
+                cli.nix.as_deref(),
+                cli.json,
+                &nix_flags,
+                command,
+                runner,
+            )
+            .map_err(RunError::Message);
         }
         Some(Command::Manpage) => {
             manpage::run()?;

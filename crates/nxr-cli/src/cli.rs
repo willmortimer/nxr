@@ -184,6 +184,36 @@ pub enum InspectSubcommand {
     },
 }
 
+/// `nxr op` sub-targets.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum OpCommand {
+    /// Find operations whose name, description, alias, or id contains this text
+    Search {
+        /// Text matched against the declaration
+        query: String,
+    },
+    /// Show one operation
+    Describe {
+        /// Portable operation id
+        id: String,
+    },
+    /// Show the work one operation would perform
+    Plan {
+        /// Portable operation id
+        id: String,
+    },
+}
+
+/// `nxr env` sub-targets.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum EnvCommand {
+    /// Compare the planned environment with the ambient PATH
+    Explain {
+        /// Portable operation id
+        id: String,
+    },
+}
+
 /// `nxr explain` sub-targets.
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 pub enum ExplainSubcommand {
@@ -455,6 +485,16 @@ pub enum Command {
         /// Parameter name for `task-parameter-values`
         #[arg(value_name = "PARAMETER")]
         parameter: Option<String>,
+    },
+    /// Discover a declared operation
+    Op {
+        #[command(subcommand)]
+        command: OpCommand,
+    },
+    /// Explain the environment a declared operation would use
+    Env {
+        #[command(subcommand)]
+        command: EnvCommand,
     },
     /// Hidden man-page generator for packaging
     #[command(name = "__manpage", hide = true)]

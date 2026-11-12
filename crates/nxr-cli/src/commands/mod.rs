@@ -29,6 +29,7 @@ pub mod list;
 pub mod manpage;
 pub mod migrate;
 pub mod nix_op;
+pub mod op;
 pub mod plan;
 pub mod process_cmd;
 pub mod remote;
