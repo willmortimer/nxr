@@ -10,7 +10,7 @@ use camino::Utf8Path;
 use nxr_nix::OptionalNixFlags;
 use nxr_task::{
     Declaration, OperationKind, OperationRecord, WorkspaceInstance, describe, explain,
-    operation_record, plan, search,
+    operation_record, plan, search, workspace_id,
 };
 
 use crate::cli::{EnvCommand, OpCommand};
@@ -62,7 +62,10 @@ pub fn run_op(
                     serde_json::to_string_pretty(&planned).map_err(|err| err.to_string())?
                 );
             } else {
-                println!("{} {}", planned.operation_id, planned.effect);
+                println!(
+                    "{} {} allowed={}",
+                    planned.operation_id, planned.inferred_effect, planned.execution_allowed
+                );
             }
         }
     }
@@ -92,7 +95,10 @@ pub fn run_env(
             serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
         );
     } else if report.mismatches.is_empty() {
-        println!("{} compiler {}", report.operation_id, report.compiler);
+        println!(
+            "{} ambient {} resolved {}",
+            report.operation_id, report.ambient.compiler, report.resolved.compiler
+        );
     } else {
         println!(
             "{} compiler mismatch: {}",
@@ -102,7 +108,7 @@ pub fn run_env(
     Ok(0)
 }
 
-fn load_records(
+pub(crate) fn load_records(
     flake: Option<&str>,
     nix_override: Option<&str>,
     nix_flags: &OptionalNixFlags,
@@ -116,12 +122,16 @@ fn load_records(
         .clone()
         .map(|path| path.into_std_path_buf())
         .unwrap_or_else(|| cwd.as_std_path().to_path_buf());
+    let directory_name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("workspace");
     let workspace = WorkspaceInstance {
-        workspace_id: root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("workspace")
-            .to_owned(),
+        workspace_id: workspace_id(
+            explicit_workspace_id(&root).as_deref(),
+            git_remote(&root).as_deref(),
+            directory_name,
+        ),
         workspace_root: root.display().to_string(),
         source_revision: git_revision(&root),
     };
@@ -201,20 +211,44 @@ fn file_records(workspace: &WorkspaceInstance, root: &Path) -> Vec<OperationReco
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_file()
-                && let Some(name) = path.file_stem().and_then(|stem| stem.to_str())
+                && let Some(name) = path.file_name().and_then(|file| file.to_str())
             {
+                let definition = format!("{SCRIPT_CONVENTION_DIR}/{name}");
                 records.push(operation_record(
                     workspace,
-                    &Declaration::named(
-                        OperationKind::Script,
-                        name,
-                        format!("{SCRIPT_CONVENTION_DIR}/{name}"),
-                    ),
+                    &Declaration::named(OperationKind::Script, name, definition),
                 ));
             }
         }
     }
     records
+}
+
+fn explicit_workspace_id(root: &Path) -> Option<String> {
+    let path = root.join(".nxr").join("workspace-id");
+    let text = std::fs::read_to_string(path).ok()?;
+    let id = text.lines().next().unwrap_or("").trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_owned())
+    }
+}
+
+fn git_remote(root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|remote| remote.trim().to_owned())
+        .filter(|remote| !remote.is_empty())
 }
 
 fn git_revision(root: &Path) -> Option<String> {

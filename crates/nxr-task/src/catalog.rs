@@ -101,6 +101,64 @@ pub struct WorkspaceInstance {
     pub source_revision: Option<String>,
 }
 
+/// Where `execution_allowed` came from. A missing annotation is [`Unset`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PolicySource {
+    /// The name is on the local-check allowlist and the kind is a task or app.
+    Allowlist,
+    /// The declaration named an effect. That does not by itself authorize execution.
+    Explicit,
+    /// No authorization was declared.
+    Unset,
+}
+
+const LOCAL_CHECK_ALLOWLIST: &[&str] = &["test", "fmt", "fmt-check", "lint", "ci", "deny"];
+
+/// Whether this caller may start the operation. Unknown work stays discoverable.
+#[must_use]
+pub fn execution_decision(
+    kind: OperationKind,
+    name: &str,
+    explicit: Option<EffectClass>,
+) -> (Option<EffectClass>, PolicySource, bool) {
+    let allowlisted = matches!(kind, OperationKind::App | OperationKind::Task)
+        && LOCAL_CHECK_ALLOWLIST.contains(&name);
+    let source = if allowlisted {
+        PolicySource::Allowlist
+    } else if explicit.is_some() {
+        PolicySource::Explicit
+    } else {
+        PolicySource::Unset
+    };
+    (explicit, source, allowlisted)
+}
+
+/// Stable workspace name. An explicit id wins, then the git remote repository, then the directory.
+#[must_use]
+pub fn workspace_id(
+    explicit: Option<&str>,
+    git_remote: Option<&str>,
+    directory_name: &str,
+) -> String {
+    explicit
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| git_remote.and_then(repository_name))
+        .unwrap_or_else(|| directory_name.to_owned())
+}
+
+fn repository_name(remote: &str) -> Option<String> {
+    let trimmed = remote.trim().trim_end_matches(".git");
+    let name = trimmed.rsplit(['/', ':']).next().unwrap_or(trimmed).trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_owned())
+    }
+}
+
 /// One declared operation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OperationRecord {
@@ -115,7 +173,13 @@ pub struct OperationRecord {
     pub name: String,
     pub description: Option<String>,
     pub aliases: Vec<String>,
-    pub effect: EffectClass,
+    /// Descriptive classification. Not an authorization.
+    pub inferred_effect: EffectClass,
+    /// Effect named by the declaration, when one exists.
+    pub authorized_effect: Option<EffectClass>,
+    pub policy_source: PolicySource,
+    /// True only for an allowlisted local task or app.
+    pub execution_allowed: bool,
     pub parameters: Vec<String>,
     /// Expected dev shell, when the declaration names one.
     pub shell: Option<String>,
@@ -177,9 +241,9 @@ pub fn operation_record(
     workspace: &WorkspaceInstance,
     declaration: &Declaration,
 ) -> OperationRecord {
-    let effect = declaration
-        .effect
-        .unwrap_or_else(|| EffectClass::from_declaration(declaration.kind, &declaration.name));
+    let inferred_effect = EffectClass::from_declaration(declaration.kind, &declaration.name);
+    let (authorized_effect, policy_source, execution_allowed) =
+        execution_decision(declaration.kind, &declaration.name, declaration.effect);
     let operation_id = format!(
         "{}:{}:{}",
         workspace.workspace_id,
@@ -196,7 +260,10 @@ pub fn operation_record(
         name: declaration.name.clone(),
         description: declaration.description.clone(),
         aliases: declaration.aliases.clone(),
-        effect,
+        inferred_effect,
+        authorized_effect,
+        policy_source,
+        execution_allowed,
         parameters: declaration.parameters.clone(),
         shell: declaration.shell.clone(),
         working_directory: declaration
@@ -249,7 +316,10 @@ pub fn describe<'a>(
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OperationPlan {
     pub operation_id: String,
-    pub effect: EffectClass,
+    pub inferred_effect: EffectClass,
+    pub authorized_effect: Option<EffectClass>,
+    pub policy_source: PolicySource,
+    pub execution_allowed: bool,
     pub definition: String,
     pub parameters: Vec<String>,
     pub shell: Option<String>,
@@ -264,7 +334,10 @@ pub struct OperationPlan {
 pub fn plan(record: &OperationRecord) -> OperationPlan {
     OperationPlan {
         operation_id: record.operation_id.clone(),
-        effect: record.effect,
+        inferred_effect: record.inferred_effect,
+        authorized_effect: record.authorized_effect,
+        policy_source: record.policy_source,
+        execution_allowed: record.execution_allowed,
         definition: record.definition.clone(),
         parameters: record.parameters.clone(),
         shell: record.shell.clone(),
@@ -283,13 +356,23 @@ pub struct EnvironmentMismatch {
     pub observed: String,
 }
 
-/// Environment the operation would use, plus drift. No compiler is launched.
+/// One environment view. `compiler` is `unknown` when it was not established.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct EnvironmentExplanation {
-    pub operation_id: String,
+pub struct EnvironmentView {
     pub shell: Option<String>,
     pub compiler: String,
     pub rustc_wrapper: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EnvironmentExplanation {
+    pub operation_id: String,
+    /// What the declaration names.
+    pub declared: EnvironmentView,
+    /// What NXR can name without entering the shell. Unknown stays unknown.
+    pub resolved: EnvironmentView,
+    /// What the current process `PATH` suggests.
+    pub ambient: EnvironmentView,
     pub working_directory: String,
     pub inputs: Vec<String>,
     pub secret_refs: Vec<String>,
@@ -304,9 +387,9 @@ pub struct EnvironmentExplanation {
 #[must_use]
 pub fn explain(record: &OperationRecord, ambient_path: &str) -> EnvironmentExplanation {
     let planned = plan(record);
+    let ambient_compiler = compiler_from_path(ambient_path);
     let mut mismatches = Vec::new();
-    let compiler = compiler_from_path(ambient_path);
-    if record.shell.is_some() && compiler == "rustup" {
+    if record.shell.is_some() && ambient_compiler == "rustup" {
         mismatches.push(EnvironmentMismatch {
             field: "compiler".to_owned(),
             expected: "nix shell".to_owned(),
@@ -315,13 +398,79 @@ pub fn explain(record: &OperationRecord, ambient_path: &str) -> EnvironmentExpla
     }
     EnvironmentExplanation {
         operation_id: planned.operation_id,
-        shell: planned.shell,
-        compiler: compiler.to_owned(),
-        rustc_wrapper: planned.rustc_wrapper,
+        declared: EnvironmentView {
+            shell: planned.shell.clone(),
+            compiler: "unknown".to_owned(),
+            rustc_wrapper: planned.rustc_wrapper.clone(),
+        },
+        resolved: EnvironmentView {
+            shell: planned.shell,
+            compiler: "unknown".to_owned(),
+            rustc_wrapper: planned.rustc_wrapper,
+        },
+        ambient: EnvironmentView {
+            shell: None,
+            compiler: ambient_compiler.to_owned(),
+            rustc_wrapper: None,
+        },
         working_directory: planned.working_directory,
         inputs: planned.inputs,
         secret_refs: planned.secret_refs,
         mismatches,
+    }
+}
+
+/// Fingerprint of one execution. `HEAD` is not an input. File bytes are.
+#[must_use]
+pub fn execution_fingerprint(record: &OperationRecord, input_contents: &[(&str, &[u8])]) -> String {
+    let mut material = String::new();
+    material.push_str(&record.operation_id);
+    material.push('\n');
+    for parameter in &record.parameters {
+        material.push_str(parameter);
+        material.push('\n');
+    }
+    material.push_str(record.shell.as_deref().unwrap_or(""));
+    material.push('\n');
+    material.push_str(record.rustc_wrapper.as_deref().unwrap_or(""));
+    material.push('\n');
+    for input in &record.inputs {
+        material.push_str(input);
+        material.push('\n');
+    }
+    let mut contents = input_contents.to_vec();
+    contents.sort_by(|left, right| left.0.cmp(right.0));
+    for (path, bytes) in contents {
+        material.push_str(path);
+        material.push(' ');
+        material.push_str(&nxr_core::digest_bytes(bytes));
+        material.push('\n');
+    }
+    nxr_core::digest_bytes(material.as_bytes())
+}
+
+/// Same key and fingerprint repeats. A changed fingerprint conflicts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FingerprintDecision {
+    /// The key has not been seen.
+    New,
+    /// Same key, same operation, same fingerprint.
+    Replay,
+    /// Same key, different fingerprint.
+    Conflict,
+}
+
+#[must_use]
+pub fn fingerprint_decision(
+    stored_operation: &str,
+    stored_fingerprint: &str,
+    operation_id: &str,
+    fingerprint: &str,
+) -> FingerprintDecision {
+    if stored_operation == operation_id && stored_fingerprint == fingerprint {
+        FingerprintDecision::Replay
+    } else {
+        FingerprintDecision::Conflict
     }
 }
 
@@ -375,34 +524,100 @@ mod tests {
                 .map(|record| record.operation_id.as_str()),
             Some("lattice:task:rust-test-pkgs")
         );
-        assert_eq!(plan(&found[0]).effect, EffectClass::LocalBuild);
+        assert_eq!(plan(&found[0]).inferred_effect, EffectClass::LocalBuild);
+        assert!(!plan(&found[0]).execution_allowed);
+        assert!(plan(&records[1]).execution_allowed);
     }
 
     #[test]
-    fn a_missing_policy_is_not_deploy() {
+    fn a_missing_policy_is_not_deploy_or_executable() {
         let record = operation_record(
             &workspace("nxr"),
             &Declaration::named(OperationKind::Task, "fmt", "flake.nix"),
         );
-        assert_eq!(record.effect, EffectClass::LocalBuild);
+        assert_eq!(record.inferred_effect, EffectClass::LocalBuild);
+        assert!(record.execution_allowed);
         let named = operation_record(
             &workspace("nixplane"),
             &Declaration::named(OperationKind::Task, "hub-update", "flake.nix"),
         );
-        assert_eq!(named.effect, EffectClass::Deploy);
+        assert_eq!(named.inferred_effect, EffectClass::Deploy);
+        assert!(!named.execution_allowed);
+        let destructive = operation_record(
+            &workspace("nixplane"),
+            &Declaration::named(OperationKind::Task, "reset-db", "flake.nix"),
+        );
+        assert!(!destructive.execution_allowed);
+        assert_eq!(destructive.policy_source, PolicySource::Unset);
     }
 
     #[test]
     fn explain_reports_rustup_ahead_of_the_nix_shell_without_compiling() {
         let record = sample("lattice", "rust-test-pkgs");
         let report = explain(&record, "/Users/will/.cargo/bin:/nix/store/rust/bin");
-        assert_eq!(report.compiler, "rustup");
+        assert_eq!(report.ambient.compiler, "rustup");
+        assert_eq!(report.resolved.compiler, "unknown");
+        assert_eq!(report.declared.shell.as_deref(), Some("rust"));
         assert_eq!(report.mismatches.len(), 1);
         assert_eq!(report.mismatches[0].field, "compiler");
-        assert_eq!(report.rustc_wrapper.as_deref(), Some("sccache"));
+        assert_eq!(report.declared.rustc_wrapper.as_deref(), Some("sccache"));
         assert!(report.secret_refs.is_empty());
         let nix = explain(&record, "/nix/store/rust/bin:/usr/bin");
         assert!(nix.mismatches.is_empty());
-        assert_eq!(nix.compiler, "nix");
+        assert_eq!(nix.ambient.compiler, "nix");
+        assert_eq!(nix.resolved.compiler, "unknown");
+    }
+
+    #[test]
+    fn script_extensions_stay_in_the_operation_id() {
+        let root = workspace("demo");
+        let shell = operation_record(
+            &root,
+            &Declaration::named(OperationKind::Script, "run.sh", ".nxr/scripts/run.sh"),
+        );
+        let python = operation_record(
+            &root,
+            &Declaration::named(OperationKind::Script, "run.py", ".nxr/scripts/run.py"),
+        );
+        assert_ne!(shell.operation_id, python.operation_id);
+        assert_eq!(shell.definition, ".nxr/scripts/run.sh");
+        assert!(!shell.execution_allowed);
+    }
+
+    #[test]
+    fn a_dirty_input_changes_the_fingerprint_without_moving_head() {
+        let record = sample("lattice", "rust-test-pkgs");
+        let first = execution_fingerprint(&record, &[("src/lib.rs", b"fn a() {}")]);
+        let second = execution_fingerprint(&record, &[("src/lib.rs", b"fn b() {}")]);
+        assert_ne!(first, second);
+        assert_eq!(
+            fingerprint_decision(&record.operation_id, &first, &record.operation_id, &first),
+            FingerprintDecision::Replay
+        );
+        assert_eq!(
+            fingerprint_decision(&record.operation_id, &first, &record.operation_id, &second),
+            FingerprintDecision::Conflict
+        );
+    }
+
+    #[test]
+    fn workspace_id_prefers_metadata_over_the_directory_name() {
+        assert_eq!(
+            workspace_id(
+                Some("lattice"),
+                Some("git@github.com:willmortimer/other.git"),
+                "backend"
+            ),
+            "lattice"
+        );
+        assert_eq!(
+            workspace_id(
+                None,
+                Some("https://github.com/willmortimer/nxr.git"),
+                "backend"
+            ),
+            "nxr"
+        );
+        assert_eq!(workspace_id(None, None, "backend"), "backend");
     }
 }

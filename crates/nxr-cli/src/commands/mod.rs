@@ -27,6 +27,7 @@ pub mod inspect;
 pub mod inventory;
 pub mod list;
 pub mod manpage;
+pub mod mcp;
 pub mod migrate;
 pub mod nix_op;
 pub mod op;

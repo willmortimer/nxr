@@ -22,6 +22,7 @@ pub mod execute;
 pub mod execution_spec;
 pub mod failure;
 pub mod graph;
+pub mod idempotency;
 pub mod identity;
 pub mod matrix;
 pub mod memory;
@@ -47,9 +48,10 @@ pub use availability::{
     resolve_availability, restore_recorded_output, reuse_decision, single_output_paths,
 };
 pub use catalog::{
-    Declaration, EffectClass, EnvironmentExplanation, EnvironmentMismatch, OperationKind,
-    OperationPlan, OperationRecord, WorkspaceInstance, describe, explain, operation_record, plan,
-    search,
+    Declaration, EffectClass, EnvironmentExplanation, EnvironmentMismatch, EnvironmentView,
+    FingerprintDecision, OperationKind, OperationPlan, OperationRecord, PolicySource,
+    WorkspaceInstance, describe, execution_decision, execution_fingerprint, explain,
+    fingerprint_decision, operation_record, plan, search, workspace_id,
 };
 pub use ci_metadata::{CiRunMetadata, attach_ci_run};
 pub use context::{
@@ -75,6 +77,7 @@ pub use execution_spec::{
 };
 pub use failure::{FailureSummary, failure_summary};
 pub use graph::{GraphError, TaskGraph, render_dot, render_mermaid, render_text};
+pub use idempotency::{Admission, Reservation, admit, cancel, inspect, mark_started};
 pub use identity::{SourceSetV1, operation_id, source_set_digest};
 pub use matrix::{
     MATRIX_ENV_PREFIX, MatrixExpansion, MatrixInstance, expand_matrix_roots, expand_matrix_tasks,

@@ -35,7 +35,7 @@ use crate::commands::common::{AppRequest, DiscoverRequest};
 use crate::commands::{
     affected, attach, cache, catalog, ci, complete, completion, configurations, context, daemon,
     doctor, doctor_builders, doctor_cache, doctor_determinate, doctor_env, envrc, explain, fmt,
-    graph, history, init, inspect, inventory, list, manpage, migrate, nix_op, op, plan,
+    graph, history, init, inspect, inventory, list, manpage, mcp, migrate, nix_op, op, plan,
     process_cmd, run, script, select, selectors, session, task, trust, ui, watch, workflow,
 };
 use crate::error_format::format_error_message;
@@ -585,6 +585,10 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 runner,
             )
             .map_err(RunError::Message);
+        }
+        Some(Command::Mcp) => {
+            return mcp::serve(cli.flake.as_deref(), cli.nix.as_deref(), &nix_flags, runner)
+                .map_err(RunError::Message);
         }
         Some(Command::Env { command }) => {
             return op::run_env(

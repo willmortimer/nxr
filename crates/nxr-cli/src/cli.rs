@@ -496,6 +496,8 @@ pub enum Command {
         #[command(subcommand)]
         command: EnvCommand,
     },
+    /// Serve the local operation catalog over stdio MCP
+    Mcp,
     /// Hidden man-page generator for packaging
     #[command(name = "__manpage", hide = true)]
     Manpage,
