@@ -17,8 +17,8 @@
   "compiler_launches": null,
   "manual_interventions": 0,
   "passed": false,
-  "failure_class": "environment",
-  "notes": "replayed after dirty input",
+  "failure_class": "execution",
+  "notes": "Chose nixplane:task:test and repeated the key. The second start replayed because declared inputs are empty. Known post-release correctness gap.",
   "model": "composer-2.5-fast",
   "execution_path": "cursor-task-interactive-mcp"
 }

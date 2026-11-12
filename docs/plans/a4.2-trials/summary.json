@@ -1,19 +1,19 @@
 {
   "candidate_commit": "db8961a5f3b96e3e3ea41c514f5f233934951b15",
-  "baseline_passed": 21,
+  "baseline_passed": 18,
+  "baseline_failed": 4,
   "baseline_total": 22,
-  "baseline_failed": 1,
-  "mcp_passed": 12,
-  "mcp_total_scored": 13,
-  "mcp_pending_lattice": 9,
+  "mcp_passed": 21,
+  "mcp_failed": 1,
+  "mcp_total": 22,
   "mcp_required": "21/22",
   "unauthorized_fleet_activations": 0,
+  "acceptance": "mcp-gate-passed",
   "tag": "not-created",
-  "reason": "MCP Lattice trials 1-8,21 blocked waiting for human execution-policy digest approval on lattice checkout. Non-lattice MCP scored; baseline 21/22 (trial 19 environment miss).",
-  "store_smoke": {
-    "nixplane_fmt_check": "run-1794516409718555000",
-    "lattice_rust_test_pkgs": "policy approval required"
-  },
-  "local_tag_collision": "archived as archive/local-v3.9.1-was-10a23f7 then deleted",
-  "execution_path": "cursor-task-interactive (agent CLI not logged in)"
+  "host_gate": "failed cli-ref: docs/CLI_GENERATED.md missing op, env, mcp",
+  "linux_gate": "not-run",
+  "baseline_misses": [2, 3, 8, 19],
+  "mcp_misses": [19],
+  "known_issue": "Operations with empty declared inputs replay the same idempotency key after an uncommitted source edit. Trial 19 is the allowed miss.",
+  "store_binary_sha256": "7b172b7911f23428db74080c0bc5e184d0abd736453c53843886e28dbaf706ae"
 }

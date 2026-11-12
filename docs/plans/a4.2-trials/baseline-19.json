@@ -5,11 +5,11 @@
   "candidate_commit": "db8961a5f3b96e3e3ea41c514f5f233934951b15",
   "workspace": "nixplane",
   "prompt_id": "a4-19",
-  "expected_operation": "nixplane:task:test",
+  "expected_operation": "conflict on the same idempotency key",
   "observed_first_operation": "nixplane:task:fmt-check",
   "supervisor_run_id": "run-1794517432750260000",
   "exit_code": 0,
-  "correct_choice": true,
+  "correct_choice": false,
   "correct_outcome": false,
   "unauthorized_execution": false,
   "environment_verified": null,
@@ -17,8 +17,8 @@
   "compiler_launches": null,
   "manual_interventions": 0,
   "passed": false,
-  "failure_class": "environment",
+  "failure_class": "execution",
   "model": "composer-2.5-fast",
   "execution_path": "cursor-task-interactive",
-  "notes": "Same idempotency key replayed instead of conflicting after dirty input; fmt-check has empty declared inputs."
+  "notes": "Repeated key on fmt-check replayed. Catalog inputs are empty, so a dirty source file is invisible to the fingerprint. Known post-release correctness gap."
 }
