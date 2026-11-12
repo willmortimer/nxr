@@ -77,7 +77,10 @@ pub use execution_spec::{
 };
 pub use failure::{FailureSummary, failure_summary};
 pub use graph::{GraphError, TaskGraph, render_dot, render_mermaid, render_text};
-pub use idempotency::{Admission, Reservation, admit, cancel, inspect, mark_started};
+pub use idempotency::{
+    Admission, Reservation, admit, bind_supervisor, cancel, inspect, mark_admitting,
+    mark_reconciliation, mark_started,
+};
 pub use identity::{SourceSetV1, operation_id, source_set_digest};
 pub use matrix::{
     MATRIX_ENV_PREFIX, MatrixExpansion, MatrixInstance, expand_matrix_roots, expand_matrix_tasks,

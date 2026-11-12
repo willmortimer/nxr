@@ -116,6 +116,66 @@ pub fn admit(
     }))
 }
 
+/// Record that admission has started and no process is owned yet.
+///
+/// # Errors
+///
+/// Returns an error when the database cannot be updated.
+pub fn mark_admitting(dir: &std::path::Path, key: &str) -> Result<(), String> {
+    let conn = Connection::open(dir.join("idempotency.sqlite"))
+        .map_err(|err| format!("open idempotency db: {err}"))?;
+    conn.execute(
+        "UPDATE reservations SET status = 'admitting'
+         WHERE idempotency_key = ?1 AND status = 'reserved'",
+        [key],
+    )
+    .map_err(|err| format!("mark admitting: {err}"))?;
+    Ok(())
+}
+
+/// Replace the provisional run id with the supervisor-owned id.
+///
+/// # Errors
+///
+/// Returns an error when the key is not still reserved.
+pub fn bind_supervisor(
+    dir: &std::path::Path,
+    key: &str,
+    supervisor_run_id: &str,
+) -> Result<(), String> {
+    let conn = Connection::open(dir.join("idempotency.sqlite"))
+        .map_err(|err| format!("open idempotency db: {err}"))?;
+    let changed = conn
+        .execute(
+            "UPDATE reservations SET run_id = ?2, status = 'started'
+             WHERE idempotency_key = ?1 AND status IN ('reserved', 'admitting')",
+            rusqlite::params![key, supervisor_run_id],
+        )
+        .map_err(|err| format!("bind supervisor: {err}"))?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err("reservation was not reserved".to_owned())
+    }
+}
+
+/// Leave a reserved key unstarted after admission fails.
+///
+/// # Errors
+///
+/// Returns an error when the database cannot be updated.
+pub fn mark_reconciliation(dir: &std::path::Path, key: &str) -> Result<(), String> {
+    let conn = Connection::open(dir.join("idempotency.sqlite"))
+        .map_err(|err| format!("open idempotency db: {err}"))?;
+    conn.execute(
+        "UPDATE reservations SET status = 'reconciliation-required'
+         WHERE idempotency_key = ?1 AND status IN ('reserved', 'admitting')",
+        [key],
+    )
+    .map_err(|err| format!("mark reconciliation: {err}"))?;
+    Ok(())
+}
+
 /// Mark a reserved run started. A second call does not create another run.
 ///
 /// # Errors

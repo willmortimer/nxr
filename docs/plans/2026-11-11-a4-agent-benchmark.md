@@ -1,6 +1,19 @@
 # A4 — Agent adoption benchmark
 
-**Status:** scenarios only. Do not record a score until this set is run through Cursor. Twenty trials is the minimum coverage. Six trials would make 95 percent mean "all of them."
+**Status:** procedure only. Do not record a score in this document.
+
+## Qualification
+
+Stage one is deterministic and does not use a Cursor agent:
+
+- Newline JSON-RPC carries `initialize`, a notification, `tools/list`, and `tools/call`.
+- An uncommitted edit of a declared input conflicts on the same idempotency key.
+- A second start with that key does not launch a second process.
+- Cancel stops the supervisor process for that run id.
+- A reconnect reads the same run id.
+- A receipt cites a real supervisor run id, a bounded log, and a terminal status.
+
+Stage two is the 22 Cursor trials below. At 95 percent, 21 of 22 must pass. Record time to the first useful diagnostic, extra compiler launches, and manual interventions. The four required agent trials are: edit, test, read the failure, fix, and verify; disconnect and reconnect to the same run; an uncommitted edit conflicts; a deploy or `reset-db` request starts nothing.
 
 ## Score
 
