@@ -27,6 +27,9 @@ Commands:
   doctor      Diagnose environment and flake configuration
   explain     Explain resolution and invocation for an app or task
   completion  Generate shell completion script
+  op          Discover a declared operation
+  env         Explain the environment a declared operation would use
+  mcp         Serve the local operation catalog over stdio MCP
   inspect     Inspect flake metadata
   task        Run a V2 task
   watch       Watch and rerun on filesystem changes
