@@ -59,6 +59,9 @@ struct OwnedRun {
     exit_code: Option<i32>,
     #[serde(default)]
     log_path: String,
+    /// Opaque id of the workspace reservation. Empty on records written before this field.
+    #[serde(default)]
+    admission_id: String,
     events: Vec<RunEvent>,
 }
 
@@ -95,6 +98,11 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
         .get("label")
         .and_then(Value::as_str)
         .unwrap_or("session")
+        .to_owned();
+    let admission_id = params
+        .get("admission_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
         .to_owned();
     let remote = optional_string(params, "remote");
     let attempt_id = optional_string(params, "attempt_id");
@@ -140,6 +148,7 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
                 memory_mib,
                 exit_code: None,
                 log_path: String::new(),
+                admission_id: admission_id.clone(),
                 events: Vec::new(),
             };
             push_event(&mut refused, "refused");
@@ -185,6 +194,7 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
             memory_mib,
             exit_code: None,
             log_path: log_path.display().to_string(),
+            admission_id,
             events: Vec::new(),
         };
         push_event(&mut record, "started");
@@ -736,6 +746,7 @@ mod tests {
             memory_mib: 1,
             exit_code: None,
             log_path: String::new(),
+            admission_id: String::new(),
             events: Vec::new(),
         };
         push_event(&mut record, "started");

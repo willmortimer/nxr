@@ -23,6 +23,8 @@ pub struct SessionStart {
     pub memory_mib: u64,
     /// Working directory for the child. Empty means the supervisor's directory.
     pub cwd: Option<std::path::PathBuf>,
+    /// Workspace-scoped reservation identity. A label is not this value.
+    pub admission_id: Option<String>,
 }
 
 /// CPU tokens and memory the local machine will admit. This is not a cluster pool.
@@ -82,6 +84,7 @@ pub fn start_on(
             "cache_mode": mode,
             "cache_env": assignments,
             "cwd": request.cwd.as_ref().map(|path| path.display().to_string()),
+            "admission_id": request.admission_id,
         }),
     )?;
     let id = value
@@ -335,6 +338,7 @@ mod tests {
                 cpu: 0,
                 memory_mib: 0,
                 cwd: None,
+                admission_id: None,
             },
             LocalBudget {
                 cpu: 1,
@@ -365,6 +369,7 @@ mod tests {
                 cpu: 1,
                 memory_mib: 8,
                 cwd: None,
+                admission_id: None,
             },
             LocalBudget {
                 cpu: 2,
@@ -398,6 +403,7 @@ mod tests {
                 cpu: 1,
                 memory_mib: 8,
                 cwd: None,
+                admission_id: None,
             },
             LocalBudget {
                 cpu: 2,

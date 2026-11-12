@@ -1,72 +1,46 @@
-# B2 and B3 — Environment resolution and structured diagnostics
+# Sprint — B2 environment and B3 diagnostics
 
-**Status:** design. Do not implement in the A4 qualification slice. `nxr env explain` still reports a resolved compiler of `unknown` when it has only inspected ambient `PATH`.
+**Status:** next sprint after A4. Do not start it until the 22-trial sheet exists. Do not add an embedding model. Change `operations_suggest` only to fix selection misses that sheet records.
 
-## B2.0 — Environment resolution
+`nxr env explain` still reports a resolved compiler of `unknown` when it has only inspected ambient `PATH`.
 
-`nxr env explain` answers two different questions, and it must say which one it answered.
+## Order
 
-Static resolution does not enter a shell. It reports the declared shell, the declared `RUSTC_WRAPPER`, the operation's working directory, and the lockfile paths named by the task. Compiler, Cargo, store paths, target directory, and linker stay unknown until they are verified.
+Implement B2.0 and B3.0 together. Then attach cache decisions and diagnostics to that same event stream.
 
-Verified resolution may enter or realize the development shell. It then reports:
+## B2.0 — Verified toolchain
 
-- The Nix development shell or execution context that will run.
-- The Rust compiler and Cargo binaries, with versions and store paths.
-- The `RUSTC_WRAPPER` and sccache configuration that apply.
-- The target directory and linker configuration.
-- The lockfile revisions and environment inputs that define the context.
-- Whether that context is already warm and reusable.
+Static resolution does not enter a shell. It may report the declared shell, the declared `RUSTC_WRAPPER`, the working directory, and named lockfile paths. It must say the compiler was not verified.
 
-The tool must not say the effective environment was verified when it only inspected ambient `PATH`.
+Verified resolution may enter or realize the development shell. It then reports the shell that will run, the `rustc` and Cargo binaries with versions and store paths, the wrapper and sccache configuration, the target directory, the linker, and whether that context is already warm.
 
-## B2.1 — Environment fingerprint
+Qualification: the reported `rustc`, Cargo, and wrapper paths match the process that actually runs.
 
-An execution-context identity covers the environment inputs and the resolved toolchain. It distinguishes:
+## B2.1 — Context identity
+
+Fingerprint the execution context separately from the source fingerprint. These are different events:
 
 - Source changed, toolchain identical.
 - Toolchain changed.
 - Compiler wrapper changed.
-- Build target directory changed.
+- Target directory changed.
 - Development shell became stale.
 - A remote worker has a compatible context that is not the same context.
 
-That identity feeds cache reuse and execution planning. It is not only a diagnostic field.
+Qualification: a source edit and a toolchain change produce two different explanations.
 
-## B2.2 — Cache explanation
+## B2.2 — Cache misses
 
-An agent can ask why a task is recompiling. The report names the operation, the environment, and the identities the cache itself used:
+Explain a miss from the same identities the cache uses. Cover a cold run, a warm run, a dirty source tree, and a toolchain change. The explanation names the invalidation cause. It does not guess from the log text.
 
-- Compiler matched or differed.
-- Target directory changed or stayed.
-- Compiler cache was available or absent.
-- Which input changed, in the same terms the cache key uses.
+## B3.0 — One event stream
 
-A cold run, a warm run, a dirty source tree, and a toolchain change are separate cases. The invalidation reason has to match the case. The qualification is those four cases, plus a count of compiler launches that the explanation says were unnecessary.
+The task scheduler and the supervisor append one versioned stream: run id, sequence, timestamp, node, payload. The CLI and MCP read that stream. They do not keep a second log parser.
 
-## B3 — Events, diagnostics, and artifacts
+## B3.1 — Failure summary
 
-Bounded logs stay. Agents also need the execution events the scheduler and supervisor already produce.
+`runs_get_diagnostics` names the failed node, the most useful diagnostic, and whether the failure looks like source, environment, infrastructure, or policy. An agent can identify that node without reading the whole log.
 
-```text
-task scheduler and execution owner
-        |
-        v
-versioned run-event stream
-  run id, sequence, timestamp, node, payload
-        |
-        +-- CLI and TUI
-        +-- Cursor MCP
-        +-- Lattice agent
-```
+## B3.2 — Artifacts and reruns
 
-New MCP reads, after this design is implemented:
-
-- `runs_get_events` returns the versioned stream for one run id.
-- `runs_get_diagnostics` returns a short summary: which node failed, the most useful diagnostic, and whether the failure looks like source, environment, infrastructure, or policy.
-- `runs_get_artifacts` returns output identities for that run.
-
-The first diagnostics are Rust compiler JSON, Cargo test failures and exit codes, Nix evaluation and build failures, task-graph node failures, and cache hit, miss, and invalidation causes.
-
-An infrastructure failure is not rerun as if it were a compiler error. `runs_rerun_failed` waits until the summary can tell those cases apart.
-
-Qualification: an agent diagnoses and repairs a deliberate Rust failure from the structured diagnostic, without reading the whole build log and without starting a different task. The debugger and the agent read the same events.
+`runs_get_artifacts` returns digest-checked outputs. A rerun keeps the same provenance. An infrastructure failure is not rerun as if it were a compiler error.

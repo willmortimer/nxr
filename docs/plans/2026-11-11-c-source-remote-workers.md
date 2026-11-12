@@ -1,59 +1,31 @@
-# C and D — SourceSet identity, one remote operation, worker lifecycle
+# Sprint — C1 SourceSet, then one remote build
 
-**Status:** design. Do not implement remote start, fleet reconcile, or a distributed DAG in this slice. The deployed v0.2.14 Hub and workers stay as they are. gmkdev stays deferred.
+**Status:** the sprint after B2/B3. Do not implement it in the A4 slice. v0.2.14 stays the deployed fabric. gmkdev stays deferred. Do not add a second scheduler or a new source-transfer design.
 
-## C1 — SourceSet-aware operations
+## C1 — Source identity
 
-NXR already has `SourceSetV1` and `source_set_digest`. Extend that manifest. Do not add a second source list.
+Extend `SourceSetV1` and `source_set_digest`. Do not add another source list.
 
-An operation may name a set of checkouts, for example Lattice, ProjectStargate, and a pinned dependency. The set records committed revisions separately from a dirty local overlay. The overlay is an identity, not an implicit `HEAD`.
+An operation names the checkouts it may read, including Lattice, ProjectStargate, and a pinned dependency. Committed revisions and a dirty local overlay are different identities. The overlay is not implicit `HEAD`.
 
-A remote attempt must resolve the same source that was admitted locally. If the agent has an uncommitted change, the attempt either materializes that authorized snapshot through the existing source mechanism, or it refuses. It must not build the committed tree while the agent expects the dirty file.
+A remote attempt must resolve the source that was admitted. If the admitted tree is dirty, the attempt materializes that snapshot through the existing source mechanism, or it refuses. It does not build the committed tree while the agent expects the dirty file.
 
-Qualification: change one file in one checkout, keep that identity in the local plan, and show that a remote operation cannot run the old committed content.
+Qualification: edit one file, keep that identity in the local plan, and show that a remote operation cannot run the old commit.
 
-## C2 — One permissioned remote operation
+## C2 — One NixPlane operation
 
-Cursor discovers and requests. NXR keeps the run graph, the idempotency key, the source binding, and the receipt. NixPlane Hub authenticates, checks worker eligibility, admits the attempt, and holds the lease. The enrolled NXB worker realizes, executes, publishes, and returns artifacts.
+Cursor requests. NXR keeps the run, the idempotency key, the source binding, and the receipt. NixPlane Hub admits one attempt on the enrolled nixdev worker. The worker returns one artifact.
 
-### C2.0 — Planning
+`operations_start_remote` is a separate tool. It does not reuse local-start authorization. The response carries the NXR run id and the NixPlane attempt id. Admitted is not finished.
 
-A plan lists eligible targets and why each is eligible: platform, architecture, worker capabilities, required environment, source availability, authorization, and freshness. A worker whose last heartbeat is weeks old is not an available target because an old advertisement said healthy.
+The first task is harmless and deterministic. Reconnecting inspects the same attempt. Cancel counts only after NixPlane acknowledges it. The artifact digest is checked when the bytes return. A Nix store hit, an archive-cache hit, and an NXR task reuse stay labeled as different events.
 
-### C2.1 — One start
+Qualification: start, disconnect, reconnect, inspect the same attempt, and fetch a digest-checked artifact. Core-scope deployment approval does not authorize this operation.
 
-`operations_start_remote` is a separate tool. It does not reuse local-start authorization. It requires an authorized operation, a target scope, a workspace `SourceSet`, and an idempotency key.
+## After that proof
 
-The response carries the NXR run id and the NixPlane attempt id. Admitted is not finished.
+D1 qualifies builder liveness, protocol ranges, drain, upgrade, and rollback on a later NixPlane release, not by changing v0.2.14 in place.
 
-The first proof is the qualified nixdev worker and one harmless deterministic task with an artifact that can be checked. Core-scope deployment approval does not authorize this operation. v0.2.14 changes only under a separate release.
+D2 is the multi-checkout search, affected analysis, and workflows over the SourceSet from C1.
 
-### C2.2 — Detach, inspect, cancel
-
-NXR owns the logical run. NixPlane owns the admitted attempt. Reconnecting inspects that attempt. It does not submit another one.
-
-Cancel is successful only after the remote execution authority acknowledges it. Stopping the local client is not a cancel.
-
-### C2.3 — Artifacts
-
-Artifacts are bound to the source identity and the execution identity. Digests are checked when bytes return to the requesting workspace. A Nix store hit, an archive-cache hit, and an NXR task reuse are different events and stay labeled that way.
-
-Qualification: one agent starts the permitted remote build, disconnects, reconnects, inspects the same attempt, retrieves a digest-verified artifact, and produces a receipt that matches those ids.
-
-## D1 — Worker lifecycle
-
-This follows the first remote proof and is required before agents choose among workers. Builder liveness exists on the NixPlane development branch and is not in the deployed v0.2.14 Hub.
-
-- Protocol compatibility: Hub and worker supported version ranges, negotiated before a claim.
-- Readiness: required executables, cache access, enrollment, and resources are checked before a claim.
-- Liveness: fresh heartbeats and leases, not a stored healthy bit.
-- Drain: no new claims while current attempts finish or expire.
-- Upgrade: identify and activate one qualified worker closure.
-- Health: enrollment, heartbeat, capabilities, and one real execution.
-- Rollback: restore the previous qualified generation without dropping attempt authority.
-
-gmkdev is qualified on its own when it is reachable. It is not a reason to activate other infrastructure.
-
-## E1 — Deferred
-
-Placing individual graph nodes on different workers waits until the single remote attempt above is qualified. NXR keeps topology, readiness, dependency binding, cache decisions, and the run result. NixPlane admits, leases, executes, and returns per-attempt results. Nix keeps derivations and store paths. The Hub does not schedule an NXR graph.
+E1 places individual graph nodes on workers only after one remote attempt is reliable. NXR keeps the graph. NixPlane admits each attempt. Nix keeps the derivations.

@@ -62,9 +62,9 @@ The adoption gate is 95 percent of these trials passing, and zero fleet activati
 
 ## Record
 
-Stage one is covered by the MCP tests: policy for one operation id, an app launched with `run`, daemon ownership, an interrupted bind, separate cancel results, a bounded log, and a dirty directory input. The CLI-and-rules baseline has not been compared.
+Stage one unit tests are not the qualification score. The real-binary initialize and the empty operation table are in [2026-11-11-a4-integration-receipt.md](2026-11-11-a4-integration-receipt.md).
 
-Stage two has not been run.
+Stage two has not been run. A miss is classified as discovery, policy, environment, execution, diagnostics, or Cursor tool selection.
 
 | Field | Value |
 | --- | --- |

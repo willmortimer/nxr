@@ -345,7 +345,8 @@ pub fn call_tool(
     match name {
         "operations_search" => {
             let query = arguments.get("query").and_then(Value::as_str).unwrap_or("");
-            let matched = nxr_task::search(records, query);
+            let visible = policy_view(records, workspace_root, trusted)?;
+            let matched = nxr_task::search(&visible, query);
             Ok(json!(matched))
         }
         "operations_suggest" => {
@@ -361,26 +362,25 @@ pub fn call_tool(
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            let visible = policy_view(records, workspace_root, trusted)?;
             Ok(json!({
                 "query": query,
-                "results": nxr_task::suggest(records, query, workspace_id, &paths)
+                "results": nxr_task::suggest(&visible, query, workspace_id, &paths)
             }))
         }
         "operations_describe" => {
             let id = required_id(&arguments)?;
-            let record =
-                nxr_task::describe(records, id).ok_or_else(|| format!("unknown operation {id}"))?;
-            Ok(json!(visible_record(record, workspace_root, trusted)?))
+            let visible = policy_view(records, workspace_root, trusted)?;
+            nxr_task::describe(&visible, id)
+                .map(|record| json!(record))
+                .ok_or_else(|| format!("unknown operation {id}"))
         }
         "operations_plan" => {
             let id = required_id(&arguments)?;
-            let record =
-                nxr_task::describe(records, id).ok_or_else(|| format!("unknown operation {id}"))?;
-            Ok(json!(nxr_task::plan(&visible_record(
-                record,
-                workspace_root,
-                trusted,
-            )?)))
+            let visible = policy_view(records, workspace_root, trusted)?;
+            let record = nxr_task::describe(&visible, id)
+                .ok_or_else(|| format!("unknown operation {id}"))?;
+            Ok(json!(nxr_task::plan(record)))
         }
         "workspace_affected" => affected_ids(
             flake,
@@ -485,6 +485,7 @@ fn start(
         nxr_task::Admission::Reserved(_) => {
             mark_admitting(run_dir, key)?;
             let (command, cwd) = command_for(launch, &record, &parameters, workspace_root)?;
+            let admission = admission_id(workspace_id, workspace_root, key);
             match start_on(
                 supervisor_socket,
                 &SessionStart {
@@ -495,6 +496,7 @@ fn start(
                     cpu: 0,
                     memory_mib: 0,
                     cwd: Some(cwd),
+                    admission_id: Some(admission.clone()),
                 },
                 LocalBudget {
                     cpu: u32::MAX,
@@ -528,7 +530,8 @@ fn start(
             }
         }
         nxr_task::Admission::Existing(reservation) if reservation.status == "admitting" => {
-            if let Some(run_id) = owned_run_id(supervisor_socket, key) {
+            let admission = admission_id(workspace_id, workspace_root, key);
+            if let Some(run_id) = owned_run_id(supervisor_socket, &admission) {
                 bind_supervisor(run_dir, key, &run_id)?;
                 return Ok(json!({
                     "run_id": run_id,
@@ -558,18 +561,23 @@ fn start(
     }
 }
 
-fn visible_record(
-    record: &OperationRecord,
+fn policy_view(
+    records: &[OperationRecord],
     root: &Path,
     trusted: bool,
-) -> Result<OperationRecord, String> {
+) -> Result<Vec<OperationRecord>, String> {
     if !trusted {
-        return Ok(record.clone());
+        return Ok(records.to_vec());
     }
-    Ok(apply_project_policy(
-        record,
-        &ProjectExecutionPolicy::load(root)?,
-    ))
+    let policy = ProjectExecutionPolicy::load(root)?;
+    Ok(records
+        .iter()
+        .map(|record| apply_project_policy(record, &policy))
+        .collect())
+}
+
+fn admission_id(workspace_id: &str, checkout: &Path, key: &str) -> String {
+    nxr_core::digest_bytes(format!("{workspace_id}\n{}\n{key}", checkout.display()).as_bytes())
 }
 
 fn parameter_map(arguments: &Value) -> Result<BTreeMap<String, String>, String> {
@@ -631,11 +639,14 @@ fn working_directory(root: &Path, working: &str) -> Result<PathBuf, String> {
     Ok(root.join(working))
 }
 
-fn owned_run_id(socket: &Path, key: &str) -> Option<String> {
+fn owned_run_id(socket: &Path, admission: &str) -> Option<String> {
+    if admission.is_empty() {
+        return None;
+    }
     let runs = list_on(socket).ok()?;
     runs.as_array().and_then(|rows| {
         rows.iter().find_map(|row| {
-            (row.get("label").and_then(Value::as_str) == Some(key))
+            (row.get("admission_id").and_then(Value::as_str) == Some(admission))
                 .then(|| row.get("id").and_then(Value::as_str).map(str::to_owned))
                 .flatten()
         })
@@ -699,24 +710,50 @@ fn cancel_run(
     nxr_core::validate_run_id(run_id).map_err(|err| err.to_string())?;
     let owned = inspect(run_dir, run_id, workspace_id)?;
     if owned.is_none() {
-        return Ok(json!({ "process_cancelled": false, "reservation_cancelled": false }));
+        return Ok(json!({
+            "cancellation_requested": false,
+            "process_cancelled": false,
+            "process_terminal": false,
+            "reservation_cancelled": false
+        }));
     }
-    let was_running = supervisor_record(supervisor_socket, supervisor_dir, run_id)
-        .ok()
-        .and_then(|record| {
-            record
-                .get("status")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .is_some_and(|status| status == "running");
-    let process_cancelled = was_running
-        && cancel_on(supervisor_socket, run_id)
-            .or_else(|_| nxr_core::execution_owner::cancel(supervisor_dir, run_id, false))
-            .is_ok();
+    let before = supervisor_record(supervisor_socket, supervisor_dir, run_id).ok();
+    let was_running = before
+        .as_ref()
+        .and_then(|record| record.get("status").and_then(Value::as_str))
+        == Some("running");
+    if !was_running {
+        let reservation_cancelled = cancel(run_dir, run_id, workspace_id)?;
+        return Ok(json!({
+            "cancellation_requested": false,
+            "process_cancelled": false,
+            "process_terminal": true,
+            "reservation_cancelled": reservation_cancelled
+        }));
+    }
+    if cancel_on(supervisor_socket, run_id).is_err() {
+        return Ok(json!({
+            "cancellation_requested": true,
+            "process_cancelled": false,
+            "process_terminal": false,
+            "reservation_cancelled": false
+        }));
+    }
+    let after = supervisor_record(supervisor_socket, supervisor_dir, run_id)?;
+    let still_running = after.get("status").and_then(Value::as_str) == Some("running");
+    if still_running {
+        return Ok(json!({
+            "cancellation_requested": true,
+            "process_cancelled": false,
+            "process_terminal": false,
+            "reservation_cancelled": false
+        }));
+    }
     let reservation_cancelled = cancel(run_dir, run_id, workspace_id)?;
     Ok(json!({
-        "process_cancelled": process_cancelled,
+        "cancellation_requested": true,
+        "process_cancelled": true,
+        "process_terminal": true,
         "reservation_cancelled": reservation_cancelled
     }))
 }
@@ -1255,6 +1292,45 @@ mod tests {
         .unwrap();
         assert_eq!(described["execution_allowed"], true);
         assert_eq!(described["policy_source"], "project");
+        let searched = invoke(
+            &json!({"name": "operations_search", "arguments": {"query": "rust-test-pkgs"}}),
+            &records,
+            root.path(),
+            root.path(),
+            &root.path().join("missing.sock"),
+            true,
+            &Launch::Task,
+        )
+        .unwrap();
+        assert_eq!(searched[0]["execution_allowed"], true);
+        let suggested = invoke(
+            &json!({"name": "operations_suggest", "arguments": {"query": "rust packages"}}),
+            &records,
+            root.path(),
+            root.path(),
+            &root.path().join("missing.sock"),
+            true,
+            &Launch::Task,
+        )
+        .unwrap();
+        let approved = suggested["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["operation_id"] == "lattice:task:rust-test-pkgs")
+            .unwrap();
+        assert_eq!(approved["execution_allowed"], true);
+        let planned = invoke(
+            &json!({"name": "operations_plan", "arguments": {"id": "lattice:task:reset-db"}}),
+            &records,
+            root.path(),
+            root.path(),
+            &root.path().join("missing.sock"),
+            true,
+            &Launch::Task,
+        )
+        .unwrap();
+        assert_eq!(planned["execution_allowed"], false);
         let refused = invoke(
             &json!({"name": "operations_start", "arguments": {"id": "lattice:task:reset-db", "idempotency_key": "db", "parameters": {"package": "x"}}}),
             &records,
@@ -1275,5 +1351,91 @@ mod tests {
             &Launch::Task,
         );
         assert!(extra.unwrap_err().contains("not authorized"));
+    }
+
+    #[test]
+    fn two_checkouts_with_the_same_key_reconnect_to_their_own_runs() {
+        let daemon = tempfile::tempdir().unwrap();
+        let socket = boot(daemon.path());
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let launch = Launch::Command(vec!["/bin/echo".into(), "ok".into()]);
+        let start_one = |root: &std::path::Path| {
+            let workspace = WorkspaceInstance {
+                workspace_id: "lattice".to_owned(),
+                workspace_root: root.display().to_string(),
+                source_revision: None,
+            };
+            let records = vec![operation_record(
+                &workspace,
+                &Declaration::named(OperationKind::Task, "test", "flake.nix"),
+            )];
+            invoke(
+                &json!({"name": "operations_start", "arguments": {"id": "lattice:task:test", "idempotency_key": "shared"}}),
+                &records,
+                root,
+                root,
+                &socket,
+                true,
+                &launch,
+            )
+            .unwrap()
+        };
+        let started_first = start_one(first.path());
+        let started_second = start_one(second.path());
+        let first_id = started_first["run_id"].as_str().unwrap().to_owned();
+        let second_id = started_second["run_id"].as_str().unwrap().to_owned();
+        assert_ne!(first_id, second_id);
+        nxr_task::mark_bind_incomplete(first.path(), "shared").unwrap();
+        nxr_task::mark_bind_incomplete(second.path(), "shared").unwrap();
+        let again_first = start_one(first.path());
+        let again_second = start_one(second.path());
+        assert_eq!(again_first["run_id"], first_id);
+        assert_eq!(again_second["run_id"], second_id);
+        assert_eq!(again_first["started"], false);
+        assert_eq!(again_second["started"], false);
+        forget_run(&first_id);
+        forget_run(&second_id);
+    }
+
+    #[test]
+    fn a_failed_cancel_does_not_mark_a_live_process_finished() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = boot(dir.path());
+        let records = records();
+        let launch = Launch::Command(vec!["/bin/sleep".into(), "30".into()]);
+        let started = invoke(
+            &json!({"name": "operations_start", "arguments": {"id": "lattice:task:test", "idempotency_key": "live"}}),
+            &records,
+            dir.path(),
+            dir.path(),
+            &socket,
+            true,
+            &launch,
+        )
+        .unwrap();
+        let run_id = started["run_id"].as_str().unwrap();
+        let path = dir.path().join("supervisor").join(format!("{run_id}.json"));
+        let mut stored: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        stored["attempt_id"] = json!("attempt-live");
+        std::fs::write(&path, serde_json::to_string(&stored).unwrap()).unwrap();
+        let cancelled = invoke(
+            &json!({"name": "runs_cancel", "arguments": {"run_id": run_id}}),
+            &records,
+            dir.path(),
+            dir.path(),
+            &socket,
+            true,
+            &launch,
+        )
+        .unwrap();
+        assert_eq!(cancelled["cancellation_requested"], true);
+        assert_eq!(cancelled["process_cancelled"], false);
+        assert_eq!(cancelled["reservation_cancelled"], false);
+        let still = inspect_on(&socket, run_id).unwrap();
+        assert_eq!(still["status"], "running");
+        nxr_core::execution_owner::cancel(&dir.path().join("supervisor"), run_id, true).unwrap();
+        forget_run(run_id);
     }
 }
