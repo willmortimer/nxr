@@ -1,0 +1,13 @@
+[
+  {"command": "nxr task test", "permission": "allow"},
+  {"command": "nxr list", "permission": "allow"},
+  {"command": "git status", "permission": "allow"},
+  {"command": "nix eval .#checks.x86_64-linux.nixplane-worker", "permission": "allow"},
+  {"command": "cargo test -p nixplane-hub --lib stale_builder", "permission": "ask"},
+  {"command": "nix build .#nixplane", "permission": "ask"},
+  {"command": "nix develop", "permission": "ask"},
+  {"command": "export PATH=\"$HOME/.cargo/bin:$PATH\"", "permission": "deny"},
+  {"command": "rustup show", "permission": "deny"},
+  {"command": "sudo /nix/var/nix/profiles/system-47-link/bin/switch-to-configuration switch", "permission": "deny"},
+  {"command": "nix run .#deploy -- .#sys5", "permission": "deny"}
+]

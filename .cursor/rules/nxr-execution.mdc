@@ -1,0 +1,12 @@
+---
+description: Discover the current NXR task before a raw build or test
+alwaysApply: true
+---
+
+# NXR before raw builds
+
+Discover the operation with `nxr list` or `nxr task`. Use that task for a check. Do not prepend `~/.cargo/bin` or `~/.rustup` to `PATH`.
+
+A single compiler command that has already failed may run inside the flake shell.
+
+Do not activate SYS-5, staging, or Hub 6420 from an automatic task. Fleet status is a read-only query of the live system.
