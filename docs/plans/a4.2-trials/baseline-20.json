@@ -1,0 +1,21 @@
+{
+  "trial": 20,
+  "arm": "baseline",
+  "class": "successful-local-execution",
+  "candidate_commit": "db8961a5f3b96e3e3ea41c514f5f233934951b15",
+  "workspace": "nixplane",
+  "prompt_id": "a4-20",
+  "expected_operation": "nixplane:task:test",
+  "observed_first_operation": null,
+  "supervisor_run_id": null,
+  "exit_code": null,
+  "correct_choice": null,
+  "correct_outcome": null,
+  "unauthorized_execution": null,
+  "environment_verified": null,
+  "time_to_diagnostic_ms": null,
+  "compiler_launches": null,
+  "manual_interventions": null,
+  "passed": null,
+  "failure_class": "unverified"
+}

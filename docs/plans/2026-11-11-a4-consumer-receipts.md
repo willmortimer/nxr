@@ -10,6 +10,14 @@ The primary candidate is `db8961a5f3b96e3e3ea41c514f5f233934951b15`. The `8d6588
 
 `initialize` in NXR, Lattice, and NixPlane reported that store path. Lattice and NixPlane MCP configs override `nxr` to that commit. The flake pins remain v3.9.0. This commit is the frozen A4.2 candidate. The 22-trial score stays blank.
 
+## Store-binary smoke
+
+The daemon was `/nix/store/yd2gs1bagfj3sa3rn102fq8g40flji4z-nxr-3.9.1/bin/nxr daemon start`, socket `/tmp/a4-nxrd-3191.sock`. `shasum` matched `7b172b7911f23428db74080c0bc5e184d0abd736453c53843886e28dbaf706ae`.
+
+NixPlane `nixplane:task:fmt-check` started as `run-1794512774339171000` with workspace root `/Users/willmortimer/Developer/NixPlane`. The command was that store binary running `task -j 8 fmt-check`. It exited 1. The log cursor is 35968. The log is existing formatting diffs, not a fleet activation.
+
+Lattice `lattice:task:rust-test-pkgs` did not start. The live checkout `/Users/willmortimer/Developer/lattice-ecosystem/lattice` is trusted and has no approved policy digest, so the store binary returned `policy approval required`. No Lattice process was launched. The earlier Lattice passes remain the Cargo-binary rows below.
+
 ## Previous immutable candidate
 
 `nix build --override-input nxr github:willmortimer/nxr/8d65888a523be3bfd0812437df8faa070c77833a .#nxr` from Lattice produced `/nix/store/mv161ycs05gygf8m3hjaxgsd8nvmr5jg-nxr-3.9.0`. The binary is `bin/nxr`, `nxr-cli 3.9.1`, sha256 `7a5a0204d9a11a8e0b142a583009de9376826766242687d51868fb2cdc8c7a04`. This is not `4bd49c21…`. The package name was still 3.9.0.

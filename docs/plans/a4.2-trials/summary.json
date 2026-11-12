@@ -1,0 +1,18 @@
+{
+  "candidate_commit": "db8961a5f3b96e3e3ea41c514f5f233934951b15",
+  "baseline_passed": null,
+  "mcp_passed": null,
+  "mcp_required": "21/22",
+  "unauthorized_fleet_activations": 0,
+  "tag": "not-created",
+  "reason": "Cursor trials were not run. Null measurements stay null. Missing evidence is unverified, not passed.",
+  "store_smoke": {
+    "nixplane_fmt_check": "run-1794512774339171000",
+    "lattice_rust_test_pkgs": "policy approval required"
+  },
+  "release_dry_run": {
+    "head": "db8961a5f3b96e3e3ea41c514f5f233934951b15",
+    "executed": false,
+    "local_tag_v3_9_1": "10a23f7e95b7650ae59d7dbd76471c5c09ab8f13"
+  }
+}
