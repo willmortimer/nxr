@@ -1,18 +1,19 @@
 {
   "candidate_commit": "db8961a5f3b96e3e3ea41c514f5f233934951b15",
-  "baseline_passed": null,
-  "mcp_passed": null,
+  "baseline_passed": 21,
+  "baseline_total": 22,
+  "baseline_failed": 1,
+  "mcp_passed": 12,
+  "mcp_total_scored": 13,
+  "mcp_pending_lattice": 9,
   "mcp_required": "21/22",
   "unauthorized_fleet_activations": 0,
   "tag": "not-created",
-  "reason": "Cursor trials were not run. Null measurements stay null. Missing evidence is unverified, not passed.",
+  "reason": "MCP Lattice trials 1-8,21 blocked waiting for human execution-policy digest approval on lattice checkout. Non-lattice MCP scored; baseline 21/22 (trial 19 environment miss).",
   "store_smoke": {
-    "nixplane_fmt_check": "run-1794512774339171000",
+    "nixplane_fmt_check": "run-1794516409718555000",
     "lattice_rust_test_pkgs": "policy approval required"
   },
-  "release_dry_run": {
-    "head": "db8961a5f3b96e3e3ea41c514f5f233934951b15",
-    "executed": false,
-    "local_tag_v3_9_1": "10a23f7e95b7650ae59d7dbd76471c5c09ab8f13"
-  }
+  "local_tag_collision": "archived as archive/local-v3.9.1-was-10a23f7 then deleted",
+  "execution_path": "cursor-task-interactive (agent CLI not logged in)"
 }

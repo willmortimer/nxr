@@ -17,5 +17,6 @@
   "compiler_launches": null,
   "manual_interventions": null,
   "passed": null,
-  "failure_class": "unverified"
+  "failure_class": "unverified",
+  "notes": "blocked waiting for human execution-policy digest approval"
 }
