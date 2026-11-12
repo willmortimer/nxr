@@ -804,6 +804,10 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 trust::add(cli.flake.as_deref(), runner)?;
                 Ok(exit::SUCCESS)
             }
+            TrustSubcommand::ApprovePolicy => {
+                trust::approve_policy(cli.flake.as_deref(), runner)?;
+                Ok(exit::SUCCESS)
+            }
             TrustSubcommand::Revoke => {
                 trust::revoke(cli.flake.as_deref(), runner)?;
                 Ok(exit::SUCCESS)

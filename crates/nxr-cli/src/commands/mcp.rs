@@ -64,7 +64,7 @@ pub fn serve(
         .first()
         .map(|record| PathBuf::from(&record.workspace_root))
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let run_dir = reservation_dir(&workspace_id, &workspace_root);
+    let run_dir = reservation_dir(&workspace_id, &workspace_root)?;
     let supervisor_dir = run_dir.join("supervisor");
     let trusted = workspace_trusted(&workspace_root);
     let stdin = io::stdin();
@@ -464,28 +464,34 @@ fn start(
     } else {
         records.to_vec()
     };
-    let policy = ProjectExecutionPolicy::load(workspace_root)?;
     let stored = nxr_task::describe(&fresh, id).ok_or_else(|| format!("unknown operation {id}"))?;
     if stored.workspace_id != workspace_id {
         return Err("operation is not in the bound workspace".to_owned());
     }
+    let gate = policy_gate(workspace_root)?;
     let record = if trusted {
-        apply_project_policy(stored, &policy)
+        apply_project_policy(stored, &gate.applied)
     } else {
         stored.clone()
     };
     if !record.execution_allowed {
+        if trusted && !gate.approved && gate.file.contains(id) {
+            return Err("policy approval required".to_owned());
+        }
         return Err("operation is not executable".to_owned());
     }
     let parameters = parameter_map(arguments)?;
-    validate_policy_parameters(&policy, &record.operation_id, &parameters)?;
+    validate_policy_parameters(&gate.applied, &record.operation_id, &parameters)?;
+    let positional = gate
+        .applied
+        .ordered_arguments(&record.operation_id, &parameters);
     let digests = declared_input_digests(workspace_root, &record.inputs)?;
     let fingerprint = execution_fingerprint_with_inputs(&record, &digests, &parameters);
     match admit(run_dir, key, &record, &fingerprint)? {
         nxr_task::Admission::Reserved(_) => {
             mark_admitting(run_dir, key)?;
-            let (command, cwd) = command_for(launch, &record, &parameters, workspace_root)?;
-            let admission = admission_id(workspace_id, workspace_root, key);
+            let (command, cwd) = command_for(launch, &record, &positional, workspace_root)?;
+            let admission = admission_id(workspace_id, workspace_root, key)?;
             match start_on(
                 supervisor_socket,
                 &SessionStart {
@@ -530,7 +536,7 @@ fn start(
             }
         }
         nxr_task::Admission::Existing(reservation) if reservation.status == "admitting" => {
-            let admission = admission_id(workspace_id, workspace_root, key);
+            let admission = admission_id(workspace_id, workspace_root, key)?;
             if let Some(run_id) = owned_run_id(supervisor_socket, &admission) {
                 bind_supervisor(run_dir, key, &run_id)?;
                 return Ok(json!({
@@ -569,15 +575,56 @@ fn policy_view(
     if !trusted {
         return Ok(records.to_vec());
     }
-    let policy = ProjectExecutionPolicy::load(root)?;
+    let gate = policy_gate(root)?;
     Ok(records
         .iter()
-        .map(|record| apply_project_policy(record, &policy))
+        .map(|record| apply_project_policy(record, &gate.applied))
         .collect())
 }
 
-fn admission_id(workspace_id: &str, checkout: &Path, key: &str) -> String {
-    nxr_core::digest_bytes(format!("{workspace_id}\n{}\n{key}", checkout.display()).as_bytes())
+struct PolicyGate {
+    applied: ProjectExecutionPolicy,
+    file: ProjectExecutionPolicy,
+    approved: bool,
+}
+
+fn policy_gate(root: &Path) -> Result<PolicyGate, String> {
+    let file = ProjectExecutionPolicy::load(root)?;
+    if file.is_empty() {
+        return Ok(PolicyGate {
+            applied: file.clone(),
+            file,
+            approved: true,
+        });
+    }
+    let approved = approved_policy_digest(root).as_deref() == Some(file.digest().as_str());
+    let applied = if approved {
+        file.clone()
+    } else {
+        ProjectExecutionPolicy::default()
+    };
+    Ok(PolicyGate {
+        applied,
+        file,
+        approved,
+    })
+}
+
+fn approved_policy_digest(root: &Path) -> Option<String> {
+    let key = nxr_core::canonical_project_key(root).ok()?;
+    nxr_core::TrustDatabase::load().ok()?.policy_digest(&key)
+}
+
+fn canonical_checkout(root: &Path) -> Result<PathBuf, String> {
+    root.canonicalize()
+        .map_err(|err| format!("checkout cannot be canonicalized: {err}"))
+}
+
+fn admission_id(workspace_id: &str, checkout: &Path, key: &str) -> Result<String, String> {
+    let canonical = canonical_checkout(checkout)?;
+    Ok(nxr_core::digest_bytes(
+        format!("{workspace_id}\n{}\n{key}", canonical.display()).as_bytes(),
+    ))
 }
 
 fn parameter_map(arguments: &Value) -> Result<BTreeMap<String, String>, String> {
@@ -600,7 +647,7 @@ fn parameter_map(arguments: &Value) -> Result<BTreeMap<String, String>, String> 
 fn command_for(
     launch: &Launch,
     record: &OperationRecord,
-    parameters: &BTreeMap<String, String>,
+    parameters: &[String],
     root: &Path,
 ) -> Result<(Vec<String>, PathBuf), String> {
     let cwd = working_directory(root, &record.working_directory)?;
@@ -613,16 +660,19 @@ fn command_for(
                 OperationKind::Task => "task",
                 _ => return Err("operation is not executable".to_owned()),
             };
-            let mut command = vec![
-                executable.display().to_string(),
-                verb.to_owned(),
-                record.name.clone(),
-            ];
+            let mut command = vec![executable.display().to_string(), verb.to_owned()];
+            if verb == "task" {
+                let jobs = std::thread::available_parallelism()
+                    .map(|count| count.get())
+                    .unwrap_or(1)
+                    .max(1);
+                command.push("-j".to_owned());
+                command.push(jobs.to_string());
+            }
+            command.push(record.name.clone());
             if !parameters.is_empty() {
                 command.push("--".to_owned());
-                for (name, value) in parameters {
-                    command.push(format!("{name}={value}"));
-                }
+                command.extend(parameters.iter().cloned());
             }
             Ok((command, cwd))
         }
@@ -836,12 +886,13 @@ fn affected_ids(
     Ok(json!(ids))
 }
 
-fn reservation_dir(workspace_id: &str, workspace_root: &Path) -> PathBuf {
-    let material = format!("{workspace_id}\n{}", workspace_root.display());
+fn reservation_dir(workspace_id: &str, workspace_root: &Path) -> Result<PathBuf, String> {
+    let canonical = canonical_checkout(workspace_root)?;
+    let material = format!("{workspace_id}\n{}", canonical.display());
     let digest = nxr_core::digest_bytes(material.as_bytes());
-    nxr_core::state_dir()
+    Ok(nxr_core::state_dir()
         .join("mcp-reservations")
-        .join(&digest[..32])
+        .join(&digest[..32]))
 }
 
 fn workspace_trusted(root: &Path) -> bool {
@@ -1220,8 +1271,7 @@ mod tests {
             &workspace,
             &Declaration::named(OperationKind::App, "test", "flake.nix"),
         )];
-        let (command, _) =
-            command_for(&Launch::Task, &records[0], &BTreeMap::new(), root.path()).unwrap();
+        let (command, _) = command_for(&Launch::Task, &records[0], &[], root.path()).unwrap();
         assert_eq!(command[1], "run");
         assert_ne!(command[0], "nxr");
         let dir = tempfile::tempdir().unwrap();
@@ -1256,6 +1306,17 @@ mod tests {
         forget_run(run_id);
     }
 
+    fn approve_policy_file(root: &std::path::Path) -> std::path::PathBuf {
+        let database = root.join("trust.json");
+        nxr_core::set_trust_db_override(Some(database.clone()));
+        let key = nxr_core::canonical_project_key(root).unwrap();
+        let mut stored = nxr_core::TrustDatabase::load().unwrap();
+        stored.add_trust(&key).unwrap();
+        let policy = nxr_task::ProjectExecutionPolicy::load(root).unwrap();
+        stored.approve_policy(&key, &policy.digest()).unwrap();
+        database
+    }
+
     #[test]
     fn project_policy_authorizes_one_operation_id() {
         let root = tempfile::tempdir().unwrap();
@@ -1279,7 +1340,12 @@ mod tests {
                 &workspace,
                 &Declaration::named(OperationKind::Task, "reset-db", "flake.nix"),
             ),
+            operation_record(
+                &workspace,
+                &Declaration::named(OperationKind::Task, "cli-build", "flake.nix"),
+            ),
         ];
+        let _database = approve_policy_file(root.path());
         let described = invoke(
             &json!({"name": "operations_describe", "arguments": {"id": "lattice:task:rust-test-pkgs"}}),
             &records,
@@ -1351,6 +1417,22 @@ mod tests {
             &Launch::Task,
         );
         assert!(extra.unwrap_err().contains("not authorized"));
+        std::fs::write(
+            root.path().join(".nxr/execution-policy.toml"),
+            "[[operation]]\nid = \"lattice:task:rust-test-pkgs\"\nparameters = [\"package\"]\n\n[[operation]]\nid = \"lattice:task:cli-build\"\n",
+        )
+        .unwrap();
+        let widened = invoke(
+            &json!({"name": "operations_start", "arguments": {"id": "lattice:task:cli-build", "idempotency_key": "build"}}),
+            &records,
+            root.path(),
+            root.path(),
+            &root.path().join("missing.sock"),
+            true,
+            &Launch::Task,
+        );
+        assert!(widened.unwrap_err().contains("policy approval required"));
+        nxr_core::set_trust_db_override(None);
     }
 
     #[test]
@@ -1437,5 +1519,56 @@ mod tests {
         assert_eq!(still["status"], "running");
         nxr_core::execution_owner::cancel(&dir.path().join("supervisor"), run_id, true).unwrap();
         forget_run(run_id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_and_its_real_path_share_one_run() {
+        let real = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let link = parent.path().join("checkout");
+        std::os::unix::fs::symlink(real.path(), &link).unwrap();
+        assert_eq!(
+            reservation_dir("lattice", real.path()).unwrap(),
+            reservation_dir("lattice", &link).unwrap()
+        );
+        let daemon = tempfile::tempdir().unwrap();
+        let socket = boot(daemon.path());
+        let reservations = reservation_dir("lattice", real.path()).unwrap();
+        std::fs::create_dir_all(&reservations).unwrap();
+        let workspace = WorkspaceInstance {
+            workspace_id: "lattice".to_owned(),
+            workspace_root: real.path().display().to_string(),
+            source_revision: None,
+        };
+        let records = vec![operation_record(
+            &workspace,
+            &Declaration::named(OperationKind::Task, "test", "flake.nix"),
+        )];
+        let launch = Launch::Command(vec!["/bin/echo".into(), "ok".into()]);
+        let started = invoke(
+            &json!({"name": "operations_start", "arguments": {"id": "lattice:task:test", "idempotency_key": "same"}}),
+            &records,
+            real.path(),
+            &reservations,
+            &socket,
+            true,
+            &launch,
+        )
+        .unwrap();
+        let again = invoke(
+            &json!({"name": "operations_start", "arguments": {"id": "lattice:task:test", "idempotency_key": "same"}}),
+            &records,
+            &link,
+            &reservations,
+            &socket,
+            true,
+            &launch,
+        )
+        .unwrap();
+        assert_eq!(started["run_id"], again["run_id"]);
+        assert_eq!(again["started"], false);
+        assert_eq!(list_on(&socket).unwrap().as_array().unwrap().len(), 1);
+        forget_run(started["run_id"].as_str().unwrap());
     }
 }

@@ -1,12 +1,12 @@
 # Sprint — B2 environment and B3 diagnostics
 
-**Status:** next sprint after A4. Do not start it until the 22-trial sheet exists. Do not add an embedding model. Change `operations_suggest` only to fix selection misses that sheet records.
+**Status:** implement only after the A4.2 score is frozen. Do not change agent-facing tools while that score is being recorded. No embedding model.
 
 `nxr env explain` still reports a resolved compiler of `unknown` when it has only inspected ambient `PATH`.
 
 ## Order
 
-Implement B2.0 and B3.0 together. Then attach cache decisions and diagnostics to that same event stream.
+B2.0 and B3.0 first, in parallel. Then attach cache decisions and diagnostics to that event stream. B1.1 ranking changes wait for the trials that selected the wrong operation.
 
 ## B2.0 — Verified toolchain
 
@@ -31,11 +31,11 @@ Qualification: a source edit and a toolchain change produce two different explan
 
 ## B2.2 — Cache misses
 
-Explain a miss from the same identities the cache uses. Cover a cold run, a warm run, a dirty source tree, and a toolchain change. The explanation names the invalidation cause. It does not guess from the log text.
+Explain a miss from the same identities the cache uses. Cover a cold run, a warm run, a dirty source tree, and a toolchain change. The explanation names the invalidation cause.
 
 ## B3.0 — One event stream
 
-The task scheduler and the supervisor append one versioned stream: run id, sequence, timestamp, node, payload. The CLI and MCP read that stream. They do not keep a second log parser.
+The task scheduler and the supervisor append one versioned stream: run id, sequence, timestamp, node, payload. The CLI and MCP read that stream.
 
 ## B3.1 — Failure summary
 

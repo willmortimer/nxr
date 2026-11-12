@@ -998,6 +998,8 @@ pub enum TrustSubcommand {
     Status,
     /// Persist trust for the selected project
     Add,
+    /// Record the current execution-policy digest for the selected project
+    ApprovePolicy,
     /// Remove persisted trust for the selected project
     Revoke,
 }

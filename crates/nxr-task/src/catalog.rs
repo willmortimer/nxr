@@ -188,6 +188,46 @@ impl ProjectExecutionPolicy {
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }
+
+    /// True when the file authorizes no operations.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.operations.is_empty()
+    }
+
+    /// True when this file lists `operation_id`.
+    #[must_use]
+    pub fn contains(&self, operation_id: &str) -> bool {
+        self.operations.contains_key(operation_id)
+    }
+
+    /// Digest of the authorization entries. Parameter order is part of the digest.
+    #[must_use]
+    pub fn digest(&self) -> String {
+        let mut material = String::new();
+        for (id, parameters) in &self.operations {
+            material.push_str(id);
+            material.push('\n');
+            for parameter in parameters {
+                material.push_str(parameter);
+                material.push('\n');
+            }
+        }
+        nxr_core::digest_bytes(material.as_bytes())
+    }
+
+    /// Values for the parameters this policy lists, in policy order.
+    #[must_use]
+    pub fn ordered_arguments(
+        &self,
+        operation_id: &str,
+        provided: &std::collections::BTreeMap<String, String>,
+    ) -> Vec<String> {
+        self.parameters(operation_id)
+            .iter()
+            .filter_map(|name| provided.get(name).cloned())
+            .collect()
+    }
 }
 
 /// Apply a trusted project policy. Deploy, remote, and `reset-db` stay refused.

@@ -5,6 +5,7 @@ use std::io::{self, Write};
 use camino::Utf8Path;
 use nxr_core::diagnostics::exit;
 use nxr_core::{TrustDatabase, TrustError, enforce_project_trust, project_trust_key};
+use nxr_task::ProjectExecutionPolicy;
 use serde::Serialize;
 
 use crate::commands::common::current_invocation_directory;
@@ -24,6 +25,8 @@ pub enum TrustCommandError {
     Json(#[from] serde_json::Error),
     #[error("failed to write trust output: {0}")]
     Io(#[source] io::Error),
+    #[error("{0}")]
+    Usage(String),
 }
 
 impl TrustCommandError {
@@ -32,7 +35,7 @@ impl TrustCommandError {
         match self {
             Self::Prepare(error) => error.exit_code(),
             Self::Flake(error) => error.exit_code(),
-            Self::Trust(_) | Self::Json(_) => exit::EVALUATION,
+            Self::Trust(_) | Self::Json(_) | Self::Usage(_) => exit::EVALUATION,
             Self::Io(_) => exit::EVALUATION,
         }
     }
@@ -93,6 +96,40 @@ pub fn add(flake_arg: Option<&str>, runner: RunnerOutput) -> Result<(), TrustCom
     Ok(())
 }
 
+/// Record the digest of `.nxr/execution-policy.toml` for an already trusted project.
+///
+/// # Errors
+///
+/// Returns [`TrustCommandError`] when the project is not trusted, the policy is missing,
+/// or the database cannot be written.
+pub fn approve_policy(
+    flake_arg: Option<&str>,
+    runner: RunnerOutput,
+) -> Result<(), TrustCommandError> {
+    let selection = resolve_trust_selection(flake_arg)?;
+    let Some(root) = selection.local_root else {
+        return Err(TrustCommandError::Usage(
+            "execution policy approval needs a local checkout".to_owned(),
+        ));
+    };
+    let policy = ProjectExecutionPolicy::load(&root).map_err(TrustCommandError::Usage)?;
+    if policy.is_empty() {
+        return Err(TrustCommandError::Usage(
+            "execution policy does not authorize an operation".to_owned(),
+        ));
+    }
+    let mut database = TrustDatabase::load()?;
+    let digest = policy.digest();
+    database.approve_policy(&selection.project_key, &digest)?;
+    runner
+        .info(format!(
+            "approved execution policy {digest} for {}",
+            selection.display
+        ))
+        .map_err(TrustCommandError::Io)?;
+    Ok(())
+}
+
 /// Remove persisted trust for the selected project.
 ///
 /// # Errors
@@ -127,6 +164,7 @@ pub fn enforce_for_execution(
 struct TrustSelection {
     project_key: String,
     display: String,
+    local_root: Option<std::path::PathBuf>,
 }
 
 fn resolve_trust_selection(flake_arg: Option<&str>) -> Result<TrustSelection, TrustCommandError> {
@@ -139,5 +177,9 @@ fn resolve_trust_selection(flake_arg: Option<&str>) -> Result<TrustSelection, Tr
     Ok(TrustSelection {
         project_key,
         display: flake.display,
+        local_root: flake
+            .local_root
+            .as_deref()
+            .map(|path| path.as_std_path().to_path_buf()),
     })
 }

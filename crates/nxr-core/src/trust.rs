@@ -14,6 +14,15 @@ pub const NXR_TRUST_PROJECT_ENV: &str = "NXR_TRUST_PROJECT";
 const TRUST_DB_SCHEMA_VERSION: u32 = 1;
 const TRUST_DB_FILENAME: &str = "trusted-projects.json";
 
+static TRUST_DB_OVERRIDE: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Use `path` as the trust database for this process. `None` restores the user database.
+pub fn set_trust_db_override(path: Option<PathBuf>) {
+    if let Ok(mut guard) = TRUST_DB_OVERRIDE.lock() {
+        *guard = path;
+    }
+}
+
 /// Errors while loading, saving, or enforcing project trust.
 #[derive(Debug, Error)]
 pub enum TrustError {
@@ -55,6 +64,9 @@ pub struct TrustDatabase {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct TrustedProjectRecord {
     trusted_at: String,
+    /// Digest of `.nxr/execution-policy.toml` that a person approved. MCP does not write this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    policy_digest: Option<String>,
 }
 
 impl TrustDatabase {
@@ -128,6 +140,7 @@ impl TrustDatabase {
             project_key.to_owned(),
             TrustedProjectRecord {
                 trusted_at: chrono_like_timestamp(),
+                policy_digest: None,
             },
         );
         self.save()
@@ -139,6 +152,7 @@ impl TrustDatabase {
             project_key.to_owned(),
             TrustedProjectRecord {
                 trusted_at: chrono_like_timestamp(),
+                policy_digest: None,
             },
         );
     }
@@ -149,6 +163,29 @@ impl TrustDatabase {
     ///
     /// Returns [`TrustError`] when the database cannot be written.
     pub fn persist(&self) -> Result<(), TrustError> {
+        self.save()
+    }
+
+    /// Approved execution-policy digest for `project_key`, when one was recorded.
+    #[must_use]
+    pub fn policy_digest(&self, project_key: &str) -> Option<String> {
+        self.trusted_projects
+            .get(project_key)
+            .and_then(|record| record.policy_digest.clone())
+    }
+
+    /// Record the approved execution-policy digest. This does not trust the project.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustError`] when the project is not trusted or the database cannot be written.
+    pub fn approve_policy(&mut self, project_key: &str, digest: &str) -> Result<(), TrustError> {
+        let Some(record) = self.trusted_projects.get_mut(project_key) else {
+            return Err(TrustError::NotTrusted {
+                display: project_key.to_owned(),
+            });
+        };
+        record.policy_digest = Some(digest.to_owned());
         self.save()
     }
 
@@ -255,6 +292,13 @@ pub fn enforce_project_trust(
 }
 
 fn trust_db_path() -> Option<PathBuf> {
+    if let Some(path) = TRUST_DB_OVERRIDE
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+    {
+        return Some(path);
+    }
     resolve_trust_db_path(
         std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
@@ -307,6 +351,7 @@ mod tests {
             "/tmp/project".to_owned(),
             super::TrustedProjectRecord {
                 trusted_at: "0".to_owned(),
+                policy_digest: None,
             },
         );
         enforce_project_trust("/tmp/project", ".", &database).expect("already trusted");

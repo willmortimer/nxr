@@ -152,7 +152,7 @@ pub use store_exe_cache::{
 };
 pub use trust::{
     NXR_TRUST_PROJECT_ENV, TrustDatabase, TrustError, canonical_project_key, enforce_project_trust,
-    project_trust_key, trust_project_env_enabled,
+    project_trust_key, set_trust_db_override, trust_project_env_enabled,
 };
 pub use worker_schedule::{
     LocalWorkerRegistry, WorkerDescriptor, WorkerRequirements, WorkerScheduler,

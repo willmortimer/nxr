@@ -64,7 +64,7 @@ The adoption gate is 95 percent of these trials passing, and zero fleet activati
 
 Stage one unit tests are not the qualification score. The real-binary initialize and the empty operation table are in [2026-11-11-a4-integration-receipt.md](2026-11-11-a4-integration-receipt.md).
 
-Stage two has not been run. A miss is classified as discovery, policy, environment, execution, diagnostics, or Cursor tool selection.
+Stage two has not been run. The consumer runs are in [2026-11-11-a4-consumer-receipts.md](2026-11-11-a4-consumer-receipts.md). A miss is classified as discovery, policy, environment, execution, diagnostics, or Cursor tool selection. The score stays blank until the 22 trials are run.
 
 | Field | Value |
 | --- | --- |
