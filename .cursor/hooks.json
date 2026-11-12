@@ -3,7 +3,8 @@
   "hooks": {
     "beforeShellExecution": [
       {
-        "command": ".cursor/hooks/before_shell.py"
+        "command": ".cursor/hooks/before_shell.py",
+        "failClosed": true
       }
     ]
   }

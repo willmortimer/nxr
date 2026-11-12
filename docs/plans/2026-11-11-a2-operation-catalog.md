@@ -30,6 +30,18 @@ Each record has a stable id, the source declaration, parameters, applicable plat
 
 Search is deterministic text and alias matching. Semantic search and generated shell commands are out of scope.
 
+## Identity and provenance
+
+An operation id includes the workspace root and the source file that declared it. `test` in Lattice and `test` in NixPlane are different operations. A description names the declaration path, the workspace root, and the resolved source revision. Search does not return an operation from another checkout.
+
+## Effect classes
+
+Every operation is one of `read`, `local-build`, `local-mutation`, `remote`, or `deploy`. Discovery commands are `read`. A missing policy annotation is not `deploy`. `nxr op plan` refuses to treat an unclassified operation as a deployment.
+
+## Environment drift
+
+`nxr env explain` names the compiler, dev shell, sccache wrapper, working directory, and inputs the task will use. It also reports each of those that differs from the task's expected environment. The report contains secret references only.
+
 ## Acceptance
 
-One query returns the same operation whether it was declared as a task, an app, a script, or a workflow. `nxr op plan` and `nxr env explain` name the environment that will actually run it. A missing declaration is an error, not a guessed command.
+One query returns the same operation whether it was declared as a task, an app, a script, or a workflow. `nxr op plan` and `nxr env explain` name the environment that will actually run it, including drift from the expected compiler or shell. A missing declaration is an error, not a guessed command. Search stays exact text. Embeddings, generated shell, and a second task language are out of scope.

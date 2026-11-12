@@ -8,6 +8,13 @@
   {"command": "nix develop", "permission": "ask"},
   {"command": "export PATH=\"$HOME/.cargo/bin:$PATH\"", "permission": "deny"},
   {"command": "rustup show", "permission": "deny"},
-  {"command": "sudo /nix/var/nix/profiles/system-47-link/bin/switch-to-configuration switch", "permission": "deny"},
-  {"command": "nix run .#deploy -- .#sys5", "permission": "deny"}
+  {"command": "sudo /nix/var/nix/profiles/system-47-link/bin/switch-to-configuration switch", "permission": "ask"},
+  {"command": "nix run .#deploy -- .#sys5", "permission": "deny"},
+  {"command": "nxr --version", "permission": "allow"},
+  {"command": "nxr task", "permission": "allow"},
+  {"command": "nxr task fmt-check", "permission": "allow"},
+  {"command": "nxr task hub-update", "permission": "deny"},
+  {"command": "nxr list; sudo switch-to-configuration switch", "permission": "ask"},
+  {"command": "nxr workflow run --execution remote", "permission": "ask"},
+  {"command": "nxr task fabric-sync", "permission": "deny"}
 ]
