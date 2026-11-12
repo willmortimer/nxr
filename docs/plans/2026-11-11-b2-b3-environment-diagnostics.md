@@ -41,6 +41,12 @@ The task scheduler and the supervisor append one versioned stream: run id, seque
 
 `runs_get_diagnostics` names the failed node, the most useful diagnostic, and whether the failure looks like source, environment, infrastructure, or policy. An agent can identify that node without reading the whole log.
 
+## B2.0 and B3.0 implementation slice
+
+Coding starts only after the `v3.9.1` tag. Do not start it during A4.2.
+
+B2.0 enters the declared shell and writes compiler, Cargo, wrapper, and target directory onto one shared receipt. It must say when those fields were not entered. B3.0 appends the existing supervisor events to that same receipt and serves them from the CLI and `runs_get_events`. Parsed diagnostics and cache explanations stay in B3.1 and B2.2. No embeddings.
+
 ## Execution evidence
 
 B2 and B3 write one versioned receipt. B2 contributes the verified shell, compiler, wrapper, target directory, and cache identity. B3 contributes the run events and the parsed Rust, Nix, and test diagnostics. The CLI, MCP, and Lattice's harness read that receipt. They do not keep a second log parser. Implementation still waits for the frozen A4 score. B2.0 and B3.0 remain the first slices. No embedding model.
