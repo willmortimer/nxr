@@ -2,21 +2,17 @@
 
 These rows are real supervisor runs. They are not the MCP unit tests. Phase A4.2 has not been run, so the 22-trial score stays blank. No fleet host was activated. The Lattice and NixPlane flake pins remain `github:willmortimer/nxr/v3.9.0` (`d0e4e759504bc676121a00ca8cd9c6bb7d20bbbe` in Lattice's lock).
 
-The Cargo development binary below is history. The immutable candidate is the Nix build of `8d65888a523be3bfd0812437df8faa070c77833a`.
+The primary candidate is `db8961a5f3b96e3e3ea41c514f5f233934951b15`. The `8d65888` build and the Cargo binary are history.
 
-## Immutable candidate
-
-`nix build --override-input nxr github:willmortimer/nxr/8d65888a523be3bfd0812437df8faa070c77833a .#nxr` from Lattice produced `/nix/store/mv161ycs05gygf8m3hjaxgsd8nvmr5jg-nxr-3.9.0`. The binary is `bin/nxr`, `nxr-cli 3.9.1`, sha256 `7a5a0204d9a11a8e0b142a583009de9376826766242687d51868fb2cdc8c7a04`. This is not `4bd49c21…`.
-
-`initialize` in NXR, Lattice, and NixPlane reported that store path. Lattice and NixPlane MCP configs now override `nxr` to `github:willmortimer/nxr/db8961a5f3b96e3e3ea41c514f5f233934951b15`. The flake pins remain v3.9.0.
-
-## Version-corrected candidate
+## Candidate
 
 `db8961a5f3b96e3e3ea41c514f5f233934951b15` changes only the Nix package version from 3.9.0 to 3.9.1. `nix build --override-input nxr github:willmortimer/nxr/db8961a5f3b96e3e3ea41c514f5f233934951b15 .#nxr` from Lattice produced `/nix/store/yd2gs1bagfj3sa3rn102fq8g40flji4z-nxr-3.9.1`. The binary is `bin/nxr`, `nxr-cli 3.9.1`, sha256 `7b172b7911f23428db74080c0bc5e184d0abd736453c53843886e28dbaf706ae`. This is not `7a5a0204…`.
 
-`initialize` in NXR, Lattice, and NixPlane reported that store path. This commit is the frozen A4.2 candidate. The 22-trial score stays blank.
+`initialize` in NXR, Lattice, and NixPlane reported that store path. Lattice and NixPlane MCP configs override `nxr` to that commit. The flake pins remain v3.9.0. This commit is the frozen A4.2 candidate. The 22-trial score stays blank.
 
 ## Previous immutable candidate
+
+`nix build --override-input nxr github:willmortimer/nxr/8d65888a523be3bfd0812437df8faa070c77833a .#nxr` from Lattice produced `/nix/store/mv161ycs05gygf8m3hjaxgsd8nvmr5jg-nxr-3.9.0`. The binary is `bin/nxr`, `nxr-cli 3.9.1`, sha256 `7a5a0204d9a11a8e0b142a583009de9376826766242687d51868fb2cdc8c7a04`. This is not `4bd49c21…`. The package name was still 3.9.0.
 
 ## Historical Cargo binary
 

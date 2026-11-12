@@ -41,6 +41,12 @@ The task scheduler and the supervisor append one versioned stream: run id, seque
 
 `runs_get_diagnostics` names the failed node, the most useful diagnostic, and whether the failure looks like source, environment, infrastructure, or policy. An agent can identify that node without reading the whole log.
 
+## Post-tag sprint
+
+Start B2.0 and B3.0 together only after `v3.9.1` is tagged on `db8961a5f3b96e3e3ea41c514f5f233934951b15`. Do not start them during A4.2. v0.2.14 and distributed DAG stay out. Cache explanations, parsed diagnostics, SourceSet, and one remote nixdev attempt stay later slices. No embeddings.
+
+B2.0 enters the declared shell and writes compiler, Cargo, wrapper, and target directory onto the shared receipt. It must say when those fields were not entered. B3.0 appends the existing supervisor events to that same receipt and serves them from the CLI and MCP. The CLI, MCP, and Lattice's harness read that one receipt.
+
 ## B2.0 and B3.0 implementation slice
 
 Coding starts only after the `v3.9.1` tag. Do not start it during A4.2.
