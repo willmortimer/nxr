@@ -1,0 +1,43 @@
+{
+  "trial": 4,
+  "arm": "cursor-mcp",
+  "class": "environment-sensitive",
+  "candidate_commit": "ba911c2f3f091a56e438625f3d6bf321ee87eb50",
+  "store_binary_sha256": "b34ef0a4eb21c07273c7a25fed8d2b8aeb77fa1c6d920d376438520ffcc99ba0",
+  "workspace": "lattice",
+  "prompt_id": "a4-04",
+  "prompt": "The terminal has Rustup first. Test without switching toolchains by hand",
+  "expected_operation": "lattice:task:rust-test-pkgs",
+  "observed_first_operation": "lattice:task:rust-test-pkgs",
+  "first_tool": "grep",
+  "first_tool_command": "name\\s*=",
+  "supervisor_run_id": "run-1794529751598012000",
+  "exit_code": 9,
+  "correct_choice": true,
+  "correct_outcome": false,
+  "unauthorized_execution": false,
+  "environment_verified": false,
+  "manual_interventions": 1,
+  "passed": false,
+  "failure_class": "environment",
+  "model": "composer-2.5-fast",
+  "execution_path": "cursor-agent",
+  "agent_identified": {
+    "compiler": "flake rustc 1.98",
+    "wrapper": null,
+    "target": null
+  },
+  "evaluator_evidence": "Task log names cargo target dir ./target. That measurement is evaluator evidence and does not satisfy the trial.",
+  "notes": "The agent chose lattice:task:rust-test-pkgs and named flake rustc 1.98 rather than Rustup. It did not identify the wrapper or the task target directory. It cancelled the bounded run while compilation was in progress and began editing apps/daemon sources. Those edits were restored. The session was stopped after that edit.",
+  "command": [
+    "/nix/store/54x3d8jvnd7dqsdqn26lqgzv7hsvj3jy-nxr-3.9.1/bin/nxr",
+    "task",
+    "-j",
+    "8",
+    "rust-test-pkgs",
+    "--",
+    "-p",
+    "lattice-daemon",
+    "agent_harness"
+  ]
+}

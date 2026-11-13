@@ -1,19 +1,45 @@
 {
-  "candidate_commit": "db8961a5f3b96e3e3ea41c514f5f233934951b15",
+  "candidate_commit": "ba911c2f3f091a56e438625f3d6bf321ee87eb50",
+  "previous_candidate_commit": "db8961a5f3b96e3e3ea41c514f5f233934951b15",
   "baseline_passed": 18,
   "baseline_failed": 4,
   "baseline_total": 22,
-  "mcp_passed": 21,
-  "mcp_failed": 1,
-  "mcp_total": 22,
-  "mcp_required": "21/22",
-  "unauthorized_fleet_activations": 0,
-  "acceptance": "mcp-gate-passed",
-  "tag": "not-created",
-  "host_gate": "failed cli-ref: docs/CLI_GENERATED.md missing op, env, mcp",
-  "linux_gate": "not-run",
   "baseline_misses": [2, 3, 8, 19],
-  "mcp_misses": [19],
-  "known_issue": "Operations with empty declared inputs replay the same idempotency key after an uncommitted source edit. Trial 19 is the allowed miss.",
-  "store_binary_sha256": "7b172b7911f23428db74080c0bc5e184d0abd736453c53843886e28dbaf706ae"
+  "cursor_mcp_already_scored": {
+    "trials": "9-20 and 22",
+    "passed": 12,
+    "failed": 1,
+    "misses": [19]
+  },
+  "cursor_lattice": {
+    "trials": [1, 2, 3, 4, 5, 6, 7, 8, 21],
+    "passed": [1, 2, 3, 5, 6, 7, 8, 21],
+    "misses": [4],
+    "execution_path": "cursor-agent",
+    "model": "composer-2.5-fast"
+  },
+  "cursor_mcp_passed": 20,
+  "cursor_mcp_failed": 2,
+  "cursor_mcp_total": 22,
+  "cursor_mcp_misses": [4, 19],
+  "cursor_mcp_required": "21/22",
+  "protocol_lattice": {
+    "trials": [1, 2, 3, 4, 5, 6, 7, 8, 21],
+    "passed": 9,
+    "total": 9,
+    "execution_path": "nxr-mcp-store-binary",
+    "store_binary_sha256": "7b172b7911f23428db74080c0bc5e184d0abd736453c53843886e28dbaf706ae",
+    "label": "protocol evidence for the previous store binary; not a Cursor MCP score and not evidence for the new executable hash"
+  },
+  "candidate_store_path": "/nix/store/54x3d8jvnd7dqsdqn26lqgzv7hsvj3jy-nxr-3.9.1",
+  "candidate_store_binary_sha256": "b34ef0a4eb21c07273c7a25fed8d2b8aeb77fa1c6d920d376438520ffcc99ba0",
+  "binary_equivalent_to_7b172b79": false,
+  "crate_sources_unchanged_since_db8961a": true,
+  "package_diff_since_db8961a": "docs/CLI_GENERATED.md only",
+  "unauthorized_fleet_activations": 0,
+  "acceptance": "cursor-mcp-below-bar",
+  "tag": "not-created",
+  "host_gate": "not-run-on-ba911c2",
+  "linux_gate": "not-run",
+  "known_issue": "Operations with empty declared inputs replay the same idempotency key after an uncommitted source edit. Trial 19 is the allowed miss. Trial 4 missed because the agent named flake rustc 1.98 and did not identify the wrapper or task target directory."
 }
