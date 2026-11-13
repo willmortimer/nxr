@@ -856,8 +856,8 @@ mod tests {
                 .map(|record| record.operation_id.as_str()),
             Some("lattice:task:rust-test-pkgs")
         );
-        assert_eq!(plan(&found[0]).inferred_effect, EffectClass::LocalBuild);
-        assert!(!plan(&found[0]).execution_allowed);
+        assert_eq!(plan(found[0]).inferred_effect, EffectClass::LocalBuild);
+        assert!(!plan(found[0]).execution_allowed);
         assert!(plan(&records[1]).execution_allowed);
     }
 

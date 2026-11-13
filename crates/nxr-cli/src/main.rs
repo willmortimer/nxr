@@ -575,32 +575,28 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             )?;
             Ok(exit::SUCCESS)
         }
-        Some(Command::Op { command }) => {
-            return op::run_op(
-                cli.flake.as_deref(),
-                cli.nix.as_deref(),
-                cli.json,
-                &nix_flags,
-                command,
-                runner,
-            )
-            .map_err(RunError::Message);
-        }
+        Some(Command::Op { command }) => op::run_op(
+            cli.flake.as_deref(),
+            cli.nix.as_deref(),
+            cli.json,
+            &nix_flags,
+            command,
+            runner,
+        )
+        .map_err(RunError::Message),
         Some(Command::Mcp) => {
-            return mcp::serve(cli.flake.as_deref(), cli.nix.as_deref(), &nix_flags, runner)
-                .map_err(RunError::Message);
+            mcp::serve(cli.flake.as_deref(), cli.nix.as_deref(), &nix_flags, runner)
+                .map_err(RunError::Message)
         }
-        Some(Command::Env { command }) => {
-            return op::run_env(
-                cli.flake.as_deref(),
-                cli.nix.as_deref(),
-                cli.json,
-                &nix_flags,
-                command,
-                runner,
-            )
-            .map_err(RunError::Message);
-        }
+        Some(Command::Env { command }) => op::run_env(
+            cli.flake.as_deref(),
+            cli.nix.as_deref(),
+            cli.json,
+            &nix_flags,
+            command,
+            runner,
+        )
+        .map_err(RunError::Message),
         Some(Command::Manpage) => {
             manpage::run()?;
             Ok(exit::SUCCESS)

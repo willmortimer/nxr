@@ -20,6 +20,7 @@ use crate::flake::resolve_flake;
 use crate::runner_output::RunnerOutput;
 
 /// Ids returned for a query. The CLI prints these same ids.
+#[cfg(test)]
 #[must_use]
 pub fn matching_ids(records: &[OperationRecord], query: &str) -> Vec<String> {
     search(records, query)
@@ -49,7 +50,7 @@ pub fn run_op(
         }
         OpCommand::Describe { id } => {
             let record = describe(&records, id).ok_or_else(|| format!("unknown operation {id}"))?;
-            write_json_or_lines(json, &[record.clone()], |record| {
+            write_json_or_lines(json, std::slice::from_ref(record), |record| {
                 record.operation_id.clone()
             })?;
         }

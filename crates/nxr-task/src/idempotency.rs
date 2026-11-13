@@ -319,7 +319,7 @@ mod tests {
             admit(dir.path(), "key-2", &blocked, &first_print).unwrap(),
             Admission::Refused
         ));
-        assert!(cancel(dir.path(), &run_id, "other").unwrap() == false);
+        assert!(!cancel(dir.path(), &run_id, "other").unwrap());
         assert!(cancel(dir.path(), &run_id, "lattice").unwrap());
     }
 }

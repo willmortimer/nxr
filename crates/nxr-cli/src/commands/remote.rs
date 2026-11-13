@@ -476,6 +476,7 @@ pub(crate) fn cancel_reason(event: &Value) -> &'static str {
 
 /// A dependent may start only after the remote attempt reaches these phases.
 #[must_use]
+#[cfg(test)]
 pub(crate) fn phase_releases_dependents(phase: &str) -> bool {
     // A terminal phase is not success. Only a verified result releases dependents,
     // and the scheduler applies that through on_exit or reuse_verified.
@@ -568,6 +569,7 @@ fn emit_client_detached(
 
 /// JSONL for the admission transition. `run_id` stays distinct from the attempt.
 #[must_use]
+#[cfg(test)]
 pub(crate) fn admission_phase_json(attempt: &str, node: &str) -> String {
     let event = nxr_task::Event::Phase {
         run_id: "run".to_owned(),

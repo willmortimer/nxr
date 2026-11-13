@@ -9,7 +9,6 @@ use std::io::{self, BufReader, IsTerminal, Seek, SeekFrom, Write};
 
 use clap::ValueEnum;
 use nxr_task::{ChunkEncoding, Event, EventSink, NullSink, OutputPayload};
-use serde_json;
 use tempfile::NamedTempFile;
 
 /// Multiplexed stdout/stderr presentation for parallel task runs.

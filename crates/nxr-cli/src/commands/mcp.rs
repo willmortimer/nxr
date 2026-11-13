@@ -21,9 +21,11 @@ use crate::commands::op::load_records;
 use crate::commands::session::{
     LocalBudget, SessionStart, cancel_on, inspect_on, list_on, start_on,
 };
+#[cfg(test)]
 use crate::output_options::{ColorWhen, LogFormat, OutputOptions};
 use crate::runner_output::RunnerOutput;
 
+#[cfg(test)]
 fn quiet_runner() -> RunnerOutput {
     RunnerOutput::new(OutputOptions::new(
         1,
@@ -41,6 +43,7 @@ pub enum Launch {
     /// `nxr task <name>` in the bound workspace.
     Task,
     /// A direct argv, used to prove logs and cancellation without a full suite.
+    #[allow(dead_code)]
     Command(Vec<String>),
 }
 
@@ -133,9 +136,7 @@ pub fn handle_line(
             );
         }
     };
-    if message.get("id").is_none() {
-        return None;
-    }
+    message.get("id")?;
     let response = respond(
         &message,
         records,
