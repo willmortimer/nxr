@@ -7,9 +7,10 @@
   "baseline_misses": [2, 3, 8, 19],
   "cursor_mcp_already_scored": {
     "trials": "9-20 and 22",
-    "passed": 12,
-    "failed": 1,
-    "misses": [19]
+    "passed": 13,
+    "failed": 0,
+    "misses": [],
+    "trial_19_requalified": "cursor-19.json"
   },
   "cursor_lattice": {
     "trials": [1, 2, 3, 4, 5, 6, 7, 8, 21],
@@ -18,10 +19,10 @@
     "execution_path": "cursor-agent",
     "model": "composer-2.5-fast"
   },
-  "cursor_mcp_passed": 20,
-  "cursor_mcp_failed": 2,
+  "cursor_mcp_passed": 21,
+  "cursor_mcp_failed": 1,
   "cursor_mcp_total": 22,
-  "cursor_mcp_misses": [4, 19],
+  "cursor_mcp_misses": [4],
   "cursor_mcp_required": "21/22",
   "protocol_lattice": {
     "trials": [1, 2, 3, 4, 5, 6, 7, 8, 21],
@@ -37,9 +38,10 @@
   "crate_sources_unchanged_since_db8961a": true,
   "package_diff_since_db8961a": "docs/CLI_GENERATED.md only",
   "unauthorized_fleet_activations": 0,
-  "acceptance": "cursor-mcp-below-bar",
+  "acceptance": "cursor-mcp-meets-bar-gates-failed",
   "tag": "not-created",
-  "host_gate": "not-run-on-ba911c2",
-  "linux_gate": "not-run",
-  "known_issue": "Operations with empty declared inputs replay the same idempotency key after an uncommitted source edit. Trial 19 is the allowed miss. Trial 4 missed because the agent named flake rustc 1.98 and did not identify the wrapper or task target directory."
+  "host_gate": "failed-rustsec-2026-0459",
+  "linux_gate": "failed-rustsec-2026-0459",
+  "nixplane_inputs_commit": "5cfdbb4858b62b114f85fd7d76a620dca427e07f",
+  "known_issue": "Trial 19 now conflicts after NixPlane declares inputs.paths on fmt-check, lint, and test. Trial 4 remains the Cursor MCP miss. Both ba911c2 gates failed cargo-deny on RUSTSEC-2026-0459 (libsqlite3-sys 0.30.1). No stamp was written and v3.9.1 was not signed."
 }
