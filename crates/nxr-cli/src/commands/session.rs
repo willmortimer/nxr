@@ -25,6 +25,8 @@ pub struct SessionStart {
     pub cwd: Option<std::path::PathBuf>,
     /// Workspace-scoped reservation identity. A label is not this value.
     pub admission_id: Option<String>,
+    /// Cargo target directory this local build will use.
+    pub target_dir: Option<String>,
 }
 
 /// CPU tokens and memory the local machine will admit. This is not a cluster pool.
@@ -85,6 +87,7 @@ pub fn start_on(
             "cache_env": assignments,
             "cwd": request.cwd.as_ref().map(|path| path.display().to_string()),
             "admission_id": request.admission_id,
+            "target_dir": request.target_dir,
         }),
     )?;
     let id = value
@@ -339,6 +342,7 @@ mod tests {
                 memory_mib: 0,
                 cwd: None,
                 admission_id: None,
+                target_dir: None,
             },
             LocalBudget {
                 cpu: 1,
@@ -370,6 +374,7 @@ mod tests {
                 memory_mib: 8,
                 cwd: None,
                 admission_id: None,
+                target_dir: None,
             },
             LocalBudget {
                 cpu: 2,
@@ -404,6 +409,7 @@ mod tests {
                 memory_mib: 8,
                 cwd: None,
                 admission_id: None,
+                target_dir: None,
             },
             LocalBudget {
                 cpu: 2,

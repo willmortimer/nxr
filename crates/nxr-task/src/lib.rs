@@ -40,6 +40,7 @@ pub mod scheduler;
 pub mod schema;
 pub mod secrets;
 pub mod selectors;
+pub mod validation_plan;
 pub mod workflows;
 
 pub use action_key::{
@@ -140,6 +141,10 @@ pub use selectors::{
     APP_PREFIX, CATEGORY_PREFIX, CHANGED_SELECTOR, ListSelectorResolution, ParsedSelector,
     SelectorError, TASK_PREFIX, TaskTargetResolution, parse_selector, resolve_list_selector,
     resolve_task_targets,
+};
+pub use validation_plan::{
+    PlanCoverage, PlanExecution, PlannedOperation, VALIDATION_PLAN_SCHEMA, ValidationPlan,
+    ValidationPlanInput, validation_plan,
 };
 pub use workflows::{
     WORKFLOWS_RELATIVE_PATH, WORKFLOWS_SCHEMA_VERSION, WorkflowDocument, WorkflowError,

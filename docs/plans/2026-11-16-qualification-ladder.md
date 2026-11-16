@@ -34,3 +34,7 @@ Host and Linux `CARGO_TARGET_DIR` values stay separate. A disk preflight refuses
 `quality (macos-latest, nix latest)` failed once on `v3.9.1` in `nxr-cli::cli watch_metadata_restart_rediscovers_apps`. Stdout closed after one `hello from basic-apps`. The same test passed on the local host gate and on the Nix 2.18 macOS job. The rerun passed. Keep the test. Do not delete or weaken it. Treat the single failure as a flake candidate until a second failure shows a source defect.
 
 NixPlane and Lattice formatting diffs stay in those repositories.
+
+## Caller identity
+
+Cursor MCP does not prove that a tool call came from the parent rather than a worker. A client-supplied `caller_role` or `authorized` flag is not authority, and a token stored where the same Unix user can read it is not a substitute. Local execution stays the trusted workspace, the project policy, and the local allowlist. `operations_plan_batch` leaves `authorized` false and `deploy_allowed` false. The worktree shell guard is a separate best-effort check. It does not grant fleet or Hub authority.

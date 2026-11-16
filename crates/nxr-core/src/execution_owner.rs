@@ -62,6 +62,9 @@ struct OwnedRun {
     /// Opaque id of the workspace reservation. Empty on records written before this field.
     #[serde(default)]
     admission_id: String,
+    /// Canonical Cargo target directory for a local build. Empty when unset.
+    #[serde(default)]
+    target_dir: String,
     events: Vec<RunEvent>,
 }
 
@@ -69,6 +72,26 @@ struct OwnedRun {
 struct RunEvent {
     cursor: u64,
     message: String,
+}
+
+/// Canonical directory identity for one Cargo target.
+///
+/// An existing directory uses its canonical path. A missing leaf uses the
+/// canonical parent plus that leaf so two spellings of the same target match.
+#[must_use]
+pub fn canonical_target_dir(path: &Path) -> String {
+    if let Ok(canonical) = fs::canonicalize(path) {
+        return canonical.display().to_string();
+    }
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        && let Ok(parent) = fs::canonicalize(parent)
+        && let Some(name) = path.file_name()
+    {
+        return parent.join(name).display().to_string();
+    }
+    path.display().to_string()
 }
 
 /// Directory of run records for the daemon socket.
@@ -129,7 +152,26 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
     }
     let cache_env = cache_assignments(params.get("cache_env"))?;
     let id = new_id();
+    let target_dir = params
+        .get("target_dir")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| canonical_target_dir(Path::new(value)))
+        .unwrap_or_default();
     with_lock(dir, || {
+        if !target_dir.is_empty() {
+            for existing in records(dir)? {
+                if existing.status == "running"
+                    && existing.kind == "local"
+                    && existing.target_dir == target_dir
+                {
+                    return Err(format!(
+                        "cargo target {target_dir} already has a running local build"
+                    ));
+                }
+            }
+        }
         let (used_cpu, used_memory) = reserved(dir)?;
         if used_cpu.saturating_add(cpu) > cpu_budget
             || used_memory.saturating_add(memory_mib) > memory_budget
@@ -149,6 +191,7 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
                 exit_code: None,
                 log_path: String::new(),
                 admission_id: admission_id.clone(),
+                target_dir: target_dir.clone(),
                 events: Vec::new(),
             };
             push_event(&mut refused, "refused");
@@ -195,6 +238,7 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
             exit_code: None,
             log_path: log_path.display().to_string(),
             admission_id,
+            target_dir: target_dir.clone(),
             events: Vec::new(),
         };
         push_event(&mut record, "started");
@@ -730,6 +774,59 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn the_same_cargo_target_refuses_a_second_running_build() {
+        let _durable = IsolatedDurableRuns::install();
+        let root = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let target_dir = target.path().display().to_string();
+        let started = start(
+            root.path(),
+            &json!({
+                "label": "local",
+                "command": ["/bin/sh", "-c", "sleep 30"],
+                "cpu": 0,
+                "target_dir": target_dir,
+            }),
+        )
+        .unwrap();
+        let id = started["id"].as_str().unwrap();
+        let spelled = target
+            .path()
+            .join("..")
+            .join(target.path().file_name().unwrap())
+            .display()
+            .to_string();
+        let again = start(
+            root.path(),
+            &json!({
+                "label": "local",
+                "command": ["/bin/sh", "-c", "sleep 30"],
+                "cpu": 0,
+                "target_dir": spelled,
+            }),
+        )
+        .unwrap_err();
+        assert!(
+            again.contains("already has a running local build"),
+            "{again}"
+        );
+        let independent = start(
+            root.path(),
+            &json!({
+                "label": "local",
+                "command": ["/bin/sh", "-c", "sleep 30"],
+                "cpu": 0,
+                "target_dir": other.path().display().to_string(),
+            }),
+        )
+        .unwrap();
+        cancel(root.path(), id, false).unwrap();
+        cancel(root.path(), independent["id"].as_str().unwrap(), false).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_reused_pid_is_not_the_old_run() {
         let root = tempfile::tempdir().unwrap();
         let mut record = OwnedRun {
@@ -747,6 +844,7 @@ mod tests {
             exit_code: None,
             log_path: String::new(),
             admission_id: String::new(),
+            target_dir: String::new(),
             events: Vec::new(),
         };
         push_event(&mut record, "started");

@@ -750,6 +750,7 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                         memory_mib: *memory_mib,
                         cwd: None,
                         admission_id: None,
+                        target_dir: None,
                     },
                     session::LocalBudget::from_process(),
                     runner,

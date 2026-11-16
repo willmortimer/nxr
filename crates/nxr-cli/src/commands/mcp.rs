@@ -6,14 +6,16 @@
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
+use camino::Utf8Path;
+use nxr_affected::{NodeStatus, git_working_tree_changes};
 use nxr_nix::OptionalNixFlags;
 use std::collections::BTreeMap;
 
 use nxr_task::{
-    OperationKind, OperationRecord, ProjectExecutionPolicy, ReceiptEvent, admit,
-    apply_project_policy, attach_events, bind_supervisor, cancel, declared_input_digests,
+    OperationKind, OperationRecord, ProjectExecutionPolicy, ReceiptEvent, ValidationPlanInput,
+    admit, apply_project_policy, attach_events, bind_supervisor, cancel, declared_input_digests,
     execution_fingerprint_with_inputs, inspect, mark_admitting, mark_reconciliation,
-    static_receipt, validate_policy_parameters,
+    static_receipt, validate_policy_parameters, validation_plan,
 };
 use serde_json::{Value, json};
 
@@ -254,6 +256,12 @@ fn tools() -> Vec<Value> {
             json!({"id": {"type": "string", "description": "Portable operation id"}}),
         ),
         tool(
+            "operations_plan_batch",
+            "Plan affected operations without starting them. Coverage is complete, partial, or unknown, and the result does not authorize execution",
+            &["paths"],
+            json!({"paths": {"type": "array", "items": {"type": "string"}, "description": "Changed repository-relative paths"}}),
+        ),
+        tool(
             "runs_inspect",
             "Read one run in this workspace",
             &["run_id"],
@@ -393,6 +401,16 @@ pub fn call_tool(
                 .ok_or_else(|| format!("unknown operation {id}"))?;
             Ok(json!(nxr_task::plan(record)))
         }
+        "operations_plan_batch" => plan_batch(
+            &arguments,
+            records,
+            workspace_id,
+            workspace_root,
+            flake,
+            nix_override,
+            nix_flags,
+            runner,
+        ),
         "workspace_affected" => affected_ids(
             flake,
             nix_override,
@@ -517,11 +535,9 @@ fn start(
                     memory_mib: 0,
                     cwd: Some(cwd),
                     admission_id: Some(admission.clone()),
+                    target_dir: Some(canonical_cargo_target(workspace_root)),
                 },
-                LocalBudget {
-                    cpu: u32::MAX,
-                    memory_mib: u64::MAX,
-                },
+                LocalBudget::from_process(),
                 &BTreeMap::new(),
                 runner,
             ) {
@@ -887,6 +903,7 @@ fn known_arguments(name: &str) -> Option<&'static [&'static str]> {
         "operations_search" => &["query"],
         "operations_suggest" => &["query", "paths"],
         "operations_describe" | "operations_plan" => &["id"],
+        "operations_plan_batch" => &["paths"],
         "runs_inspect" | "runs_cancel" => &["run_id"],
         "runs_get_receipt" => &["id", "run_id"],
         "workspace_affected" => &["paths"],
@@ -937,6 +954,101 @@ fn affected_ids(
         .map(|name| format!("{workspace_id}:task:{name}"))
         .collect::<Vec<_>>();
     Ok(json!(ids))
+}
+
+fn plan_batch(
+    arguments: &Value,
+    records: &[OperationRecord],
+    workspace_id: &str,
+    workspace_root: &Path,
+    flake: Option<&str>,
+    nix_override: Option<&str>,
+    nix_flags: &OptionalNixFlags,
+    runner: RunnerOutput,
+) -> Result<Value, String> {
+    let paths = arguments
+        .get("paths")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let dirty = tree_is_dirty(workspace_root);
+    let selection = select_for_flake(
+        flake,
+        nix_override,
+        false,
+        nix_flags,
+        &AffectedPathSources {
+            base: None,
+            working_tree: paths.is_empty(),
+            all_changes: None,
+        },
+        true,
+        &paths,
+        runner,
+    );
+    let plan = match selection {
+        Err(_) => validation_plan(&ValidationPlanInput {
+            discovery_failed: true,
+            dirty,
+            changed_paths: &paths,
+            unknown_nodes: &[],
+            operations: &[],
+        }),
+        Ok(selection) => {
+            let unknown: Vec<String> = selection
+                .analysis
+                .nodes
+                .iter()
+                .filter(|node| node.status == NodeStatus::Unknown)
+                .map(|node| node.name.clone())
+                .collect();
+            let ids: std::collections::BTreeSet<String> = selection
+                .analysis
+                .tasks
+                .iter()
+                .map(|name| format!("{workspace_id}:task:{name}"))
+                .collect();
+            let operations: Vec<OperationRecord> = records
+                .iter()
+                .filter(|record| ids.contains(&record.operation_id))
+                .cloned()
+                .collect();
+            validation_plan(&ValidationPlanInput {
+                discovery_failed: false,
+                dirty,
+                changed_paths: &selection.analysis.changed_paths,
+                unknown_nodes: &unknown,
+                operations: &operations,
+            })
+        }
+    };
+    Ok(json!(plan))
+}
+
+fn tree_is_dirty(root: &Path) -> bool {
+    let Some(root) = Utf8Path::from_path(root) else {
+        return true;
+    };
+    git_working_tree_changes(root)
+        .map(|paths| !paths.is_empty())
+        .unwrap_or(true)
+}
+
+fn canonical_cargo_target(workspace_root: &Path) -> String {
+    let raw = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_owned());
+    let path = PathBuf::from(raw);
+    let joined = if path.is_absolute() {
+        path
+    } else {
+        workspace_root.join(path)
+    };
+    nxr_core::execution_owner::canonical_target_dir(&joined)
 }
 
 fn reservation_dir(workspace_id: &str, workspace_root: &Path) -> Result<PathBuf, String> {
@@ -1166,6 +1278,42 @@ mod tests {
                 .any(|event| event["message"] == "started")
         );
         forget_run(run_id);
+    }
+
+    #[test]
+    fn plan_batch_rejects_a_client_authorization_flag() {
+        let records = records();
+        let refused = invoke(
+            &json!({
+                "name": "operations_plan_batch",
+                "arguments": {"paths": ["crates/nxr-cli"], "authorized": true}
+            }),
+            &records,
+            std::path::Path::new("/tmp/lattice"),
+            std::path::Path::new("/tmp/unused"),
+            std::path::Path::new("/tmp/missing.sock"),
+            true,
+            &Launch::Task,
+        );
+        assert!(refused.unwrap_err().contains("unknown argument"));
+        let start = invoke(
+            &json!({
+                "name": "operations_start",
+                "arguments": {
+                    "id": "lattice:task:test",
+                    "idempotency_key": "budget",
+                    "caller_role": "parent",
+                    "cpu": 99
+                }
+            }),
+            &records,
+            std::path::Path::new("/tmp/lattice"),
+            std::path::Path::new("/tmp/unused"),
+            std::path::Path::new("/tmp/missing.sock"),
+            true,
+            &Launch::Task,
+        );
+        assert!(start.unwrap_err().contains("unknown argument"));
     }
 
     #[test]
