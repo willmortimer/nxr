@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.9.1] - 2026-11-16
+
+### Security
+
+- `nxr-task` links bundled SQLite 3.54.1 through rusqlite 0.41.1 and libsqlite3-sys 0.39.1.
+
+### Added
+
+- `nxr mcp` serves the operation catalog for the checkout it was launched in.
+- `nxr op` and `nxr env explain` describe a declared operation.
+
+### Changed
+
+- Workspace and Nix package version **3.9.1**. The signed tag is `e54092c0b62dbef4b24c80e7f082e1eb7f33a108`.
+
+### Fixed
+
+- Clippy warnings that blocked the host and Linux release gates.
+
 ## [3.9.0] - 2026-10-29
 
 ### Changed

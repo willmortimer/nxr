@@ -1,8 +1,8 @@
 # Sprint — B2 environment and B3 diagnostics
 
-**Status:** implement only after the A4.2 score is frozen. Do not change agent-facing tools while that score is being recorded. No embedding model.
+**Status:** `v3.9.1` is signed on `e54092c`. The A4.2 Cursor scores stay historical. B2.0 and B3.0 are the current slice. No embedding model.
 
-`nxr env explain` still reports a resolved compiler of `unknown` when it has only inspected ambient `PATH`.
+`nxr env explain` reports a resolved compiler of `not entered` when it has only inspected ambient `PATH`. A verified shell probe is a separate receipt.
 
 ## Order
 
@@ -43,19 +43,19 @@ The task scheduler and the supervisor append one versioned stream: run id, seque
 
 ## Post-tag sprint
 
-Start B2.0 and B3.0 together only after `v3.9.1` is tagged on `db8961a5f3b96e3e3ea41c514f5f233934951b15`. Do not start them during A4.2. v0.2.14 and distributed DAG stay out. Cache explanations, parsed diagnostics, SourceSet, and one remote nixdev attempt stay later slices. No embeddings.
+`v3.9.1` is tagged on `e54092c0b62dbef4b24c80e7f082e1eb7f33a108`. `db8961a5f3b96e3e3ea41c514f5f233934951b15` was an earlier candidate and is not the tag. B2.0 and B3.0 start from that signed tag. v0.2.14 and distributed DAG stay out. Cache explanations, parsed diagnostics, SourceSet, and one remote nixdev attempt stay later slices. No embeddings.
 
-B2.0 enters the declared shell and writes compiler, Cargo, wrapper, and target directory onto the shared receipt. It must say when those fields were not entered. B3.0 appends the existing supervisor events to that same receipt and serves them from the CLI and MCP. The CLI, MCP, and Lattice's harness read that one receipt.
+B2.0 enters the declared shell and writes compiler, Cargo, wrapper, and target directory onto the shared receipt. It must say when those fields were not entered. B3.0 appends the existing supervisor events to that same receipt. `nxr session events` and MCP `runs_get_receipt` read that receipt. Lattice's harness reads it after the fixture tests pass.
 
 ## B2.0 and B3.0 implementation slice
 
-Coding starts only after the `v3.9.1` tag. Do not start it during A4.2.
+Coding starts from the signed `v3.9.1` tag `e54092c`. The earlier `db8961a` candidate is not that tag.
 
-B2.0 enters the declared shell and writes compiler, Cargo, wrapper, and target directory onto one shared receipt. It must say when those fields were not entered. B3.0 appends the existing supervisor events to that same receipt and serves them from the CLI and `runs_get_events`. Parsed diagnostics and cache explanations stay in B3.1 and B2.2. No embeddings.
+B2.0 enters the declared shell and writes compiler, Cargo, wrapper, and target directory onto one shared receipt. It must say when those fields were not entered. B3.0 appends the existing supervisor events to that same receipt and serves them from `nxr session events` and MCP `runs_get_receipt`. Parsed diagnostics and cache explanations stay in B3.1 and B2.2. No embeddings.
 
 ## Execution evidence
 
-B2 and B3 write one versioned receipt. B2 contributes the verified shell, compiler, wrapper, target directory, and cache identity. B3 contributes the run events and the parsed Rust, Nix, and test diagnostics. The CLI, MCP, and Lattice's harness read that receipt. They do not keep a second log parser. Implementation still waits for the frozen A4 score. B2.0 and B3.0 remain the first slices. No embedding model.
+B2 and B3 write one versioned receipt. B2 contributes the verified shell, compiler, wrapper, target directory, and cache identity. B3 contributes the run events and the parsed Rust, Nix, and test diagnostics. The CLI, MCP, and Lattice's harness read that receipt. They do not keep a second log parser. B2.0 and B3.0 remain the first slices. No embedding model.
 
 ## B3.2 — Artifacts and reruns
 
