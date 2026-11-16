@@ -10,9 +10,10 @@ use nxr_nix::OptionalNixFlags;
 use std::collections::BTreeMap;
 
 use nxr_task::{
-    OperationKind, OperationRecord, ProjectExecutionPolicy, admit, apply_project_policy,
-    bind_supervisor, cancel, declared_input_digests, execution_fingerprint_with_inputs, inspect,
-    mark_admitting, mark_reconciliation, validate_policy_parameters,
+    OperationKind, OperationRecord, ProjectExecutionPolicy, ReceiptEvent, admit,
+    apply_project_policy, attach_events, bind_supervisor, cancel, declared_input_digests,
+    execution_fingerprint_with_inputs, inspect, mark_admitting, mark_reconciliation,
+    static_receipt, validate_policy_parameters,
 };
 use serde_json::{Value, json};
 
@@ -259,6 +260,15 @@ fn tools() -> Vec<Value> {
             json!({"run_id": {"type": "string", "description": "Supervisor run id"}}),
         ),
         tool(
+            "runs_get_receipt",
+            "Read the execution receipt and the stored supervisor events for one run",
+            &["id", "run_id"],
+            json!({
+                "id": {"type": "string", "description": "Portable operation id"},
+                "run_id": {"type": "string", "description": "Supervisor run id"}
+            }),
+        ),
+        tool(
             "workspace_affected",
             "List operations affected by paths in this workspace",
             &[],
@@ -397,6 +407,9 @@ pub fn call_tool(
                 .and_then(Value::as_str)
                 .unwrap_or("");
             Ok(json!(inspect(run_dir, run_id, workspace_id)?))
+        }
+        "runs_get_receipt" => {
+            run_receipt(&arguments, records, workspace_root, supervisor_dir, trusted)
         }
         "runs_get_logs" => read_run_log(
             &arguments,
@@ -566,6 +579,44 @@ fn start(
         )),
         nxr_task::Admission::Refused => Err("operation is not executable".to_owned()),
     }
+}
+
+fn run_receipt(
+    arguments: &Value,
+    records: &[OperationRecord],
+    workspace_root: &Path,
+    supervisor_dir: &Path,
+    trusted: bool,
+) -> Result<Value, String> {
+    let id = required_id(arguments)?;
+    let run_id = arguments
+        .get("run_id")
+        .and_then(Value::as_str)
+        .filter(|run_id| !run_id.is_empty())
+        .ok_or_else(|| "run_id is required".to_owned())?;
+    let visible = policy_view(records, workspace_root, trusted)?;
+    let record =
+        nxr_task::describe(&visible, id).ok_or_else(|| format!("unknown operation {id}"))?;
+    let mut receipt = static_receipt(record);
+    let stored = nxr_core::execution_owner::events(supervisor_dir, run_id, 0)?;
+    let events = stored
+        .as_array()
+        .ok_or_else(|| "supervisor events are not a list".to_owned())?;
+    let mut copied = Vec::with_capacity(events.len());
+    for event in events {
+        let cursor = event
+            .get("cursor")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "supervisor event is missing a cursor".to_owned())?;
+        let message = event
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        copied.push(ReceiptEvent { cursor, message });
+    }
+    attach_events(&mut receipt, copied);
+    Ok(json!(receipt))
 }
 
 fn policy_view(
@@ -837,6 +888,7 @@ fn known_arguments(name: &str) -> Option<&'static [&'static str]> {
         "operations_suggest" => &["query", "paths"],
         "operations_describe" | "operations_plan" => &["id"],
         "runs_inspect" | "runs_cancel" => &["run_id"],
+        "runs_get_receipt" => &["id", "run_id"],
         "workspace_affected" => &["paths"],
         "operations_start" => &["id", "idempotency_key", "parameters"],
         "runs_get_logs" => &["run_id", "offset", "limit"],
@@ -1063,6 +1115,57 @@ mod tests {
         );
         assert!(untrusted.unwrap_err().contains("not trusted"));
         forget_run(started["run_id"].as_str().unwrap());
+    }
+
+    #[test]
+    fn receipt_copies_supervisor_events_and_leaves_the_shell_unentered() {
+        let records = records();
+        let dir = tempfile::tempdir().unwrap();
+        let supervisor = dir.path().join("supervisor");
+        let true_bin = if std::path::Path::new("/usr/bin/true").exists() {
+            "/usr/bin/true"
+        } else {
+            "/bin/true"
+        };
+        let started = nxr_core::execution_owner::start(
+            &supervisor,
+            &json!({ "command": [true_bin], "label": "receipt-fixture" }),
+        )
+        .unwrap();
+        let run_id = started["id"].as_str().unwrap();
+        for _ in 0..50 {
+            let record = nxr_core::execution_owner::inspect(&supervisor, run_id).unwrap();
+            if record["status"] == "exited" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let receipt = invoke(
+            &json!({
+                "name": "runs_get_receipt",
+                "arguments": {"id": "lattice:task:test", "run_id": run_id}
+            }),
+            &records,
+            std::path::Path::new("/tmp/lattice"),
+            dir.path(),
+            &dir.path().join("nxrd.sock"),
+            true,
+            &Launch::Task,
+        )
+        .unwrap();
+        assert_eq!(receipt["shell_entered"], false);
+        assert_eq!(receipt["rustc"]["status"], "not entered");
+        assert_eq!(receipt["schema"], "execution-receipt-v1");
+        let stored = nxr_core::execution_owner::events(&supervisor, run_id, 0).unwrap();
+        assert_eq!(receipt["events"], stored);
+        assert!(
+            stored
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event["message"] == "started")
+        );
+        forget_run(run_id);
     }
 
     #[test]

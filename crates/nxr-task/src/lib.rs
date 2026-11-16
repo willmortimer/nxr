@@ -30,6 +30,7 @@ pub mod parameters;
 pub mod plan_exec;
 pub mod planner;
 pub mod process;
+pub mod receipt;
 pub mod remote_execution;
 pub mod resolve;
 pub mod resources;
@@ -107,6 +108,10 @@ pub use process::{
     ProcessDefinition, ProcessNameError, ProcessReadiness, ProcessRestart, ReadinessHttp,
     ReadinessTcp, dependency_base_name, parse_processes, sanitize_process_log_name,
     validate_node_id,
+};
+pub use receipt::{
+    ExecutionReceipt, NOT_ENTERED, RECEIPT_SCHEMA, ReceiptEvent, ShellProbe, ToolObservation,
+    attach_events, probe_shell, static_receipt, verified_receipt,
 };
 pub use remote_execution::{
     ExecutionTransport, cancel_execution, execution_status, replay_execution, submit_execution,

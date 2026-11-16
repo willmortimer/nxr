@@ -640,7 +640,7 @@ pub struct EnvironmentMismatch {
     pub observed: String,
 }
 
-/// One environment view. `compiler` is `unknown` when it was not established.
+/// One environment view. `compiler` is `not entered` when the shell was not entered.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EnvironmentView {
     pub shell: Option<String>,
@@ -653,7 +653,7 @@ pub struct EnvironmentExplanation {
     pub operation_id: String,
     /// What the declaration names.
     pub declared: EnvironmentView,
-    /// What NXR can name without entering the shell. Unknown stays unknown.
+    /// What NXR can name without entering the shell. Unentered fields stay `not entered`.
     pub resolved: EnvironmentView,
     /// What the current process `PATH` suggests.
     pub ambient: EnvironmentView,
@@ -661,6 +661,8 @@ pub struct EnvironmentExplanation {
     pub inputs: Vec<String>,
     pub secret_refs: Vec<String>,
     pub mismatches: Vec<EnvironmentMismatch>,
+    /// Static receipt. Toolchain fields stay `not entered` until a shell probe.
+    pub receipt: crate::receipt::ExecutionReceipt,
 }
 
 /// Compare the plan with an ambient `PATH`.
@@ -684,12 +686,12 @@ pub fn explain(record: &OperationRecord, ambient_path: &str) -> EnvironmentExpla
         operation_id: planned.operation_id,
         declared: EnvironmentView {
             shell: planned.shell.clone(),
-            compiler: "unknown".to_owned(),
+            compiler: crate::receipt::NOT_ENTERED.to_owned(),
             rustc_wrapper: planned.rustc_wrapper.clone(),
         },
         resolved: EnvironmentView {
             shell: planned.shell,
-            compiler: "unknown".to_owned(),
+            compiler: crate::receipt::NOT_ENTERED.to_owned(),
             rustc_wrapper: planned.rustc_wrapper,
         },
         ambient: EnvironmentView {
@@ -701,6 +703,7 @@ pub fn explain(record: &OperationRecord, ambient_path: &str) -> EnvironmentExpla
         inputs: planned.inputs,
         secret_refs: planned.secret_refs,
         mismatches,
+        receipt: crate::receipt::static_receipt(record),
     }
 }
 
@@ -919,7 +922,7 @@ mod tests {
         let record = sample("lattice", "rust-test-pkgs");
         let report = explain(&record, "/Users/will/.cargo/bin:/nix/store/rust/bin");
         assert_eq!(report.ambient.compiler, "rustup");
-        assert_eq!(report.resolved.compiler, "unknown");
+        assert_eq!(report.resolved.compiler, "not entered");
         assert_eq!(report.declared.shell.as_deref(), Some("rust"));
         assert_eq!(report.mismatches.len(), 1);
         assert_eq!(report.mismatches[0].field, "compiler");
@@ -928,7 +931,9 @@ mod tests {
         let nix = explain(&record, "/nix/store/rust/bin:/usr/bin");
         assert!(nix.mismatches.is_empty());
         assert_eq!(nix.ambient.compiler, "nix");
-        assert_eq!(nix.resolved.compiler, "unknown");
+        assert_eq!(nix.resolved.compiler, "not entered");
+        assert!(!report.receipt.shell_entered);
+        assert_eq!(report.receipt.rustc.status, "not entered");
     }
 
     #[test]

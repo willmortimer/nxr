@@ -1,0 +1,5 @@
+#!/bin/sh
+case "$1" in
+  --print-path) command -v cc ;;
+  *) printf '%s\n' cc ;;
+esac

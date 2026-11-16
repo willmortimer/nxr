@@ -1,0 +1,5 @@
+#!/bin/sh
+case "$1" in
+  --print-path) command -v wrapper ;;
+  *) printf '%s\n' wrapper ;;
+esac
