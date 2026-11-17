@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 /// # Errors
 ///
 /// Returns `remote execution is not authorized` when the id is absent.
+#[cfg(test)]
 pub fn authorize_remote_start(
     policy: &ProjectExecutionPolicy,
     operation_id: &str,

@@ -1826,6 +1826,223 @@ mod tests {
     use super::*;
     use nxr_task::{Declaration, OperationKind, WorkspaceInstance, operation_record};
 
+    #[test]
+    #[ignore = "disposable hub"]
+    fn disposable_hub_receipt_binds_the_attempt() {
+        let spec_path = std::env::var("C24_SPEC").expect("C24_SPEC");
+        let source_path = std::env::var("C24_SOURCE").expect("C24_SOURCE");
+        let locator_path = std::env::var("C24_LOCATOR").expect("C24_LOCATOR");
+        let state_dir = std::env::var("NIXPLANE_STATE_DIR").expect("NIXPLANE_STATE_DIR");
+        let data_dir = std::env::var("NIXPLANE_DATA_DIR").expect("NIXPLANE_DATA_DIR");
+        let token_file =
+            std::env::var("NIXPLANE_WORKER_TOKEN_FILE").expect("NIXPLANE_WORKER_TOKEN_FILE");
+        let system = std::env::var("C24_SYSTEM").expect("C24_SYSTEM");
+        let nixplane = std::env::var("NIXPLANE").expect("NIXPLANE");
+        let hub = std::env::var("NIXPLANE_HUB_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:19580".to_owned());
+        let spec: Value = serde_json::from_str(&std::fs::read_to_string(&spec_path).expect("spec"))
+            .expect("spec json");
+        let source_set: Value =
+            serde_json::from_str(&std::fs::read_to_string(&source_path).expect("source"))
+                .expect("source json");
+        let locator = std::fs::read_to_string(&locator_path).expect("locator");
+        let root = tempfile::tempdir().expect("root");
+        std::fs::create_dir_all(root.path().join(".nxr")).expect("policy dir");
+        std::fs::write(
+            root.path().join(".nxr/execution-policy.toml"),
+            "[[remote_operation]]\nid = \"lattice:task:c24-marker\"\n",
+        )
+        .expect("policy");
+        let trust = root.path().join("trust.json");
+        nxr_core::set_trust_db_override(Some(trust));
+        let key = nxr_core::canonical_project_key(root.path()).expect("project key");
+        let mut database = nxr_core::TrustDatabase::load().expect("trust");
+        database.add_trust(&key).expect("trust project");
+        let policy = nxr_task::ProjectExecutionPolicy::load(root.path()).expect("policy load");
+        database
+            .approve_policy(&key, &policy.digest())
+            .expect("approve");
+        let workspace = WorkspaceInstance {
+            workspace_id: "lattice".to_owned(),
+            workspace_root: root.path().display().to_string(),
+            source_revision: None,
+        };
+        let record = operation_record(
+            &workspace,
+            &Declaration::named(OperationKind::Task, "c24-marker", "flake.nix"),
+        );
+        let other = operation_record(
+            &workspace,
+            &Declaration::named(OperationKind::Task, "other", "flake.nix"),
+        );
+        let attempts_before = hub_attempt_count(&data_dir);
+        let denied = start_remote(
+            &json!({
+                "id": other.operation_id,
+                "idempotency_key": "c24-denied",
+                "spec": spec.clone(),
+                "source_set": source_set.clone(),
+                "source_locator": locator.trim(),
+            }),
+            &[other.clone(), record.clone()],
+            "lattice",
+            root.path(),
+            root.path(),
+            false,
+        );
+        assert_eq!(
+            denied.expect_err("denied"),
+            "remote execution is not authorized"
+        );
+        assert_eq!(hub_attempt_count(&data_dir), attempts_before);
+        let started = start_remote(
+            &json!({
+                "id": record.operation_id,
+                "idempotency_key": "c24-nxr-1",
+                "spec": spec.clone(),
+                "source_set": source_set.clone(),
+                "source_locator": locator.trim(),
+            }),
+            &[record.clone()],
+            "lattice",
+            root.path(),
+            root.path(),
+            false,
+        )
+        .expect("submit");
+        let again = start_remote(
+            &json!({
+                "id": record.operation_id,
+                "idempotency_key": "c24-nxr-1",
+                "spec": spec.clone(),
+                "source_set": source_set.clone(),
+                "source_locator": locator.trim(),
+            }),
+            &[record.clone()],
+            "lattice",
+            root.path(),
+            root.path(),
+            false,
+        )
+        .expect("replay");
+        assert_eq!(again["attempt_id"], started["attempt_id"]);
+        assert_eq!(again["replayed"], true);
+        let token = std::fs::read_to_string(&token_file).expect("token");
+        let worker = std::process::Command::new(&nixplane)
+            .args([
+                "--json",
+                "nxb",
+                "worker",
+                "--hub",
+                &hub,
+                "--facet",
+                "c24-host/linux",
+                "--physical-host",
+                "c24-host",
+                "--system",
+                &system,
+                "--max-jobs",
+                "1",
+                "--cores",
+                "1",
+                "--memory-mib",
+                "1024",
+                "--feature",
+                "native_command",
+                "--once",
+            ])
+            .env("NIXPLANE_STATE_DIR", &state_dir)
+            .env("NIXPLANE_WORKER_TOKEN", token.trim())
+            .env("NIXPLANE_HUB_URL", &hub)
+            .output()
+            .expect("worker");
+        assert!(
+            worker.status.success(),
+            "worker {}",
+            String::from_utf8_lossy(&worker.stderr)
+        );
+        let run_id = started["run_id"].as_str().expect("run");
+        let receipt = run_receipt(
+            &json!({
+                "id": record.operation_id,
+                "run_id": run_id,
+                "output_name": "out.txt",
+            }),
+            &[record.clone()],
+            "lattice",
+            root.path(),
+            root.path(),
+            root.path(),
+            false,
+        )
+        .expect("receipt");
+        let digest = receipt["remote_receipt"]["output_digest"]
+            .as_str()
+            .expect("digest");
+        let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
+        assert!(hex.len() == 64, "{receipt}");
+        assert_eq!(receipt["source_set_id"], spec["source_set_id"]);
+        let wrong = run_receipt(
+            &json!({
+                "id": record.operation_id,
+                "run_id": run_id,
+                "lease_generation": 99,
+            }),
+            &[record.clone()],
+            "lattice",
+            root.path(),
+            root.path(),
+            root.path(),
+            false,
+        );
+        assert_eq!(
+            wrong.expect_err("lease"),
+            "lease does not match the attempt"
+        );
+        let queued = start_remote(
+            &json!({
+                "id": record.operation_id,
+                "idempotency_key": "c24-nxr-cancel",
+                "spec": spec.clone(),
+                "source_set": source_set.clone(),
+                "source_locator": locator.trim(),
+            }),
+            &[record.clone()],
+            "lattice",
+            root.path(),
+            root.path(),
+            false,
+        )
+        .expect("cancel submit");
+        let cancelled = cancel_run(
+            root.path(),
+            root.path(),
+            root.path(),
+            "lattice",
+            &json!({"run_id": queued["run_id"].as_str().expect("cancel run")}),
+        )
+        .expect("cancel");
+        assert_eq!(cancelled["cancel_complete"], true);
+        assert!(cancelled.get("process_terminal").is_none());
+        let text = serde_json::to_string_pretty(&receipt).expect("json");
+        let path =
+            std::env::var("C24_RECEIPT").unwrap_or_else(|_| "/tmp/c24-nxr-receipt.json".to_owned());
+        std::fs::write(path, text).expect("write receipt");
+    }
+
+    fn hub_attempt_count(data_dir: &str) -> i64 {
+        let output = std::process::Command::new("python3")
+            .arg("-c")
+            .arg("import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute('select count(*) from execution_attempts').fetchone()[0])")
+            .arg(format!("{data_dir}/hub.sqlite"))
+            .output()
+            .expect("count");
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .expect("count parse")
+    }
+
     fn records() -> Vec<OperationRecord> {
         let workspace = WorkspaceInstance {
             workspace_id: "lattice".to_owned(),
