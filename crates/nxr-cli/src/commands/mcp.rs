@@ -576,17 +576,16 @@ fn start(
                 probe_script.as_deref(),
                 cwd.as_path(),
             );
-            match coalesce_running(supervisor_socket, _supervisor_dir, &identity, &output_dirs)? {
-                Some(run_id) => {
-                    bind_supervisor(run_dir, key, &run_id)?;
-                    return Ok(json!({
-                        "run_id": run_id,
-                        "started": false,
-                        "replayed": true,
-                        "status": "attached"
-                    }));
-                }
-                None => {}
+            if let Some(run_id) =
+                coalesce_running(supervisor_socket, _supervisor_dir, &identity, &output_dirs)?
+            {
+                bind_supervisor(run_dir, key, &run_id)?;
+                return Ok(json!({
+                    "run_id": run_id,
+                    "started": false,
+                    "replayed": true,
+                    "status": "attached"
+                }));
             }
             match start_on(
                 supervisor_socket,
