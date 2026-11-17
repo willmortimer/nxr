@@ -92,8 +92,10 @@ pub use execution_spec::{
 pub use failure::{FailureSummary, failure_summary};
 pub use graph::{GraphError, TaskGraph, render_dot, render_mermaid, render_text};
 pub use idempotency::{
-    Admission, Reservation, admit, bind_supervisor, cancel, inspect, mark_admitting,
-    mark_bind_incomplete, mark_reconciliation, mark_started,
+    Admission, CoalesceOutcome, CoalesceRequest, DetachOutcome, Reservation, admit,
+    attach_observer, bind_supervisor, cancel, detach_observer_id, finish_coalesce,
+    idempotency_key_for_run, inspect, mark_admitting, mark_bind_incomplete, mark_reconciliation,
+    mark_started,
 };
 pub use identity::{SourceSetV1, operation_id, source_set_digest};
 pub use matrix::{
@@ -133,7 +135,7 @@ pub use run_diagnostics::{RunDiagnostic, parse_run_log};
 pub use run_events::{RunEventDecorator, format_rfc3339_utc};
 pub use run_provenance::{
     ChildObservation, StoredReceipt, child_probe_script, get_artifact, next_attempt,
-    parse_child_probe, put_artifact, read_receipt, transition, write_receipt,
+    parse_child_probe, put_artifact, read_leaf_receipt, read_receipt, transition, write_receipt,
 };
 pub use scheduler::{NodeState, ScheduleOutcome, Scheduler, SchedulerError};
 pub use schema::{

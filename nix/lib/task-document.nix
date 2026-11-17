@@ -94,6 +94,7 @@ let
       paths = task.paths or [ ];
       aliases = task.aliases or [ ];
       interactive = task.interactive or false;
+      cargoOutput = task.cargoOutput or false;
       shell = task.shell or null;
       context = task.context or null;
       inputs = task.inputs or null;
@@ -119,6 +120,9 @@ let
     }
     // lib.optionalAttrs interactive {
       inherit interactive;
+    }
+    // lib.optionalAttrs cargoOutput {
+      inherit cargoOutput;
     }
     // lib.optionalAttrs (paths != [ ]) {
       inherit paths;

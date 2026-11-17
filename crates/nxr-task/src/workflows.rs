@@ -354,6 +354,7 @@ pub fn plan_workflow_document(
                 artifacts: task.artifacts.clone(),
                 inputs: task.inputs.clone(),
                 artifact_reuse: false,
+                cargo_output: false,
             })
         })
         .collect();

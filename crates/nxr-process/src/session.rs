@@ -33,6 +33,13 @@ pub struct ChildSession {
 }
 
 impl ChildSession {
+    /// Track a child that is already in its own process group.
+    #[must_use]
+    pub fn from_child(child: Child) -> Self {
+        let pgid = child.id();
+        Self { child, pgid }
+    }
+
     /// Process group id (equals the child pid after `process_group(0)`).
     #[must_use]
     pub const fn pgid(&self) -> u32 {

@@ -64,6 +64,58 @@ fn output_resource(kind: &str, path: PathBuf, cohort: &str) -> OutputResource {
     }
 }
 
+/// Whether a command's writers were inspected.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OutputCoverage {
+    /// Cargo target or cargo build directories this leaf writes.
+    Managed(Vec<OutputResource>),
+    /// Inspected. NXR does not take an exclusive output lock.
+    NoneRequired,
+    /// Not inspected. An empty list is not this state.
+    Unknown { command: String },
+}
+
+/// Classify `command` without treating an unknown command as lock-free.
+#[must_use]
+pub fn classify_output_coverage(
+    workspace_root: &Path,
+    command: &[String],
+    cargo_target_dir: Option<&str>,
+    cargo_build_dir: Option<&str>,
+    platform: &str,
+    arch: &str,
+    toolchain: &str,
+) -> OutputCoverage {
+    if is_nix_invocation(command) {
+        return OutputCoverage::NoneRequired;
+    }
+    if !locks_cargo_output(command) {
+        let program = command
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "<empty>".to_owned());
+        return OutputCoverage::Unknown { command: program };
+    }
+    match resolve_output_resources(
+        workspace_root,
+        command,
+        cargo_target_dir,
+        cargo_build_dir,
+        platform,
+        arch,
+        toolchain,
+    ) {
+        Ok(resources) => OutputCoverage::Managed(resources),
+        Err(_) => {
+            let program = command
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "<empty>".to_owned());
+            OutputCoverage::Unknown { command: program }
+        }
+    }
+}
+
 /// Two resources conflict when they name the same directory.
 ///
 /// Kind and cohort are not part of the identity. A symlink and its real path

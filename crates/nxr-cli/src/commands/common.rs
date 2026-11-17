@@ -185,6 +185,8 @@ pub struct PreparedTaskNode {
     pub store_exe_nix_flags: Option<OptionalNixFlags>,
     /// Nix version from the preparation snapshot; paired with [`Self::store_exe_nix_flags`].
     pub store_exe_nix_version: Option<String>,
+    /// This leaf declared a cargo output and must lock that directory.
+    pub cargo_output: bool,
 }
 
 /// Once-per-invocation workspace evaluation: flake, Nix adapter, apps, optional tasks.
@@ -2080,6 +2082,7 @@ impl<'a> TaskNodePreparer<'a> {
             matrix_env,
             store_exe_nix_flags: Some(nix_flags.clone()),
             store_exe_nix_version: Some(snapshot.nix.capabilities.version.to_string()),
+            cargo_output: definition.cargo_output,
         })
     }
 }

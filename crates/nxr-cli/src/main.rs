@@ -47,15 +47,67 @@ use crate::reports::{ReportKind, ReportPaths, parse_report_spec};
 use crate::runner_output::RunnerOutput;
 use crate::tui::browser::BrowserLaunch;
 
+fn supervisor_once() -> Result<(), String> {
+    let dirs = std::env::var("NXR_GUARDIAN_DIRS").unwrap_or_default();
+    let output_dirs = dirs
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(std::path::PathBuf::from)
+        .collect();
+    let argv = serde_json::from_str::<Vec<String>>(
+        &std::env::var("NXR_GUARDIAN_ARGV").unwrap_or_default(),
+    )
+    .unwrap_or_default();
+    let stdio = match std::env::var("NXR_GUARDIAN_LOG") {
+        Ok(path) if !path.is_empty() => {
+            nxr_core::resource_guard::WriterStdio::Log(std::path::PathBuf::from(path))
+        }
+        _ => nxr_core::resource_guard::WriterStdio::Inherit,
+    };
+    let launched =
+        nxr_core::resource_guard::launch_writer(&nxr_core::resource_guard::WriterRequest {
+            argv,
+            cwd: std::env::var("NXR_GUARDIAN_CWD")
+                .ok()
+                .map(std::path::PathBuf::from),
+            env: Vec::new(),
+            output_dirs,
+            stdio,
+            probe_out: std::env::var("NXR_GUARDIAN_PROBE_OUT")
+                .ok()
+                .map(std::path::PathBuf::from),
+            probe_script: std::env::var("NXR_GUARDIAN_PROBE_SCRIPT").ok(),
+            guardian_bin: Some(std::env::current_exe().map_err(|err| err.to_string())?),
+            pause_file: std::env::var("NXR_GUARDIAN_PAUSE")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .map(std::path::PathBuf::from),
+            clear_env: false,
+        })?;
+    if let Ok(result) = std::env::var("NXR_GUARDIAN_RESULT")
+        && !result.is_empty()
+    {
+        std::fs::write(&result, launched.writer_pid.to_string()).map_err(|err| err.to_string())?;
+    }
+    if let Some(guardian) = launched.guardian {
+        std::mem::forget(guardian);
+    }
+    Ok(())
+}
+
 fn main() {
     if std::env::var_os("NXR_RESOURCE_GUARDIAN").is_some() {
-        let lock = std::env::var("NXR_GUARDIAN_LOCK").unwrap_or_default();
-        let pgid = std::env::var("NXR_GUARDIAN_PGID")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(0);
-        if !lock.is_empty() && pgid != 0 {
-            let _ = nxr_core::resource_guard::guardian_loop(std::path::Path::new(&lock), pgid);
+        if let Err(message) = nxr_core::resource_guard::run_guardian_from_env() {
+            eprintln!("error: {message}");
+            process::exit(1);
+        }
+        process::exit(0);
+    }
+    if std::env::var_os("NXR_GUARDIAN_SUPERVISOR_ONCE").is_some() {
+        if let Err(message) = supervisor_once() {
+            eprintln!("error: {message}");
+            process::exit(1);
         }
         process::exit(0);
     }
@@ -766,6 +818,11 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                         workspace_id: None,
                         output_dirs: Vec::new(),
                         probe_script: None,
+                        run_id: None,
+                        source_digest: None,
+                        leaf_id: None,
+                        qualify: false,
+                        parameters: None,
                     },
                     session::LocalBudget::from_process(),
                     runner,

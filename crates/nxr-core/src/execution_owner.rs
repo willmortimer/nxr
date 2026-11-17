@@ -92,6 +92,21 @@ struct OwnedRun {
     /// Workspace this run was started for. Empty on records written before this field.
     #[serde(default)]
     workspace_id: String,
+    /// Guardian process that holds the output locks. Empty when this process does.
+    #[serde(default)]
+    guardian_pid: Option<u32>,
+    /// Admitted operation fingerprint. Empty when the caller did not send one.
+    #[serde(default)]
+    source_digest: String,
+    /// Leaf that produced the authoritative probe. Empty for a single direct command.
+    #[serde(default)]
+    leaf_id: String,
+    /// When true, a passing exit with a leaf probe may be stored as a qualification.
+    #[serde(default)]
+    qualify: bool,
+    /// Canonical parameters compared by qualification reuse.
+    #[serde(default)]
+    parameters: String,
     events: Vec<RunEvent>,
 }
 
@@ -177,8 +192,9 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
     if cache_mode.contains("://") || cache_mode.contains('@') {
         return Err("compiler cache mode must not contain an endpoint".into());
     }
-    let cache_env = cache_assignments(params.get("cache_env"))?;
-    let id = new_id();
+    let mut cache_env = cache_assignments(params.get("cache_env"))?;
+    cache_env.extend(string_map(params.get("env"))?);
+    let id = requested_run_id(params);
     let target_dir = params
         .get("target_dir")
         .and_then(Value::as_str)
@@ -231,6 +247,11 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
                 target_dir: target_dir.clone(),
                 operation_id: operation_id.clone(),
                 workspace_id: workspace_id.clone(),
+                guardian_pid: None,
+                source_digest: String::new(),
+                leaf_id: String::new(),
+                qualify: false,
+                parameters: String::new(),
                 events: Vec::new(),
             };
             push_event(&mut refused, "refused");
@@ -238,43 +259,100 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
             return Err("local budget exceeded".into());
         }
         let output_dirs = output_directories(params, &target_dir);
-        if remote.is_none() {
-            refuse_when_disk_is_short(&output_dirs)?;
+        let reserve = crate::disk_preflight::disk_reserve_bytes(
+            std::env::var("NXR_DISK_RESERVE_BYTES").ok().as_deref(),
+            memory_budget,
+        );
+        if remote.is_none()
+            && let Err(reason) = refuse_when_disk_is_short(&output_dirs, reserve)
+        {
+            let mut refused = OwnedRun {
+                id: id.clone(),
+                label: label.clone(),
+                status: "refused".into(),
+                kind: kind_of(remote.as_ref()),
+                command: command.clone(),
+                remote: remote.clone(),
+                attempt_id: attempt_id.clone(),
+                pid: None,
+                start_time: None,
+                cpu,
+                memory_mib,
+                exit_code: None,
+                log_path: String::new(),
+                admission_id: admission_id.clone(),
+                target_dir: target_dir.clone(),
+                operation_id: operation_id.clone(),
+                workspace_id: workspace_id.clone(),
+                guardian_pid: None,
+                source_digest: String::new(),
+                leaf_id: String::new(),
+                qualify: false,
+                parameters: String::new(),
+                events: Vec::new(),
+            };
+            push_event(&mut refused, "disk refused");
+            store(dir, &refused)?;
+            return Err(reason);
         }
-        let admissions = if output_dirs.is_empty() || remote.is_some() {
-            Vec::new()
-        } else {
-            crate::resource_guard::acquire_ordered(&output_dirs)?
-        };
         let log_path = dir.join(format!("{id}.log"));
-        let log = File::create(&log_path).map_err(|err| err.to_string())?;
-        let stderr = log.try_clone().map_err(|err| err.to_string())?;
-        let mut child = Command::new(&command[0]);
-        child.args(&command[1..]);
-        if let Some(cwd) = params.get("cwd").and_then(Value::as_str)
-            && !cwd.is_empty()
-        {
-            child.current_dir(cwd);
-        }
-        child.stdin(Stdio::null());
-        child.stdout(log);
-        child.stderr(stderr);
-        for (key, value) in &cache_env {
-            child.env(key, value);
-        }
-        #[cfg(unix)]
-        {
-            child.process_group(0);
-        }
-        capture_child_probe(dir, &id, params, &cache_env);
-        let mut spawned = match child.spawn() {
-            Ok(child) => child,
-            Err(err) => {
-                drop(admissions);
-                return Err(format!("spawn {}: {err}", command[0]));
-            }
+        let source_digest = optional_string(params, "source_digest").unwrap_or_default();
+        let parameters = optional_string(params, "parameters").unwrap_or_default();
+        let leaf_id = optional_string(params, "leaf_id").unwrap_or_else(|| "command".to_owned());
+        let qualify = params
+            .get("qualify")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let probe_out = dir.join("provenance").join(format!("{id}.{leaf_id}.probe"));
+        let launched = if output_dirs.is_empty() || remote.is_some() {
+            capture_child_probe(dir, &id, params, &cache_env);
+            direct_child(&command, params, &cache_env, &log_path).map(|child| StartedChild {
+                pid: child.id(),
+                guardian_pid: None,
+                child: Some(child),
+                guardian: None,
+                status_path: None,
+                admissions: Vec::new(),
+            })
+        } else {
+            let request = crate::resource_guard::WriterRequest {
+                argv: command.clone(),
+                cwd: params
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .filter(|cwd| !cwd.is_empty())
+                    .map(PathBuf::from),
+                env: cache_env.clone(),
+                output_dirs: output_dirs.clone(),
+                stdio: crate::resource_guard::WriterStdio::Log(log_path.clone()),
+                probe_out: params
+                    .get("probe_script")
+                    .and_then(Value::as_str)
+                    .filter(|script| !script.is_empty())
+                    .map(|_| probe_out.clone()),
+                probe_script: params
+                    .get("probe_script")
+                    .and_then(Value::as_str)
+                    .filter(|script| !script.is_empty())
+                    .map(str::to_owned),
+                guardian_bin: None,
+                pause_file: None,
+                clear_env: false,
+            };
+            crate::resource_guard::launch_writer(&request).map(|launched| StartedChild {
+                pid: launched.writer_pid,
+                guardian_pid: launched.guardian.as_ref().map(std::process::Child::id),
+                child: launched.child,
+                guardian: launched.guardian,
+                status_path: launched.status_path,
+                admissions: launched.admissions,
+            })
         };
-        let pid = spawned.id();
+        let mut started_child = match launched {
+            Ok(started_child) => started_child,
+            Err(err) => return Err(err),
+        };
+        let pid = started_child.pid;
         let start_time = capture_start_time(pid);
         let mut record = OwnedRun {
             id: id.clone(),
@@ -294,12 +372,14 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
             target_dir: target_dir.clone(),
             operation_id,
             workspace_id,
+            guardian_pid: started_child.guardian_pid,
+            source_digest,
+            leaf_id,
+            qualify,
+            parameters,
             events: Vec::new(),
         };
-        for path in &output_dirs {
-            let _ = crate::resource_guard::spawn_guardian(&path.join(".nxr-target.lock"), pid);
-        }
-        hold_targets(&id, admissions);
+        hold_targets(&id, std::mem::take(&mut started_child.admissions));
         push_event(&mut record, "started");
         if record.kind == "remote" {
             push_event(&mut record, "submitted");
@@ -324,14 +404,11 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
         let wait_dir = dir.to_path_buf();
         let wait_id = id.clone();
         let wait_pid = pid;
+        let mut started_child = started_child;
         // Retained under test so suites can join; detached in non-test builds.
         #[cfg_attr(not(test), allow(unused_variables))]
         let wait_handle = thread::spawn(move || {
-            let code = spawned
-                .wait()
-                .ok()
-                .and_then(|status| status.code())
-                .unwrap_or(-1);
+            let code = started_child.wait_code();
             let _ = with_lock(&wait_dir, || {
                 let Ok(mut stored) = load(&wait_dir, &wait_id) else {
                     return Ok(());
@@ -340,6 +417,9 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
                 if stored.status == "running" {
                     stored.status = "exited".into();
                     push_event(&mut stored, "exited");
+                }
+                if code == 0 && stored.qualify {
+                    let _ = write_passing_qualification(&wait_dir, &stored);
                 }
                 store(&wait_dir, &stored)?;
                 let durable_status = if code == 0 {
@@ -401,6 +481,56 @@ pub fn logs(dir: &Path, id: &str) -> Result<Value, String> {
     let start = bytes.len().saturating_sub(256 * 1024);
     let text = String::from_utf8_lossy(&bytes[start..]).into_owned();
     Ok(json!({ "text": text }))
+}
+
+/// Append one supervisor event without changing the run status.
+///
+/// # Errors
+///
+/// Returns an error when the run is missing or the record cannot be stored.
+pub fn note(dir: &Path, id: &str, message: &str) -> Result<(), String> {
+    with_lock(dir, || {
+        let mut record = load(dir, id)?;
+        push_event(&mut record, message);
+        store(dir, &record)
+    })
+}
+
+/// Counts taken from stored supervisor records. Missing records contribute nothing.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RunTallies {
+    /// Stored runs, including ones admission refused.
+    pub requested: u64,
+    /// Runs that recorded a start.
+    pub unique_executions: u64,
+    /// Runs refused because disk was short or unknown.
+    pub disk_refusals: u64,
+    /// Observers that attached to a running execution.
+    pub attached: u64,
+    /// Requests served by a stored passing qualification.
+    pub reused: u64,
+}
+
+/// Read [`RunTallies`] without reconciling process liveness.
+///
+/// # Errors
+///
+/// Returns an error when a record cannot be read.
+pub fn tallies(dir: &Path) -> Result<RunTallies, String> {
+    let mut counts = RunTallies::default();
+    for record in records(dir)? {
+        counts.requested = counts.requested.saturating_add(1);
+        for event in &record.events {
+            match event.message.as_str() {
+                "started" => counts.unique_executions = counts.unique_executions.saturating_add(1),
+                "disk refused" => counts.disk_refusals = counts.disk_refusals.saturating_add(1),
+                "attached" => counts.attached = counts.attached.saturating_add(1),
+                "qualification reused" => counts.reused = counts.reused.saturating_add(1),
+                _ => {}
+            }
+        }
+    }
+    Ok(counts)
 }
 
 /// Every stored run.
@@ -544,6 +674,26 @@ fn optional_string(params: &Value, field: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn string_map(value: Option<&Value>) -> Result<Vec<(String, String)>, String> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let Some(object) = value.as_object() else {
+        return Err("env must be an object".into());
+    };
+    let mut assigned = Vec::new();
+    for (key, raw) in object {
+        let Some(text) = raw.as_str().filter(|text| !text.is_empty()) else {
+            continue;
+        };
+        if key.contains('=') || key.contains('\0') || text.contains('\0') {
+            return Err("env contains an invalid assignment".into());
+        }
+        assigned.push((key.clone(), text.to_owned()));
+    }
+    Ok(assigned)
+}
+
 fn cache_assignments(value: Option<&Value>) -> Result<Vec<(String, String)>, String> {
     let Some(value) = value else {
         return Ok(Vec::new());
@@ -656,15 +806,123 @@ fn output_directories(params: &Value, target_dir: &str) -> Vec<PathBuf> {
     }
 }
 
-fn refuse_when_disk_is_short(paths: &[PathBuf]) -> Result<(), String> {
-    const RESERVE_BYTES: u64 = 1024 * 1024;
+fn refuse_when_disk_is_short(paths: &[PathBuf], reserve_bytes: u64) -> Result<(), String> {
     for path in paths {
-        let decision = crate::disk_preflight::disk_preflight(path, RESERVE_BYTES);
+        let decision = crate::disk_preflight::disk_preflight(path, reserve_bytes);
         if !decision.allowed {
             return Err(decision.reason);
         }
     }
     Ok(())
+}
+
+struct StartedChild {
+    pid: u32,
+    guardian_pid: Option<u32>,
+    child: Option<std::process::Child>,
+    guardian: Option<std::process::Child>,
+    status_path: Option<PathBuf>,
+    admissions: Vec<crate::target_lock::TargetAdmission>,
+}
+
+impl StartedChild {
+    fn wait_code(&mut self) -> i32 {
+        if let Some(mut child) = self.child.take() {
+            return child
+                .wait()
+                .ok()
+                .and_then(|status| status.code())
+                .unwrap_or(-1);
+        }
+        if let Some(mut guardian) = self.guardian.take() {
+            let _ = guardian.wait();
+        }
+        let Some(path) = &self.status_path else {
+            return -1;
+        };
+        let Ok(text) = fs::read_to_string(path) else {
+            return -1;
+        };
+        text.lines()
+            .find_map(|line| line.strip_prefix("exit "))
+            .and_then(|rest| rest.trim().parse().ok())
+            .unwrap_or(-1)
+    }
+}
+
+fn requested_run_id(params: &Value) -> String {
+    let Some(value) = params.get("id").and_then(Value::as_str) else {
+        return new_id();
+    };
+    if (1..64).contains(&value.len())
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        value.to_owned()
+    } else {
+        new_id()
+    }
+}
+
+fn direct_child(
+    command: &[String],
+    params: &Value,
+    cache_env: &[(String, String)],
+    log_path: &Path,
+) -> Result<std::process::Child, String> {
+    let log = File::create(log_path).map_err(|err| err.to_string())?;
+    let stderr = log.try_clone().map_err(|err| err.to_string())?;
+    let mut child = Command::new(&command[0]);
+    child.args(&command[1..]);
+    if let Some(cwd) = params.get("cwd").and_then(Value::as_str)
+        && !cwd.is_empty()
+    {
+        child.current_dir(cwd);
+    }
+    child.stdin(Stdio::null());
+    child.stdout(log);
+    child.stderr(stderr);
+    for (key, value) in cache_env {
+        child.env(key, value);
+    }
+    #[cfg(unix)]
+    {
+        child.process_group(0);
+    }
+    child
+        .spawn()
+        .map_err(|err| format!("spawn {}: {err}", command[0]))
+}
+
+fn write_passing_qualification(dir: &Path, record: &OwnedRun) -> Result<(), String> {
+    if record.operation_id.is_empty() || record.source_digest.is_empty() {
+        return Err("qualification is missing its source".to_owned());
+    }
+    let probe_path = dir
+        .join("provenance")
+        .join(format!("{}.{}.probe", record.id, record.leaf_id));
+    let text = fs::read_to_string(&probe_path).map_err(|_| "leaf probe is missing".to_owned())?;
+    let toolchain = text
+        .lines()
+        .find_map(|line| line.strip_prefix("rustc_version="))
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "leaf probe has no toolchain".to_owned())?;
+    let body = json!({
+        "run_id": record.id,
+        "status": "passed",
+        "coverage": "complete",
+        "source_digest": record.source_digest,
+        "test_digest": record.source_digest,
+        "toolchain": toolchain,
+        "parameters": record.parameters,
+        "tests_ran": true
+    });
+    let qual_dir = dir.join("qualifications");
+    fs::create_dir_all(&qual_dir).map_err(|err| err.to_string())?;
+    let name = crate::digest_bytes(record.operation_id.as_bytes());
+    fs::write(qual_dir.join(format!("{name}.json")), body.to_string())
+        .map_err(|err| err.to_string())
 }
 
 fn capture_child_probe(dir: &Path, run_id: &str, params: &Value, cache_env: &[(String, String)]) {
@@ -1017,6 +1275,11 @@ mod tests {
             target_dir: String::new(),
             operation_id: String::new(),
             workspace_id: String::new(),
+            guardian_pid: None,
+            source_digest: String::new(),
+            leaf_id: String::new(),
+            qualify: false,
+            parameters: String::new(),
             events: Vec::new(),
         };
         push_event(&mut record, "started");
@@ -1129,5 +1392,84 @@ mod tests {
             probe.contains("target_directory=/tmp/nxr-q-target"),
             "{probe}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_leaf_probe_reports_the_child_compiler_and_qualifies_a_passing_test() {
+        let _durable = IsolatedDurableRuns::install();
+        let root = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let bin = tempfile::tempdir().unwrap();
+        let rustc = bin.path().join("rustc");
+        std::fs::write(&rustc, "#!/bin/sh\necho compiler-b\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&rustc).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&rustc, permissions).unwrap();
+        }
+        let started = start(
+            root.path(),
+            &json!({
+                "label": "leaf",
+                "command": ["/bin/echo", "ok"],
+                "cpu": 0,
+                "memory_budget": 4096,
+                "target_dir": target.path(),
+                "probe_script": "printf '%s\\n' rustc_version=$(rustc) cargo_version=cargo rustc_path=/leaf/rustc cargo_path=/leaf/cargo wrapper_path= linker_path= target_directory= cache_identity=",
+                "env": { "PATH": format!("{}:{}", bin.path().display(), std::env::var("PATH").unwrap_or_default()) },
+                "source_digest": "admitted-fingerprint",
+                "leaf_id": "test",
+                "operation_id": "workspace:task:test",
+                "parameters": "mode=fast",
+                "qualify": true
+            }),
+        )
+        .unwrap();
+        let id = started["id"].as_str().unwrap().to_owned();
+        join_test_wait_threads();
+        let probe_path = root
+            .path()
+            .join("provenance")
+            .join(format!("{id}.test.probe"));
+        let probe = std::fs::read_to_string(&probe_path).unwrap_or_default();
+        assert!(probe.contains("rustc_version=compiler-b"), "{probe}");
+        assert!(!probe.contains("parent-a"), "{probe}");
+        let qual_name = format!("{}.json", crate::digest_bytes(b"workspace:task:test"));
+        let qual_path = root.path().join("qualifications").join(qual_name);
+        let mut body = String::new();
+        for _ in 0..50 {
+            if let Ok(text) = std::fs::read_to_string(&qual_path) {
+                body = text;
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(body.contains("\"status\":\"passed\""), "{body}");
+        assert!(body.contains("admitted-fingerprint"), "{body}");
+        let skipped = start(
+            root.path(),
+            &json!({
+                "label": "build",
+                "command": ["/bin/echo", "built"],
+                "cpu": 0,
+                "memory_budget": 4096,
+                "operation_id": "workspace:task:build",
+                "source_digest": "admitted-fingerprint",
+                "qualify": false
+            }),
+        )
+        .unwrap();
+        let build_id = skipped["id"].as_str().unwrap();
+        join_test_wait_threads();
+        let record = inspect(root.path(), build_id).unwrap();
+        assert_eq!(record["status"], "exited");
+        let build_qual = root.path().join("qualifications").join(format!(
+            "{}.json",
+            crate::digest_bytes(b"workspace:task:build")
+        ));
+        assert!(!build_qual.exists(), "a build without tests writes nothing");
     }
 }

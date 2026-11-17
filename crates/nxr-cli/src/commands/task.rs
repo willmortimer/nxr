@@ -9,8 +9,8 @@ use nxr_core::diagnostics::exit;
 use nxr_core::{EnvironmentPolicy, PlanSecretRef};
 use nxr_nix::{NixError, OptionalNixFlags, TaskDiscoveryError};
 use nxr_process::{
-    ChunkCoalescer, CoalesceLimits, DeadlineQueue, InterruptFlags, PipeChunk, PipeMultiplexer,
-    PipeStream, Supervisor,
+    ChildSession, ChunkCoalescer, CoalesceLimits, DeadlineQueue, InterruptFlags, PipeChunk,
+    PipeMultiplexer, PipeStream, Supervisor,
 };
 use nxr_task::{
     ContextError, Event, EventSink, ExecutionPlan, FailurePolicy, OutputPayload, PlanError,
@@ -1462,6 +1462,39 @@ fn spawn_node(
     node_secret_guards.insert(node_id.to_owned(), spawn_secrets);
     let compact = pipe_io.intern_node(node_id);
 
+    if prepared.cargo_output && stdin_payload.is_none() {
+        return spawn_declared_cargo_leaf(
+            node_id,
+            program,
+            args,
+            cwd,
+            env_overrides.as_ref(),
+            pipe_stdio,
+            supervisor,
+            pipe_io,
+            compact,
+        );
+    }
+    if !prepared.cargo_output {
+        let mut argv = vec![program.display().to_string()];
+        argv.extend(args.iter().cloned());
+        if let nxr_core::output_resource::OutputCoverage::Unknown { command } =
+            nxr_core::output_resource::classify_output_coverage(
+                prepared.cwd.as_std_path(),
+                &argv,
+                std::env::var("CARGO_TARGET_DIR").ok().as_deref(),
+                None,
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                "local",
+            )
+        {
+            runner
+                .verbose(format!("coverage unknown for {node_id}: {command}"))
+                .map_err(TaskError::Io)?;
+        }
+    }
+
     if pipe_stdio {
         let (_pgid, stdout, stderr) = supervisor
             .spawn_piped(
@@ -1493,6 +1526,107 @@ fn spawn_node(
             .map_err(TaskError::Supervision)?;
     }
 
+    Ok(compact)
+}
+
+fn spawn_declared_cargo_leaf(
+    node_id: &str,
+    program: &std::path::Path,
+    args: &[String],
+    cwd: Option<&std::path::Path>,
+    env_overrides: Option<&BTreeMap<String, String>>,
+    pipe_stdio: bool,
+    supervisor: &mut Supervisor,
+    pipe_io: &mut PipeMultiplexer,
+    compact: u32,
+) -> Result<u32, TaskError> {
+    let mut argv = vec![program.display().to_string()];
+    argv.extend(args.iter().cloned());
+    let target = std::env::var("CARGO_TARGET_DIR")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| cwd.unwrap_or(std::path::Path::new(".")).join("target"));
+    let reserve = nxr_core::disk_preflight::disk_reserve_bytes(
+        std::env::var("NXR_DISK_RESERVE_BYTES").ok().as_deref(),
+        nxr_core::admission_budget::host_budget(
+            std::env::var("NXR_LOCAL_CPU").ok().as_deref(),
+            std::env::var("NXR_LOCAL_MEMORY_MIB").ok().as_deref(),
+            1,
+        )
+        .memory_mib,
+    );
+    let decision = nxr_core::disk_preflight::disk_preflight(&target, reserve);
+    if !decision.allowed {
+        return Err(TaskError::Supervision(io::Error::other(decision.reason)));
+    }
+    let mut env = Vec::new();
+    if let Some(overrides) = env_overrides {
+        env.extend(
+            overrides
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+    }
+    let probe_out =
+        std::env::temp_dir().join(format!("nxr-leaf-{node_id}-{}.probe", std::process::id()));
+    env.push((
+        "NXR_LEAF_PROBE_OUT".to_owned(),
+        probe_out.display().to_string(),
+    ));
+    let request = nxr_core::resource_guard::WriterRequest {
+        argv,
+        cwd: cwd.map(std::path::Path::to_path_buf),
+        env,
+        output_dirs: vec![target],
+        stdio: if pipe_stdio {
+            nxr_core::resource_guard::WriterStdio::Piped
+        } else {
+            nxr_core::resource_guard::WriterStdio::Inherit
+        },
+        probe_out: Some(probe_out),
+        probe_script: Some(nxr_task::child_probe_script().to_owned()),
+        guardian_bin: None,
+        pause_file: None,
+        clear_env: false,
+    };
+    let launched = nxr_core::resource_guard::launch_writer(&request)
+        .map_err(|detail| TaskError::Supervision(io::Error::other(detail)))?;
+    let writer_pid = launched.writer_pid;
+    let admissions = launched.admissions;
+    let mut child = launched
+        .child
+        .or(launched.guardian)
+        .ok_or_else(|| TaskError::Supervision(io::Error::other("writer was not started")))?;
+    if pipe_stdio {
+        let stdout = child.stdout.take().ok_or_else(|| {
+            TaskError::Supervision(io::Error::other("spawned child missing stdout pipe"))
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            TaskError::Supervision(io::Error::other("spawned child missing stderr pipe"))
+        })?;
+        pipe_io
+            .register_stdout(compact, stdout)
+            .map_err(TaskError::Supervision)?;
+        pipe_io
+            .register_stderr(compact, stderr)
+            .map_err(TaskError::Supervision)?;
+    }
+    supervisor.add(node_id.to_owned(), ChildSession::from_child(child));
+    if !admissions.is_empty() {
+        std::thread::spawn(move || {
+            loop {
+                match nxr_core::resource_guard::writer_group_alive(writer_pid, None) {
+                    nxr_core::resource_guard::GroupLiveness::Dead => break,
+                    nxr_core::resource_guard::GroupLiveness::Alive
+                    | nxr_core::resource_guard::GroupLiveness::Uncertain => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            }
+            drop(admissions);
+        });
+    }
     Ok(compact)
 }
 
@@ -1963,6 +2097,7 @@ mod tests {
             matrix_env: BTreeMap::new(),
             store_exe_nix_flags: None,
             store_exe_nix_version: None,
+            cargo_output: false,
         }
     }
 

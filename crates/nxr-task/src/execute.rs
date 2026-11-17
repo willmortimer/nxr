@@ -11,7 +11,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use nxr_core::Operation;
 use nxr_core::diagnostics::exit;
@@ -671,106 +670,89 @@ fn spawn_argv(
     args: &[String],
     ctx: &ExecContext,
 ) -> Result<OperationResult, ExecuteError> {
-    let (leaf_paths, leaf_admissions) = admit_cargo_leaf(program, args, ctx)?;
-    let mut command = Command::new(program);
-    command.args(args);
-    command.env_clear();
-    command.env("PATH", &ctx.path);
-    for (key, value) in &ctx.env {
-        command.env(key, value);
-    }
-    crate::compiler_cache::apply_compiler_cache(
-        &mut command,
-        &crate::compiler_cache::compiler_cache_from_process(),
-        &ctx.env,
+    let mut argv = vec![program.display().to_string()];
+    argv.extend(args.iter().cloned());
+    let root = ctx.cwd.clone().unwrap_or_else(|| PathBuf::from("."));
+    let coverage = nxr_core::output_resource::classify_output_coverage(
+        &root,
+        &argv,
+        std::env::var("CARGO_TARGET_DIR").ok().as_deref(),
+        None,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        "local",
     );
-    if let Some(cwd) = &ctx.cwd {
-        command.current_dir(cwd);
-    }
-    command.stdin(Stdio::null());
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
-    if !leaf_paths.is_empty() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
+    let output_dirs = match coverage {
+        nxr_core::output_resource::OutputCoverage::Managed(resources) => {
+            let reserve = nxr_core::disk_preflight::disk_reserve_bytes(
+                std::env::var("NXR_DISK_RESERVE_BYTES").ok().as_deref(),
+                nxr_core::admission_budget::host_budget(None, None, 1).memory_mib,
+            );
+            for resource in &resources {
+                let decision = nxr_core::disk_preflight::disk_preflight(&resource.path, reserve);
+                if !decision.allowed {
+                    return Err(ExecuteError::Spawn {
+                        detail: decision.reason,
+                    });
+                }
+            }
+            resources
+                .into_iter()
+                .map(|resource| resource.path)
+                .collect()
         }
-    }
-    let output = if leaf_paths.is_empty() {
-        drop(leaf_admissions);
-        command.output().map_err(|error| ExecuteError::Spawn {
-            detail: format!("failed to spawn {}: {error}", program.display()),
-        })?
-    } else {
-        let child = command.spawn().map_err(|error| ExecuteError::Spawn {
-            detail: format!("failed to spawn {}: {error}", program.display()),
-        })?;
-        let pid = child.id();
-        for path in &leaf_paths {
-            let _ = nxr_core::resource_guard::spawn_guardian(&path.join(".nxr-target.lock"), pid);
-        }
-        let output = child
-            .wait_with_output()
-            .map_err(|error| ExecuteError::Spawn {
-                detail: format!("failed to wait {}: {error}", program.display()),
-            })?;
-        release_leaf_when_stopped(pid, leaf_admissions);
-        output
+        nxr_core::output_resource::OutputCoverage::NoneRequired
+        | nxr_core::output_resource::OutputCoverage::Unknown { .. } => Vec::new(),
     };
+    let mut env = vec![("PATH".to_owned(), ctx.path.clone())];
+    env.extend(
+        ctx.env
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone())),
+    );
+    for (key, value) in crate::compiler_cache::compiler_cache_assignments(
+        &crate::compiler_cache::compiler_cache_from_process(),
+    ) {
+        if !ctx.env.contains_key(&key) {
+            env.push((key, value));
+        }
+    }
+    let request = nxr_core::resource_guard::WriterRequest {
+        argv,
+        cwd: ctx.cwd.clone(),
+        env,
+        output_dirs,
+        stdio: nxr_core::resource_guard::WriterStdio::Piped,
+        probe_out: None,
+        probe_script: None,
+        guardian_bin: None,
+        pause_file: None,
+        clear_env: true,
+    };
+    let launched = nxr_core::resource_guard::launch_writer(&request)
+        .map_err(|detail| ExecuteError::Spawn { detail })?;
+    let writer_pid = launched.writer_pid;
+    let admissions = launched.admissions;
+    let child = launched
+        .child
+        .or(launched.guardian)
+        .ok_or_else(|| ExecuteError::Spawn {
+            detail: "writer was not started".to_owned(),
+        })?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| ExecuteError::Spawn {
+            detail: format!("failed to wait {}: {error}", program.display()),
+        })?;
+    if !admissions.is_empty() {
+        release_leaf_when_stopped(writer_pid, admissions);
+    }
     let code = output.status.code().unwrap_or(exit::CHILD_FAILED);
     Ok(OperationResult::Exited {
         code,
         stdout: decode_output(&output.stdout),
         stderr: decode_output(&output.stderr),
     })
-}
-
-fn admit_cargo_leaf(
-    program: &Path,
-    args: &[String],
-    ctx: &ExecContext,
-) -> Result<(Vec<PathBuf>, Vec<nxr_core::target_lock::TargetAdmission>), ExecuteError> {
-    let mut command = vec![program.display().to_string()];
-    command.extend(args.iter().cloned());
-    let name = program.file_name().and_then(|name| name.to_str());
-    let locks_cargo = name == Some("cargo")
-        || args
-            .iter()
-            .any(|arg| arg == "--target-dir" || arg.starts_with("--target-dir="));
-    let nix = matches!(name, Some("nix" | "nix-build"));
-    if !locks_cargo && !nix {
-        return Ok((Vec::new(), Vec::new()));
-    }
-    let root = ctx.cwd.clone().unwrap_or_else(|| PathBuf::from("."));
-    let resources = nxr_core::output_resource::resolve_output_resources(
-        &root,
-        &command,
-        std::env::var("CARGO_TARGET_DIR").ok().as_deref(),
-        None,
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        "local",
-    )
-    .map_err(|detail| ExecuteError::Spawn { detail })?;
-    if resources.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
-    }
-    for resource in &resources {
-        let decision = nxr_core::disk_preflight::disk_preflight(&resource.path, 1024 * 1024);
-        if !decision.allowed {
-            return Err(ExecuteError::Spawn {
-                detail: decision.reason,
-            });
-        }
-    }
-    let paths: Vec<PathBuf> = resources
-        .into_iter()
-        .map(|resource| resource.path)
-        .collect();
-    let admissions = nxr_core::resource_guard::acquire_ordered(&paths)
-        .map_err(|detail| ExecuteError::Spawn { detail })?;
-    Ok((paths, admissions))
 }
 
 fn release_leaf_when_stopped(pid: u32, admissions: Vec<nxr_core::target_lock::TargetAdmission>) {

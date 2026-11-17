@@ -35,6 +35,16 @@ pub struct SessionStart {
     pub output_dirs: Vec<String>,
     /// Script the supervisor runs in the child environment before spawn.
     pub probe_script: Option<String>,
+    /// Supervisor run id reserved by an observer transaction. Empty means one is chosen.
+    pub run_id: Option<String>,
+    /// Admitted operation fingerprint stored on the receipt.
+    pub source_digest: Option<String>,
+    /// Leaf this run executes. Empty means the whole command.
+    pub leaf_id: Option<String>,
+    /// Store a passing test qualification when the leaf exits 0.
+    pub qualify: bool,
+    /// Canonical parameters compared by qualification reuse.
+    pub parameters: Option<String>,
 }
 
 /// CPU tokens and memory the local machine will admit. This is not a cluster pool.
@@ -100,6 +110,11 @@ pub fn start_on(
             "workspace_id": request.workspace_id,
             "output_dirs": request.output_dirs,
             "probe_script": request.probe_script,
+            "id": request.run_id,
+            "source_digest": request.source_digest,
+            "leaf_id": request.leaf_id,
+            "qualify": request.qualify,
+            "parameters": request.parameters,
         }),
     )?;
     let id = value
@@ -359,6 +374,11 @@ mod tests {
                 workspace_id: None,
                 output_dirs: Vec::new(),
                 probe_script: None,
+                run_id: None,
+                source_digest: None,
+                leaf_id: None,
+                qualify: false,
+                parameters: None,
             },
             LocalBudget {
                 cpu: 1,
@@ -395,6 +415,11 @@ mod tests {
                 workspace_id: None,
                 output_dirs: Vec::new(),
                 probe_script: None,
+                run_id: None,
+                source_digest: None,
+                leaf_id: None,
+                qualify: false,
+                parameters: None,
             },
             LocalBudget {
                 cpu: 2,
@@ -434,6 +459,11 @@ mod tests {
                 workspace_id: None,
                 output_dirs: Vec::new(),
                 probe_script: None,
+                run_id: None,
+                source_digest: None,
+                leaf_id: None,
+                qualify: false,
+                parameters: None,
             },
             LocalBudget {
                 cpu: 2,

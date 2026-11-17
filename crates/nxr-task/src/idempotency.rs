@@ -242,6 +242,29 @@ pub fn cancel(dir: &std::path::Path, run_id: &str, workspace_id: &str) -> Result
     Ok(changed == 1)
 }
 
+/// Idempotency key bound to a supervisor run, when one reservation stores that id.
+///
+/// # Errors
+///
+/// Returns an error when the database cannot be read.
+pub fn idempotency_key_for_run(
+    dir: &std::path::Path,
+    run_id: &str,
+) -> Result<Option<String>, String> {
+    if !dir.join("idempotency.sqlite").exists() {
+        return Ok(None);
+    }
+    let conn = Connection::open(dir.join("idempotency.sqlite"))
+        .map_err(|err| format!("open idempotency db: {err}"))?;
+    conn.query_row(
+        "SELECT idempotency_key FROM reservations WHERE run_id = ?1",
+        [run_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|err| format!("read idempotency key: {err}"))
+}
+
 /// Read one reservation in this workspace.
 ///
 /// # Errors
@@ -273,6 +296,263 @@ pub fn inspect(
     )
     .optional()
     .map_err(|err| format!("inspect reservation: {err}"))
+}
+
+/// One caller joining or starting a verified execution.
+#[derive(Clone, Debug)]
+pub struct CoalesceRequest {
+    pub observer_id: String,
+    pub run_id: String,
+    pub identity: crate::coalesce::ExecutionIdentity,
+    pub resources: Vec<String>,
+    pub verified: bool,
+}
+
+/// What the immediate transaction decided.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CoalesceOutcome {
+    Start { run_id: String },
+    Attach { run_id: String },
+    Conflict { reason: String },
+    Unverified,
+}
+
+/// Result of removing one observer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DetachOutcome {
+    Detach,
+    Terminate,
+    Absent,
+}
+
+/// Attach `observer_id` to an active verified run, or reserve `run_id`.
+///
+/// # Errors
+///
+/// Returns an error when the database cannot be locked or written.
+pub fn attach_observer(
+    dir: &std::path::Path,
+    request: &CoalesceRequest,
+) -> Result<CoalesceOutcome, String> {
+    use crate::coalesce::coalesce_decision;
+    std::fs::create_dir_all(dir).map_err(|err| format!("create run dir: {err}"))?;
+    let mut conn = Connection::open(dir.join("idempotency.sqlite"))
+        .map_err(|err| format!("open idempotency db: {err}"))?;
+    ensure_coalesce(&conn)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|err| format!("begin coalesce: {err}"))?;
+    let active = load_active(&tx)?;
+    let decision = coalesce_decision(
+        &request.identity,
+        request.verified,
+        &request.resources,
+        &active,
+    );
+    let outcome = match decision {
+        Err(_) => CoalesceOutcome::Unverified,
+        Ok(crate::coalesce::CoalesceDecision::Conflict { reason }) => {
+            CoalesceOutcome::Conflict { reason }
+        }
+        Ok(crate::coalesce::CoalesceDecision::Attach { run_id }) => {
+            insert_observer(&tx, &run_id, &request.observer_id)?;
+            CoalesceOutcome::Attach { run_id }
+        }
+        Ok(crate::coalesce::CoalesceDecision::Start) => {
+            insert_run(&tx, request)?;
+            insert_observer(&tx, &request.run_id, &request.observer_id)?;
+            CoalesceOutcome::Start {
+                run_id: request.run_id.clone(),
+            }
+        }
+    };
+    tx.commit()
+        .map_err(|err| format!("commit coalesce: {err}"))?;
+    Ok(outcome)
+}
+
+/// Remove one observer. A second detach of the same id is [`DetachOutcome::Absent`].
+///
+/// # Errors
+///
+/// Returns an error when the database cannot be updated.
+pub fn detach_observer_id(
+    dir: &std::path::Path,
+    run_id: &str,
+    observer_id: &str,
+) -> Result<DetachOutcome, String> {
+    if !dir.join("idempotency.sqlite").exists() {
+        return Ok(DetachOutcome::Absent);
+    }
+    let mut conn = Connection::open(dir.join("idempotency.sqlite"))
+        .map_err(|err| format!("open idempotency db: {err}"))?;
+    ensure_coalesce(&conn)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|err| format!("begin detach: {err}"))?;
+    let removed = tx
+        .execute(
+            "DELETE FROM coalesce_observers WHERE run_id = ?1 AND observer_id = ?2",
+            rusqlite::params![run_id, observer_id],
+        )
+        .map_err(|err| format!("delete observer: {err}"))?;
+    if removed == 0 {
+        tx.commit().map_err(|err| format!("commit detach: {err}"))?;
+        return Ok(DetachOutcome::Absent);
+    }
+    let remaining: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM coalesce_observers WHERE run_id = ?1",
+            [run_id],
+            |row| row.get(0),
+        )
+        .map_err(|err| format!("count observers: {err}"))?;
+    if remaining == 0 {
+        tx.execute(
+            "UPDATE coalesce_runs SET status = 'finished' WHERE run_id = ?1",
+            [run_id],
+        )
+        .map_err(|err| format!("finish coalesce run: {err}"))?;
+        tx.commit().map_err(|err| format!("commit detach: {err}"))?;
+        return Ok(DetachOutcome::Terminate);
+    }
+    tx.commit().map_err(|err| format!("commit detach: {err}"))?;
+    Ok(DetachOutcome::Detach)
+}
+
+/// Mark a reserved run finished when start fails after the transaction.
+///
+/// # Errors
+///
+/// Returns an error when the database cannot be updated.
+pub fn finish_coalesce(dir: &std::path::Path, run_id: &str) -> Result<(), String> {
+    if !dir.join("idempotency.sqlite").exists() {
+        return Ok(());
+    }
+    let conn = Connection::open(dir.join("idempotency.sqlite"))
+        .map_err(|err| format!("open idempotency db: {err}"))?;
+    ensure_coalesce(&conn)?;
+    conn.execute(
+        "UPDATE coalesce_runs SET status = 'finished' WHERE run_id = ?1",
+        [run_id],
+    )
+    .map_err(|err| format!("finish coalesce run: {err}"))?;
+    Ok(())
+}
+
+fn ensure_coalesce(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS coalesce_runs (
+            run_id TEXT PRIMARY KEY,
+            operation_id TEXT NOT NULL,
+            parameters TEXT NOT NULL,
+            source_digest TEXT NOT NULL,
+            toolchain TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            env_digest TEXT NOT NULL,
+            resources TEXT NOT NULL,
+            status TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS coalesce_observers (
+            run_id TEXT NOT NULL,
+            observer_id TEXT NOT NULL,
+            PRIMARY KEY (run_id, observer_id)
+         );",
+    )
+    .map_err(|err| format!("prepare coalesce: {err}"))
+}
+
+fn load_active(tx: &rusqlite::Transaction<'_>) -> Result<Vec<crate::coalesce::ActiveRun>, String> {
+    let mut stmt = tx
+        .prepare(
+            "SELECT run_id, operation_id, parameters, source_digest, toolchain, platform, env_digest, resources
+             FROM coalesce_runs WHERE status = 'active'",
+        )
+        .map_err(|err| format!("list active runs: {err}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+            ))
+        })
+        .map_err(|err| format!("read active runs: {err}"))?;
+    let mut active = Vec::new();
+    for row in rows {
+        let (
+            run_id,
+            operation_id,
+            parameters,
+            source_digest,
+            toolchain,
+            platform,
+            env_digest,
+            resources,
+        ) = row.map_err(|err| format!("read active run: {err}"))?;
+        let observers: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM coalesce_observers WHERE run_id = ?1",
+                [&run_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(1);
+        let parsed: Vec<String> = serde_json::from_str(&resources).unwrap_or_default();
+        active.push(crate::coalesce::ActiveRun {
+            run_id,
+            identity: crate::coalesce::ExecutionIdentity {
+                operation_id,
+                parameters,
+                source_digest,
+                toolchain,
+                platform,
+                env_digest,
+            },
+            verified: true,
+            resources: parsed,
+            observers: u32::try_from(observers).unwrap_or(1),
+        });
+    }
+    Ok(active)
+}
+
+fn insert_run(tx: &rusqlite::Transaction<'_>, request: &CoalesceRequest) -> Result<(), String> {
+    let resources = serde_json::to_string(&request.resources).unwrap_or_else(|_| "[]".to_owned());
+    tx.execute(
+        "INSERT INTO coalesce_runs
+         (run_id, operation_id, parameters, source_digest, toolchain, platform, env_digest, resources, status)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active')",
+        rusqlite::params![
+            request.run_id,
+            request.identity.operation_id,
+            request.identity.parameters,
+            request.identity.source_digest,
+            request.identity.toolchain,
+            request.identity.platform,
+            request.identity.env_digest,
+            resources
+        ],
+    )
+    .map_err(|err| format!("insert coalesce run: {err}"))?;
+    Ok(())
+}
+
+fn insert_observer(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    observer_id: &str,
+) -> Result<(), String> {
+    tx.execute(
+        "INSERT OR IGNORE INTO coalesce_observers (run_id, observer_id) VALUES (?1, ?2)",
+        rusqlite::params![run_id, observer_id],
+    )
+    .map_err(|err| format!("insert observer: {err}"))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -321,5 +601,57 @@ mod tests {
         ));
         assert!(!cancel(dir.path(), &run_id, "other").unwrap());
         assert!(cancel(dir.path(), &run_id, "lattice").unwrap());
+    }
+
+    fn identity() -> crate::coalesce::ExecutionIdentity {
+        crate::coalesce::ExecutionIdentity {
+            operation_id: "op".into(),
+            parameters: "params".into(),
+            source_digest: "source".into(),
+            toolchain: "rustc".into(),
+            platform: "host".into(),
+            env_digest: "env".into(),
+        }
+    }
+
+    fn request(observer: &str, run: &str) -> CoalesceRequest {
+        CoalesceRequest {
+            observer_id: observer.into(),
+            run_id: run.into(),
+            identity: identity(),
+            resources: vec!["/tmp/target".into()],
+            verified: true,
+        }
+    }
+
+    #[test]
+    fn two_observers_attach_to_one_run_and_the_last_one_terminates() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = attach_observer(dir.path(), &request("obs-a", "run-a")).unwrap();
+        assert_eq!(
+            first,
+            CoalesceOutcome::Start {
+                run_id: "run-a".into()
+            }
+        );
+        let second = attach_observer(dir.path(), &request("obs-b", "run-b")).unwrap();
+        assert_eq!(
+            second,
+            CoalesceOutcome::Attach {
+                run_id: "run-a".into()
+            }
+        );
+        assert_eq!(
+            detach_observer_id(dir.path(), "run-a", "obs-a").unwrap(),
+            DetachOutcome::Detach
+        );
+        assert_eq!(
+            detach_observer_id(dir.path(), "run-a", "obs-a").unwrap(),
+            DetachOutcome::Absent
+        );
+        assert_eq!(
+            detach_observer_id(dir.path(), "run-a", "obs-b").unwrap(),
+            DetachOutcome::Terminate
+        );
     }
 }

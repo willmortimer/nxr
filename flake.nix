@@ -127,6 +127,31 @@
             unset NXR_DEV_SHELL || true
             export GIT_CONFIG_GLOBAL=/dev/null
             export GIT_CONFIG_SYSTEM=/dev/null
+            if [ -n "''${NXR_LEAF_PROBE_OUT:-}" ]; then
+              mkdir -p "$(dirname "$NXR_LEAF_PROBE_OUT")"
+              rustc_path=$(command -v rustc) || exit 1
+              rustc_version=$("$rustc_path" --version) || exit 1
+              cargo_path=$(command -v cargo) || exit 1
+              cargo_version=$("$cargo_path" --version) || exit 1
+              if [ -n "''${RUSTC_WRAPPER:-}" ]; then
+                wrapper_path=$(command -v "$RUSTC_WRAPPER") || wrapper_path=
+              else
+                wrapper_path=
+              fi
+              linker_path=$(command -v cc) || linker_path=
+              target_directory=''${CARGO_TARGET_DIR:-}
+              cache_identity=''${NXR_CACHE_IDENTITY:-}
+              printf '%s\n' \
+                "rustc_path=''${rustc_path}" \
+                "rustc_version=''${rustc_version}" \
+                "cargo_path=''${cargo_path}" \
+                "cargo_version=''${cargo_version}" \
+                "wrapper_path=''${wrapper_path}" \
+                "linker_path=''${linker_path}" \
+                "target_directory=''${target_directory}" \
+                "cache_identity=''${cache_identity}" \
+                > "$NXR_LEAF_PROBE_OUT" || true
+            fi
           '';
 
           rustDevInputs = with pkgs; [
@@ -145,30 +170,35 @@
             fmt = {
               description = "Format Rust sources";
               app = "fmt";
+              cargoOutput = true;
             };
 
             fmt-check = {
               description = "Verify Rust formatting (CI)";
               app = "fmt-check";
               hidden = true;
+              cargoOutput = true;
             };
 
             lint = {
               description = "Run Clippy on the workspace";
               app = "lint";
               dependsOn = [ "fmt-check" ];
+              cargoOutput = true;
             };
 
             test = {
               description = "Run the Rust test suite";
               app = "test";
               dependsOn = [ "lint" ];
+              cargoOutput = true;
             };
 
             deny = {
               description = "Run cargo-deny";
               app = "deny";
               dependsOn = [ "fmt-check" ];
+              cargoOutput = true;
             };
 
             # Fail-closed on Clap help drift (same as checks.*.cli-ref).
@@ -177,6 +207,7 @@
               description = "Verify docs/CLI_GENERATED.md matches Clap help";
               app = "cli-ref";
               dependsOn = [ "fmt-check" ];
+              cargoOutput = true;
             };
 
             ci = {

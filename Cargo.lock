@@ -1285,6 +1285,7 @@ dependencies = [
  "nix 0.31.3",
  "serde",
  "serde_json",
+ "signal-hook 0.4.4",
  "tempfile",
  "thiserror 2.0.18",
  "toml",

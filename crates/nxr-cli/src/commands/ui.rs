@@ -168,6 +168,7 @@ mod tests {
                     parameters: BTreeMap::new(),
                     matrix: None,
                     artifact_reuse: false,
+                    cargo_output: false,
                 },
             )]),
         };

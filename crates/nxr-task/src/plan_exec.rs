@@ -106,6 +106,13 @@ pub struct PlanNode {
     /// Dependency task names whose stored outputs this node consumes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<String>,
+    /// This leaf writes a cargo target and takes the output lock.
+    #[serde(
+        default,
+        rename = "cargoOutput",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub cargo_output: bool,
 }
 
 /// Versioned, immutable execution plan for a chosen root.
@@ -239,6 +246,7 @@ pub fn build_execution_plan_roots(
                 artifacts: Vec::new(),
                 inputs: Vec::new(),
                 artifact_reuse: artifact_reuse_allowed(definition),
+                cargo_output: definition.cargo_output,
             })
         })
         .collect();

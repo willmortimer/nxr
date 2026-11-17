@@ -468,6 +468,14 @@ pub struct TaskDefinition {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub artifact_reuse: bool,
+
+    /// When true, this leaf writes a cargo target and must take the output lock.
+    #[serde(
+        default,
+        rename = "cargoOutput",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub cargo_output: bool,
 }
 
 /// Matrix expansion metadata (schema v2).
@@ -718,6 +726,7 @@ impl TaskDefinition {
             parameters: BTreeMap::new(),
             matrix: None,
             artifact_reuse: false,
+            cargo_output: false,
         }
     }
 }
@@ -995,6 +1004,8 @@ struct TaskDefinitionV2Strict {
     matrix: Option<TaskMatrixV2Strict>,
     #[serde(default, rename = "artifactReuse")]
     artifact_reuse: bool,
+    #[serde(default, rename = "cargoOutput")]
+    cargo_output: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1176,6 +1187,7 @@ impl From<TaskDefinitionV2Strict> for TaskDefinition {
                 .collect(),
             matrix: strict.matrix.map(Into::into),
             artifact_reuse: strict.artifact_reuse,
+            cargo_output: strict.cargo_output,
         }
     }
 }
@@ -1340,6 +1352,7 @@ mod tests {
                 parameters: BTreeMap::new(),
                 matrix: None,
                 artifact_reuse: false,
+                cargo_output: false,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1750,6 +1763,7 @@ mod tests {
                 parameters: BTreeMap::new(),
                 matrix: None,
                 artifact_reuse: false,
+                cargo_output: false,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1786,6 +1800,7 @@ mod tests {
                 parameters: BTreeMap::new(),
                 matrix: None,
                 artifact_reuse: false,
+                cargo_output: false,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1826,6 +1841,7 @@ mod tests {
                 parameters: BTreeMap::new(),
                 matrix: None,
                 artifact_reuse: false,
+                cargo_output: false,
             },
         );
         let doc = TaskDocument::new(tasks);
@@ -1861,6 +1877,7 @@ mod tests {
                 parameters: BTreeMap::new(),
                 matrix: None,
                 artifact_reuse: false,
+                cargo_output: false,
             },
         );
         let value = serde_json::to_value(TaskDocument::new(tasks)).expect("serialize");

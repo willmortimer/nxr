@@ -107,16 +107,23 @@ pub struct StoredReceipt {
     pub workspace_id: String,
     pub run_id: String,
     pub source_digest: String,
+    /// Empty for a run-level receipt written before leaf ids existed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub leaf_id: String,
     pub attempt: u32,
     pub observation: Option<ChildObservation>,
 }
 
-fn receipt_filename(run_id: &str, attempt: u32) -> String {
-    format!("{run_id}.attempt-{attempt}.json")
+fn receipt_filename(run_id: &str, leaf_id: &str, attempt: u32) -> String {
+    if leaf_id.is_empty() {
+        format!("{run_id}.attempt-{attempt}.json")
+    } else {
+        format!("{run_id}.{leaf_id}.attempt-{attempt}.json")
+    }
 }
 
-fn receipt_path(dir: &Path, run_id: &str, attempt: u32) -> PathBuf {
-    dir.join(receipt_filename(run_id, attempt))
+fn receipt_path(dir: &Path, run_id: &str, leaf_id: &str, attempt: u32) -> PathBuf {
+    dir.join(receipt_filename(run_id, leaf_id, attempt))
 }
 
 /// Write `{run_id}.attempt-{attempt}.json`. Refuses to replace an existing file.
@@ -127,7 +134,7 @@ fn receipt_path(dir: &Path, run_id: &str, attempt: u32) -> PathBuf {
 /// exists, or serialization/write fails.
 pub fn write_receipt(dir: &Path, receipt: &StoredReceipt) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|err| format!("create receipt dir: {err}"))?;
-    let path = receipt_path(dir, &receipt.run_id, receipt.attempt);
+    let path = receipt_path(dir, &receipt.run_id, &receipt.leaf_id, receipt.attempt);
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -146,7 +153,21 @@ pub fn write_receipt(dir: &Path, receipt: &StoredReceipt) -> Result<(), String> 
 ///
 /// Returns an error when the file is missing or cannot be parsed.
 pub fn read_receipt(dir: &Path, run_id: &str, attempt: u32) -> Result<StoredReceipt, String> {
-    let path = receipt_path(dir, run_id, attempt);
+    read_leaf_receipt(dir, run_id, "", attempt)
+}
+
+/// Read the receipt for one leaf. An empty `leaf_id` is the whole command.
+///
+/// # Errors
+///
+/// Returns an error when the file is missing or cannot be parsed.
+pub fn read_leaf_receipt(
+    dir: &Path,
+    run_id: &str,
+    leaf_id: &str,
+    attempt: u32,
+) -> Result<StoredReceipt, String> {
+    let path = receipt_path(dir, run_id, leaf_id, attempt);
     let body = fs::read(&path).map_err(|err| format!("read receipt {}: {err}", path.display()))?;
     serde_json::from_slice(&body).map_err(|err| format!("parse receipt {}: {err}", path.display()))
 }
@@ -188,6 +209,7 @@ pub fn transition(receipt: &StoredReceipt, next: &str) -> Result<StoredReceipt, 
         workspace_id: receipt.workspace_id.clone(),
         run_id: receipt.run_id.clone(),
         source_digest: receipt.source_digest.clone(),
+        leaf_id: receipt.leaf_id.clone(),
         attempt: receipt.attempt,
     })
 }
@@ -201,6 +223,7 @@ pub fn next_attempt(previous: &StoredReceipt) -> StoredReceipt {
         workspace_id: previous.workspace_id.clone(),
         run_id: previous.run_id.clone(),
         source_digest: previous.source_digest.clone(),
+        leaf_id: previous.leaf_id.clone(),
         attempt: previous.attempt.saturating_add(1),
         observation: None,
     }
@@ -286,6 +309,7 @@ mod tests {
             workspace_id: "ws_test".to_owned(),
             run_id: "run_test".to_owned(),
             source_digest: "digest_src".to_owned(),
+            leaf_id: String::new(),
             attempt: 1,
             observation: None,
         }
@@ -334,7 +358,12 @@ cache_identity=
         let dir = tempfile::tempdir().expect("tempdir");
         let mut receipt = sample_receipt();
         write_receipt(dir.path(), &receipt).expect("first write");
-        let path = receipt_path(dir.path(), &receipt.run_id, receipt.attempt);
+        let path = receipt_path(
+            dir.path(),
+            &receipt.run_id,
+            &receipt.leaf_id,
+            receipt.attempt,
+        );
         let original = fs::read(&path).expect("original bytes");
         receipt.state = "admitted".to_owned();
         assert!(write_receipt(dir.path(), &receipt).is_err());
@@ -348,7 +377,7 @@ cache_identity=
         first.observation = Some(sample_observation());
         first.state = "completed".to_owned();
         write_receipt(dir.path(), &first).expect("write first");
-        let path = receipt_path(dir.path(), &first.run_id, first.attempt);
+        let path = receipt_path(dir.path(), &first.run_id, &first.leaf_id, first.attempt);
         assert!(path.is_file());
         let next = next_attempt(&first);
         assert_eq!(next.attempt, first.attempt + 1);

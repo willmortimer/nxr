@@ -16,8 +16,9 @@ use nxr_task::{
     ReceiptEvent, ShellProbe, StoredReceipt, ValidationPlanInput, admit, apply_project_policy,
     attach_events, bind_supervisor, cache_reason, cancel, child_probe_script,
     declared_input_digests, execution_fingerprint_with_inputs, inspect, mark_admitting,
-    mark_reconciliation, parse_child_probe, parse_run_log, read_receipt, static_receipt,
-    transition, validate_policy_parameters, validation_plan, verified_receipt, write_receipt,
+    mark_reconciliation, parse_child_probe, parse_run_log, read_leaf_receipt, read_receipt,
+    static_receipt, transition, validate_policy_parameters, validation_plan, verified_receipt,
+    write_receipt,
 };
 use serde_json::{Value, json};
 
@@ -576,17 +577,77 @@ fn start(
                 probe_script.as_deref(),
                 cwd.as_path(),
             );
-            if let Some(run_id) =
-                coalesce_running(supervisor_socket, _supervisor_dir, &identity, &output_dirs)?
-            {
-                bind_supervisor(run_dir, key, &run_id)?;
-                return Ok(json!({
-                    "run_id": run_id,
-                    "started": false,
-                    "replayed": true,
-                    "status": "attached"
-                }));
-            }
+            let digest = nxr_core::digest_bytes(key.as_bytes());
+            let coalesce_run = format!("run-{}", &digest[..16]);
+            let coalesce = nxr_task::attach_observer(
+                run_dir,
+                &nxr_task::CoalesceRequest {
+                    observer_id: key.to_owned(),
+                    run_id: coalesce_run,
+                    identity: identity.clone(),
+                    resources: output_dirs.clone(),
+                    verified: identity_verified(&identity),
+                },
+            )?;
+            let reserved_run = match coalesce {
+                nxr_task::CoalesceOutcome::Attach { run_id } => {
+                    let running = supervisor_record(supervisor_socket, _supervisor_dir, &run_id)
+                        .ok()
+                        .and_then(|row| {
+                            row.get("status").and_then(Value::as_str).map(str::to_owned)
+                        })
+                        == Some("running".to_owned());
+                    if running {
+                        let _ =
+                            nxr_core::execution_owner::note(_supervisor_dir, &run_id, "attached");
+                        bind_supervisor(run_dir, key, &run_id)?;
+                        return Ok(json!({
+                            "run_id": run_id,
+                            "started": false,
+                            "replayed": true,
+                            "status": "attached"
+                        }));
+                    }
+                    let _ = nxr_task::finish_coalesce(run_dir, &run_id);
+                    let _ = nxr_task::detach_observer_id(run_dir, &run_id, key);
+                    let retry_id = format!(
+                        "run-{}",
+                        &nxr_core::digest_bytes(format!("{key}:{run_id}").as_bytes())[..16]
+                    );
+                    match nxr_task::attach_observer(
+                        run_dir,
+                        &nxr_task::CoalesceRequest {
+                            observer_id: key.to_owned(),
+                            run_id: retry_id,
+                            identity: identity.clone(),
+                            resources: output_dirs.clone(),
+                            verified: identity_verified(&identity),
+                        },
+                    )? {
+                        nxr_task::CoalesceOutcome::Start { run_id } => Some(run_id),
+                        nxr_task::CoalesceOutcome::Attach { run_id } => {
+                            let _ = nxr_core::execution_owner::note(
+                                _supervisor_dir,
+                                &run_id,
+                                "attached",
+                            );
+                            bind_supervisor(run_dir, key, &run_id)?;
+                            return Ok(json!({
+                                "run_id": run_id,
+                                "started": false,
+                                "replayed": true,
+                                "status": "attached"
+                            }));
+                        }
+                        nxr_task::CoalesceOutcome::Conflict { reason } => return Err(reason),
+                        nxr_task::CoalesceOutcome::Unverified => None,
+                    }
+                }
+                nxr_task::CoalesceOutcome::Conflict { reason } => return Err(reason),
+                nxr_task::CoalesceOutcome::Start { run_id } => Some(run_id),
+                nxr_task::CoalesceOutcome::Unverified => None,
+            };
+            let qualify = record.operation_id.ends_with(":task:test");
             match start_on(
                 supervisor_socket,
                 &SessionStart {
@@ -603,6 +664,11 @@ fn start(
                     workspace_id: Some(workspace_id.to_owned()),
                     output_dirs: output_dirs.clone(),
                     probe_script,
+                    run_id: reserved_run.clone(),
+                    source_digest: Some(fingerprint.clone()),
+                    leaf_id: Some("command".to_owned()),
+                    qualify,
+                    parameters: Some(parameter_text.clone()),
                 },
                 LocalBudget {
                     cpu: host.cpu,
@@ -617,8 +683,9 @@ fn start(
                         &run_id,
                         &record.operation_id,
                         workspace_id,
+                        &fingerprint,
+                        "command",
                     );
-                    remember_active_run(_supervisor_dir, &run_id, &identity, &output_dirs);
                     let durable =
                         nxr_core::load_durable_run(&run_id).map_err(|err| err.to_string())?;
                     if durable.status != nxr_core::DurableRunStatus::Running
@@ -637,6 +704,9 @@ fn start(
                     }))
                 }
                 Err(error) => {
+                    if let Some(run_id) = reserved_run.as_deref() {
+                        let _ = nxr_task::finish_coalesce(run_dir, run_id);
+                    }
                     let _ = mark_reconciliation(run_dir, key);
                     Err(error)
                 }
@@ -706,6 +776,25 @@ fn run_receipt(
         &record.operation_id,
         workspace_id,
     )?;
+    let source_digest = stored_run
+        .get("source_digest")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let leaf_id = stored_run
+        .get("leaf_id")
+        .and_then(Value::as_str)
+        .filter(|leaf| !leaf.is_empty())
+        .unwrap_or("command");
+    if !source_digest.is_empty() {
+        persist_child_observation(
+            supervisor_dir,
+            run_id,
+            &record.operation_id,
+            workspace_id,
+            source_digest,
+            leaf_id,
+        );
+    }
     let observed = stored_child_observation(supervisor_dir, run_id);
     let (mut receipt, context, verified) = if let Some(observation) = observed {
         let probe = shell_probe_from_observation(&observation);
@@ -742,6 +831,33 @@ fn run_receipt(
     let mut value = serde_json::to_value(&receipt).map_err(|err| err.to_string())?;
     if let Some(object) = value.as_object_mut() {
         object.insert("cache_reason".to_owned(), json!(reason));
+        if let Ok(tallies) = nxr_core::execution_owner::tallies(supervisor_dir) {
+            let report =
+                nxr_task::economics::economics_report(&nxr_task::economics::EconomicsInput {
+                    requested: tallies.requested,
+                    unique_executions: tallies.unique_executions,
+                    coalesced: tallies.attached,
+                    reused_qualifications: tallies.reused,
+                    compiler_cache_hits: None,
+                    wall_time_ms: None,
+                    queue_wait_ms: None,
+                    peak_disk_bytes: None,
+                    artifacts_written: None,
+                    artifacts_transferred: None,
+                    test_compile_ms: None,
+                    test_execute_ms: None,
+                    measured_saved_ms: None,
+                    estimated_saved_ms: None,
+                });
+            let economics_path = supervisor_dir
+                .join("provenance")
+                .join(format!("{run_id}.economics.json"));
+            if let Some(parent) = economics_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&economics_path, report.to_string());
+            object.insert("economics_report".to_owned(), report);
+        }
     }
     Ok(value)
 }
@@ -980,146 +1096,26 @@ fn identity_verified(identity: &nxr_task::coalesce::ExecutionIdentity) -> bool {
     !identity.toolchain.is_empty()
 }
 
-fn coalesce_running(
-    socket: &Path,
-    supervisor_dir: &Path,
-    identity: &nxr_task::coalesce::ExecutionIdentity,
-    resources: &[String],
-) -> Result<Option<String>, String> {
-    if !identity_verified(identity) {
-        return Ok(None);
-    }
-    let active = active_runs(socket, supervisor_dir);
-    match nxr_task::coalesce::coalesce_decision(identity, true, resources, &active) {
-        Ok(nxr_task::coalesce::CoalesceDecision::Attach { run_id }) => {
-            add_observer(supervisor_dir, &run_id);
-            Ok(Some(run_id))
-        }
-        Ok(nxr_task::coalesce::CoalesceDecision::Conflict { reason }) => Err(reason),
-        Ok(nxr_task::coalesce::CoalesceDecision::Start) | Err(_) => Ok(None),
-    }
+/// A cancel from one of several observers only detaches that observer.
+fn detach_observer(run_dir: &Path, run_id: &str, observer_id: &str) -> bool {
+    matches!(
+        nxr_task::detach_observer_id(run_dir, run_id, observer_id),
+        Ok(nxr_task::DetachOutcome::Detach)
+    )
 }
 
-fn active_runs(socket: &Path, supervisor_dir: &Path) -> Vec<nxr_task::coalesce::ActiveRun> {
-    let Ok(listed) = list_on(socket) else {
-        return Vec::new();
-    };
-    let Some(rows) = listed.as_array() else {
-        return Vec::new();
-    };
-    rows.iter()
-        .filter(|row| row.get("status").and_then(Value::as_str) == Some("running"))
-        .filter_map(|row| row.get("id").and_then(Value::as_str))
-        .filter_map(|run_id| read_active_run(supervisor_dir, run_id))
-        .collect()
-}
-
-fn coalesce_path(supervisor_dir: &Path, run_id: &str) -> PathBuf {
-    supervisor_dir
-        .join("coalesce")
-        .join(format!("{run_id}.json"))
-}
-
-fn remember_active_run(
-    supervisor_dir: &Path,
-    run_id: &str,
-    identity: &nxr_task::coalesce::ExecutionIdentity,
-    resources: &[String],
-) {
-    if !identity_verified(identity) {
-        return;
+fn observer_id_for_run(run_dir: &Path, run_id: &str, arguments: &Value) -> String {
+    if let Some(key) = arguments
+        .get("idempotency_key")
+        .and_then(Value::as_str)
+        .filter(|key| !key.is_empty())
+    {
+        return key.to_owned();
     }
-    let path = coalesce_path(supervisor_dir, run_id);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let body = json!({
-        "run_id": run_id,
-        "operation_id": identity.operation_id,
-        "parameters": identity.parameters,
-        "source_digest": identity.source_digest,
-        "toolchain": identity.toolchain,
-        "platform": identity.platform,
-        "env_digest": identity.env_digest,
-        "verified": true,
-        "resources": resources,
-        "observers": 1
-    });
-    let _ = std::fs::write(path, body.to_string());
-}
-
-fn read_active_run(supervisor_dir: &Path, run_id: &str) -> Option<nxr_task::coalesce::ActiveRun> {
-    let text = std::fs::read_to_string(coalesce_path(supervisor_dir, run_id)).ok()?;
-    let value: Value = serde_json::from_str(&text).ok()?;
-    if value.get("verified").and_then(Value::as_bool) != Some(true) {
-        return None;
-    }
-    let resources = value
-        .get("resources")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
-    Some(nxr_task::coalesce::ActiveRun {
-        run_id: run_id.to_owned(),
-        identity: nxr_task::coalesce::ExecutionIdentity {
-            operation_id: value.get("operation_id")?.as_str()?.to_owned(),
-            parameters: value.get("parameters")?.as_str()?.to_owned(),
-            source_digest: value.get("source_digest")?.as_str()?.to_owned(),
-            toolchain: value.get("toolchain")?.as_str()?.to_owned(),
-            platform: value.get("platform")?.as_str()?.to_owned(),
-            env_digest: value.get("env_digest")?.as_str()?.to_owned(),
-        },
-        verified: true,
-        resources,
-        observers: value.get("observers").and_then(Value::as_u64).unwrap_or(1) as u32,
-    })
-}
-
-fn add_observer(supervisor_dir: &Path, run_id: &str) {
-    let path = coalesce_path(supervisor_dir, run_id);
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return;
-    };
-    let Ok(mut value) = serde_json::from_str::<Value>(&text) else {
-        return;
-    };
-    let observers = value
-        .get("observers")
-        .and_then(Value::as_u64)
-        .unwrap_or(1)
-        .saturating_add(1);
-    if let Some(object) = value.as_object_mut() {
-        object.insert("observers".to_owned(), json!(observers));
-        let _ = std::fs::write(path, value.to_string());
-    }
-}
-
-/// A cancel from one of several observers only detaches.
-fn detach_observer(supervisor_dir: &Path, run_id: &str) -> bool {
-    let Some(run) = read_active_run(supervisor_dir, run_id) else {
-        return false;
-    };
-    match nxr_task::coalesce::observer_cancel(run.observers) {
-        Ok("detach") => {
-            let path = coalesce_path(supervisor_dir, run_id);
-            if let Ok(text) = std::fs::read_to_string(&path)
-                && let Ok(mut value) = serde_json::from_str::<Value>(&text)
-                && let Some(object) = value.as_object_mut()
-            {
-                let next = run.observers.saturating_sub(1).max(1);
-                object.insert("observers".to_owned(), json!(next));
-                let _ = std::fs::write(path, value.to_string());
-            }
-            true
-        }
-        _ => false,
-    }
+    nxr_task::idempotency_key_for_run(run_dir, run_id)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
 }
 
 fn reused_qualification(
@@ -1149,12 +1145,26 @@ fn reused_qualification(
         tests_ran: true,
     };
     match nxr_task::qualification::reuse_passing_qualification(Some(&previous), &current) {
-        nxr_task::qualification::ReuseDecision::Reuse => Some(json!({
-            "run_id": value.get("run_id").and_then(Value::as_str).unwrap_or(""),
-            "started": false,
-            "replayed": true,
-            "status": "reused"
-        })),
+        nxr_task::qualification::ReuseDecision::Reuse => {
+            let run_id = value
+                .get("run_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            if !run_id.is_empty() {
+                let _ = nxr_core::execution_owner::note(
+                    supervisor_dir,
+                    &run_id,
+                    "qualification reused",
+                );
+            }
+            Some(json!({
+                "run_id": run_id,
+                "started": false,
+                "replayed": true,
+                "status": "reused"
+            }))
+        }
         _ => None,
     }
 }
@@ -1176,10 +1186,15 @@ fn persist_child_observation(
     run_id: &str,
     operation_id: &str,
     workspace_id: &str,
+    source_digest: &str,
+    leaf_id: &str,
 ) {
+    if source_digest.is_empty() {
+        return;
+    }
     let probe_path = supervisor_dir
         .join("provenance")
-        .join(format!("{run_id}.probe"));
+        .join(format!("{run_id}.{leaf_id}.probe"));
     let Ok(text) = std::fs::read_to_string(probe_path) else {
         return;
     };
@@ -1191,7 +1206,8 @@ fn persist_child_observation(
         operation_id: operation_id.to_owned(),
         workspace_id: workspace_id.to_owned(),
         run_id: run_id.to_owned(),
-        source_digest: String::new(),
+        source_digest: source_digest.to_owned(),
+        leaf_id: leaf_id.to_owned(),
         attempt: 1,
         observation: Some(observation),
     };
@@ -1206,7 +1222,19 @@ fn persist_child_observation(
 }
 
 fn stored_child_observation(supervisor_dir: &Path, run_id: &str) -> Option<ChildObservation> {
-    let receipt = read_receipt(&supervisor_dir.join("provenance"), run_id, 1).ok()?;
+    let dir = supervisor_dir.join("provenance");
+    let leaf = nxr_core::execution_owner::inspect(supervisor_dir, run_id)
+        .ok()
+        .and_then(|row| {
+            row.get("leaf_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .filter(|leaf| !leaf.is_empty());
+    let receipt = leaf
+        .as_deref()
+        .and_then(|leaf_id| read_leaf_receipt(&dir, run_id, leaf_id, 1).ok())
+        .or_else(|| read_receipt(&dir, run_id, 1).ok())?;
     match receipt.state.as_str() {
         "environment-verified" | "completed" | "artifact-verified" | "qualified" => {
             receipt.observation
@@ -1365,7 +1393,8 @@ fn cancel_run(
             "reservation_cancelled": false
         }));
     }
-    if detach_observer(supervisor_dir, run_id) {
+    let observer = observer_id_for_run(run_dir, run_id, arguments);
+    if detach_observer(run_dir, run_id, &observer) {
         return Ok(json!({
             "cancellation_requested": true,
             "process_cancelled": false,
@@ -1889,6 +1918,7 @@ mod tests {
             workspace_id: "lattice".into(),
             run_id: run_id.into(),
             source_digest: "src".into(),
+            leaf_id: String::new(),
             attempt: 1,
             observation: Some(observation),
         };

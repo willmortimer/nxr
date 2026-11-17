@@ -561,6 +561,7 @@ mod tests {
                 parameters: BTreeMap::new(),
                 matrix: None,
                 artifact_reuse: false,
+                cargo_output: false,
             },
         );
         tasks.insert(
@@ -586,6 +587,7 @@ mod tests {
                 parameters: BTreeMap::new(),
                 matrix: None,
                 artifact_reuse: false,
+                cargo_output: false,
             },
         );
         TaskDocument::new(tasks)

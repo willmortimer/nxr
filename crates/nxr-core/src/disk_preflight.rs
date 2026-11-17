@@ -11,6 +11,23 @@ pub struct DiskDecision {
     pub reason: String,
 }
 
+/// Bytes to keep free before a managed write.
+///
+/// `NXR_DISK_RESERVE_BYTES` wins when it parses. Otherwise the floor is
+/// 512 MiB and the cap is 2 GiB, taken from one quarter of `host_memory_mib`.
+#[must_use]
+pub fn disk_reserve_bytes(reserve_env: Option<&str>, host_memory_mib: u64) -> u64 {
+    if let Some(parsed) = reserve_env.and_then(|value| value.parse::<u64>().ok()) {
+        return parsed;
+    }
+    const FLOOR: u64 = 512 * 1024 * 1024;
+    const CAP: u64 = 2 * 1024 * 1024 * 1024;
+    let from_host = host_memory_mib
+        .saturating_div(4)
+        .saturating_mul(1024 * 1024);
+    from_host.clamp(FLOOR, CAP)
+}
+
 /// Check whether `output_dir` has at least `reserve_bytes` free.
 ///
 /// Creates no files and deletes nothing. On Unix, queries `statvfs` for
@@ -108,6 +125,13 @@ fn nearest_existing(path: &Path) -> Option<&Path> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn disk_reserve_uses_the_env_or_a_host_floor() {
+        assert_eq!(disk_reserve_bytes(Some("4096"), u64::MAX), 4096);
+        assert_eq!(disk_reserve_bytes(None, 64), 512 * 1024 * 1024);
+        assert_eq!(disk_reserve_bytes(None, u64::MAX), 2 * 1024 * 1024 * 1024);
+    }
 
     #[test]
     fn disk_preflight_temp_dir_with_reserve_one_allows() {

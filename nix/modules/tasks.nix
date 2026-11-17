@@ -378,6 +378,15 @@ let
         '';
       };
 
+      cargoOutput = lib.mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          When true, this leaf writes a cargo target directory. nxr locks that
+          directory for the writer. This is not a schema v2 cache output.
+        '';
+      };
+
       outputs = lib.mkOption {
         type = types.listOf taskOutputType;
         default = [ ];
