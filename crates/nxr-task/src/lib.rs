@@ -19,6 +19,7 @@ pub mod coalesce;
 pub mod compiler_cache;
 pub mod context;
 pub mod duration;
+pub mod dirty_freeze;
 pub mod economics;
 pub mod events;
 pub mod execute;
@@ -76,6 +77,7 @@ pub use context::{
     serialized_plan_excludes_value,
 };
 pub use duration::{format_duration, parse_duration};
+pub use dirty_freeze::{freeze_dirty_manifest, frozen_manifest};
 pub use events::{
     ChunkEncoding, Event, EventSink, KNOWN_PHASES, NodeOutcome, NullSink, OutputPayload,
     RecordingSink, RunOutcome, event_kind, known_phase,
