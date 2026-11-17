@@ -127,12 +127,10 @@
             unset NXR_DEV_SHELL || true
             export GIT_CONFIG_GLOBAL=/dev/null
             export GIT_CONFIG_SYSTEM=/dev/null
-            if [ -n "''${NXR_LEAF_PROBE_OUT:-}" ]; then
+            if [ -n "''${NXR_LEAF_PROBE_OUT:-}" ] && rustc_path=$(command -v rustc) && cargo_path=$(command -v cargo); then
               mkdir -p "$(dirname "$NXR_LEAF_PROBE_OUT")"
-              rustc_path=$(command -v rustc) || exit 1
-              rustc_version=$("$rustc_path" --version) || exit 1
-              cargo_path=$(command -v cargo) || exit 1
-              cargo_version=$("$cargo_path" --version) || exit 1
+              rustc_version=$("$rustc_path" --version) || true
+              cargo_version=$("$cargo_path" --version) || true
               if [ -n "''${RUSTC_WRAPPER:-}" ]; then
                 wrapper_path=$(command -v "$RUSTC_WRAPPER") || wrapper_path=
               else
