@@ -46,9 +46,7 @@ fn disk_preflight_unix(output_dir: &Path, reserve_bytes: u64) -> DiskDecision {
 
     match nix::sys::statvfs::statvfs(probe) {
         Ok(stat) => {
-            let available = stat
-                .fragment_size()
-                .saturating_mul(u64::from(stat.blocks_available()));
+            let available = available_bytes(&stat);
             if available < reserve_bytes {
                 DiskDecision {
                     allowed: false,
@@ -76,6 +74,19 @@ fn disk_preflight_unix(output_dir: &Path, reserve_bytes: u64) -> DiskDecision {
             reason: "disk availability is unknown".into(),
         },
     }
+}
+
+/// Free bytes from a `statvfs` result.
+///
+/// `fragment_size` is `u64` on both hosts. `blocks_available` is `u32` on
+/// macOS and `u64` on Linux, so one cast fails one of the two lints.
+#[cfg(unix)]
+fn available_bytes(stat: &nix::sys::statvfs::Statvfs) -> u64 {
+    #[cfg(target_os = "linux")]
+    let blocks = stat.blocks_available();
+    #[cfg(not(target_os = "linux"))]
+    let blocks = u64::from(stat.blocks_available());
+    stat.fragment_size().saturating_mul(blocks)
 }
 
 /// Walk from `path` toward the root, returning the nearest existing ancestor.
