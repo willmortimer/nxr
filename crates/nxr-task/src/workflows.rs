@@ -2303,18 +2303,18 @@ schema_version = 1
 
 [tasks.typecheck]
 source_member = "stargate"
-working_directory = "stargate"
+working_directory = "."
 executor = { native = ["/bin/sh", "-c", "echo typecheck >> ../marker"] }
 
 [tasks.build]
 source_member = "lattice"
-working_directory = "lattice"
+working_directory = "."
 depends_on = ["stargate:typecheck"]
 executor = { native = ["/bin/sh", "-c", "echo build >> ../marker"] }
 
 [tasks.test]
 source_member = "lattice"
-working_directory = "lattice"
+working_directory = "."
 depends_on = ["build"]
 executor = { native = ["/bin/sh", "-c", "echo test >> ../marker"] }
 "#,
@@ -2328,12 +2328,15 @@ executor = { native = ["/bin/sh", "-c", "echo test >> ../marker"] }
             None,
         )
         .expect("plan");
+        let mut member_roots = BTreeMap::new();
+        member_roots.insert("stargate".to_owned(), root.path().join("stargate"));
+        member_roots.insert("lattice".to_owned(), root.path().join("lattice"));
         let ctx = ExecContext {
             path: std::env::var("PATH").unwrap_or_default(),
             nix_override: None,
             cwd: Some(root.path().to_path_buf()),
             env: BTreeMap::new(),
-            member_roots: BTreeMap::new(),
+            member_roots,
         };
         let run = run_operation_plan(&plan, &ctx, 1, None).expect("run");
         assert_eq!(run.exit_code, 0);
@@ -2361,18 +2364,18 @@ schema_version = 1
 
 [tasks.typecheck]
 source_member = "stargate"
-working_directory = "stargate"
+working_directory = "."
 executor = { native = ["/bin/sh", "-c", "exit 7"] }
 
 [tasks.build]
 source_member = "lattice"
-working_directory = "lattice"
+working_directory = "."
 depends_on = ["stargate:typecheck"]
 executor = { native = ["/bin/sh", "-c", "echo build >> ../marker"] }
 
 [tasks.test]
 source_member = "lattice"
-working_directory = "lattice"
+working_directory = "."
 depends_on = ["build"]
 executor = { native = ["/bin/sh", "-c", "echo test >> ../marker"] }
 "#,
@@ -2386,12 +2389,15 @@ executor = { native = ["/bin/sh", "-c", "echo test >> ../marker"] }
             None,
         )
         .expect("plan");
+        let mut member_roots = BTreeMap::new();
+        member_roots.insert("stargate".to_owned(), root.path().join("stargate"));
+        member_roots.insert("lattice".to_owned(), root.path().join("lattice"));
         let ctx = ExecContext {
             path: std::env::var("PATH").unwrap_or_default(),
             nix_override: None,
             cwd: Some(root.path().to_path_buf()),
             env: BTreeMap::new(),
-            member_roots: BTreeMap::new(),
+            member_roots,
         };
         let run = run_operation_plan(&plan, &ctx, 2, None).expect("run");
         assert_eq!(run.exit_code, 7);
