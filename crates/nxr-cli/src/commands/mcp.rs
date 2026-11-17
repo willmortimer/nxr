@@ -296,6 +296,20 @@ fn tools() -> Vec<Value> {
             }),
         ),
         tool(
+            "operations_start_remote",
+            "Start one operation on NixPlane. Local start permission does not grant this.",
+            &["id", "idempotency_key"],
+            json!({
+                "id": {"type": "string", "description": "Portable operation id"},
+                "idempotency_key": {"type": "string", "description": "Caller key for this attempt"},
+                "spec": {"type": "object", "description": "Execution spec document"},
+                "source_set": {"type": "object", "description": "Source set document"},
+                "dirty_manifest": {"description": "Dirty manifest object or path string"},
+                "source_locator": {"type": "string", "description": "Locator for a git source set"},
+                "parameters": {"type": "object", "description": "Parameter names listed for this operation id"}
+            }),
+        ),
+        tool(
             "runs_get_diagnostics",
             "Classify an existing run log. This does not call a model or create a second store",
             &["run_id"],
@@ -467,6 +481,7 @@ pub fn call_tool(
             launch,
             reload,
         ),
+        "operations_start_remote" => start_remote(&arguments, workspace_root),
         "runs_cancel" => cancel_run(
             run_dir,
             supervisor_dir,
@@ -742,6 +757,39 @@ fn start(
         )),
         nxr_task::Admission::Refused => Err("operation is not executable".to_owned()),
     }
+}
+
+fn start_remote(arguments: &Value, workspace_root: &Path) -> Result<Value, String> {
+    let id = required_id(arguments)?;
+    let key = arguments
+        .get("idempotency_key")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if key.is_empty() {
+        return Err("idempotency_key is required".to_owned());
+    }
+    let gate = policy_gate(workspace_root)?;
+    crate::commands::remote_start::authorize_remote_start(&gate.applied, id)?;
+    let Some(spec) = arguments.get("spec").filter(|value| value.is_object()) else {
+        return Err("execution spec is required".to_owned());
+    };
+    let Some(source_set) = arguments.get("source_set").filter(|value| value.is_object()) else {
+        return Err("execution spec is required".to_owned());
+    };
+    let mut body = json!({
+        "spec": spec,
+        "source_set": source_set,
+    });
+    if let Some(dirty) = arguments.get("dirty_manifest") {
+        body["dirty_manifest"] = dirty.clone();
+    }
+    if let Some(locator) = arguments.get("source_locator").and_then(Value::as_str) {
+        body["source_locator"] = json!(locator);
+    }
+    let bin = std::env::var("NIXPLANE").unwrap_or_else(|_| "nixplane".to_owned());
+    let state_dir = std::env::var("NIXPLANE_STATE_DIR").ok();
+    let transport = crate::commands::nixplane_transport::NixplaneCliTransport { bin, state_dir };
+    crate::commands::remote_start::start_remote_authorized(&gate.applied, id, &transport, &body)
 }
 
 fn run_receipt(
@@ -1476,6 +1524,15 @@ fn known_arguments(name: &str) -> Option<&'static [&'static str]> {
         "runs_get_diagnostics" => &["run_id"],
         "workspace_affected" => &["paths"],
         "operations_start" => &["id", "idempotency_key", "parameters"],
+        "operations_start_remote" => &[
+            "id",
+            "idempotency_key",
+            "spec",
+            "source_set",
+            "dirty_manifest",
+            "source_locator",
+            "parameters",
+        ],
         "runs_get_logs" => &["run_id", "offset", "limit"],
         _ => return None,
     })
