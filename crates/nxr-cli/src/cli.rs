@@ -488,6 +488,12 @@ pub enum Command {
     },
     /// Discover a declared operation
     Op {
+        /// SourceSet v2 document for multi-checkout discovery
+        #[arg(long = "source-set", value_name = "FILE")]
+        source_set: Option<std::path::PathBuf>,
+        /// Locator JSON mapping primary and sibling logical paths to local checkouts
+        #[arg(long = "source-locator", value_name = "JSON")]
+        source_locator: Option<String>,
         #[command(subcommand)]
         command: OpCommand,
     },

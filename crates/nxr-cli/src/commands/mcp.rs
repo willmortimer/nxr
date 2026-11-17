@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 
 use nxr_task::{
     ChildObservation, ContextIdentity, OperationKind, OperationRecord, ProjectExecutionPolicy,
-    ReceiptEvent, ShellProbe, StoredReceipt, ValidationPlanInput, admit, apply_project_policy,
-    attach_events, bind_supervisor, cache_reason, cancel, child_probe_script,
+    ReceiptEvent, ShellProbe, SourceSetV2, StoredReceipt, ValidationPlanInput, admit,
+    apply_project_policy, attach_events, bind_supervisor, cache_reason, cancel, child_probe_script,
     declared_input_digests, execution_fingerprint_with_inputs, inspect, mark_admitting,
     mark_reconciliation, parse_child_probe, parse_run_log, read_leaf_receipt, read_receipt,
     static_receipt, transition, validate_policy_parameters, validation_plan, verified_receipt,
@@ -23,7 +23,9 @@ use nxr_task::{
 use serde_json::{Value, json};
 
 use crate::commands::affected::{AffectedPathSources, select_for_flake};
-use crate::commands::op::load_records;
+use crate::commands::op::{
+    load_records, load_records_from_source_set, parse_source_locators_value,
+};
 use crate::commands::session::{
     LocalBudget, SessionStart, cancel_on, inspect_on, list_on, start_on,
 };
@@ -235,7 +237,11 @@ fn tools() -> Vec<Value> {
             "operations_search",
             "Find operations in the bound workspace",
             &["query"],
-            json!({"query": {"type": "string", "description": "Text matched against name, alias, or id"}}),
+            json!({
+                "query": {"type": "string", "description": "Text matched against name, alias, or id"},
+                "source_set": {"type": "object", "description": "Optional source-set-v2 document for multi-checkout search"},
+                "locators": {"type": "object", "description": "Optional primary and sibling checkout map for source_set"}
+            }),
         ),
         tool(
             "operations_suggest",
@@ -387,7 +393,9 @@ pub fn call_tool(
     match name {
         "operations_search" => {
             let query = arguments.get("query").and_then(Value::as_str).unwrap_or("");
-            let visible = policy_view(records, workspace_root, trusted)?;
+            let search_records =
+                search_records_for_arguments(&arguments, records, nix_override, nix_flags, runner)?;
+            let visible = policy_view(&search_records, workspace_root, trusted)?;
             let matched = nxr_task::search(&visible, query);
             Ok(json!(matched))
         }
@@ -1079,6 +1087,38 @@ fn policy_view(
         .collect())
 }
 
+/// Session catalog when `source_set` is absent; member records when it is supplied.
+fn search_records_for_arguments(
+    arguments: &Value,
+    session_records: &[OperationRecord],
+    nix_override: Option<&str>,
+    nix_flags: &OptionalNixFlags,
+    runner: RunnerOutput,
+) -> Result<Vec<OperationRecord>, String> {
+    let has_source_set = arguments.get("source_set").is_some();
+    let has_locators = arguments.get("locators").is_some();
+    match (has_source_set, has_locators) {
+        (false, false) => Ok(session_records.to_vec()),
+        (true, true) => {
+            let source_set: SourceSetV2 = serde_json::from_value(
+                arguments
+                    .get("source_set")
+                    .cloned()
+                    .ok_or_else(|| "source_set is required".to_owned())?,
+            )
+            .map_err(|err| format!("source set: {err}"))?;
+            let locators = parse_source_locators_value(
+                arguments
+                    .get("locators")
+                    .ok_or_else(|| "locators is required".to_owned())?,
+            )?;
+            load_records_from_source_set(&source_set, &locators, nix_override, nix_flags, runner)
+        }
+        (true, false) => Err("locators is required with source_set".to_owned()),
+        (false, true) => Err("source_set is required with locators".to_owned()),
+    }
+}
+
 struct PolicyGate {
     applied: ProjectExecutionPolicy,
     file: ProjectExecutionPolicy,
@@ -1642,7 +1682,7 @@ fn required_id(arguments: &Value) -> Result<&str, String> {
 
 fn known_arguments(name: &str) -> Option<&'static [&'static str]> {
     Some(match name {
-        "operations_search" => &["query"],
+        "operations_search" => &["query", "source_set", "locators"],
         "operations_suggest" => &["query", "paths"],
         "operations_describe" | "operations_plan" => &["id"],
         "operations_plan_batch" => &["paths"],
@@ -2817,6 +2857,123 @@ mod tests {
         );
         assert!(widened.unwrap_err().contains("policy approval required"));
         nxr_core::set_trust_db_override(None);
+    }
+
+    #[test]
+    fn operations_search_with_source_set_uses_member_records() {
+        use nxr_task::{SOURCE_SET_V2, SourceMemberV2, execution_decision};
+
+        let lattice = tempfile::tempdir().unwrap();
+        let stargate = tempfile::tempdir().unwrap();
+        for (root, workspace_id, task) in [
+            (lattice.path(), "lattice", "rust-test-pkgs"),
+            (stargate.path(), "stargate", "test"),
+        ] {
+            std::fs::create_dir_all(root.join(".nxr")).unwrap();
+            std::fs::write(root.join("flake.nix"), "{}\n").unwrap();
+            std::fs::write(root.join(".nxr/workspace-id"), format!("{workspace_id}\n")).unwrap();
+            std::fs::write(
+                root.join(".nxr/workflows.toml"),
+                format!(
+                    r#"
+schema_version = 1
+
+[tasks.{task}]
+executor = {{ native = ["true"] }}
+"#
+                ),
+            )
+            .unwrap();
+        }
+        let session = records();
+        let source_set = SourceSetV2 {
+            schema_version: SOURCE_SET_V2.to_owned(),
+            primary: "lattice".to_owned(),
+            members: vec![
+                SourceMemberV2 {
+                    name: "lattice".to_owned(),
+                    logical_path: "lattice".to_owned(),
+                    kind: "git".to_owned(),
+                    commit: "rev-lattice".to_owned(),
+                    submodules: Vec::new(),
+                    lockfiles: Vec::new(),
+                    dirty_snapshot_id: None,
+                },
+                SourceMemberV2 {
+                    name: "stargate".to_owned(),
+                    logical_path: "deps/stargate".to_owned(),
+                    kind: "git".to_owned(),
+                    commit: "rev-stargate".to_owned(),
+                    submodules: Vec::new(),
+                    lockfiles: Vec::new(),
+                    dirty_snapshot_id: None,
+                },
+            ],
+        };
+        let searched = call_tool(
+            &json!({
+                "name": "operations_search",
+                "arguments": {
+                    "query": "",
+                    "source_set": source_set,
+                    "locators": {
+                        "primary": lattice.path().display().to_string(),
+                        "siblings": {
+                            "deps/stargate": stargate.path().display().to_string()
+                        }
+                    }
+                }
+            }),
+            &session,
+            "lattice",
+            lattice.path(),
+            lattice.path(),
+            &lattice.path().join("supervisor"),
+            &lattice.path().join("missing.sock"),
+            true,
+            None,
+            Some("/definitely/missing/nix"),
+            &OptionalNixFlags::default(),
+            quiet_runner(),
+            &Launch::Task,
+            false,
+        )
+        .expect("member search");
+        let rows = searched.as_array().expect("array");
+        assert_eq!(rows.len(), 2);
+        let lattice_row = rows
+            .iter()
+            .find(|row| row["name"] == "rust-test-pkgs")
+            .expect("lattice");
+        assert_eq!(lattice_row["source_member"], "lattice");
+        assert_eq!(lattice_row["source_revision"], "rev-lattice");
+        let kind: OperationKind = serde_json::from_value(lattice_row["kind"].clone()).unwrap();
+        let (_, _, allowed) = execution_decision(kind, lattice_row["name"].as_str().unwrap(), None);
+        assert_eq!(lattice_row["execution_allowed"], allowed);
+        let session_only = call_tool(
+            &json!({"name": "operations_search", "arguments": {"query": "rust-test-pkgs"}}),
+            &session,
+            "lattice",
+            std::path::Path::new("/tmp/lattice"),
+            std::path::Path::new("/tmp/unused"),
+            &std::path::PathBuf::from("/tmp/missing.sock"),
+            &std::path::PathBuf::from("/tmp/missing.sock"),
+            true,
+            None,
+            None,
+            &OptionalNixFlags::default(),
+            quiet_runner(),
+            &Launch::Task,
+            false,
+        )
+        .expect("session search");
+        assert!(
+            session_only
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row.get("source_member").is_none() || row["source_member"].is_null())
+        );
     }
 
     #[test]

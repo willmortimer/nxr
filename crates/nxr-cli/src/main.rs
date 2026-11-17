@@ -638,12 +638,18 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             )?;
             Ok(exit::SUCCESS)
         }
-        Some(Command::Op { command }) => op::run_op(
+        Some(Command::Op {
+            source_set,
+            source_locator,
+            command,
+        }) => op::run_op(
             cli.flake.as_deref(),
             cli.nix.as_deref(),
             cli.json,
             &nix_flags,
             command,
+            source_set.as_deref(),
+            source_locator.as_deref(),
             runner,
         )
         .map_err(RunError::Message),

@@ -4,6 +4,8 @@
 //! source revision travel beside it.
 
 use std::fmt;
+use std::path::Path;
+use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
@@ -461,6 +463,79 @@ pub fn operation_record(
         inputs: declaration.inputs.clone(),
         secret_refs: declaration.secret_refs.clone(),
     }
+}
+
+/// Build a [`WorkspaceInstance`] for one SourceSet member checkout.
+///
+/// The workspace id comes from that checkout. `source_revision` is the
+/// checkout's git `HEAD` when present, otherwise `fallback_commit` (the
+/// member's admitted commit). Searching a member does not grant execution.
+#[must_use]
+pub fn workspace_instance_from_checkout(root: &Path, fallback_commit: &str) -> WorkspaceInstance {
+    let directory_name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("workspace");
+    let source_revision = git_revision(root).or_else(|| {
+        let commit = fallback_commit.trim();
+        if commit.is_empty() {
+            None
+        } else {
+            Some(commit.to_owned())
+        }
+    });
+    WorkspaceInstance {
+        workspace_id: workspace_id(
+            explicit_workspace_id(root).as_deref(),
+            git_remote(root).as_deref(),
+            directory_name,
+        ),
+        workspace_root: root.display().to_string(),
+        source_revision,
+    }
+}
+
+fn explicit_workspace_id(root: &Path) -> Option<String> {
+    let path = root.join(".nxr").join("workspace-id");
+    let text = std::fs::read_to_string(path).ok()?;
+    let id = text.lines().next().unwrap_or("").trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_owned())
+    }
+}
+
+fn git_remote(root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|remote| remote.trim().to_owned())
+        .filter(|remote| !remote.is_empty())
+}
+
+fn git_revision(root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["-C"])
+        .arg(root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|revision| revision.trim().to_owned())
+        .filter(|revision| !revision.is_empty())
 }
 
 /// Assemble one record per declaration across declared SourceSet members.
@@ -1112,6 +1187,24 @@ mod tests {
         );
         assert_eq!(record.source_member, None);
         assert_eq!(record.source_revision.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn workspace_instance_from_checkout_falls_back_to_member_commit() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".nxr")).unwrap();
+        std::fs::write(root.path().join(".nxr/workspace-id"), "lattice\n").unwrap();
+        let workspace = workspace_instance_from_checkout(root.path(), "rev-member");
+        assert_eq!(workspace.workspace_id, "lattice");
+        assert_eq!(workspace.source_revision.as_deref(), Some("rev-member"));
+        assert_eq!(workspace.workspace_root, root.path().display().to_string());
+    }
+
+    #[test]
+    fn workspace_instance_without_fallback_leaves_revision_unset() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = workspace_instance_from_checkout(root.path(), "");
+        assert_eq!(workspace.source_revision, None);
     }
 
     #[test]

@@ -69,6 +69,7 @@ pub use catalog::{
     apply_project_policy, describe, discover_members, execution_decision, execution_fingerprint,
     execution_fingerprint_with_inputs, explain, fingerprint_decision, operation_record, plan,
     remote_allowed, search, suggest, validate_policy_parameters, workspace_id,
+    workspace_instance_from_checkout,
 };
 pub use ci_metadata::{CiRunMetadata, attach_ci_run};
 pub use context::{
