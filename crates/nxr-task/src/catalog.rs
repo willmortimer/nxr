@@ -370,9 +370,7 @@ pub struct OperationRecord {
 
 /// Two SourceSet members produced the same portable operation id.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error(
-    "duplicate operation `{operation_id}` from members `{first_member}` and `{second_member}`"
-)]
+#[error("duplicate operation `{operation_id}` from members `{first_member}` and `{second_member}`")]
 pub struct DuplicateOperation {
     pub operation_id: String,
     pub first_member: String,
@@ -1187,8 +1185,7 @@ mod tests {
             "reset-db",
             "flake.nix",
         )];
-        let records =
-            discover_members(&[("demo", &member, decls.as_slice())]).expect("one member");
+        let records = discover_members(&[("demo", &member, decls.as_slice())]).expect("one member");
         assert_eq!(records[0].source_member.as_deref(), Some("demo"));
         assert!(!records[0].execution_allowed);
         assert_eq!(records[0].policy_source, PolicySource::Unset);
