@@ -87,8 +87,7 @@ pub struct ExecContext {
     pub cwd: Option<PathBuf>,
     /// Extra environment variables. `PATH` still comes from [`Self::path`].
     pub env: BTreeMap<String, String>,
-    /// Checkout roots keyed by workflow `source_member`. Empty preserves
-    /// single-checkout cwd joining.
+    /// Checkout roots keyed by workflow `source_member`. Required for named members.
     pub member_roots: BTreeMap<String, PathBuf>,
 }
 
@@ -143,6 +142,9 @@ pub enum ExecuteError {
     /// The graph scheduler rejected the plan or a completion.
     #[error("operation scheduler failed: {detail}")]
     Scheduler { detail: String },
+    /// A workflow `source_member` could not be resolved to an isolated checkout.
+    #[error("source member `{member}` is unresolved: {detail}")]
+    SourceUnresolved { member: String, detail: String },
 }
 
 impl ExecuteError {
@@ -156,6 +158,7 @@ impl ExecuteError {
             Self::Invalid { .. } => "invalid-operation",
             Self::MissingOperation { .. } => "missing-operation",
             Self::Scheduler { .. } => "scheduler",
+            Self::SourceUnresolved { .. } => "source-unresolved",
         }
     }
 
@@ -168,7 +171,7 @@ impl ExecuteError {
                 exit::PROCESS_SUPERVISION
             }
             Self::Invalid { .. } => exit::USAGE,
-            Self::MissingOperation { .. } => exit::TASK_GRAPH,
+            Self::MissingOperation { .. } | Self::SourceUnresolved { .. } => exit::TASK_GRAPH,
         }
     }
 
@@ -332,7 +335,7 @@ pub fn run_operation_plan_callbacks(
             let Some(operation) = node.operation.as_ref() else {
                 return Err(ExecuteError::MissingOperation { node: id });
             };
-            let node_ctx = context_for_node(ctx, node);
+            let node_ctx = context_for_node(ctx, node)?;
             if let Err(detail) = crate::artifact::materialize_inputs(&node_ctx, &node.inputs) {
                 return Err(ExecuteError::Invalid { detail });
             }
@@ -435,21 +438,112 @@ pub fn run_operation_plan_callbacks(
     })
 }
 
-fn context_for_node(base: &ExecContext, node: &PlanNode) -> ExecContext {
+const ARTIFACT_ROOT_ESCAPE: &str = "artifact root escapes the member checkout";
+
+fn source_unresolved(member: impl Into<String>, detail: impl Into<String>) -> ExecuteError {
+    ExecuteError::SourceUnresolved {
+        member: member.into(),
+        detail: detail.into(),
+    }
+}
+
+fn member_name_addressable(member: &str) -> bool {
+    !member.is_empty()
+        && member
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+}
+
+fn path_entry_is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .ok()
+        .is_some_and(|meta| meta.file_type().is_symlink())
+}
+
+fn walk_member_working_directory(
+    member: &str,
+    root: &Path,
+    relative: &str,
+) -> Result<PathBuf, ExecuteError> {
+    use std::path::Component;
+    let relative_path = Path::new(relative);
+    let mut current = root.to_path_buf();
+    for component in relative_path.components() {
+        match component {
+            Component::Normal(part) => {
+                current.push(part);
+                if path_entry_is_symlink(&current) {
+                    return Err(source_unresolved(
+                        member,
+                        "working directory escapes through a symlink",
+                    ));
+                }
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(source_unresolved(
+                    member,
+                    "working directory escapes through a symlink",
+                ));
+            }
+        }
+    }
+    Ok(current)
+}
+
+fn expected_revision_key(member: &str) -> String {
+    format!("NXR_EXPECTED_REVISION_{member}")
+}
+
+fn observed_revision_key(member: &str) -> String {
+    format!("NXR_OBSERVED_REVISION_{member}")
+}
+
+fn verify_source_revision(member: &str, env: &BTreeMap<String, String>) -> Result<(), ExecuteError> {
+    let expected_key = expected_revision_key(member);
+    let Some(expected) = env.get(&expected_key) else {
+        return Ok(());
+    };
+    let observed_key = observed_revision_key(member);
+    match env.get(&observed_key) {
+        Some(observed) if observed == expected => Ok(()),
+        _ => Err(source_unresolved(
+            member,
+            "source revision does not match",
+        )),
+    }
+}
+
+fn context_for_node(base: &ExecContext, node: &PlanNode) -> Result<ExecContext, ExecuteError> {
     let mut env = base.env.clone();
     env.extend(node.environment.clone());
-    let root = match node.source_member.as_deref() {
-        Some(member) => base
-            .member_roots
-            .get(member)
-            .cloned()
-            .or_else(|| base.cwd.clone()),
-        None => base.cwd.clone(),
+    let member_root = match node.source_member.as_deref() {
+        Some(member) => {
+            if !member_name_addressable(member) {
+                return Err(source_unresolved(
+                    member,
+                    "source member name is not addressable",
+                ));
+            }
+            let Some(root) = base.member_roots.get(member).cloned() else {
+                return Err(source_unresolved(member, "source member is not mounted"));
+            };
+            if path_entry_is_symlink(&root) {
+                return Err(source_unresolved(member, "member root is a symlink"));
+            }
+            verify_source_revision(member, &base.env)?;
+            Some((member.to_owned(), root))
+        }
+        None => base.cwd.clone().map(|root| (String::new(), root)),
     };
-    let cwd = match (&node.working_directory, &root) {
-        (Some(relative), Some(root)) => Some(root.join(relative)),
+    let cwd = match (&node.working_directory, &member_root) {
+        (Some(relative), Some((member, root))) if !member.is_empty() => {
+            Some(walk_member_working_directory(member, root, relative)?)
+        }
+        (Some(relative), Some((_, root))) => Some(root.join(relative)),
         (Some(relative), None) => Some(PathBuf::from(relative)),
-        (None, cwd) => cwd.clone(),
+        (None, Some((_, root))) => Some(root.clone()),
+        (None, None) => None,
     };
     if !node.inputs.is_empty() {
         env.insert("NXR_ARTIFACT_INPUTS".to_owned(), node.inputs.join(","));
@@ -465,13 +559,37 @@ fn context_for_node(base: &ExecContext, node: &PlanNode) -> ExecContext {
             );
         }
     }
-    ExecContext {
+    Ok(ExecContext {
         path: base.path.clone(),
         nix_override: base.nix_override.clone(),
         cwd,
         env,
         member_roots: base.member_roots.clone(),
+    })
+}
+
+fn resolve_member_artifact(cwd: &Path, artifact: &str) -> Result<PathBuf, String> {
+    if artifact.is_empty() || Path::new(artifact).is_absolute() {
+        return Err(ARTIFACT_ROOT_ESCAPE.to_owned());
     }
+    if artifact.split(['/', '\\']).any(|part| part == "..") {
+        return Err(ARTIFACT_ROOT_ESCAPE.to_owned());
+    }
+    let full = cwd.join(artifact);
+    if full.strip_prefix(cwd).is_err() {
+        return Err(ARTIFACT_ROOT_ESCAPE.to_owned());
+    }
+    let mut cursor = full.as_path();
+    loop {
+        if path_entry_is_symlink(cursor) {
+            return Err(ARTIFACT_ROOT_ESCAPE.to_owned());
+        }
+        if cursor == cwd {
+            break;
+        }
+        cursor = cursor.parent().unwrap_or(cwd);
+    }
+    Ok(full)
 }
 
 fn record_artifacts(
@@ -483,8 +601,17 @@ fn record_artifacts(
     let mut artifact_digests = BTreeMap::new();
     for artifact in &node.artifacts {
         let path = match &ctx.cwd {
-            Some(cwd) => cwd.join(artifact),
-            None => PathBuf::from(artifact),
+            Some(cwd) => resolve_member_artifact(cwd, artifact)?,
+            None => {
+                let relative = PathBuf::from(artifact);
+                if artifact.split(['/', '\\']).any(|part| part == "..") {
+                    return Err(ARTIFACT_ROOT_ESCAPE.to_owned());
+                }
+                if path_entry_is_symlink(&relative) {
+                    return Err(ARTIFACT_ROOT_ESCAPE.to_owned());
+                }
+                relative
+            }
         };
         let bytes = std::fs::read(&path).map_err(|_| {
             format!(
@@ -519,6 +646,9 @@ fn write_member_receipt(
     source_member: &str,
     artifacts: &BTreeMap<String, String>,
 ) -> Result<(), String> {
+    if path_entry_is_symlink(checkout) {
+        return Err(ARTIFACT_ROOT_ESCAPE.to_owned());
+    }
     let receipts = checkout.join(".nxr").join("receipts");
     std::fs::create_dir_all(&receipts).map_err(|error| format!("create receipts dir: {error}"))?;
     let path = receipts.join(format!("{node}.json"));
@@ -821,9 +951,34 @@ mod tests {
     use nxr_core::diagnostics::exit;
 
     use super::*;
-    use crate::plan_exec::build_serial_plan;
+    use crate::plan_exec::{PlanNode, build_serial_plan};
+    use crate::resources::NodeResources;
     use crate::scheduler::Scheduler;
     use crate::schema::TaskDefinition;
+
+    fn plan_node_for_source(
+        source_member: Option<String>,
+        working_directory: Option<String>,
+        environment: BTreeMap<String, String>,
+    ) -> PlanNode {
+        PlanNode {
+            id: "node".to_owned(),
+            depends_on: vec![],
+            interactive: false,
+            resources: NodeResources::default(),
+            operation: None,
+            platform: None,
+            architecture: None,
+            artifact_reuse: false,
+            environment,
+            working_directory,
+            artifacts: vec![],
+            inputs: vec![],
+            cargo_output: false,
+            source_member,
+            remote_eligible: false,
+        }
+    }
 
     #[test]
     fn flake_and_nix_build_without_nix_are_unavailable_executor() {
@@ -999,6 +1154,168 @@ mod tests {
             .schedule_ready();
         assert_eq!(flake_ready, vec!["a".to_owned()]);
         assert_eq!(flake_ready, native_ready);
+    }
+
+    #[test]
+    fn source_member_without_mount_refuses_invoking_cwd() {
+        let invoke = tempfile::tempdir().expect("invoke checkout");
+        let ctx = ExecContext {
+            path: String::new(),
+            nix_override: None,
+            cwd: Some(invoke.path().to_path_buf()),
+            env: BTreeMap::new(),
+            member_roots: BTreeMap::new(),
+        };
+        let node = plan_node_for_source(Some("stargate".to_owned()), None, BTreeMap::new());
+        let error = context_for_node(&ctx, &node).expect_err("missing member root");
+        assert!(matches!(
+            error,
+            ExecuteError::SourceUnresolved {
+                member,
+                detail
+            } if member == "stargate" && detail == "source member is not mounted"
+        ));
+    }
+
+    #[test]
+    fn source_member_with_mount_selects_member_root() {
+        let mount = tempfile::tempdir().expect("member root");
+        let mut member_roots = BTreeMap::new();
+        member_roots.insert("stargate".to_owned(), mount.path().to_path_buf());
+        let ctx = ExecContext {
+            path: String::new(),
+            nix_override: None,
+            cwd: Some(PathBuf::from("/invoking-checkout")),
+            env: BTreeMap::new(),
+            member_roots,
+        };
+        let node = plan_node_for_source(
+            Some("stargate".to_owned()),
+            Some("pkg".to_owned()),
+            BTreeMap::new(),
+        );
+        let resolved = context_for_node(&ctx, &node).expect("mounted member");
+        assert_eq!(resolved.cwd, Some(mount.path().join("pkg")));
+    }
+
+    #[test]
+    fn source_member_revision_mismatch_fails() {
+        let mount = tempfile::tempdir().expect("member root");
+        let mut member_roots = BTreeMap::new();
+        member_roots.insert("stargate".to_owned(), mount.path().to_path_buf());
+        let mut env = BTreeMap::new();
+        env.insert(
+            "NXR_EXPECTED_REVISION_stargate".to_owned(),
+            "abc".to_owned(),
+        );
+        env.insert(
+            "NXR_OBSERVED_REVISION_stargate".to_owned(),
+            "def".to_owned(),
+        );
+        let ctx = ExecContext {
+            path: String::new(),
+            nix_override: None,
+            cwd: None,
+            env,
+            member_roots,
+        };
+        let node = plan_node_for_source(Some("stargate".to_owned()), None, BTreeMap::new());
+        let error = context_for_node(&ctx, &node).expect_err("revision mismatch");
+        assert!(matches!(
+            error,
+            ExecuteError::SourceUnresolved {
+                member,
+                detail
+            } if member == "stargate" && detail == "source revision does not match"
+        ));
+    }
+
+    #[test]
+    fn source_member_revision_absent_does_not_fail() {
+        let mount = tempfile::tempdir().expect("member root");
+        let mut member_roots = BTreeMap::new();
+        member_roots.insert("stargate".to_owned(), mount.path().to_path_buf());
+        let ctx = ExecContext {
+            path: String::new(),
+            nix_override: None,
+            cwd: None,
+            env: BTreeMap::new(),
+            member_roots,
+        };
+        let node = plan_node_for_source(Some("stargate".to_owned()), None, BTreeMap::new());
+        context_for_node(&ctx, &node).expect("no revision gate without expected key");
+    }
+
+    #[test]
+    fn task_environment_cannot_satisfy_the_expected_revision() {
+        let mount = tempfile::tempdir().expect("member root");
+        let mut member_roots = BTreeMap::new();
+        member_roots.insert("stargate".to_owned(), mount.path().to_path_buf());
+        let mut env = BTreeMap::new();
+        env.insert(
+            "NXR_EXPECTED_REVISION_stargate".to_owned(),
+            "abc".to_owned(),
+        );
+        let ctx = ExecContext {
+            path: String::new(),
+            nix_override: None,
+            cwd: None,
+            env,
+            member_roots,
+        };
+        let mut task_env = BTreeMap::new();
+        task_env.insert(
+            "NXR_EXPECTED_REVISION_stargate".to_owned(),
+            "abc".to_owned(),
+        );
+        task_env.insert(
+            "NXR_OBSERVED_REVISION_stargate".to_owned(),
+            "abc".to_owned(),
+        );
+        let node = plan_node_for_source(Some("stargate".to_owned()), None, task_env);
+        let error = context_for_node(&ctx, &node).expect_err("task env cannot attest revision");
+        assert!(matches!(
+            error,
+            ExecuteError::SourceUnresolved { detail, .. } if detail == "source revision does not match"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_member_symlinked_root_fails() {
+        use std::os::unix::fs::symlink;
+        let parent = tempfile::tempdir().expect("parent");
+        let target = tempfile::tempdir().expect("target");
+        let link = parent.path().join("stargate");
+        symlink(target.path(), &link).expect("symlink member root");
+        let mut member_roots = BTreeMap::new();
+        member_roots.insert("stargate".to_owned(), link);
+        let ctx = ExecContext {
+            path: String::new(),
+            nix_override: None,
+            cwd: None,
+            env: BTreeMap::new(),
+            member_roots,
+        };
+        let node = plan_node_for_source(Some("stargate".to_owned()), None, BTreeMap::new());
+        let error = context_for_node(&ctx, &node).expect_err("symlink root");
+        assert!(matches!(
+            error,
+            ExecuteError::SourceUnresolved {
+                member,
+                detail
+            } if member == "stargate" && detail == "member root is a symlink"
+        ));
+    }
+
+    #[test]
+    fn artifact_outside_member_checkout_fails() {
+        let root = tempfile::tempdir().expect("root");
+        let checkout = root.path().join("member");
+        std::fs::create_dir(&checkout).expect("member dir");
+        std::fs::write(root.path().join("secret.txt"), b"outside").expect("outside file");
+        let error = resolve_member_artifact(&checkout, "../secret.txt").expect_err("escapes");
+        assert_eq!(error, ARTIFACT_ROOT_ESCAPE);
     }
 
     #[cfg(unix)]
