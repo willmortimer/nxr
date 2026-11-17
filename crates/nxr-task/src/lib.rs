@@ -97,7 +97,7 @@ pub use idempotency::{
     idempotency_key_for_run, inspect, mark_admitting, mark_bind_incomplete, mark_reconciliation,
     mark_started,
 };
-pub use identity::{SourceSetV1, operation_id, source_set_digest};
+pub use identity::{SourceMemberV2, SourceSetV1, SourceSetV2, SOURCE_SET_V2, operation_id, project_primary_v1, source_set_digest, source_set_digest_v2};
 pub use matrix::{
     MATRIX_ENV_PREFIX, MatrixExpansion, MatrixInstance, expand_matrix_roots, expand_matrix_tasks,
     matrix_attr_names, matrix_env_name, resolve_matrix_env, resolve_matrix_values,
