@@ -9,11 +9,16 @@
 mod analyze;
 mod git;
 mod graph;
+mod members;
 mod paths;
 
 pub use analyze::{AffectedAnalysis, AffectedNode, AffectedReason, NodeStatus, analyze};
 pub use git::{GitDiffError, git_all_changes, git_diff_name_only, git_working_tree_changes};
 pub use graph::{AffectedGraph, build_graph};
+pub use members::{
+    MemberAffectedAnalysis, MemberAffectedNode, MemberChange, MemberEdge, MemberNode,
+    analyze_members,
+};
 pub use paths::{
     PathRootError, is_global_invalidation_path, literal_path_prefix, looks_like_glob,
     normalize_relative_path, path_matches_roots, roots_may_overlap_changes,
