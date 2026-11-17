@@ -76,6 +76,110 @@ fn cancel_argv(attempt_id: &str, state_dir: Option<&str>) -> Vec<String> {
     argv
 }
 
+/// Assemble `execution fetch` argv after the binary name.
+#[must_use]
+pub fn fetch_argv(
+    attempt_id: &str,
+    name: &str,
+    out: &Path,
+    state_dir: Option<&str>,
+) -> Vec<String> {
+    let mut argv = vec![
+        "execution".to_owned(),
+        "fetch".to_owned(),
+        attempt_id.to_owned(),
+        "--name".to_owned(),
+        name.to_owned(),
+        "--out".to_owned(),
+        out.display().to_string(),
+    ];
+    if let Some(dir) = state_dir {
+        argv.push("--state-dir".to_owned());
+        argv.push(dir.to_owned());
+    }
+    argv
+}
+
+impl NixplaneCliTransport {
+    /// Fetch one named output. Stdout is the digest printed by `nixplane`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the process error when `nixplane` cannot be started or exits non-zero.
+    pub fn fetch_output(&self, attempt_id: &str, name: &str, out: &Path) -> Result<String, String> {
+        let argv = fetch_argv(attempt_id, name, out, self.state_dir.as_deref());
+        let output = Command::new(&self.bin)
+            .args(&argv)
+            .output()
+            .map_err(|err| format!("nixplane: {err}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            return Err(if stderr.is_empty() {
+                format!("nixplane exited {}", output.status)
+            } else {
+                stderr
+            });
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    /// Replay the attempt journal from sequence 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns the transport error.
+    pub fn replay_journal(&self, attempt_id: &str) -> Result<Value, String> {
+        self.call(
+            "replay",
+            &json!({ "attempt_id": attempt_id, "after_sequence": 0 }),
+        )
+    }
+}
+
+/// Fetch `output_name`, check its bytes, and store the remote receipt.
+///
+/// # Errors
+///
+/// Returns an error when the attempt has no id, the bytes do not match, or the
+/// journal names a stale lease.
+pub fn record_fetched_receipt(
+    transport: &NixplaneCliTransport,
+    dir: &Path,
+    attempt: &nxr_task::RemoteAttempt,
+    output_name: &str,
+    journal: &Value,
+) -> Result<nxr_task::RemoteReceipt, String> {
+    let attempt_id = attempt
+        .attempt_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "remote attempt has not been admitted".to_owned())?;
+    if let Some(generation) = journal.get("lease_generation").and_then(Value::as_u64) {
+        nxr_task::record_lease(dir, &attempt.idempotency_key, generation)?;
+    }
+    let file = NamedTempFile::new().map_err(|err| format!("temp file: {err}"))?;
+    let printed = transport.fetch_output(attempt_id, output_name, file.path())?;
+    let bytes = std::fs::read(file.path()).map_err(|err| format!("read artifact: {err}"))?;
+    let output_digest = nxr_task::verify_artifact(&bytes, &printed)?;
+    let (source_disposition, execution_disposition) = nxr_task::dispositions_from_journal(journal);
+    let stored_lease = nxr_task::remote_attempt_for_run(dir, &attempt.run_id)?
+        .and_then(|row| row.lease_generation)
+        .or(attempt.lease_generation);
+    let receipt = nxr_task::RemoteReceipt {
+        source_set_id: attempt.source_set_id.clone(),
+        operation_id: attempt.operation_id.clone(),
+        run_id: attempt.run_id.clone(),
+        attempt_id: attempt_id.to_owned(),
+        lease_generation: stored_lease,
+        output_digest,
+        source_disposition,
+        execution_disposition,
+        artifact_verified: true,
+    };
+    nxr_task::store_remote_receipt(dir, &receipt)?;
+    Ok(receipt)
+}
+
 fn replay_argv(attempt_id: &str, after_sequence: u64, state_dir: Option<&str>) -> Vec<String> {
     let mut argv = vec![
         "execution".to_owned(),
@@ -99,9 +203,7 @@ fn write_json_temp(value: &Value) -> Result<NamedTempFile, String> {
     Ok(file)
 }
 
-fn dirty_manifest_path(
-    value: &Value,
-) -> Result<(PathBuf, Option<NamedTempFile>), String> {
+fn dirty_manifest_path(value: &Value) -> Result<(PathBuf, Option<NamedTempFile>), String> {
     match value {
         Value::String(path) => Ok((PathBuf::from(path), None)),
         other => {
@@ -160,11 +262,11 @@ impl ExecutionTransport for NixplaneCliTransport {
             "submit" => {
                 let spec = body
                     .get("spec")
-                    .filter(Value::is_object)
+                    .filter(|value| value.is_object())
                     .ok_or_else(|| "submit needs spec object".to_owned())?;
                 let source_set = body
                     .get("source_set")
-                    .filter(Value::is_object)
+                    .filter(|value| value.is_object())
                     .ok_or_else(|| "submit needs source_set object".to_owned())?;
                 let spec_file = write_json_temp(spec)?;
                 let source_file = write_json_temp(source_set)?;
@@ -266,6 +368,25 @@ mod tests {
                 "/tmp/spec.json",
                 "--source-set",
                 "/tmp/source.json",
+            ]
+        );
+        assert_eq!(
+            fetch_argv(
+                "att_1",
+                "marker",
+                Path::new("/tmp/marker"),
+                Some("/var/lib/nixplane"),
+            ),
+            [
+                "execution",
+                "fetch",
+                "att_1",
+                "--name",
+                "marker",
+                "--out",
+                "/tmp/marker",
+                "--state-dir",
+                "/var/lib/nixplane",
             ]
         );
     }

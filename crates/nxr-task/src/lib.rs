@@ -18,8 +18,8 @@ pub mod ci_metadata;
 pub mod coalesce;
 pub mod compiler_cache;
 pub mod context;
-pub mod duration;
 pub mod dirty_freeze;
+pub mod duration;
 pub mod economics;
 pub mod events;
 pub mod execute;
@@ -37,6 +37,8 @@ pub mod process;
 pub mod qualification;
 pub mod receipt;
 pub mod remote_execution;
+pub mod remote_journal;
+pub mod remote_receipt;
 pub mod resolve;
 pub mod resources;
 pub mod run_diagnostics;
@@ -65,8 +67,8 @@ pub use catalog::{
     FingerprintDecision, OperationKind, OperationPlan, OperationRecord, OperationSuggestion,
     PolicySource, ProjectExecutionPolicy, WorkspaceInstance, apply_project_policy, describe,
     execution_decision, execution_fingerprint, execution_fingerprint_with_inputs, explain,
-    fingerprint_decision, operation_record, plan, remote_allowed, search, suggest, validate_policy_parameters,
-    workspace_id,
+    fingerprint_decision, operation_record, plan, remote_allowed, search, suggest,
+    validate_policy_parameters, workspace_id,
 };
 pub use ci_metadata::{CiRunMetadata, attach_ci_run};
 pub use context::{
@@ -76,8 +78,8 @@ pub use context::{
     resolve_task_context, secret_delivery_mode, secret_provider_mode,
     serialized_plan_excludes_value,
 };
-pub use duration::{format_duration, parse_duration};
 pub use dirty_freeze::{freeze_dirty_manifest, frozen_manifest};
+pub use duration::{format_duration, parse_duration};
 pub use events::{
     ChunkEncoding, Event, EventSink, KNOWN_PHASES, NodeOutcome, NullSink, OutputPayload,
     RecordingSink, RunOutcome, event_kind, known_phase,
@@ -100,7 +102,10 @@ pub use idempotency::{
     idempotency_key_for_run, inspect, mark_admitting, mark_bind_incomplete, mark_reconciliation,
     mark_started,
 };
-pub use identity::{SourceMemberV2, SourceSetV1, SourceSetV2, SOURCE_SET_V2, operation_id, project_primary_v1, source_set_digest, source_set_digest_v2};
+pub use identity::{
+    SOURCE_SET_V2, SourceMemberV2, SourceSetV1, SourceSetV2, operation_id, project_primary_v1,
+    source_set_digest, source_set_digest_v2,
+};
 pub use matrix::{
     MATRIX_ENV_PREFIX, MatrixExpansion, MatrixInstance, expand_matrix_roots, expand_matrix_tasks,
     matrix_attr_names, matrix_env_name, resolve_matrix_env, resolve_matrix_values,
@@ -128,6 +133,14 @@ pub use receipt::{
 };
 pub use remote_execution::{
     ExecutionTransport, cancel_execution, execution_status, replay_execution, submit_execution,
+};
+pub use remote_journal::{
+    RemoteAttempt, begin_remote, cancel_and_bind, record_admitted, record_cancel, record_lease,
+    remote_attempt_for_run, remote_run_id, submit_and_bind,
+};
+pub use remote_receipt::{
+    RemoteReceipt, dispositions_from_journal, read_remote_receipt, store_remote_receipt,
+    verify_artifact,
 };
 pub use resolve::{
     ResolveTaskError, enrich_apps_with_listing_metadata, listable_tasks, listable_tasks_filtered,

@@ -454,6 +454,7 @@ pub fn call_tool(
             records,
             workspace_id,
             workspace_root,
+            run_dir,
             supervisor_dir,
             trusted,
         ),
@@ -481,7 +482,7 @@ pub fn call_tool(
             launch,
             reload,
         ),
-        "operations_start_remote" => start_remote(&arguments, workspace_root),
+        "operations_start_remote" => start_remote(&arguments, workspace_root, run_dir),
         "runs_cancel" => cancel_run(
             run_dir,
             supervisor_dir,
@@ -759,7 +760,7 @@ fn start(
     }
 }
 
-fn start_remote(arguments: &Value, workspace_root: &Path) -> Result<Value, String> {
+fn start_remote(arguments: &Value, workspace_root: &Path, run_dir: &Path) -> Result<Value, String> {
     let id = required_id(arguments)?;
     let key = arguments
         .get("idempotency_key")
@@ -773,11 +774,16 @@ fn start_remote(arguments: &Value, workspace_root: &Path) -> Result<Value, Strin
     let Some(spec) = arguments.get("spec").filter(|value| value.is_object()) else {
         return Err("execution spec is required".to_owned());
     };
-    let Some(source_set) = arguments.get("source_set").filter(|value| value.is_object()) else {
+    let Some(source_set) = arguments
+        .get("source_set")
+        .filter(|value| value.is_object())
+    else {
         return Err("execution spec is required".to_owned());
     };
+    let (operation_id, source_set_id) =
+        crate::commands::remote_start::remote_identity(spec, source_set)?;
     let mut body = json!({
-        "spec": spec,
+        "spec": crate::commands::remote_start::spec_with_idempotency(spec, key),
         "source_set": source_set,
     });
     if let Some(dirty) = arguments.get("dirty_manifest") {
@@ -789,7 +795,15 @@ fn start_remote(arguments: &Value, workspace_root: &Path) -> Result<Value, Strin
     let bin = std::env::var("NIXPLANE").unwrap_or_else(|_| "nixplane".to_owned());
     let state_dir = std::env::var("NIXPLANE_STATE_DIR").ok();
     let transport = crate::commands::nixplane_transport::NixplaneCliTransport { bin, state_dir };
-    crate::commands::remote_start::start_remote_authorized(&gate.applied, id, &transport, &body)
+    nxr_task::submit_and_bind(
+        run_dir,
+        key,
+        &nxr_task::remote_run_id(key),
+        &operation_id,
+        &source_set_id,
+        &transport,
+        &body,
+    )
 }
 
 fn run_receipt(
@@ -797,6 +811,7 @@ fn run_receipt(
     records: &[OperationRecord],
     workspace_id: &str,
     workspace_root: &Path,
+    run_dir: &Path,
     supervisor_dir: &Path,
     trusted: bool,
 ) -> Result<Value, String> {
@@ -905,6 +920,32 @@ fn run_receipt(
             }
             let _ = std::fs::write(&economics_path, report.to_string());
             object.insert("economics_report".to_owned(), report);
+        }
+        if let Some(output_name) = arguments
+            .get("output_name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            && let Some(remote) = nxr_task::remote_attempt_for_run(run_dir, run_id)?
+            && let Some(attempt_id) = remote.attempt_id.clone()
+        {
+            let bin = std::env::var("NIXPLANE").unwrap_or_else(|_| "nixplane".to_owned());
+            let state_dir = std::env::var("NIXPLANE_STATE_DIR").ok();
+            let transport =
+                crate::commands::nixplane_transport::NixplaneCliTransport { bin, state_dir };
+            let journal = transport.replay_journal(&attempt_id)?;
+            crate::commands::nixplane_transport::record_fetched_receipt(
+                &transport,
+                run_dir,
+                &remote,
+                output_name,
+                &journal,
+            )?;
+        }
+        if let Some(remote) = nxr_task::read_remote_receipt(run_dir, run_id)? {
+            object.insert(
+                "remote_receipt".to_owned(),
+                serde_json::to_value(remote).map_err(|err| err.to_string())?,
+            );
         }
     }
     Ok(value)
@@ -1432,6 +1473,15 @@ fn cancel_run(
         .and_then(Value::as_str)
         .unwrap_or("");
     nxr_core::validate_run_id(run_id).map_err(|err| err.to_string())?;
+    if let Some(remote) = nxr_task::remote_attempt_for_run(run_dir, run_id)?
+        && remote.attempt_id.is_some()
+    {
+        let bin = std::env::var("NIXPLANE").unwrap_or_else(|_| "nixplane".to_owned());
+        let state_dir = std::env::var("NIXPLANE_STATE_DIR").ok();
+        let transport =
+            crate::commands::nixplane_transport::NixplaneCliTransport { bin, state_dir };
+        return nxr_task::cancel_and_bind(run_dir, &remote.idempotency_key, &transport);
+    }
     let owned = inspect(run_dir, run_id, workspace_id)?;
     if owned.is_none() {
         return Ok(json!({
@@ -1520,7 +1570,7 @@ fn known_arguments(name: &str) -> Option<&'static [&'static str]> {
         "operations_describe" | "operations_plan" => &["id"],
         "operations_plan_batch" => &["paths"],
         "runs_inspect" | "runs_cancel" => &["run_id"],
-        "runs_get_receipt" => &["id", "run_id"],
+        "runs_get_receipt" => &["id", "run_id", "output_name"],
         "runs_get_diagnostics" => &["run_id"],
         "workspace_affected" => &["paths"],
         "operations_start" => &["id", "idempotency_key", "parameters"],
