@@ -36,6 +36,24 @@ pub(crate) fn join_test_wait_threads() {
     }
 }
 
+static TARGET_GUARDS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, crate::target_lock::TargetAdmission>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn hold_target(run_id: &str, admission: crate::target_lock::TargetAdmission) {
+    TARGET_GUARDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(run_id.to_owned(), admission);
+}
+
+fn release_target(run_id: &str) {
+    TARGET_GUARDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(run_id);
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct OwnedRun {
     id: String,
@@ -65,6 +83,12 @@ struct OwnedRun {
     /// Canonical Cargo target directory for a local build. Empty when unset.
     #[serde(default)]
     target_dir: String,
+    /// Operation this run was started for. Empty on records written before this field.
+    #[serde(default)]
+    operation_id: String,
+    /// Workspace this run was started for. Empty on records written before this field.
+    #[serde(default)]
+    workspace_id: String,
     events: Vec<RunEvent>,
 }
 
@@ -159,6 +183,16 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
         .filter(|value| !value.is_empty())
         .map(|value| canonical_target_dir(Path::new(value)))
         .unwrap_or_default();
+    let operation_id = params
+        .get("operation_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let workspace_id = params
+        .get("workspace_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
     with_lock(dir, || {
         if !target_dir.is_empty() {
             for existing in records(dir)? {
@@ -192,12 +226,19 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
                 log_path: String::new(),
                 admission_id: admission_id.clone(),
                 target_dir: target_dir.clone(),
+                operation_id: operation_id.clone(),
+                workspace_id: workspace_id.clone(),
                 events: Vec::new(),
             };
             push_event(&mut refused, "refused");
             store(dir, &refused)?;
             return Err("local budget exceeded".into());
         }
+        let admission = if target_dir.is_empty() || remote.is_some() {
+            None
+        } else {
+            Some(crate::target_lock::admit_target(Path::new(&target_dir))?)
+        };
         let log_path = dir.join(format!("{id}.log"));
         let log = File::create(&log_path).map_err(|err| err.to_string())?;
         let stderr = log.try_clone().map_err(|err| err.to_string())?;
@@ -218,9 +259,13 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
         {
             child.process_group(0);
         }
-        let mut spawned = child
-            .spawn()
-            .map_err(|err| format!("spawn {}: {err}", command[0]))?;
+        let mut spawned = match child.spawn() {
+            Ok(child) => child,
+            Err(err) => {
+                drop(admission);
+                return Err(format!("spawn {}: {err}", command[0]));
+            }
+        };
         let pid = spawned.id();
         let start_time = capture_start_time(pid);
         let mut record = OwnedRun {
@@ -239,8 +284,13 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
             log_path: log_path.display().to_string(),
             admission_id,
             target_dir: target_dir.clone(),
+            operation_id,
+            workspace_id,
             events: Vec::new(),
         };
+        if let Some(admission) = admission {
+            hold_target(&id, admission);
+        }
         push_event(&mut record, "started");
         if record.kind == "remote" {
             push_event(&mut record, "submitted");
@@ -248,9 +298,14 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
         if cache_mode != "off" {
             push_event(&mut record, &format!("compiler-cache {cache_mode}"));
         }
-        store(dir, &record)?;
+        if let Err(err) = store(dir, &record) {
+            release_target(&id);
+            let _ = stop_group(pid);
+            return Err(err);
+        }
         let command_for_durable = record.command.clone();
         durable_run::sync_supervisor_started(&id, &command_for_durable).map_err(|err| {
+            release_target(&id);
             let _ = stop_group(pid);
             let _ = fs::remove_file(dir.join(format!("{id}.json")));
             let _ = fs::remove_file(&log_path);
@@ -289,6 +344,7 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
                 );
                 Ok(())
             });
+            release_target(&wait_id);
         });
         #[cfg(test)]
         TEST_WAIT_THREADS
@@ -373,6 +429,7 @@ pub fn cancel(dir: &Path, id: &str, remote_confirmed: bool) -> Result<Value, Str
             record.status = "cancelled".into();
             push_event(&mut record, "cancelled");
             store(dir, &record)?;
+            release_target(id);
             let _ = durable_run::sync_supervisor_terminal_with_reconcile(
                 id,
                 DurableRunStatus::Cancelled,
@@ -424,6 +481,7 @@ fn reconcile_once(dir: &Path) -> Result<bool, String> {
                 record.exit_code = None;
                 push_event(&mut record, "lost");
                 store(dir, &record)?;
+                release_target(&record.id);
                 changed = true;
             }
         }
@@ -845,6 +903,8 @@ mod tests {
             log_path: String::new(),
             admission_id: String::new(),
             target_dir: String::new(),
+            operation_id: String::new(),
+            workspace_id: String::new(),
             events: Vec::new(),
         };
         push_event(&mut record, "started");

@@ -1,6 +1,5 @@
 #!/bin/sh
 case "$1" in
   --version) printf '%s\n' "cargo 1.98.0-fixture" ;;
-  --print-path) command -v cargo ;;
   *) printf '%s\n' cargo ;;
 esac

@@ -1,0 +1,4 @@
+thread 'tests::adds' panicked at src/lib.rs:12:5:
+assertion `left == right` failed
+  left: 1
+ right: 2

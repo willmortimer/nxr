@@ -10,6 +10,8 @@ L1 runs when the change touches tool discovery, MCP behavior, execution policy, 
 
 L2 is the full adoption corpus. It is scheduled and budgeted. It is not required to sign a patch release whose L0 evidence and an approved exception already cover the change.
 
+L1 and L2 are nonblocking. A release does not wait on a model trial. The v3.9.1 `21/22` score and the `not_executed_quota_exhausted` observation stay attached to the executable that produced them.
+
 ## Evidence manifest
 
 One manifest links:

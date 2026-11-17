@@ -1,5 +1,5 @@
 #!/bin/sh
 case "$1" in
-  --print-path) command -v wrapper ;;
+  --version) printf '%s\n' "wrapper 1.98.0-fixture" ;;
   *) printf '%s\n' wrapper ;;
 esac

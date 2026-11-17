@@ -66,10 +66,15 @@ pub fn validation_plan(input: &ValidationPlanInput<'_>) -> ValidationPlan {
     if input.dirty {
         unresolved.extend(empty_inputs.iter().cloned());
     }
-    let status = if input.discovery_failed || (input.dirty && !empty_inputs.is_empty()) {
+    let status = if input.discovery_failed
+        || (input.dirty && !empty_inputs.is_empty())
+        || (!input.changed_paths.is_empty() && input.operations.is_empty())
+    {
         "unknown"
     } else if !input.unknown_nodes.is_empty() {
         "partial"
+    } else if input.operations.is_empty() {
+        "empty"
     } else {
         "complete"
     };
@@ -170,5 +175,28 @@ mod tests {
         assert_eq!(failed.coverage.status, "unknown");
         assert_eq!(failed.coverage.unresolved_inputs, ["discovery"]);
         assert!(!failed.execution.authorized);
+    }
+
+    #[test]
+    fn nothing_changed_is_empty_and_unselected_paths_are_unknown() {
+        let empty = validation_plan(&ValidationPlanInput {
+            discovery_failed: false,
+            dirty: false,
+            changed_paths: &[],
+            unknown_nodes: &[],
+            operations: &[],
+        });
+        assert_eq!(empty.coverage.status, "empty");
+        assert!(!empty.execution.authorized);
+        let paths = ["crates/nxr-task/src/lib.rs".to_owned()];
+        let unknown = validation_plan(&ValidationPlanInput {
+            discovery_failed: false,
+            dirty: false,
+            changed_paths: &paths,
+            unknown_nodes: &[],
+            operations: &[],
+        });
+        assert_eq!(unknown.coverage.status, "unknown");
+        assert!(!unknown.execution.authorized);
     }
 }

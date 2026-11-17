@@ -82,8 +82,10 @@ pub fn static_receipt(record: &OperationRecord) -> ExecutionReceipt {
 ///
 /// # Errors
 ///
-/// Returns an error when a probed path is empty. The probe already requires
-/// each path to match the process that printed it.
+/// Returns an error when rustc or cargo paths are empty. Wrapper, linker,
+/// target directory, and cache identity may be empty and become
+/// [`NOT_ENTERED`]. The probe already requires each non-empty path to match
+/// the process that printed it.
 pub fn verified_receipt(
     record: &OperationRecord,
     probe: &ShellProbe,
@@ -95,10 +97,10 @@ pub fn verified_receipt(
         shell_entered: true,
         rustc: entered(&probe.rustc_path, Some(probe.rustc_version.clone()))?,
         cargo: entered(&probe.cargo_path, Some(probe.cargo_version.clone()))?,
-        wrapper: entered(&probe.wrapper_path, None)?,
-        linker: entered(&probe.linker_path, None)?,
-        target_directory: entered(&probe.target_directory, None)?,
-        cache_identity: entered(&probe.cache_identity, None)?,
+        wrapper: optional_entered(&probe.wrapper_path, None),
+        linker: optional_entered(&probe.linker_path, None),
+        target_directory: optional_entered(&probe.target_directory, None),
+        cache_identity: optional_entered(&probe.cache_identity, None),
         events: Vec::new(),
     })
 }
@@ -134,14 +136,31 @@ pub fn probe_shell(enter: &Path) -> Result<ShellProbe, String> {
 const PROBE_SCRIPT: &str = r#"
 rustc_path=$(command -v rustc) || exit 1
 cargo_path=$(command -v cargo) || exit 1
-wrapper_path=$(command -v wrapper) || exit 1
-linker_path=$(command -v cc) || exit 1
-rustc_version=$(rustc --version) || exit 1
-cargo_version=$(cargo --version) || exit 1
-rustc_self=$(rustc --print-path) || exit 1
-cargo_self=$(cargo --print-path) || exit 1
-wrapper_self=$(wrapper --print-path) || exit 1
-linker_self=$(cc --print-path) || exit 1
+rustc_version=$("$rustc_path" --version) || exit 1
+cargo_version=$("$cargo_path" --version) || exit 1
+rustc_self="$rustc_path"
+cargo_self="$cargo_path"
+if [ -z "${RUSTC_WRAPPER:-}" ]; then
+  wrapper_path=
+  wrapper_self=
+else
+  wrapper_path=$(command -v "$RUSTC_WRAPPER" || true)
+  if [ -n "$wrapper_path" ]; then
+    "$wrapper_path" --version >/dev/null 2>&1 || true
+    wrapper_self="$wrapper_path"
+  else
+    wrapper_path=
+    wrapper_self=
+  fi
+fi
+linker_path=$(command -v cc || true)
+if [ -n "$linker_path" ]; then
+  "$linker_path" --version >/dev/null 2>&1 || true
+  linker_self="$linker_path"
+else
+  linker_path=
+  linker_self=
+fi
 printf 'rustc_path=%s\n' "$rustc_path"
 printf 'rustc_self=%s\n' "$rustc_self"
 printf 'rustc_version=%s\n' "$rustc_version"
@@ -166,8 +185,8 @@ fn parse_probe(text: &str) -> Result<ShellProbe, String> {
     }
     let rustc_path = matched(&fields, "rustc_path", "rustc_self")?;
     let cargo_path = matched(&fields, "cargo_path", "cargo_self")?;
-    let wrapper_path = matched(&fields, "wrapper_path", "wrapper_self")?;
-    let linker_path = matched(&fields, "linker_path", "linker_self")?;
+    let wrapper_path = matched_allow_empty(&fields, "wrapper_path", "wrapper_self")?;
+    let linker_path = matched_allow_empty(&fields, "linker_path", "linker_self")?;
     Ok(ShellProbe {
         rustc_path,
         rustc_version: required(&fields, "rustc_version")?,
@@ -175,8 +194,8 @@ fn parse_probe(text: &str) -> Result<ShellProbe, String> {
         cargo_version: required(&fields, "cargo_version")?,
         wrapper_path,
         linker_path,
-        target_directory: required(&fields, "target_directory")?,
-        cache_identity: required(&fields, "cache_identity")?,
+        target_directory: optional_field(&fields, "target_directory"),
+        cache_identity: optional_field(&fields, "cache_identity"),
     })
 }
 
@@ -193,6 +212,19 @@ fn matched(
     Ok(path)
 }
 
+fn matched_allow_empty(
+    fields: &std::collections::BTreeMap<String, String>,
+    path_key: &str,
+    self_key: &str,
+) -> Result<String, String> {
+    let path = optional_field(fields, path_key);
+    let printed = optional_field(fields, self_key);
+    if path != printed {
+        return Err(format!("{path_key} does not match the process that ran"));
+    }
+    Ok(path)
+}
+
 fn required(
     fields: &std::collections::BTreeMap<String, String>,
     key: &str,
@@ -202,6 +234,13 @@ fn required(
         return Err(format!("{key} was not entered"));
     }
     Ok(value.to_owned())
+}
+
+fn optional_field(fields: &std::collections::BTreeMap<String, String>, key: &str) -> String {
+    fields
+        .get(key)
+        .map(|value| value.trim().to_owned())
+        .unwrap_or_default()
 }
 
 fn not_entered() -> ToolObservation {
@@ -223,10 +262,23 @@ fn entered(path: &str, version: Option<String>) -> Result<ToolObservation, Strin
     })
 }
 
+fn optional_entered(path: &str, version: Option<String>) -> ToolObservation {
+    if path.is_empty() {
+        not_entered()
+    } else {
+        ToolObservation {
+            status: ENTERED.to_owned(),
+            path: Some(path.to_owned()),
+            version,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::catalog::{Declaration, OperationKind, WorkspaceInstance, operation_record};
+    use std::io::Write;
 
     fn record() -> OperationRecord {
         let workspace = WorkspaceInstance {
@@ -279,6 +331,11 @@ mod tests {
             receipt.wrapper.path.as_deref(),
             Some(probe.wrapper_path.as_str())
         );
+        assert!(
+            probe
+                .wrapper_path
+                .ends_with("fixtures/receipt-shell/bin/wrapper")
+        );
         assert_eq!(
             receipt.linker.path.as_deref(),
             Some(probe.linker_path.as_str())
@@ -304,5 +361,48 @@ mod tests {
             }],
         );
         assert_eq!(with_events.events[0].message, "started");
+    }
+
+    #[test]
+    fn probe_without_rustc_wrapper_leaves_wrapper_not_entered() {
+        let fixture_bin =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/receipt-shell/bin");
+        let fixture_bin = std::fs::canonicalize(&fixture_bin).expect("fixture bin");
+        let enter_path = std::env::temp_dir().join(format!(
+            "nxr-receipt-enter-no-wrapper-{}.sh",
+            std::process::id()
+        ));
+        {
+            let mut file = std::fs::File::create(&enter_path).expect("temp enter");
+            writeln!(
+                file,
+                "#!/bin/sh\nexport PATH=\"{}:$PATH\"\nunset RUSTC_WRAPPER\nexec \"$@\"",
+                fixture_bin.display()
+            )
+            .expect("write enter");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&enter_path)
+                .expect("enter metadata")
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&enter_path, perms).expect("chmod enter");
+        }
+
+        let probe = probe_shell(&enter_path).expect("probe without wrapper");
+        assert!(probe.wrapper_path.is_empty());
+        let receipt = verified_receipt(&record(), &probe).expect("receipt");
+        assert!(receipt.shell_entered);
+        assert_eq!(receipt.wrapper.status, NOT_ENTERED);
+        assert!(receipt.wrapper.path.is_none());
+        assert_eq!(receipt.rustc.status, "entered");
+        assert_eq!(
+            receipt.rustc.version.as_deref(),
+            Some("rustc 1.98.0-fixture")
+        );
+
+        let _ = std::fs::remove_file(&enter_path);
     }
 }

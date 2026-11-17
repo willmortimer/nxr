@@ -27,6 +27,10 @@ pub struct SessionStart {
     pub admission_id: Option<String>,
     /// Cargo target directory this local build will use.
     pub target_dir: Option<String>,
+    /// Operation this run belongs to. Empty for a raw session.
+    pub operation_id: Option<String>,
+    /// Workspace this run belongs to. Empty for a raw session.
+    pub workspace_id: Option<String>,
 }
 
 /// CPU tokens and memory the local machine will admit. This is not a cluster pool.
@@ -88,6 +92,8 @@ pub fn start_on(
             "cwd": request.cwd.as_ref().map(|path| path.display().to_string()),
             "admission_id": request.admission_id,
             "target_dir": request.target_dir,
+            "operation_id": request.operation_id,
+            "workspace_id": request.workspace_id,
         }),
     )?;
     let id = value
@@ -343,6 +349,8 @@ mod tests {
                 cwd: None,
                 admission_id: None,
                 target_dir: None,
+                operation_id: None,
+                workspace_id: None,
             },
             LocalBudget {
                 cpu: 1,
@@ -375,6 +383,8 @@ mod tests {
                 cwd: None,
                 admission_id: None,
                 target_dir: None,
+                operation_id: None,
+                workspace_id: None,
             },
             LocalBudget {
                 cpu: 2,
@@ -410,6 +420,8 @@ mod tests {
                 cwd: None,
                 admission_id: None,
                 target_dir: None,
+                operation_id: None,
+                workspace_id: None,
             },
             LocalBudget {
                 cpu: 2,
@@ -449,6 +461,12 @@ mod tests {
     fn nxr_bin() -> std::path::PathBuf {
         if let Ok(path) = std::env::var("CARGO_BIN_EXE_nxr") {
             return std::path::PathBuf::from(path);
+        }
+        if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
+            let candidate = std::path::PathBuf::from(dir).join("debug/nxr");
+            if candidate.is_file() {
+                return candidate;
+            }
         }
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/nxr")
     }

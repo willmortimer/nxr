@@ -12,6 +12,7 @@
 pub mod action_key;
 pub mod artifact;
 pub mod availability;
+pub mod cache_reason;
 pub mod catalog;
 pub mod ci_metadata;
 pub mod compiler_cache;
@@ -34,6 +35,7 @@ pub mod receipt;
 pub mod remote_execution;
 pub mod resolve;
 pub mod resources;
+pub mod run_diagnostics;
 pub mod run_events;
 pub mod run_journal;
 pub mod scheduler;
@@ -52,6 +54,7 @@ pub use availability::{
     ReuseDecision, current_requirements, record_producer_receipt, requirements_for_plan,
     resolve_availability, restore_recorded_output, reuse_decision, single_output_paths,
 };
+pub use cache_reason::{ContextIdentity, cache_reason, context_fingerprint};
 pub use catalog::{
     Declaration, EffectClass, EnvironmentExplanation, EnvironmentMismatch, EnvironmentView,
     FingerprintDecision, OperationKind, OperationPlan, OperationRecord, OperationSuggestion,
@@ -122,6 +125,7 @@ pub use resolve::{
     resolve_task, resolve_task_name,
 };
 pub use resources::{NodeResources, ResourceLimits};
+pub use run_diagnostics::{RunDiagnostic, parse_run_log};
 pub use run_events::{RunEventDecorator, format_rfc3339_utc};
 pub use scheduler::{NodeState, ScheduleOutcome, Scheduler, SchedulerError};
 pub use schema::{

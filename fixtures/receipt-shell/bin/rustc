@@ -1,6 +1,5 @@
 #!/bin/sh
 case "$1" in
   --version) printf '%s\n' "rustc 1.98.0-fixture" ;;
-  --print-path) command -v rustc ;;
   *) printf '%s\n' rustc ;;
 esac

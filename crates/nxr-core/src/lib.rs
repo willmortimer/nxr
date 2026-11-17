@@ -25,10 +25,12 @@ pub mod plan;
 pub mod plan_cache;
 pub mod projects;
 pub mod repo_path;
+pub mod run_binding;
 pub mod run_history;
 pub mod sanitize;
 pub mod source_identity;
 pub mod store_exe_cache;
+pub mod target_lock;
 pub mod trust;
 pub mod worker_schedule;
 
@@ -137,6 +139,7 @@ pub use projects::{
     listable_apps, load_projects_document, set_app_category,
 };
 pub use repo_path::{RepoPathError, normalize_repo_relative_path, validate_repo_relative_path};
+pub use run_binding::receipt_binding_matches;
 pub use run_history::{
     DEFAULT_RUN_HISTORY_LIMIT, DiscoveryCacheOutcome, RUN_HISTORY_LIMIT_ENV, RunSummary,
     RunSummaryInput, RunTargetKind, clear_runs, list_runs, record_run, record_run_result,

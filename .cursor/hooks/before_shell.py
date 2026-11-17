@@ -72,6 +72,23 @@ def is_compound(text: str) -> bool:
     return "|" in without_or
 
 
+def isolated_package_cargo(text: str) -> bool:
+    """Parent filtered fmt/test against a /tmp target. Workers stay denied elsewhere."""
+    if re.search(r"\bnix\s+(build|develop)\b", text):
+        return False
+    if re.search(r"(^|[;&|`(]\s*)rustup\b", text):
+        return False
+    match = re.search(r"CARGO_TARGET_DIR=(/tmp/[^\s;&|`$]+)", text)
+    if match is None:
+        return False
+    target = match.group(1)
+    if target.startswith("/tmp/../") or "/../" in target or not target.startswith("/tmp/"):
+        return False
+    if not re.search(r"(^|[;&|`(\s])\s*cargo\s+(test|fmt)\b", text):
+        return False
+    return bool(re.search(r"(^|\s)-p(\s|=)", text))
+
+
 def local_nxr_task(text: str) -> bool:
     if is_compound(text):
         return False
@@ -99,12 +116,14 @@ def decide(command: str) -> dict:
         )
     if text in DISCOVERY or local_nxr_task(text):
         return {"permission": "allow"}
+    if isolated_package_cargo(text):
+        return {"permission": "allow"}
     if text == "nxr" or text.startswith("nxr "):
         return ask(
             "This nxr command is not a known local check. Confirm it before it changes local or remote state."
         )
-    if re.search(r"(^|[;&|`(]\s*)cargo\b", text) or re.search(
-        r"(^|[;&|`(]\s*)nix\s+(build|develop)\b", text
+    if re.search(r"(^|[;&|`(\s])\s*cargo\b", text) or re.search(
+        r"(^|[;&|`(\s])\s*nix\s+(build|develop)\b", text
     ):
         return ask(
             "Prefer nxr list and nxr task. cargo, nix build, and nix develop need confirmation."

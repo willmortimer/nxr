@@ -13,9 +13,10 @@ use std::collections::BTreeMap;
 
 use nxr_task::{
     OperationKind, OperationRecord, ProjectExecutionPolicy, ReceiptEvent, ValidationPlanInput,
-    admit, apply_project_policy, attach_events, bind_supervisor, cancel, declared_input_digests,
-    execution_fingerprint_with_inputs, inspect, mark_admitting, mark_reconciliation,
-    static_receipt, validate_policy_parameters, validation_plan,
+    admit, apply_project_policy, attach_events, bind_supervisor, cache_reason, cancel,
+    declared_input_digests, execution_fingerprint_with_inputs, inspect, mark_admitting,
+    mark_reconciliation, parse_run_log, static_receipt, validate_policy_parameters,
+    validation_plan,
 };
 use serde_json::{Value, json};
 
@@ -257,7 +258,7 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "operations_plan_batch",
-            "Plan affected operations without starting them. Coverage is complete, partial, or unknown, and the result does not authorize execution",
+            "Plan affected operations without starting them. Coverage is empty, complete, partial, or unknown, and the result does not authorize execution",
             &["paths"],
             json!({"paths": {"type": "array", "items": {"type": "string"}, "description": "Changed repository-relative paths"}}),
         ),
@@ -291,6 +292,12 @@ fn tools() -> Vec<Value> {
                 "idempotency_key": {"type": "string", "description": "Caller key for this attempt"},
                 "parameters": {"type": "object", "description": "Parameter names listed for this operation id"}
             }),
+        ),
+        tool(
+            "runs_get_diagnostics",
+            "Classify an existing run log. This does not call a model or create a second store",
+            &["run_id"],
+            json!({"run_id": {"type": "string", "description": "Supervisor run id"}}),
         ),
         tool(
             "runs_get_logs",
@@ -426,9 +433,15 @@ pub fn call_tool(
                 .unwrap_or("");
             Ok(json!(inspect(run_dir, run_id, workspace_id)?))
         }
-        "runs_get_receipt" => {
-            run_receipt(&arguments, records, workspace_root, supervisor_dir, trusted)
-        }
+        "runs_get_receipt" => run_receipt(
+            &arguments,
+            records,
+            workspace_id,
+            workspace_root,
+            supervisor_dir,
+            trusted,
+        ),
+        "runs_get_diagnostics" => run_diagnostics(&arguments, supervisor_dir),
         "runs_get_logs" => read_run_log(
             &arguments,
             run_dir,
@@ -524,6 +537,17 @@ fn start(
             mark_admitting(run_dir, key)?;
             let (command, cwd) = command_for(launch, &record, &positional, workspace_root)?;
             let admission = admission_id(workspace_id, workspace_root, key)?;
+            let target_dir = if command_locks_cargo_target(&command) {
+                let cargo_target = std::env::var("CARGO_TARGET_DIR").ok();
+                let effective = nxr_core::target_lock::effective_target_dir(
+                    workspace_root,
+                    cargo_target.as_deref(),
+                    &command,
+                );
+                Some(nxr_core::execution_owner::canonical_target_dir(&effective))
+            } else {
+                None
+            };
             match start_on(
                 supervisor_socket,
                 &SessionStart {
@@ -535,7 +559,9 @@ fn start(
                     memory_mib: 0,
                     cwd: Some(cwd),
                     admission_id: Some(admission.clone()),
-                    target_dir: Some(canonical_cargo_target(workspace_root)),
+                    target_dir,
+                    operation_id: Some(record.operation_id.clone()),
+                    workspace_id: Some(workspace_id.to_owned()),
                 },
                 LocalBudget::from_process(),
                 &BTreeMap::new(),
@@ -600,6 +626,7 @@ fn start(
 fn run_receipt(
     arguments: &Value,
     records: &[OperationRecord],
+    workspace_id: &str,
     workspace_root: &Path,
     supervisor_dir: &Path,
     trusted: bool,
@@ -613,7 +640,29 @@ fn run_receipt(
     let visible = policy_view(records, workspace_root, trusted)?;
     let record =
         nxr_task::describe(&visible, id).ok_or_else(|| format!("unknown operation {id}"))?;
+    let stored_run = nxr_core::execution_owner::inspect(supervisor_dir, run_id)?;
+    let stored_operation = stored_run
+        .get("operation_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let stored_workspace = stored_run
+        .get("workspace_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    nxr_core::receipt_binding_matches(
+        stored_operation,
+        stored_workspace,
+        &record.operation_id,
+        workspace_id,
+    )?;
     let mut receipt = static_receipt(record);
+    let reason = cache_reason(
+        None,
+        &unverified_context(),
+        false,
+        false,
+        receipt.shell_entered,
+    );
     let stored = nxr_core::execution_owner::events(supervisor_dir, run_id, 0)?;
     let events = stored
         .as_array()
@@ -632,7 +681,47 @@ fn run_receipt(
         copied.push(ReceiptEvent { cursor, message });
     }
     attach_events(&mut receipt, copied);
-    Ok(json!(receipt))
+    let mut value = serde_json::to_value(&receipt).map_err(|err| err.to_string())?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("cache_reason".to_owned(), json!(reason));
+    }
+    Ok(value)
+}
+
+fn unverified_context() -> nxr_task::ContextIdentity {
+    nxr_task::ContextIdentity {
+        rustc_version: String::new(),
+        wrapper_name: String::new(),
+        target_dir: String::new(),
+        cache_mode: String::new(),
+    }
+}
+
+fn run_diagnostics(arguments: &Value, supervisor_dir: &Path) -> Result<Value, String> {
+    let run_id = arguments
+        .get("run_id")
+        .and_then(Value::as_str)
+        .filter(|run_id| !run_id.is_empty())
+        .ok_or_else(|| "run_id is required".to_owned())?;
+    let _ = nxr_core::execution_owner::inspect(supervisor_dir, run_id)?;
+    let log = nxr_core::execution_owner::logs(supervisor_dir, run_id)?;
+    let text = log.get("text").and_then(Value::as_str).unwrap_or("");
+    let diagnostics = parse_run_log(text);
+    let items = diagnostics
+        .iter()
+        .map(|item| {
+            json!({
+                "category": item.category,
+                "file": item.file,
+                "line": item.line,
+                "excerpt": item.excerpt,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "run_id": run_id,
+        "diagnostics": items
+    }))
 }
 
 fn policy_view(
@@ -710,6 +799,20 @@ fn parameter_map(arguments: &Value) -> Result<BTreeMap<String, String>, String> 
         parameters.insert(name.clone(), text.to_owned());
     }
     Ok(parameters)
+}
+
+/// A cargo argv, or an explicit `--target-dir`, owns one output directory.
+/// `echo`, `sleep`, and `nxr task` do not lock the supervisor's `CARGO_TARGET_DIR`.
+fn command_locks_cargo_target(command: &[String]) -> bool {
+    if command
+        .iter()
+        .any(|arg| arg == "--target-dir" || arg.starts_with("--target-dir="))
+    {
+        return true;
+    }
+    command.first().is_some_and(|arg| {
+        Path::new(arg).file_name().and_then(|name| name.to_str()) == Some("cargo")
+    })
 }
 
 fn command_for(
@@ -906,6 +1009,7 @@ fn known_arguments(name: &str) -> Option<&'static [&'static str]> {
         "operations_plan_batch" => &["paths"],
         "runs_inspect" | "runs_cancel" => &["run_id"],
         "runs_get_receipt" => &["id", "run_id"],
+        "runs_get_diagnostics" => &["run_id"],
         "workspace_affected" => &["paths"],
         "operations_start" => &["id", "idempotency_key", "parameters"],
         "runs_get_logs" => &["run_id", "offset", "limit"],
@@ -1038,17 +1142,6 @@ fn tree_is_dirty(root: &Path) -> bool {
     git_working_tree_changes(root)
         .map(|paths| !paths.is_empty())
         .unwrap_or(true)
-}
-
-fn canonical_cargo_target(workspace_root: &Path) -> String {
-    let raw = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_owned());
-    let path = PathBuf::from(raw);
-    let joined = if path.is_absolute() {
-        path
-    } else {
-        workspace_root.join(path)
-    };
-    nxr_core::execution_owner::canonical_target_dir(&joined)
 }
 
 fn reservation_dir(workspace_id: &str, workspace_root: &Path) -> Result<PathBuf, String> {
@@ -1241,7 +1334,12 @@ mod tests {
         };
         let started = nxr_core::execution_owner::start(
             &supervisor,
-            &json!({ "command": [true_bin], "label": "receipt-fixture" }),
+            &json!({
+                "command": [true_bin],
+                "label": "receipt-fixture",
+                "operation_id": "lattice:task:test",
+                "workspace_id": "lattice"
+            }),
         )
         .unwrap();
         let run_id = started["id"].as_str().unwrap();
@@ -1268,6 +1366,7 @@ mod tests {
         assert_eq!(receipt["shell_entered"], false);
         assert_eq!(receipt["rustc"]["status"], "not entered");
         assert_eq!(receipt["schema"], "execution-receipt-v1");
+        assert_eq!(receipt["cache_reason"], "context_unverified");
         let stored = nxr_core::execution_owner::events(&supervisor, run_id, 0).unwrap();
         assert_eq!(receipt["events"], stored);
         assert!(
@@ -1277,6 +1376,85 @@ mod tests {
                 .iter()
                 .any(|event| event["message"] == "started")
         );
+        forget_run(run_id);
+    }
+
+    #[test]
+    fn receipt_rejects_a_run_for_another_operation() {
+        let records = records();
+        let dir = tempfile::tempdir().unwrap();
+        let supervisor = dir.path().join("supervisor");
+        let true_bin = if std::path::Path::new("/usr/bin/true").exists() {
+            "/usr/bin/true"
+        } else {
+            "/bin/true"
+        };
+        let started = nxr_core::execution_owner::start(
+            &supervisor,
+            &json!({
+                "command": [true_bin],
+                "label": "other-operation",
+                "operation_id": "lattice:task:reset-db",
+                "workspace_id": "lattice"
+            }),
+        )
+        .unwrap();
+        let run_id = started["id"].as_str().unwrap();
+        let receipt = invoke(
+            &json!({
+                "name": "runs_get_receipt",
+                "arguments": {"id": "lattice:task:test", "run_id": run_id}
+            }),
+            &records,
+            std::path::Path::new("/tmp/lattice"),
+            dir.path(),
+            &dir.path().join("nxrd.sock"),
+            true,
+            &Launch::Task,
+        );
+        assert!(receipt.unwrap_err().contains("does not match"));
+        forget_run(run_id);
+    }
+
+    #[test]
+    fn diagnostics_classify_the_existing_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let supervisor = dir.path().join("supervisor");
+        let started = nxr_core::execution_owner::start(
+            &supervisor,
+            &json!({
+                "command": ["/bin/sh", "-c", "echo policy approval required"],
+                "label": "diagnostic-fixture",
+                "operation_id": "lattice:task:test",
+                "workspace_id": "lattice"
+            }),
+        )
+        .unwrap();
+        let run_id = started["id"].as_str().unwrap();
+        for _ in 0..50 {
+            let record = nxr_core::execution_owner::inspect(&supervisor, run_id).unwrap();
+            if record["status"] == "exited" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let report = invoke(
+            &json!({
+                "name": "runs_get_diagnostics",
+                "arguments": {"run_id": run_id}
+            }),
+            &records(),
+            std::path::Path::new("/tmp/lattice"),
+            dir.path(),
+            &dir.path().join("nxrd.sock"),
+            true,
+            &Launch::Task,
+        )
+        .unwrap();
+        assert_eq!(report["run_id"], run_id);
+        assert_eq!(report["diagnostics"][0]["category"], "policy_refusal");
+        assert!(report["diagnostics"][0]["file"].is_null());
+        assert!(report["diagnostics"][0]["line"].is_null());
         forget_run(run_id);
     }
 
