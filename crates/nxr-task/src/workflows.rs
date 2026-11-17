@@ -1752,12 +1752,10 @@ executor = { remote = { target = "windows-pc", task = "fixture", source_url = "h
             .expect("build");
         assert_eq!(build.source_member.as_deref(), Some("lattice"));
         assert!(!build.remote_eligible);
-        let remote = plan
-            .nodes
-            .iter()
-            .find(|node| node.id == "remote-win")
-            .expect("remote");
-        assert!(remote.remote_eligible);
+        assert!(
+            plan.nodes.iter().all(|node| node.id != "remote-win"),
+            "an unrelated remote task is not part of the build subgraph"
+        );
     }
 
     #[test]
