@@ -28,7 +28,7 @@
 //! `executor` sets exactly one of `flake` (app name), `native` (argv), or
 //! `winbuild` (task id).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -173,6 +173,10 @@ pub struct WorkflowTask {
     /// Named outputs this task restores from dependencies before it runs.
     pub inputs: Vec<String>,
     pub operation: Operation,
+    /// Checkout member that owns this task. `None` is the invoking checkout.
+    pub source_member: Option<String>,
+    /// `true` when the executor is [`Operation::Remote`].
+    pub remote_eligible: bool,
 }
 
 /// Parsed `.nxr/workflows.toml`.
@@ -355,6 +359,8 @@ pub fn plan_workflow_document(
                 inputs: task.inputs.clone(),
                 artifact_reuse: false,
                 cargo_output: false,
+                source_member: task.source_member.clone(),
+                remote_eligible: task.remote_eligible,
             })
         })
         .collect();
@@ -424,6 +430,12 @@ fn parse_workflow_str(text: &str, path: &str) -> Result<WorkflowDocument, Workfl
         });
     }
 
+    let source_members: BTreeMap<String, Option<String>> = file
+        .tasks
+        .iter()
+        .map(|(name, task)| (name.clone(), task.source_member.clone()))
+        .collect();
+
     let mut tasks = BTreeMap::new();
     for (name, task) in file.tasks {
         validate_task_name(&name).map_err(|message| WorkflowError::Invalid {
@@ -458,13 +470,26 @@ fn parse_workflow_str(text: &str, path: &str) -> Result<WorkflowDocument, Workfl
                 message,
             }
         })?;
+        let remote_eligible = matches!(operation, Operation::Remote { .. });
+        let depends_on = task
+            .depends_on
+            .iter()
+            .map(|edge| {
+                resolve_workflow_dependency(edge, &name, &source_members, path).map_err(|message| {
+                    WorkflowError::Invalid {
+                        path: path.to_owned(),
+                        message,
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let resources = task
             .resources
             .as_ref()
             .map(NodeResources::from_task_resources)
             .unwrap_or_default();
         for input in &task.inputs {
-            if !task.depends_on.iter().any(|edge| edge == input) {
+            if !depends_on.iter().any(|edge| edge == input) {
                 return Err(WorkflowError::Invalid {
                     path: path.to_owned(),
                     message: format!("task `{name}` input `{input}` is not a dependency"),
@@ -474,7 +499,7 @@ fn parse_workflow_str(text: &str, path: &str) -> Result<WorkflowDocument, Workfl
         tasks.insert(
             name,
             WorkflowTask {
-                depends_on: task.depends_on,
+                depends_on,
                 platform,
                 architecture: task.architecture,
                 resources,
@@ -483,6 +508,8 @@ fn parse_workflow_str(text: &str, path: &str) -> Result<WorkflowDocument, Workfl
                 artifacts: task.artifacts,
                 inputs: task.inputs.clone(),
                 operation,
+                source_member: task.source_member,
+                remote_eligible,
             },
         );
     }
@@ -491,6 +518,74 @@ fn parse_workflow_str(text: &str, path: &str) -> Result<WorkflowDocument, Workfl
         schema_version: file.schema_version,
         tasks,
     })
+}
+
+/// Task keys whose [`WorkflowTask::source_member`] matches `member`, plus transitive dependents.
+#[must_use]
+pub fn invalidated_by_member(document: &WorkflowDocument, member: &str) -> BTreeSet<String> {
+    let seeds: Vec<String> = document
+        .tasks
+        .iter()
+        .filter(|(_, task)| task.source_member.as_deref() == Some(member))
+        .map(|(name, _)| name.clone())
+        .collect();
+    if seeds.is_empty() {
+        return BTreeSet::new();
+    }
+
+    let mut dependents: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (name, task) in &document.tasks {
+        for dep in &task.depends_on {
+            dependents
+                .entry(dep.as_str())
+                .or_default()
+                .push(name.as_str());
+        }
+    }
+
+    let mut invalidated = BTreeSet::new();
+    let mut stack = seeds.iter().map(String::as_str).collect::<Vec<_>>();
+    while let Some(current) = stack.pop() {
+        if !invalidated.insert(current.to_owned()) {
+            continue;
+        }
+        if let Some(children) = dependents.get(current) {
+            for child in children {
+                stack.push(child);
+            }
+        }
+    }
+    invalidated
+}
+
+fn resolve_workflow_dependency(
+    edge: &str,
+    task_name: &str,
+    source_members: &BTreeMap<String, Option<String>>,
+    path: &str,
+) -> Result<String, String> {
+    if let Some((member, dep_task)) = edge.split_once(':') {
+        if member.is_empty() || dep_task.is_empty() {
+            return Err(format!(
+                "task `{task_name}` dependency `{edge}` in {path} is invalid"
+            ));
+        }
+        let mut matched = None;
+        for (key, source_member) in source_members {
+            if source_member.as_deref() == Some(member) && key == dep_task {
+                if matched.is_some() {
+                    return Err(format!(
+                        "task `{task_name}` dependency `{edge}` in {path} is ambiguous"
+                    ));
+                }
+                matched = Some(key.clone());
+            }
+        }
+        matched
+            .ok_or_else(|| format!("task `{task_name}` dependency `{edge}` in {path} is unknown"))
+    } else {
+        Ok(edge.to_owned())
+    }
 }
 
 fn validate_task_name(name: &str) -> Result<(), String> {
@@ -855,6 +950,8 @@ struct WorkflowFile {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WorkflowTaskFile {
+    #[serde(default)]
+    source_member: Option<String>,
     #[serde(default, alias = "dependsOn")]
     depends_on: Vec<String>,
     #[serde(default)]
@@ -1599,5 +1696,253 @@ executor = { native = ["true"] }
 "#;
         let error = parse_workflow_str(missing, "workflows.toml").expect_err("input");
         assert!(error.to_string().contains("is not a dependency"));
+    }
+
+    #[test]
+    fn source_member_cross_member_dep_plans_in_order() {
+        let document = parse(
+            r#"
+schema_version = 1
+
+[tasks.typecheck]
+source_member = "stargate"
+executor = { native = ["/bin/true"] }
+
+[tasks.build]
+source_member = "lattice"
+depends_on = ["stargate:typecheck"]
+executor = { native = ["/bin/true"] }
+
+[tasks.remote-win]
+executor = { remote = { target = "windows-pc", task = "fixture", source_url = "https://example.invalid/repo.git", source_revision = "0123456789abcdef0123456789abcdef01234567", lock_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }
+"#,
+        );
+        assert_eq!(
+            document.tasks["build"].depends_on,
+            vec!["typecheck".to_owned()]
+        );
+        assert!(!document.tasks["typecheck"].remote_eligible);
+        assert!(!document.tasks["build"].remote_eligible);
+        assert!(document.tasks["remote-win"].remote_eligible);
+
+        let plan = plan_workflow_document(
+            &document,
+            &WorkflowPlanMode::Explicit {
+                root: Some("build".to_owned()),
+            },
+            FailurePolicy::FailFast,
+            None,
+        )
+        .expect("plan");
+        assert_eq!(
+            plan.serial_order,
+            vec!["typecheck".to_owned(), "build".to_owned()]
+        );
+        let typecheck = plan
+            .nodes
+            .iter()
+            .find(|node| node.id == "typecheck")
+            .expect("typecheck");
+        assert_eq!(typecheck.source_member.as_deref(), Some("stargate"));
+        assert!(!typecheck.remote_eligible);
+        let build = plan
+            .nodes
+            .iter()
+            .find(|node| node.id == "build")
+            .expect("build");
+        assert_eq!(build.source_member.as_deref(), Some("lattice"));
+        assert!(!build.remote_eligible);
+        let remote = plan
+            .nodes
+            .iter()
+            .find(|node| node.id == "remote-win")
+            .expect("remote");
+        assert!(remote.remote_eligible);
+    }
+
+    #[test]
+    fn workflows_without_source_member_still_parse_and_plan() {
+        let document = parse(
+            r#"
+schema_version = 1
+
+[tasks.prep]
+executor = { native = ["/bin/true"] }
+"#,
+        );
+        assert!(document.tasks["prep"].source_member.is_none());
+        let plan = plan_workflow_document(
+            &document,
+            &WorkflowPlanMode::Explicit {
+                root: Some("prep".to_owned()),
+            },
+            FailurePolicy::FailFast,
+            None,
+        )
+        .expect("plan");
+        assert!(plan.nodes.iter().all(|node| node.source_member.is_none()));
+        assert!(plan.nodes.iter().all(|node| !node.remote_eligible));
+    }
+
+    #[test]
+    fn unknown_member_dependency_edge_is_invalid() {
+        let error = parse_workflow_str(
+            r#"
+schema_version = 1
+
+[tasks.build]
+source_member = "lattice"
+depends_on = ["missing:task"]
+executor = { native = ["/bin/true"] }
+"#,
+            "workflows.toml",
+        )
+        .expect_err("missing member edge");
+        assert!(matches!(error, WorkflowError::Invalid { .. }));
+        assert!(error.to_string().contains("missing:task"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_member_native_graph_runs_in_dependency_order() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::create_dir(root.path().join("stargate")).expect("stargate");
+        std::fs::create_dir(root.path().join("lattice")).expect("lattice");
+        let document = parse(
+            r#"
+schema_version = 1
+
+[tasks.typecheck]
+source_member = "stargate"
+working_directory = "stargate"
+executor = { native = ["/bin/sh", "-c", "echo typecheck >> ../marker"] }
+
+[tasks.build]
+source_member = "lattice"
+working_directory = "lattice"
+depends_on = ["stargate:typecheck"]
+executor = { native = ["/bin/sh", "-c", "echo build >> ../marker"] }
+
+[tasks.test]
+source_member = "lattice"
+working_directory = "lattice"
+depends_on = ["build"]
+executor = { native = ["/bin/sh", "-c", "echo test >> ../marker"] }
+"#,
+        );
+        let plan = plan_workflow_document(
+            &document,
+            &WorkflowPlanMode::Explicit {
+                root: Some("test".to_owned()),
+            },
+            FailurePolicy::FailFast,
+            None,
+        )
+        .expect("plan");
+        let ctx = ExecContext {
+            path: std::env::var("PATH").unwrap_or_default(),
+            nix_override: None,
+            cwd: Some(root.path().to_path_buf()),
+            env: BTreeMap::new(),
+        };
+        let run = run_operation_plan(&plan, &ctx, 1, None).expect("run");
+        assert_eq!(run.exit_code, 0);
+        assert_eq!(
+            run.order,
+            vec![
+                "typecheck".to_owned(),
+                "build".to_owned(),
+                "test".to_owned()
+            ]
+        );
+        let marker = std::fs::read_to_string(root.path().join("marker")).expect("marker contents");
+        assert_eq!(marker, "typecheck\nbuild\ntest\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_member_fail_fast_stops_after_failed_cross_member_leaf() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::create_dir(root.path().join("stargate")).expect("stargate");
+        std::fs::create_dir(root.path().join("lattice")).expect("lattice");
+        let document = parse(
+            r#"
+schema_version = 1
+
+[tasks.typecheck]
+source_member = "stargate"
+working_directory = "stargate"
+executor = { native = ["/bin/sh", "-c", "exit 7"] }
+
+[tasks.build]
+source_member = "lattice"
+working_directory = "lattice"
+depends_on = ["stargate:typecheck"]
+executor = { native = ["/bin/sh", "-c", "echo build >> ../marker"] }
+
+[tasks.test]
+source_member = "lattice"
+working_directory = "lattice"
+depends_on = ["build"]
+executor = { native = ["/bin/sh", "-c", "echo test >> ../marker"] }
+"#,
+        );
+        let plan = plan_workflow_document(
+            &document,
+            &WorkflowPlanMode::Explicit {
+                root: Some("test".to_owned()),
+            },
+            FailurePolicy::FailFast,
+            None,
+        )
+        .expect("plan");
+        let ctx = ExecContext {
+            path: std::env::var("PATH").unwrap_or_default(),
+            nix_override: None,
+            cwd: Some(root.path().to_path_buf()),
+            env: BTreeMap::new(),
+        };
+        let run = run_operation_plan(&plan, &ctx, 2, None).expect("run");
+        assert_eq!(run.exit_code, 7);
+        assert_eq!(run.order, vec!["typecheck".to_owned()]);
+        assert!(!root.path().join("marker").exists());
+    }
+
+    #[test]
+    fn invalidated_by_member_collects_member_tasks_and_dependents() {
+        let document = parse(
+            r#"
+schema_version = 1
+
+[tasks.typecheck]
+source_member = "stargate"
+executor = { native = ["/bin/true"] }
+
+[tasks.build]
+source_member = "lattice"
+depends_on = ["stargate:typecheck"]
+executor = { native = ["/bin/true"] }
+
+[tasks.test]
+source_member = "lattice"
+depends_on = ["build"]
+executor = { native = ["/bin/true"] }
+
+[tasks.nxr-only]
+source_member = "nxr"
+executor = { native = ["/bin/true"] }
+"#,
+        );
+        let stargate = invalidated_by_member(&document, "stargate");
+        assert_eq!(
+            stargate,
+            BTreeSet::from([
+                "typecheck".to_owned(),
+                "build".to_owned(),
+                "test".to_owned(),
+            ])
+        );
+        assert!(!stargate.contains("nxr-only"));
+        assert!(invalidated_by_member(&document, "cell").is_empty());
     }
 }

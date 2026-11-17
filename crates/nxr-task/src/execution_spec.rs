@@ -1251,6 +1251,8 @@ mod tests {
             operation: Operation::NativeCommand {
                 argv: vec!["/usr/bin/true".to_owned()],
             },
+            source_member: None,
+            remote_eligible: false,
         }
     }
 

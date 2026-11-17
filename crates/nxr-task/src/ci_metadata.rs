@@ -92,6 +92,8 @@ mod tests {
             operation: Operation::NativeCommand {
                 argv: vec!["/usr/bin/true".to_owned()],
             },
+            source_member: None,
+            remote_eligible: false,
         };
         let spec = execution_spec_for_task(
             &SourceSetV1::fixture("src_fixture"),

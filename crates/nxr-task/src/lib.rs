@@ -178,6 +178,7 @@ pub use validation_plan::{
 };
 pub use workflows::{
     WORKFLOWS_RELATIVE_PATH, WORKFLOWS_SCHEMA_VERSION, WorkflowDocument, WorkflowError,
-    WorkflowPlanMode, WorkflowPlatform, WorkflowTask, load_workflow_document,
-    plan_workflow_document, plan_workflows, workflow_mode_from_selector, workflow_path,
+    WorkflowPlanMode, WorkflowPlatform, WorkflowTask, invalidated_by_member,
+    load_workflow_document, plan_workflow_document, plan_workflows, workflow_mode_from_selector,
+    workflow_path,
 };

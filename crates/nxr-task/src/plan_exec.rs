@@ -113,6 +113,12 @@ pub struct PlanNode {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub cargo_output: bool,
+    /// Checkout member that owns this workflow task. Omitted for the invoking checkout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_member: Option<String>,
+    /// Whether the task executor is a remote worker (scheduling hint only).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remote_eligible: bool,
 }
 
 /// Versioned, immutable execution plan for a chosen root.
@@ -247,6 +253,8 @@ pub fn build_execution_plan_roots(
                 inputs: Vec::new(),
                 artifact_reuse: artifact_reuse_allowed(definition),
                 cargo_output: definition.cargo_output,
+                source_member: None,
+                remote_eligible: false,
             })
         })
         .collect();
