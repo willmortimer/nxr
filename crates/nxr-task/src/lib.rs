@@ -135,12 +135,12 @@ pub use remote_execution::{
     ExecutionTransport, cancel_execution, execution_status, replay_execution, submit_execution,
 };
 pub use remote_journal::{
-    RemoteAttempt, begin_remote, cancel_and_bind, record_admitted, record_cancel, record_lease,
-    remote_attempt_for_run, remote_run_id, submit_and_bind,
+    RemoteAttempt, begin_remote, cancel_and_bind, observe_replay, record_admitted, record_cancel,
+    record_lease, record_replay_cursor, remote_attempt_for_run, remote_run_id, submit_and_bind,
 };
 pub use remote_receipt::{
-    RemoteReceipt, dispositions_from_journal, read_remote_receipt, store_remote_receipt,
-    verify_artifact,
+    RemoteReceipt, artifact_is_authoritative, dispositions_from_journal, read_remote_receipt,
+    store_remote_receipt, verify_artifact,
 };
 pub use resolve::{
     ResolveTaskError, enrich_apps_with_listing_metadata, listable_tasks, listable_tasks_filtered,
