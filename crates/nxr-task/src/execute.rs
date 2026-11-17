@@ -87,6 +87,9 @@ pub struct ExecContext {
     pub cwd: Option<PathBuf>,
     /// Extra environment variables. `PATH` still comes from [`Self::path`].
     pub env: BTreeMap<String, String>,
+    /// Checkout roots keyed by workflow `source_member`. Empty preserves
+    /// single-checkout cwd joining.
+    pub member_roots: BTreeMap<String, PathBuf>,
 }
 
 impl ExecContext {
@@ -98,6 +101,7 @@ impl ExecContext {
             nix_override: None,
             cwd: None,
             env: BTreeMap::new(),
+            member_roots: BTreeMap::new(),
         }
     }
 }
@@ -434,7 +438,15 @@ pub fn run_operation_plan_callbacks(
 fn context_for_node(base: &ExecContext, node: &PlanNode) -> ExecContext {
     let mut env = base.env.clone();
     env.extend(node.environment.clone());
-    let cwd = match (&node.working_directory, &base.cwd) {
+    let root = match node.source_member.as_deref() {
+        Some(member) => base
+            .member_roots
+            .get(member)
+            .cloned()
+            .or_else(|| base.cwd.clone()),
+        None => base.cwd.clone(),
+    };
+    let cwd = match (&node.working_directory, &root) {
         (Some(relative), Some(root)) => Some(root.join(relative)),
         (Some(relative), None) => Some(PathBuf::from(relative)),
         (None, cwd) => cwd.clone(),
@@ -458,6 +470,7 @@ fn context_for_node(base: &ExecContext, node: &PlanNode) -> ExecContext {
         nix_override: base.nix_override.clone(),
         cwd,
         env,
+        member_roots: base.member_roots.clone(),
     }
 }
 
@@ -467,6 +480,7 @@ fn record_artifacts(
     id: &str,
     mut sink: Option<&mut &mut dyn EventSink>,
 ) -> Result<(), String> {
+    let mut artifact_digests = BTreeMap::new();
     for artifact in &node.artifacts {
         let path = match &ctx.cwd {
             Some(cwd) => cwd.join(artifact),
@@ -485,11 +499,36 @@ fn record_artifacts(
                 message: format!("artifact {artifact} sha256:{hex}"),
             });
         }
+        artifact_digests.insert(artifact.clone(), hex);
     }
     if let Some(cwd) = &ctx.cwd {
         crate::artifact::publish_checkout_catalog(cwd)?;
     }
+    if let Some(member) = node.source_member.as_deref()
+        && !artifact_digests.is_empty()
+        && let Some(checkout) = ctx.member_roots.get(member)
+    {
+        write_member_receipt(checkout, id, member, &artifact_digests)?;
+    }
     Ok(())
+}
+
+fn write_member_receipt(
+    checkout: &Path,
+    node: &str,
+    source_member: &str,
+    artifacts: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let receipts = checkout.join(".nxr").join("receipts");
+    std::fs::create_dir_all(&receipts).map_err(|error| format!("create receipts dir: {error}"))?;
+    let path = receipts.join(format!("{node}.json"));
+    let body = serde_json::json!({
+        "node": node,
+        "source_member": source_member,
+        "artifacts": artifacts,
+    });
+    std::fs::write(&path, format!("{body}\n"))
+        .map_err(|error| format!("write receipt {}: {error}", path.display()))
 }
 
 fn emit(sink: Option<&mut &mut dyn EventSink>, event: Event) {
@@ -836,6 +875,7 @@ mod tests {
             nix_override: Some("/definitely/missing/nix".to_owned()),
             cwd: None,
             env: BTreeMap::new(),
+            member_roots: BTreeMap::new(),
         };
         let error = run_operation_plan(&plan, &ctx, 1, None).expect_err("nix missing");
         assert_eq!(error.code(), UNAVAILABLE_EXECUTOR);
@@ -857,6 +897,7 @@ mod tests {
             nix_override: Some("/definitely/missing/nix".to_owned()),
             cwd: None,
             env: BTreeMap::new(),
+            member_roots: BTreeMap::new(),
         };
         let error = execute_operation(&operation, &ctx).expect_err("winbuild missing");
         assert_eq!(error.code(), UNAVAILABLE_EXECUTOR);
@@ -887,6 +928,7 @@ mod tests {
             nix_override: Some("/definitely/missing/nix".to_owned()),
             cwd: None,
             env: BTreeMap::new(),
+            member_roots: BTreeMap::new(),
         };
         let error = execute_operation(&operation, &ctx).expect_err("winbuild missing");
         assert_eq!(error.code(), UNAVAILABLE_EXECUTOR);
@@ -910,6 +952,7 @@ mod tests {
             nix_override: None,
             cwd: None,
             env: BTreeMap::new(),
+            member_roots: BTreeMap::new(),
         };
         let result = execute_operation(&operation, &ctx).expect("fixture app");
         assert!(matches!(result, OperationResult::Exited { code: 0, .. }));

@@ -564,6 +564,10 @@ fn resolve_workflow_dependency(
     source_members: &BTreeMap<String, Option<String>>,
     path: &str,
 ) -> Result<String, String> {
+    // Prefer an exact task key, including keys that contain `:`.
+    if source_members.contains_key(edge) {
+        return Ok(edge.to_owned());
+    }
     if let Some((member, dep_task)) = edge.split_once(':') {
         if member.is_empty() || dep_task.is_empty() {
             return Err(format!(
@@ -1221,6 +1225,7 @@ executor = { native = ["/bin/true"] }
                 nix_override: Some("/definitely/missing/nix".to_owned()),
                 cwd: None,
                 env: BTreeMap::new(),
+                member_roots: BTreeMap::new(),
             };
             let mut run_sink = RecordingSink::new();
             let run = run_operation_plan(&plan, &ctx, 1, Some(&mut run_sink)).expect("run native");
@@ -1461,6 +1466,7 @@ NXR_WF_PROBE = "from-env"
             nix_override: None,
             cwd: Some(root.path().to_path_buf()),
             env: BTreeMap::new(),
+            member_roots: BTreeMap::new(),
         };
         let run = run_operation_plan(&plan, &ctx, 1, Some(&mut sink)).expect("run");
         assert_eq!(run.exit_code, 0);
@@ -1842,6 +1848,7 @@ executor = { native = ["/bin/sh", "-c", "echo test >> ../marker"] }
             nix_override: None,
             cwd: Some(root.path().to_path_buf()),
             env: BTreeMap::new(),
+            member_roots: BTreeMap::new(),
         };
         let run = run_operation_plan(&plan, &ctx, 1, None).expect("run");
         assert_eq!(run.exit_code, 0);
@@ -1899,6 +1906,7 @@ executor = { native = ["/bin/sh", "-c", "echo test >> ../marker"] }
             nix_override: None,
             cwd: Some(root.path().to_path_buf()),
             env: BTreeMap::new(),
+            member_roots: BTreeMap::new(),
         };
         let run = run_operation_plan(&plan, &ctx, 2, None).expect("run");
         assert_eq!(run.exit_code, 7);
@@ -1942,5 +1950,168 @@ executor = { native = ["/bin/true"] }
         );
         assert!(!stargate.contains("nxr-only"));
         assert!(invalidated_by_member(&document, "cell").is_empty());
+    }
+
+    #[test]
+    fn colon_task_key_is_preferred_over_member_split() {
+        let document = parse(
+            r#"
+schema_version = 1
+
+[tasks."lattice:test"]
+source_member = "lattice"
+executor = { native = ["/bin/true"] }
+
+[tasks."stargate:test"]
+source_member = "stargate"
+executor = { native = ["/bin/true"] }
+
+[tasks.test]
+source_member = "lattice"
+executor = { native = ["/bin/true"] }
+
+[tasks.consumer]
+depends_on = ["lattice:test"]
+executor = { native = ["/bin/true"] }
+"#,
+        );
+        assert_eq!(
+            document.tasks["consumer"].depends_on,
+            vec!["lattice:test".to_owned()]
+        );
+        assert!(document.tasks.contains_key("stargate:test"));
+        assert!(document.tasks.contains_key("test"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn two_member_checkouts_write_artifacts_and_receipts() {
+        let stargate = tempfile::tempdir().expect("stargate");
+        let lattice = tempfile::tempdir().expect("lattice");
+        let document = parse(
+            r#"
+schema_version = 1
+
+[tasks."stargate:typecheck"]
+source_member = "stargate"
+artifacts = ["out.txt"]
+executor = { native = ["/bin/sh", "-c", "printf ok > out.txt"] }
+
+[tasks."lattice:test"]
+source_member = "lattice"
+artifacts = ["out.txt"]
+depends_on = ["stargate:typecheck"]
+executor = { native = ["/bin/sh", "-c", "printf ok > out.txt"] }
+"#,
+        );
+        assert_eq!(
+            document.tasks["lattice:test"].depends_on,
+            vec!["stargate:typecheck".to_owned()]
+        );
+        let plan = plan_workflow_document(
+            &document,
+            &WorkflowPlanMode::Explicit {
+                root: Some("lattice:test".to_owned()),
+            },
+            FailurePolicy::FailFast,
+            None,
+        )
+        .expect("plan");
+        let mut member_roots = BTreeMap::new();
+        member_roots.insert("stargate".to_owned(), stargate.path().to_path_buf());
+        member_roots.insert("lattice".to_owned(), lattice.path().to_path_buf());
+        let ctx = ExecContext {
+            path: std::env::var("PATH").unwrap_or_default(),
+            nix_override: None,
+            cwd: None,
+            env: BTreeMap::new(),
+            member_roots,
+        };
+        let run = run_operation_plan(&plan, &ctx, 1, None).expect("run");
+        assert_eq!(run.exit_code, 0);
+        assert_eq!(
+            run.order,
+            vec!["stargate:typecheck".to_owned(), "lattice:test".to_owned()]
+        );
+        assert_eq!(
+            std::fs::read_to_string(stargate.path().join("out.txt")).expect("stargate out"),
+            "ok"
+        );
+        assert_eq!(
+            std::fs::read_to_string(lattice.path().join("out.txt")).expect("lattice out"),
+            "ok"
+        );
+        let stargate_receipt = serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(
+                stargate
+                    .path()
+                    .join(".nxr/receipts/stargate:typecheck.json"),
+            )
+            .expect("stargate receipt"),
+        )
+        .expect("parse stargate receipt");
+        assert_eq!(stargate_receipt["node"], "stargate:typecheck");
+        assert_eq!(stargate_receipt["source_member"], "stargate");
+        assert!(stargate_receipt["artifacts"]["out.txt"].is_string());
+        let lattice_receipt = serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(lattice.path().join(".nxr/receipts/lattice:test.json"))
+                .expect("lattice receipt"),
+        )
+        .expect("parse lattice receipt");
+        assert_eq!(lattice_receipt["node"], "lattice:test");
+        assert_eq!(lattice_receipt["source_member"], "lattice");
+        assert!(lattice_receipt["artifacts"]["out.txt"].is_string());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn two_member_fail_fast_skips_dependent_checkout_artifact() {
+        let stargate = tempfile::tempdir().expect("stargate");
+        let lattice = tempfile::tempdir().expect("lattice");
+        let document = parse(
+            r#"
+schema_version = 1
+
+[tasks."stargate:typecheck"]
+source_member = "stargate"
+artifacts = ["out.txt"]
+executor = { native = ["/bin/sh", "-c", "exit 7"] }
+
+[tasks."lattice:test"]
+source_member = "lattice"
+artifacts = ["out.txt"]
+depends_on = ["stargate:typecheck"]
+executor = { native = ["/bin/sh", "-c", "printf ok > out.txt"] }
+"#,
+        );
+        let plan = plan_workflow_document(
+            &document,
+            &WorkflowPlanMode::Explicit {
+                root: Some("lattice:test".to_owned()),
+            },
+            FailurePolicy::FailFast,
+            None,
+        )
+        .expect("plan");
+        let mut member_roots = BTreeMap::new();
+        member_roots.insert("stargate".to_owned(), stargate.path().to_path_buf());
+        member_roots.insert("lattice".to_owned(), lattice.path().to_path_buf());
+        let ctx = ExecContext {
+            path: std::env::var("PATH").unwrap_or_default(),
+            nix_override: None,
+            cwd: None,
+            env: BTreeMap::new(),
+            member_roots,
+        };
+        let run = run_operation_plan(&plan, &ctx, 2, None).expect("run");
+        assert_eq!(run.exit_code, 7);
+        assert_eq!(run.order, vec!["stargate:typecheck".to_owned()]);
+        assert!(!lattice.path().join("out.txt").exists());
+        assert!(
+            !lattice
+                .path()
+                .join(".nxr/receipts/lattice:test.json")
+                .exists()
+        );
     }
 }
