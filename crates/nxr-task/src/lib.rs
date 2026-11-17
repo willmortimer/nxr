@@ -64,7 +64,7 @@ pub use catalog::{
     FingerprintDecision, OperationKind, OperationPlan, OperationRecord, OperationSuggestion,
     PolicySource, ProjectExecutionPolicy, WorkspaceInstance, apply_project_policy, describe,
     execution_decision, execution_fingerprint, execution_fingerprint_with_inputs, explain,
-    fingerprint_decision, operation_record, plan, search, suggest, validate_policy_parameters,
+    fingerprint_decision, operation_record, plan, remote_allowed, search, suggest, validate_policy_parameters,
     workspace_id,
 };
 pub use ci_metadata::{CiRunMetadata, attach_ci_run};

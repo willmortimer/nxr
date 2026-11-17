@@ -140,12 +140,15 @@ pub fn execution_decision(
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProjectExecutionPolicy {
     operations: std::collections::BTreeMap<String, Vec<String>>,
+    remote_operations: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
 struct PolicyFile {
     #[serde(default)]
     operation: Vec<PolicyOperation>,
+    #[serde(default)]
+    remote_operation: Vec<PolicyOperation>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -177,7 +180,17 @@ impl ProjectExecutionPolicy {
             }
             operations.insert(operation.id, operation.parameters);
         }
-        Ok(Self { operations })
+        let mut remote_operations = std::collections::BTreeMap::new();
+        for operation in file.remote_operation {
+            if operation.id.is_empty() {
+                return Err("execution policy operation id is empty".to_owned());
+            }
+            remote_operations.insert(operation.id, operation.parameters);
+        }
+        Ok(Self {
+            operations,
+            remote_operations,
+        })
     }
 
     /// Parameter names this policy allows for `operation_id`.
@@ -189,10 +202,10 @@ impl ProjectExecutionPolicy {
             .unwrap_or(&[])
     }
 
-    /// True when the file authorizes no operations.
+    /// True when the file authorizes no local or remote operations.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.operations.is_empty()
+        self.operations.is_empty() && self.remote_operations.is_empty()
     }
 
     /// True when this file lists `operation_id`.
@@ -201,11 +214,26 @@ impl ProjectExecutionPolicy {
         self.operations.contains_key(operation_id)
     }
 
+    /// True when `[[remote_operation]]` lists this id. Local `[[operation]]` does not grant this.
+    #[must_use]
+    pub fn remote_allowed(&self, operation_id: &str) -> bool {
+        self.remote_operations.contains_key(operation_id)
+    }
+
     /// Digest of the authorization entries. Parameter order is part of the digest.
     #[must_use]
     pub fn digest(&self) -> String {
         let mut material = String::new();
         for (id, parameters) in &self.operations {
+            material.push_str(id);
+            material.push('\n');
+            for parameter in parameters {
+                material.push_str(parameter);
+                material.push('\n');
+            }
+        }
+        for (id, parameters) in &self.remote_operations {
+            material.push_str("remote\n");
             material.push_str(id);
             material.push('\n');
             for parameter in parameters {
@@ -228,6 +256,12 @@ impl ProjectExecutionPolicy {
             .filter_map(|name| provided.get(name).cloned())
             .collect()
     }
+}
+
+/// True when `[[remote_operation]]` lists this id. Local `[[operation]]` does not grant this.
+#[must_use]
+pub fn remote_allowed(policy: &ProjectExecutionPolicy, operation_id: &str) -> bool {
+    policy.remote_allowed(operation_id)
 }
 
 /// Apply a trusted project policy. Deploy, remote, and `reset-db` stay refused.
@@ -987,5 +1021,39 @@ mod tests {
             "nxr"
         );
         assert_eq!(workspace_id(None, None, "backend"), "backend");
+    }
+
+    #[test]
+    fn local_operation_entries_do_not_grant_remote_allowed() {
+        let root = tempfile::tempdir().unwrap();
+        let policy_dir = root.path().join(".nxr");
+        std::fs::create_dir_all(&policy_dir).unwrap();
+        std::fs::write(
+            policy_dir.join("execution-policy.toml"),
+            "[[operation]]\nid = \"workspace:task:marker\"\n",
+        )
+        .unwrap();
+        let policy = ProjectExecutionPolicy::load(root.path()).unwrap();
+        assert!(!policy.remote_allowed("workspace:task:marker"));
+    }
+
+    #[test]
+    fn remote_operation_entries_grant_remote_allowed() {
+        let root = tempfile::tempdir().unwrap();
+        let policy_dir = root.path().join(".nxr");
+        std::fs::create_dir_all(&policy_dir).unwrap();
+        std::fs::write(
+            policy_dir.join("execution-policy.toml"),
+            "[[remote_operation]]\nid = \"workspace:task:marker\"\n",
+        )
+        .unwrap();
+        let policy = ProjectExecutionPolicy::load(root.path()).unwrap();
+        assert!(policy.remote_allowed("workspace:task:marker"));
+    }
+
+    #[test]
+    fn remote_allowed_helper_has_no_caller_role_parameter() {
+        let policy = ProjectExecutionPolicy::default();
+        assert!(!policy.remote_allowed("workspace:task:marker"));
     }
 }
