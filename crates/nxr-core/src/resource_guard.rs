@@ -97,7 +97,7 @@ pub fn guardian_loop(lock_path: &Path, writer_pgid: u32) -> Result<(), String> {
 #[must_use = "dropping releases the target directory locks"]
 pub fn acquire_ordered(paths: &[PathBuf]) -> Result<Vec<TargetAdmission>, String> {
     let mut ordered: Vec<&PathBuf> = paths.iter().collect();
-    ordered.sort_by_cached_key(|path| canonical_sort_key(*path));
+    ordered.sort_by_cached_key(|path| canonical_sort_key(path));
 
     let mut admitted = Vec::with_capacity(ordered.len());
     for path in ordered {

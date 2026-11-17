@@ -46,8 +46,9 @@ fn disk_preflight_unix(output_dir: &Path, reserve_bytes: u64) -> DiskDecision {
 
     match nix::sys::statvfs::statvfs(probe) {
         Ok(stat) => {
-            let available =
-                (stat.fragment_size() as u64).saturating_mul(stat.blocks_available() as u64);
+            let available = stat
+                .fragment_size()
+                .saturating_mul(u64::from(stat.blocks_available()));
             if available < reserve_bytes {
                 DiskDecision {
                     allowed: false,
