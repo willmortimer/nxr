@@ -341,6 +341,9 @@ pub struct OperationRecord {
     pub workspace_id: String,
     pub workspace_root: String,
     pub source_revision: Option<String>,
+    /// SourceSet member that produced this record. Absent for single-checkout discovery.
+    #[serde(default)]
+    pub source_member: Option<String>,
     /// Declaring file, relative to the workspace root.
     pub definition: String,
     pub kind: OperationKind,
@@ -363,6 +366,17 @@ pub struct OperationRecord {
     pub inputs: Vec<String>,
     /// Secret references. Never resolved values.
     pub secret_refs: Vec<String>,
+}
+
+/// Two SourceSet members produced the same portable operation id.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error(
+    "duplicate operation `{operation_id}` from members `{first_member}` and `{second_member}`"
+)]
+pub struct DuplicateOperation {
+    pub operation_id: String,
+    pub first_member: String,
+    pub second_member: String,
 }
 
 /// A declaration before it becomes an [`OperationRecord`].
@@ -429,6 +443,7 @@ pub fn operation_record(
         workspace_id: workspace.workspace_id.clone(),
         workspace_root: workspace.workspace_root.clone(),
         source_revision: workspace.source_revision.clone(),
+        source_member: None,
         definition: declaration.definition.clone(),
         kind: declaration.kind,
         name: declaration.name.clone(),
@@ -448,6 +463,40 @@ pub fn operation_record(
         inputs: declaration.inputs.clone(),
         secret_refs: declaration.secret_refs.clone(),
     }
+}
+
+/// Assemble one record per declaration across declared SourceSet members.
+///
+/// Each record keeps `{workspace_id}:{kind}:{name}` as its id and stamps
+/// `source_member` plus that checkout's `source_revision`. Searching a member
+/// does not set `execution_allowed`; that stays with [`execution_decision`].
+///
+/// # Errors
+///
+/// Returns [`DuplicateOperation`] when two members produce the same
+/// `operation_id`. Both member names are reported; nothing is collapsed.
+pub fn discover_members(
+    members: &[(&str, &WorkspaceInstance, &[Declaration])],
+) -> Result<Vec<OperationRecord>, DuplicateOperation> {
+    let mut records = Vec::new();
+    let mut seen: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for (member_name, workspace, declarations) in members {
+        for declaration in *declarations {
+            let mut record = operation_record(workspace, declaration);
+            record.source_member = Some((*member_name).to_owned());
+            record.source_revision = workspace.source_revision.clone();
+            if let Some(first_member) = seen.get(&record.operation_id) {
+                return Err(DuplicateOperation {
+                    operation_id: record.operation_id,
+                    first_member: first_member.clone(),
+                    second_member: (*member_name).to_owned(),
+                });
+            }
+            seen.insert(record.operation_id.clone(), (*member_name).to_owned());
+            records.push(record);
+        }
+    }
+    Ok(records)
 }
 
 /// Exact, case-insensitive match against the id, name, description, and aliases.
@@ -1055,5 +1104,120 @@ mod tests {
     fn remote_allowed_helper_has_no_caller_role_parameter() {
         let policy = ProjectExecutionPolicy::default();
         assert!(!policy.remote_allowed("workspace:task:marker"));
+    }
+
+    #[test]
+    fn single_checkout_operation_record_leaves_source_member_unset() {
+        let record = operation_record(
+            &workspace("nxr"),
+            &Declaration::named(OperationKind::Task, "fmt", "flake.nix"),
+        );
+        assert_eq!(record.source_member, None);
+        assert_eq!(record.source_revision.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn discover_members_returns_distinct_ids_with_source_provenance() {
+        let lattice = WorkspaceInstance {
+            workspace_id: "lattice".to_owned(),
+            workspace_root: "/tmp/lattice".to_owned(),
+            source_revision: Some("rev-a".to_owned()),
+        };
+        let stargate = WorkspaceInstance {
+            workspace_id: "stargate".to_owned(),
+            workspace_root: "/tmp/stargate".to_owned(),
+            source_revision: Some("rev-b".to_owned()),
+        };
+        let lattice_decls = [Declaration::named(
+            OperationKind::Task,
+            "rust-test-pkgs",
+            "flake.nix",
+        )];
+        let stargate_decls = [Declaration::named(OperationKind::Task, "test", "flake.nix")];
+        let records = discover_members(&[
+            ("lattice", &lattice, lattice_decls.as_slice()),
+            ("stargate", &stargate, stargate_decls.as_slice()),
+        ])
+        .expect("distinct ids");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].operation_id, "lattice:task:rust-test-pkgs");
+        assert_eq!(records[0].source_member.as_deref(), Some("lattice"));
+        assert_eq!(records[0].source_revision.as_deref(), Some("rev-a"));
+        assert!(!records[0].execution_allowed);
+        assert_eq!(records[1].operation_id, "stargate:task:test");
+        assert_eq!(records[1].source_member.as_deref(), Some("stargate"));
+        assert_eq!(records[1].source_revision.as_deref(), Some("rev-b"));
+        assert!(records[1].execution_allowed);
+    }
+
+    #[test]
+    fn discover_members_errors_on_duplicate_operation_id() {
+        let left = WorkspaceInstance {
+            workspace_id: "shared".to_owned(),
+            workspace_root: "/tmp/left".to_owned(),
+            source_revision: Some("rev-left".to_owned()),
+        };
+        let right = WorkspaceInstance {
+            workspace_id: "shared".to_owned(),
+            workspace_root: "/tmp/right".to_owned(),
+            source_revision: Some("rev-right".to_owned()),
+        };
+        let decls = [Declaration::named(OperationKind::Task, "fmt", "flake.nix")];
+        let error = discover_members(&[
+            ("alpha", &left, decls.as_slice()),
+            ("beta", &right, decls.as_slice()),
+        ])
+        .expect_err("duplicate id");
+        assert_eq!(error.operation_id, "shared:task:fmt");
+        assert_eq!(error.first_member, "alpha");
+        assert_eq!(error.second_member, "beta");
+        assert!(error.to_string().contains("alpha"));
+        assert!(error.to_string().contains("beta"));
+    }
+
+    #[test]
+    fn discover_members_does_not_grant_execution_by_search() {
+        let member = WorkspaceInstance {
+            workspace_id: "demo".to_owned(),
+            workspace_root: "/tmp/demo".to_owned(),
+            source_revision: Some("rev".to_owned()),
+        };
+        let decls = [Declaration::named(
+            OperationKind::Task,
+            "reset-db",
+            "flake.nix",
+        )];
+        let records =
+            discover_members(&[("demo", &member, decls.as_slice())]).expect("one member");
+        assert_eq!(records[0].source_member.as_deref(), Some("demo"));
+        assert!(!records[0].execution_allowed);
+        assert_eq!(records[0].policy_source, PolicySource::Unset);
+    }
+
+    #[test]
+    fn older_catalog_json_without_source_member_still_parses() {
+        let json = r#"{
+            "operation_id": "nxr:task:fmt",
+            "workspace_id": "nxr",
+            "workspace_root": "/tmp/nxr",
+            "source_revision": null,
+            "definition": "flake.nix",
+            "kind": "task",
+            "name": "fmt",
+            "description": null,
+            "aliases": [],
+            "inferred_effect": "local-build",
+            "authorized_effect": null,
+            "policy_source": "allowlist",
+            "execution_allowed": true,
+            "parameters": [],
+            "shell": null,
+            "working_directory": ".",
+            "rustc_wrapper": null,
+            "inputs": [],
+            "secret_refs": []
+        }"#;
+        let record: OperationRecord = serde_json::from_str(json).expect("parse");
+        assert_eq!(record.source_member, None);
     }
 }

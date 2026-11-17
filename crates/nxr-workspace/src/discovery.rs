@@ -65,6 +65,19 @@ pub fn discover_from(cwd: &Utf8Path) -> Result<WorkspaceContext, DiscoveryError>
     }
 }
 
+/// Locate one SourceSet member checkout via the same upward `flake.nix` walk.
+///
+/// Call once per declared member root. Does not scan siblings, clone, or grant
+/// execution.
+///
+/// # Errors
+///
+/// Returns [`DiscoveryError::FlakeNotFound`] when no ancestor of `checkout`
+/// contains `flake.nix`.
+pub fn discover_member(checkout: &Utf8Path) -> Result<WorkspaceContext, DiscoveryError> {
+    discover_from(checkout)
+}
+
 fn absolute_utf8_path(path: &Utf8Path) -> Utf8PathBuf {
     path.canonicalize_utf8()
         .unwrap_or_else(|_| path.to_path_buf())
@@ -76,7 +89,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{DiscoveryError, discover_from};
+    use super::{DiscoveryError, discover_from, discover_member};
     use nxr_core::diagnostics::exit;
 
     fn utf8_path(temp: &TempDir) -> camino::Utf8PathBuf {
@@ -135,5 +148,22 @@ mod tests {
 
         assert!(matches!(error, DiscoveryError::FlakeNotFound { .. }));
         assert_eq!(error.exit_code(), exit::DISCOVERY);
+    }
+
+    #[test]
+    fn discover_member_locates_each_checkout_independently() {
+        let first = TempDir::new().expect("tempdir");
+        let second = TempDir::new().expect("tempdir");
+        let first_root = utf8_path(&first);
+        let second_root = utf8_path(&second);
+        fs::write(first_root.join("flake.nix"), "{}").expect("write flake.nix");
+        fs::write(second_root.join("flake.nix"), "{}").expect("write flake.nix");
+
+        let first_context = discover_member(&first_root).expect("first member");
+        let second_context = discover_member(&second_root).expect("second member");
+
+        assert_eq!(first_context.flake_root, canonicalize(&first_root));
+        assert_eq!(second_context.flake_root, canonicalize(&second_root));
+        assert_ne!(first_context.flake_root, second_context.flake_root);
     }
 }
