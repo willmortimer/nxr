@@ -100,6 +100,23 @@ pub fn fetch_argv(
     argv
 }
 
+/// Normalize NixPlane cancel JSON so `status: "cancelled"` is an acknowledgement.
+///
+/// Does not set `process_terminal` or claim the worker exited. Callers still
+/// treat `cancelled: true` as the acknowledgement bit for `cancel_and_bind`.
+#[must_use]
+pub fn normalize_cancel_response(value: &Value) -> Value {
+    let mut out = value.clone();
+    let status_cancelled = value.get("status").and_then(Value::as_str) == Some("cancelled");
+    let already = value.get("cancelled").and_then(Value::as_bool) == Some(true);
+    if let Some(object) = out.as_object_mut() {
+        if status_cancelled || already {
+            object.insert("cancelled".to_owned(), json!(true));
+        }
+    }
+    out
+}
+
 impl NixplaneCliTransport {
     /// Fetch one named output. Stdout is the digest printed by `nixplane`.
     ///
@@ -129,9 +146,18 @@ impl NixplaneCliTransport {
     ///
     /// Returns the transport error.
     pub fn replay_journal(&self, attempt_id: &str) -> Result<Value, String> {
+        self.replay_from(attempt_id, 0)
+    }
+
+    /// Replay the attempt journal after `after_sequence` (pass stored `last_sequence`).
+    ///
+    /// # Errors
+    ///
+    /// Returns the transport error.
+    pub fn replay_from(&self, attempt_id: &str, after_sequence: u64) -> Result<Value, String> {
         self.call(
             "replay",
-            &json!({ "attempt_id": attempt_id, "after_sequence": 0 }),
+            &json!({ "attempt_id": attempt_id, "after_sequence": after_sequence }),
         )
     }
 }
@@ -301,7 +327,8 @@ impl ExecutionTransport for NixplaneCliTransport {
                     .get("attempt_id")
                     .and_then(Value::as_str)
                     .ok_or_else(|| "cancel needs attempt_id".to_owned())?;
-                run_argv(&self.bin, &cancel_argv(attempt_id, state_dir), false)
+                let value = run_argv(&self.bin, &cancel_argv(attempt_id, state_dir), false)?;
+                Ok(normalize_cancel_response(&value))
             }
             "replay" => {
                 let attempt_id = body
@@ -327,6 +354,25 @@ impl ExecutionTransport for NixplaneCliTransport {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn nixplane_cancel_status_is_acknowledgement() {
+        let normalized = normalize_cancel_response(&json!({
+            "attempt_id": "att_1",
+            "status": "cancelled"
+        }));
+        assert_eq!(normalized["cancelled"], true);
+        assert_eq!(normalized["attempt_id"], "att_1");
+        assert_eq!(normalized["status"], "cancelled");
+        assert!(normalized.get("process_terminal").is_none());
+
+        let running = normalize_cancel_response(&json!({
+            "attempt_id": "att_1",
+            "status": "running"
+        }));
+        assert_eq!(running.get("cancelled").and_then(Value::as_bool), None);
+        assert_ne!(running.get("cancelled"), Some(&json!(true)));
+    }
 
     #[test]
     fn submit_argv_includes_optional_flags_without_spawning() {

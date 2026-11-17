@@ -18,6 +18,7 @@ pub struct RemoteAttempt {
     pub source_set_id: String,
     pub attempt_id: Option<String>,
     pub lease_generation: Option<u64>,
+    pub last_sequence: Option<u64>,
     pub phase: String,
 }
 
@@ -178,6 +179,93 @@ pub fn record_lease(
     Ok(stored)
 }
 
+/// Advance the replay cursor only when `sequence` is greater than the stored value.
+///
+/// A lower (or equal) sequence returns the stored row and does not move the
+/// cursor backward. Callers pass the stored `last_sequence` as `--after-sequence`
+/// (see `NixplaneCliTransport::replay_from`).
+///
+/// # Errors
+///
+/// Returns an error when the row is missing or the database cannot be written.
+pub fn record_replay_cursor(
+    dir: &Path,
+    idempotency_key: &str,
+    sequence: u64,
+) -> Result<RemoteAttempt, String> {
+    let mut conn = open(dir)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|err| format!("record replay cursor: {err}"))?;
+    let existing =
+        read_key(&tx, idempotency_key)?.ok_or_else(|| "remote attempt is missing".to_owned())?;
+    if let Some(stored) = existing.last_sequence
+        && sequence <= stored
+    {
+        tx.commit()
+            .map_err(|err| format!("commit replay cursor: {err}"))?;
+        return Ok(existing);
+    }
+    tx.execute(
+        "UPDATE remote_attempts SET last_sequence = ?1 WHERE idempotency_key = ?2",
+        (sequence as i64, idempotency_key),
+    )
+    .map_err(|err| format!("update replay cursor: {err}"))?;
+    let stored =
+        read_key(&tx, idempotency_key)?.ok_or_else(|| "remote attempt missing".to_owned())?;
+    tx.commit()
+        .map_err(|err| format!("commit replay cursor: {err}"))?;
+    Ok(stored)
+}
+
+/// Advance the stored replay cursor from a replay journal's `events` array.
+///
+/// Each event is an object with `sequence` and `event_type`. The cursor moves to
+/// the maximum sequence. Seeing the same terminal `event_type` at the same
+/// sequence again is not treated as a new event (the cursor does not move).
+///
+/// # Errors
+///
+/// Returns an error when the row is missing or the database cannot be written.
+pub fn observe_replay(
+    dir: &Path,
+    idempotency_key: &str,
+    journal: &Value,
+) -> Result<RemoteAttempt, String> {
+    let existing = remote_by_key(dir, idempotency_key)?
+        .ok_or_else(|| "remote attempt is missing".to_owned())?;
+    let Some(events) = journal.get("events").and_then(Value::as_array) else {
+        return Ok(existing);
+    };
+
+    let mut max_sequence: Option<u64> = None;
+    for event in events {
+        let Some(sequence) = event.get("sequence").and_then(Value::as_u64) else {
+            continue;
+        };
+        let event_type = event.get("event_type").and_then(Value::as_str);
+        if is_terminal_event_type(event_type)
+            && existing.last_sequence == Some(sequence)
+        {
+            // Same terminal event at the stored sequence is not a new event.
+            continue;
+        }
+        max_sequence = Some(max_sequence.map_or(sequence, |current| current.max(sequence)));
+    }
+
+    match max_sequence {
+        Some(sequence) => record_replay_cursor(dir, idempotency_key, sequence),
+        None => Ok(existing),
+    }
+}
+
+fn is_terminal_event_type(event_type: Option<&str>) -> bool {
+    matches!(
+        event_type,
+        Some("exited" | "succeeded" | "failed" | "cancelled")
+    )
+}
+
 /// Read the attempt stored for `run_id`.
 ///
 /// # Errors
@@ -186,7 +274,7 @@ pub fn record_lease(
 pub fn remote_attempt_for_run(dir: &Path, run_id: &str) -> Result<Option<RemoteAttempt>, String> {
     let conn = open(dir)?;
     conn.query_row(
-        "SELECT idempotency_key, run_id, operation_id, source_set_id, attempt_id, lease_generation, phase
+        "SELECT idempotency_key, run_id, operation_id, source_set_id, attempt_id, lease_generation, phase, last_sequence
          FROM remote_attempts WHERE run_id = ?1",
         [run_id],
         map_attempt,
@@ -309,16 +397,27 @@ fn open(dir: &Path) -> Result<Connection, String> {
             source_set_id TEXT NOT NULL,
             attempt_id TEXT,
             lease_generation INTEGER,
+            last_sequence INTEGER,
             phase TEXT NOT NULL
          );",
     )
     .map_err(|err| format!("prepare remote attempts: {err}"))?;
+    // Existing databases created before last_sequence need an ALTER; ignore
+    // duplicate-column errors when CREATE TABLE already defined the column.
+    match conn.execute(
+        "ALTER TABLE remote_attempts ADD COLUMN last_sequence INTEGER",
+        [],
+    ) {
+        Ok(_) => {}
+        Err(err) if err.to_string().contains("duplicate column") => {}
+        Err(err) => return Err(format!("prepare remote attempts: {err}")),
+    }
     Ok(conn)
 }
 
 fn read_key(conn: &Connection, idempotency_key: &str) -> Result<Option<RemoteAttempt>, String> {
     conn.query_row(
-        "SELECT idempotency_key, run_id, operation_id, source_set_id, attempt_id, lease_generation, phase
+        "SELECT idempotency_key, run_id, operation_id, source_set_id, attempt_id, lease_generation, phase, last_sequence
          FROM remote_attempts WHERE idempotency_key = ?1",
         [idempotency_key],
         map_attempt,
@@ -329,6 +428,7 @@ fn read_key(conn: &Connection, idempotency_key: &str) -> Result<Option<RemoteAtt
 
 fn map_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<RemoteAttempt> {
     let lease: Option<i64> = row.get(5)?;
+    let last_sequence: Option<i64> = row.get(7)?;
     Ok(RemoteAttempt {
         idempotency_key: row.get(0)?,
         run_id: row.get(1)?,
@@ -336,6 +436,7 @@ fn map_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<RemoteAttempt> {
         source_set_id: row.get(3)?,
         attempt_id: row.get(4)?,
         lease_generation: lease.map(|value| value as u64),
+        last_sequence: last_sequence.map(|value| value as u64),
         phase: row.get(6)?,
     })
 }
@@ -483,5 +584,28 @@ mod tests {
             .expect("read")
             .expect("row");
         assert_eq!(row.lease_generation, Some(2));
+    }
+
+    #[test]
+    fn a_lower_replay_cursor_does_not_replace_the_stored_sequence() {
+        let dir = tempfile::tempdir().expect("temp");
+        begin_remote(dir.path(), "once", "run-once", "op_1", "src2_a").expect("begin");
+        record_admitted(dir.path(), "once", "att_1").expect("admit");
+        let advanced = record_replay_cursor(dir.path(), "once", 5).expect("cursor");
+        assert_eq!(advanced.last_sequence, Some(5));
+        let stored = record_replay_cursor(dir.path(), "once", 3).expect("lower");
+        assert_eq!(stored.last_sequence, Some(5));
+        let observed = observe_replay(
+            dir.path(),
+            "once",
+            &json!({
+                "events": [
+                    {"sequence": 5, "event_type": "exited"},
+                    {"sequence": 3, "event_type": "started"}
+                ]
+            }),
+        )
+        .expect("observe");
+        assert_eq!(observed.last_sequence, Some(5));
     }
 }

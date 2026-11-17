@@ -23,23 +23,40 @@ pub struct RemoteReceipt {
     pub artifact_verified: bool,
 }
 
-/// Classify journal text without turning a cache hit into a qualification.
+/// Classify journal fields without turning a cache hit into a qualification.
+///
+/// Reads structured JSON fields only; does not search serialized document text.
 #[must_use]
 pub fn dispositions_from_journal(journal: &Value) -> (String, String) {
-    let text = journal.to_string();
-    let source =
-        if text.contains("\"source_reused\":true") || text.contains("\"source\":\"reused\"") {
-            "reused"
-        } else {
-            "fetched"
-        };
-    let execution =
-        if text.contains("\"existing_artifact\":true") || text.contains("\"cache_hit\":true") {
-            "existing_artifact"
-        } else {
-            "fresh"
-        };
-    (source.to_owned(), execution.to_owned())
+    (source_disposition(journal), execution_disposition(journal))
+}
+
+fn source_disposition(journal: &Value) -> String {
+    let reused = journal.get("source_reused").and_then(Value::as_bool) == Some(true)
+        || journal.get("source").and_then(Value::as_str) == Some("reused");
+    if reused {
+        return "reused".to_owned();
+    }
+    let fetched = journal.get("source").and_then(Value::as_str) == Some("fetched")
+        || journal.get("source_reused").and_then(Value::as_bool) == Some(false);
+    if fetched {
+        return "fetched".to_owned();
+    }
+    "unknown".to_owned()
+}
+
+fn execution_disposition(journal: &Value) -> String {
+    let existing = journal.get("existing_artifact").and_then(Value::as_bool) == Some(true)
+        || journal.get("cache_hit").and_then(Value::as_bool) == Some(true);
+    if existing {
+        return "existing_artifact".to_owned();
+    }
+    let fresh = journal.get("existing_artifact").and_then(Value::as_bool) == Some(false)
+        && journal.get("cache_hit").and_then(Value::as_bool) == Some(false);
+    if fresh {
+        return "fresh".to_owned();
+    }
+    "unknown".to_owned()
 }
 
 /// Check `bytes` against `expected`, which may be hex or `sha256:` hex.
@@ -58,6 +75,70 @@ pub fn verify_artifact(bytes: &[u8], expected: &str) -> Result<String, String> {
     Ok(format!("sha256:{actual}"))
 }
 
+/// Decide whether a verified digest may be treated as the attempt's authoritative output.
+///
+/// A digest alone is never enough: the journal must show terminal success and the
+/// lease must match. This function does not hash bytes; `verify_artifact` remains
+/// the byte check.
+///
+/// # Errors
+///
+/// Returns `attempt is not successful` when the attempt did not succeed, or
+/// `lease does not match the attempt` when the lease is missing or disagrees.
+pub fn artifact_is_authoritative(
+    journal: &Value,
+    stored_lease: Option<u64>,
+    output_digest: &str,
+) -> Result<(), String> {
+    if output_digest.is_empty() {
+        return Err("output digest is empty".to_owned());
+    }
+
+    let status = journal.get("status").and_then(Value::as_str);
+    if matches!(status, Some("cancelled" | "failed")) {
+        return Err("attempt is not successful".to_owned());
+    }
+
+    let terminal_success = status == Some("succeeded") || journal_has_terminal_success(journal);
+    if !terminal_success {
+        return Err("attempt is not successful".to_owned());
+    }
+
+    let Some(stored) = stored_lease else {
+        return Err("lease does not match the attempt".to_owned());
+    };
+    let Some(journal_lease) = journal.get("lease_generation").and_then(Value::as_u64) else {
+        return Err("lease does not match the attempt".to_owned());
+    };
+    if journal_lease != stored {
+        return Err("lease does not match the attempt".to_owned());
+    }
+
+    Ok(())
+}
+
+fn journal_has_terminal_success(journal: &Value) -> bool {
+    events_iter(journal).any(|event| {
+        let event_type = event.get("event_type").and_then(Value::as_str);
+        let success = matches!(event_type, Some("exited" | "succeeded"));
+        let no_failure = match event.get("failure") {
+            None => true,
+            Some(value) => value.is_null() || value == &Value::Bool(false),
+        };
+        success && no_failure
+    })
+}
+
+fn events_iter(journal: &Value) -> Box<dyn Iterator<Item = &Value> + '_> {
+    if let Some(events) = journal.get("events").and_then(Value::as_array) {
+        Box::new(events.iter())
+    } else if let Some(events) = journal.as_array() {
+        Box::new(events.iter())
+    } else {
+        Box::new(std::iter::empty())
+    }
+}
+
 /// Write the receipt next to the run. A verified artifact stays distinct from a passing test.
 ///
 /// # Errors
@@ -67,11 +148,15 @@ pub fn store_remote_receipt(
     dir: &Path,
     receipt: &RemoteReceipt,
 ) -> Result<std::path::PathBuf, String> {
-    if receipt.source_disposition != "fetched" && receipt.source_disposition != "reused" {
+    if receipt.source_disposition != "fetched"
+        && receipt.source_disposition != "reused"
+        && receipt.source_disposition != "unknown"
+    {
         return Err("source disposition is unknown".to_owned());
     }
     if receipt.execution_disposition != "fresh"
         && receipt.execution_disposition != "existing_artifact"
+        && receipt.execution_disposition != "unknown"
     {
         return Err("execution disposition is unknown".to_owned());
     }
@@ -127,15 +212,40 @@ mod tests {
 
     #[test]
     fn cache_labels_stay_distinct_from_a_fresh_fetch() {
-        let (source, execution) = dispositions_from_journal(&json!([
-            {"source_reused": true},
-            {"existing_artifact": true}
-        ]));
+        let (source, execution) = dispositions_from_journal(&json!({
+            "source_reused": true,
+            "existing_artifact": true
+        }));
         assert_eq!(source, "reused");
         assert_eq!(execution, "existing_artifact");
-        let (fetched, fresh) = dispositions_from_journal(&json!([{"event_type": "exited"}]));
+        let (fetched, fresh) = dispositions_from_journal(&json!({
+            "source_reused": false,
+            "existing_artifact": false,
+            "cache_hit": false
+        }));
         assert_eq!(fetched, "fetched");
         assert_eq!(fresh, "fresh");
+    }
+
+    #[test]
+    fn missing_reuse_fields_are_unknown() {
+        let (source, execution) = dispositions_from_journal(&json!({"event_type": "exited"}));
+        assert_eq!(source, "unknown");
+        assert_eq!(execution, "unknown");
+    }
+
+    #[test]
+    fn a_digest_without_a_matching_lease_is_not_authoritative() {
+        let journal = json!({
+            "status": "succeeded",
+            "lease_generation": 2,
+            "events": [{"sequence": 1, "event_type": "succeeded"}]
+        });
+        let err = artifact_is_authoritative(&journal, None, "sha256:abc").expect_err("no lease");
+        assert_eq!(err, "lease does not match the attempt");
+        let err = artifact_is_authoritative(&journal, Some(1), "sha256:abc").expect_err("mismatch");
+        assert_eq!(err, "lease does not match the attempt");
+        artifact_is_authoritative(&journal, Some(2), "sha256:abc").expect("authoritative");
     }
 
     #[test]
@@ -159,5 +269,13 @@ mod tests {
             .expect("present");
         assert_eq!(stored, receipt);
         assert_ne!(stored.execution_disposition, "qualified");
+
+        let unknown = RemoteReceipt {
+            source_disposition: "unknown".to_owned(),
+            execution_disposition: "unknown".to_owned(),
+            run_id: "run-unknown".to_owned(),
+            ..receipt.clone()
+        };
+        store_remote_receipt(dir.path(), &unknown).expect("store unknown");
     }
 }
