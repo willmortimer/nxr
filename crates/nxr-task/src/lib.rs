@@ -15,9 +15,11 @@ pub mod availability;
 pub mod cache_reason;
 pub mod catalog;
 pub mod ci_metadata;
+pub mod coalesce;
 pub mod compiler_cache;
 pub mod context;
 pub mod duration;
+pub mod economics;
 pub mod events;
 pub mod execute;
 pub mod execution_spec;
@@ -31,6 +33,7 @@ pub mod parameters;
 pub mod plan_exec;
 pub mod planner;
 pub mod process;
+pub mod qualification;
 pub mod receipt;
 pub mod remote_execution;
 pub mod resolve;
@@ -38,6 +41,7 @@ pub mod resources;
 pub mod run_diagnostics;
 pub mod run_events;
 pub mod run_journal;
+pub mod run_provenance;
 pub mod scheduler;
 pub mod schema;
 pub mod secrets;
@@ -127,6 +131,10 @@ pub use resolve::{
 pub use resources::{NodeResources, ResourceLimits};
 pub use run_diagnostics::{RunDiagnostic, parse_run_log};
 pub use run_events::{RunEventDecorator, format_rfc3339_utc};
+pub use run_provenance::{
+    ChildObservation, StoredReceipt, child_probe_script, get_artifact, next_attempt,
+    parse_child_probe, put_artifact, read_receipt, transition, write_receipt,
+};
 pub use scheduler::{NodeState, ScheduleOutcome, Scheduler, SchedulerError};
 pub use schema::{
     AppFastPathMetadata, AppListingMetadata, ContextEnvironment, ContextEnvironmentMode,

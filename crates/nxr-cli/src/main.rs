@@ -48,6 +48,17 @@ use crate::runner_output::RunnerOutput;
 use crate::tui::browser::BrowserLaunch;
 
 fn main() {
+    if std::env::var_os("NXR_RESOURCE_GUARDIAN").is_some() {
+        let lock = std::env::var("NXR_GUARDIAN_LOCK").unwrap_or_default();
+        let pgid = std::env::var("NXR_GUARDIAN_PGID")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        if !lock.is_empty() && pgid != 0 {
+            let _ = nxr_core::resource_guard::guardian_loop(std::path::Path::new(&lock), pgid);
+        }
+        process::exit(0);
+    }
     if let Some(result) = lean::try_run() {
         match result {
             Ok(code) => process::exit(code),
@@ -753,6 +764,8 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                         target_dir: None,
                         operation_id: None,
                         workspace_id: None,
+                        output_dirs: Vec::new(),
+                        probe_script: None,
                     },
                     session::LocalBudget::from_process(),
                     runner,

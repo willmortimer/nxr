@@ -37,14 +37,17 @@ pub(crate) fn join_test_wait_threads() {
 }
 
 static TARGET_GUARDS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, crate::target_lock::TargetAdmission>>,
+    std::sync::Mutex<std::collections::HashMap<String, Vec<crate::target_lock::TargetAdmission>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
-fn hold_target(run_id: &str, admission: crate::target_lock::TargetAdmission) {
+fn hold_targets(run_id: &str, admissions: Vec<crate::target_lock::TargetAdmission>) {
+    if admissions.is_empty() {
+        return;
+    }
     TARGET_GUARDS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(run_id.to_owned(), admission);
+        .insert(run_id.to_owned(), admissions);
 }
 
 fn release_target(run_id: &str) {
@@ -234,10 +237,14 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
             store(dir, &refused)?;
             return Err("local budget exceeded".into());
         }
-        let admission = if target_dir.is_empty() || remote.is_some() {
-            None
+        let output_dirs = output_directories(params, &target_dir);
+        if remote.is_none() {
+            refuse_when_disk_is_short(&output_dirs)?;
+        }
+        let admissions = if output_dirs.is_empty() || remote.is_some() {
+            Vec::new()
         } else {
-            Some(crate::target_lock::admit_target(Path::new(&target_dir))?)
+            crate::resource_guard::acquire_ordered(&output_dirs)?
         };
         let log_path = dir.join(format!("{id}.log"));
         let log = File::create(&log_path).map_err(|err| err.to_string())?;
@@ -259,10 +266,11 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
         {
             child.process_group(0);
         }
+        capture_child_probe(dir, &id, params, &cache_env);
         let mut spawned = match child.spawn() {
             Ok(child) => child,
             Err(err) => {
-                drop(admission);
+                drop(admissions);
                 return Err(format!("spawn {}: {err}", command[0]));
             }
         };
@@ -288,9 +296,10 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
             workspace_id,
             events: Vec::new(),
         };
-        if let Some(admission) = admission {
-            hold_target(&id, admission);
+        for path in &output_dirs {
+            let _ = crate::resource_guard::spawn_guardian(&path.join(".nxr-target.lock"), pid);
         }
+        hold_targets(&id, admissions);
         push_event(&mut record, "started");
         if record.kind == "remote" {
             push_event(&mut record, "submitted");
@@ -314,6 +323,7 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
         })?;
         let wait_dir = dir.to_path_buf();
         let wait_id = id.clone();
+        let wait_pid = pid;
         // Retained under test so suites can join; detached in non-test builds.
         #[cfg_attr(not(test), allow(unused_variables))]
         let wait_handle = thread::spawn(move || {
@@ -344,7 +354,7 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
                 );
                 Ok(())
             });
-            release_target(&wait_id);
+            let _ = release_target_if_stopped(&wait_id, Some(wait_pid));
         });
         #[cfg(test)]
         TEST_WAIT_THREADS
@@ -429,7 +439,11 @@ pub fn cancel(dir: &Path, id: &str, remote_confirmed: bool) -> Result<Value, Str
             record.status = "cancelled".into();
             push_event(&mut record, "cancelled");
             store(dir, &record)?;
-            release_target(id);
+            if let Some(pid) = record.pid {
+                release_target_if_stopped(id, Some(pid))?;
+            } else {
+                release_target(id);
+            }
             let _ = durable_run::sync_supervisor_terminal_with_reconcile(
                 id,
                 DurableRunStatus::Cancelled,
@@ -470,11 +484,11 @@ fn reconcile_once(dir: &Path) -> Result<bool, String> {
                 continue;
             }
             let still = match record.pid {
-                Some(pid) if pid_alive(pid) => match record.start_time {
-                    Some(expected) => capture_start_time(pid) == Some(expected),
-                    None => true,
-                },
-                _ => false,
+                Some(pid) => !matches!(
+                    crate::resource_guard::writer_group_alive(pid, record.start_time),
+                    crate::resource_guard::GroupLiveness::Dead
+                ),
+                None => false,
             };
             if !still {
                 record.status = "lost".into();
@@ -622,6 +636,104 @@ fn push_event(record: &mut OwnedRun, message: &str) {
     });
 }
 
+fn output_directories(params: &Value, target_dir: &str) -> Vec<PathBuf> {
+    if let Some(items) = params.get("output_dirs").and_then(Value::as_array) {
+        let paths: Vec<PathBuf> = items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| PathBuf::from(canonical_target_dir(Path::new(value))))
+            .collect();
+        if !paths.is_empty() {
+            return paths;
+        }
+    }
+    if target_dir.is_empty() {
+        Vec::new()
+    } else {
+        vec![PathBuf::from(target_dir)]
+    }
+}
+
+fn refuse_when_disk_is_short(paths: &[PathBuf]) -> Result<(), String> {
+    const RESERVE_BYTES: u64 = 1024 * 1024;
+    for path in paths {
+        let decision = crate::disk_preflight::disk_preflight(path, RESERVE_BYTES);
+        if !decision.allowed {
+            return Err(decision.reason);
+        }
+    }
+    Ok(())
+}
+
+fn capture_child_probe(dir: &Path, run_id: &str, params: &Value, cache_env: &[(String, String)]) {
+    let Some(script) = params
+        .get("probe_script")
+        .and_then(Value::as_str)
+        .filter(|script| !script.is_empty())
+    else {
+        return;
+    };
+    let mut command = Command::new("sh");
+    command.arg("-c").arg(script);
+    if let Some(cwd) = params
+        .get("cwd")
+        .and_then(Value::as_str)
+        .filter(|cwd| !cwd.is_empty())
+    {
+        command.current_dir(cwd);
+    }
+    for (key, value) in cache_env {
+        command.env(key, value);
+    }
+    let Ok(output) = command.output() else {
+        return;
+    };
+    if !output.status.success() || output.stdout.is_empty() {
+        return;
+    }
+    let dest = dir.join("provenance");
+    if fs::create_dir_all(&dest).is_err() {
+        return;
+    }
+    let _ = fs::write(dest.join(format!("{run_id}.probe")), &output.stdout);
+}
+
+/// Drop the in-process guard only after the writer group is dead.
+///
+/// Uncertain or still-alive groups keep the guard. The caller must not report
+/// cleanup as finished in those cases.
+fn release_target_if_stopped(run_id: &str, pgid: Option<u32>) -> Result<(), String> {
+    let Some(pgid) = pgid else {
+        release_target(run_id);
+        return Ok(());
+    };
+    for _ in 0..40 {
+        match crate::resource_guard::writer_group_alive(pgid, None) {
+            crate::resource_guard::GroupLiveness::Dead => {
+                release_target(run_id);
+                return Ok(());
+            }
+            crate::resource_guard::GroupLiveness::Uncertain => {
+                return Err("writer liveness is uncertain".into());
+            }
+            crate::resource_guard::GroupLiveness::Alive => {
+                thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+    if crate::resource_guard::writer_group_alive(pgid, None)
+        == crate::resource_guard::GroupLiveness::Dead
+    {
+        release_target(run_id);
+        Ok(())
+    } else {
+        Err("writer is still running".into())
+    }
+}
+
+#[cfg(test)]
 fn pid_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -990,6 +1102,32 @@ mod tests {
                     .iter()
                     .all(|entry| entry["status"] != "running"),
             "start failure must not leave a running reservation"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_script_is_stored_from_the_child_environment() {
+        let _durable = IsolatedDurableRuns::install();
+        let root = tempfile::tempdir().unwrap();
+        let started = start(
+            root.path(),
+            &json!({
+                "label": "probe",
+                "command": ["/bin/echo", "probe-child"],
+                "cpu": 0,
+                "probe_script": "printf '%s\\n' rustc_path=/usr/bin/rustc rustc_version=rustc-test cargo_path=/usr/bin/cargo cargo_version=cargo-test wrapper_path= linker_path= target_directory=/tmp/nxr-q-target cache_identity="
+            }),
+        )
+        .unwrap();
+        let id = started["id"].as_str().unwrap();
+        let probe =
+            std::fs::read_to_string(root.path().join("provenance").join(format!("{id}.probe")))
+                .expect("child probe");
+        assert!(probe.contains("rustc_path=/usr/bin/rustc"), "{probe}");
+        assert!(
+            probe.contains("target_directory=/tmp/nxr-q-target"),
+            "{probe}"
         );
     }
 }

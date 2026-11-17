@@ -31,6 +31,10 @@ pub struct SessionStart {
     pub operation_id: Option<String>,
     /// Workspace this run belongs to. Empty for a raw session.
     pub workspace_id: Option<String>,
+    /// Canonical output directories this local command will write.
+    pub output_dirs: Vec<String>,
+    /// Script the supervisor runs in the child environment before spawn.
+    pub probe_script: Option<String>,
 }
 
 /// CPU tokens and memory the local machine will admit. This is not a cluster pool.
@@ -94,6 +98,8 @@ pub fn start_on(
             "target_dir": request.target_dir,
             "operation_id": request.operation_id,
             "workspace_id": request.workspace_id,
+            "output_dirs": request.output_dirs,
+            "probe_script": request.probe_script,
         }),
     )?;
     let id = value
@@ -351,6 +357,8 @@ mod tests {
                 target_dir: None,
                 operation_id: None,
                 workspace_id: None,
+                output_dirs: Vec::new(),
+                probe_script: None,
             },
             LocalBudget {
                 cpu: 1,
@@ -385,6 +393,8 @@ mod tests {
                 target_dir: None,
                 operation_id: None,
                 workspace_id: None,
+                output_dirs: Vec::new(),
+                probe_script: None,
             },
             LocalBudget {
                 cpu: 2,
@@ -422,6 +432,8 @@ mod tests {
                 target_dir: None,
                 operation_id: None,
                 workspace_id: None,
+                output_dirs: Vec::new(),
+                probe_script: None,
             },
             LocalBudget {
                 cpu: 2,

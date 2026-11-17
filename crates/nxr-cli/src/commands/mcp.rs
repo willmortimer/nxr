@@ -12,11 +12,12 @@ use nxr_nix::OptionalNixFlags;
 use std::collections::BTreeMap;
 
 use nxr_task::{
-    OperationKind, OperationRecord, ProjectExecutionPolicy, ReceiptEvent, ValidationPlanInput,
-    admit, apply_project_policy, attach_events, bind_supervisor, cache_reason, cancel,
+    ChildObservation, ContextIdentity, OperationKind, OperationRecord, ProjectExecutionPolicy,
+    ReceiptEvent, ShellProbe, StoredReceipt, ValidationPlanInput, admit, apply_project_policy,
+    attach_events, bind_supervisor, cache_reason, cancel, child_probe_script,
     declared_input_digests, execution_fingerprint_with_inputs, inspect, mark_admitting,
-    mark_reconciliation, parse_run_log, static_receipt, validate_policy_parameters,
-    validation_plan,
+    mark_reconciliation, parse_child_probe, parse_run_log, read_receipt, static_receipt,
+    transition, validate_policy_parameters, validation_plan, verified_receipt, write_receipt,
 };
 use serde_json::{Value, json};
 
@@ -532,22 +533,61 @@ fn start(
         .ordered_arguments(&record.operation_id, &parameters);
     let digests = declared_input_digests(workspace_root, &record.inputs)?;
     let fingerprint = execution_fingerprint_with_inputs(&record, &digests, &parameters);
+    let parameter_text = canonical_parameters(&parameters);
+    if let Some(reused) = reused_qualification(
+        _supervisor_dir,
+        workspace_root,
+        &record.operation_id,
+        &fingerprint,
+        &parameter_text,
+    ) {
+        return Ok(reused);
+    }
     match admit(run_dir, key, &record, &fingerprint)? {
         nxr_task::Admission::Reserved(_) => {
             mark_admitting(run_dir, key)?;
             let (command, cwd) = command_for(launch, &record, &positional, workspace_root)?;
             let admission = admission_id(workspace_id, workspace_root, key)?;
-            let target_dir = if command_locks_cargo_target(&command) {
-                let cargo_target = std::env::var("CARGO_TARGET_DIR").ok();
-                let effective = nxr_core::target_lock::effective_target_dir(
-                    workspace_root,
-                    cargo_target.as_deref(),
-                    &command,
-                );
-                Some(nxr_core::execution_owner::canonical_target_dir(&effective))
+            let resources = admitted_output_resources(workspace_root, &command)?;
+            let output_dirs: Vec<String> = resources
+                .iter()
+                .map(|resource| nxr_core::execution_owner::canonical_target_dir(&resource.path))
+                .collect();
+            let target_dir = output_dirs.first().cloned();
+            let parallelism = std::thread::available_parallelism()
+                .map(|count| u32::try_from(count.get()).unwrap_or(1))
+                .unwrap_or(1);
+            let host = nxr_core::admission_budget::host_budget(
+                std::env::var("NXR_LOCAL_CPU").ok().as_deref(),
+                std::env::var("NXR_LOCAL_MEMORY_MIB").ok().as_deref(),
+                parallelism,
+            );
+            let heavy = command_is_heavy_cargo(&command);
+            let reservation = nxr_core::admission_budget::reservation_for(0, 0, heavy);
+            let probe_script = if should_probe_child(&command) {
+                Some(child_probe_script().to_owned())
             } else {
                 None
             };
+            let identity = execution_identity(
+                &record.operation_id,
+                &parameter_text,
+                &fingerprint,
+                probe_script.as_deref(),
+                cwd.as_path(),
+            );
+            match coalesce_running(supervisor_socket, _supervisor_dir, &identity, &output_dirs)? {
+                Some(run_id) => {
+                    bind_supervisor(run_dir, key, &run_id)?;
+                    return Ok(json!({
+                        "run_id": run_id,
+                        "started": false,
+                        "replayed": true,
+                        "status": "attached"
+                    }));
+                }
+                None => {}
+            }
             match start_on(
                 supervisor_socket,
                 &SessionStart {
@@ -555,19 +595,31 @@ fn start(
                     command,
                     remote: None,
                     attempt_id: None,
-                    cpu: 0,
-                    memory_mib: 0,
+                    cpu: reservation.cpu,
+                    memory_mib: reservation.memory_mib,
                     cwd: Some(cwd),
                     admission_id: Some(admission.clone()),
                     target_dir,
                     operation_id: Some(record.operation_id.clone()),
                     workspace_id: Some(workspace_id.to_owned()),
+                    output_dirs: output_dirs.clone(),
+                    probe_script,
                 },
-                LocalBudget::from_process(),
+                LocalBudget {
+                    cpu: host.cpu,
+                    memory_mib: host.memory_mib,
+                },
                 &BTreeMap::new(),
                 runner,
             ) {
                 Ok(run_id) => {
+                    persist_child_observation(
+                        _supervisor_dir,
+                        &run_id,
+                        &record.operation_id,
+                        workspace_id,
+                    );
+                    remember_active_run(_supervisor_dir, &run_id, &identity, &output_dirs);
                     let durable =
                         nxr_core::load_durable_run(&run_id).map_err(|err| err.to_string())?;
                     if durable.status != nxr_core::DurableRunStatus::Running
@@ -655,14 +707,21 @@ fn run_receipt(
         &record.operation_id,
         workspace_id,
     )?;
-    let mut receipt = static_receipt(record);
-    let reason = cache_reason(
-        None,
-        &unverified_context(),
-        false,
-        false,
-        receipt.shell_entered,
-    );
+    let observed = stored_child_observation(supervisor_dir, run_id);
+    let (mut receipt, context, verified) = if let Some(observation) = observed {
+        let probe = shell_probe_from_observation(&observation);
+        let receipt = verified_receipt(record, &probe)?;
+        let context = ContextIdentity {
+            rustc_version: observation.rustc_version,
+            wrapper_name: observation.wrapper_path,
+            target_dir: observation.target_directory,
+            cache_mode: observation.cache_identity,
+        };
+        (receipt, context, true)
+    } else {
+        (static_receipt(record), unverified_context(), false)
+    };
+    let reason = cache_reason(None, &context, false, false, verified);
     let stored = nxr_core::execution_owner::events(supervisor_dir, run_id, 0)?;
     let events = stored
         .as_array()
@@ -801,6 +860,375 @@ fn parameter_map(arguments: &Value) -> Result<BTreeMap<String, String>, String> 
     Ok(parameters)
 }
 
+/// Cargo and Nix commands have an output contract. Other commands do not lock
+/// the supervisor's `CARGO_TARGET_DIR`.
+fn admitted_output_resources(
+    workspace_root: &Path,
+    command: &[String],
+) -> Result<Vec<nxr_core::output_resource::OutputResource>, String> {
+    if !command_has_output_contract(command) {
+        return Ok(Vec::new());
+    }
+    let cargo_target = std::env::var("CARGO_TARGET_DIR").ok();
+    nxr_core::output_resource::resolve_output_resources(
+        workspace_root,
+        command,
+        cargo_target.as_deref(),
+        None,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        "local",
+    )
+}
+
+fn command_has_output_contract(command: &[String]) -> bool {
+    command_locks_cargo_target(command) || command_is_nix(command)
+}
+
+fn command_is_nix(command: &[String]) -> bool {
+    command.first().is_some_and(|arg| {
+        matches!(
+            Path::new(arg).file_name().and_then(|name| name.to_str()),
+            Some("nix" | "nix-build")
+        )
+    })
+}
+
+fn command_is_heavy_cargo(command: &[String]) -> bool {
+    let Some(program) = command.first() else {
+        return false;
+    };
+    if Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some("cargo")
+    {
+        return false;
+    }
+    command
+        .iter()
+        .skip(1)
+        .any(|arg| arg == "build" || arg == "test" || arg == "nextest")
+}
+
+fn should_probe_child(command: &[String]) -> bool {
+    if command_locks_cargo_target(command) {
+        return true;
+    }
+    matches!(command.get(1).map(String::as_str), Some("task" | "run"))
+}
+
+fn canonical_parameters(parameters: &BTreeMap<String, String>) -> String {
+    if parameters.is_empty() {
+        return "none".to_owned();
+    }
+    parameters
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn execution_identity(
+    operation_id: &str,
+    parameters: &str,
+    source_digest: &str,
+    probe_script: Option<&str>,
+    cwd: &Path,
+) -> nxr_task::coalesce::ExecutionIdentity {
+    let observation = probe_script.and_then(|script| run_probe(script, cwd));
+    let toolchain = observation
+        .as_ref()
+        .map(|item| item.rustc_version.clone())
+        .unwrap_or_default();
+    let env_digest = nxr_core::digest_bytes(
+        observation
+            .as_ref()
+            .map(|item| {
+                format!(
+                    "{}\n{}\n{}",
+                    item.wrapper_path, item.target_directory, item.cache_identity
+                )
+            })
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    nxr_task::coalesce::ExecutionIdentity {
+        operation_id: operation_id.to_owned(),
+        parameters: parameters.to_owned(),
+        source_digest: source_digest.to_owned(),
+        toolchain,
+        platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+        env_digest,
+    }
+}
+
+fn run_probe(script: &str, cwd: &Path) -> Option<ChildObservation> {
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    parse_child_probe(&text).ok()
+}
+
+fn identity_verified(identity: &nxr_task::coalesce::ExecutionIdentity) -> bool {
+    !identity.toolchain.is_empty()
+}
+
+fn coalesce_running(
+    socket: &Path,
+    supervisor_dir: &Path,
+    identity: &nxr_task::coalesce::ExecutionIdentity,
+    resources: &[String],
+) -> Result<Option<String>, String> {
+    if !identity_verified(identity) {
+        return Ok(None);
+    }
+    let active = active_runs(socket, supervisor_dir);
+    match nxr_task::coalesce::coalesce_decision(identity, true, resources, &active) {
+        Ok(nxr_task::coalesce::CoalesceDecision::Attach { run_id }) => {
+            add_observer(supervisor_dir, &run_id);
+            Ok(Some(run_id))
+        }
+        Ok(nxr_task::coalesce::CoalesceDecision::Conflict { reason }) => Err(reason),
+        Ok(nxr_task::coalesce::CoalesceDecision::Start) | Err(_) => Ok(None),
+    }
+}
+
+fn active_runs(socket: &Path, supervisor_dir: &Path) -> Vec<nxr_task::coalesce::ActiveRun> {
+    let Ok(listed) = list_on(socket) else {
+        return Vec::new();
+    };
+    let Some(rows) = listed.as_array() else {
+        return Vec::new();
+    };
+    rows.iter()
+        .filter(|row| row.get("status").and_then(Value::as_str) == Some("running"))
+        .filter_map(|row| row.get("id").and_then(Value::as_str))
+        .filter_map(|run_id| read_active_run(supervisor_dir, run_id))
+        .collect()
+}
+
+fn coalesce_path(supervisor_dir: &Path, run_id: &str) -> PathBuf {
+    supervisor_dir
+        .join("coalesce")
+        .join(format!("{run_id}.json"))
+}
+
+fn remember_active_run(
+    supervisor_dir: &Path,
+    run_id: &str,
+    identity: &nxr_task::coalesce::ExecutionIdentity,
+    resources: &[String],
+) {
+    if !identity_verified(identity) {
+        return;
+    }
+    let path = coalesce_path(supervisor_dir, run_id);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let body = json!({
+        "run_id": run_id,
+        "operation_id": identity.operation_id,
+        "parameters": identity.parameters,
+        "source_digest": identity.source_digest,
+        "toolchain": identity.toolchain,
+        "platform": identity.platform,
+        "env_digest": identity.env_digest,
+        "verified": true,
+        "resources": resources,
+        "observers": 1
+    });
+    let _ = std::fs::write(path, body.to_string());
+}
+
+fn read_active_run(supervisor_dir: &Path, run_id: &str) -> Option<nxr_task::coalesce::ActiveRun> {
+    let text = std::fs::read_to_string(coalesce_path(supervisor_dir, run_id)).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    if value.get("verified").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let resources = value
+        .get("resources")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(nxr_task::coalesce::ActiveRun {
+        run_id: run_id.to_owned(),
+        identity: nxr_task::coalesce::ExecutionIdentity {
+            operation_id: value.get("operation_id")?.as_str()?.to_owned(),
+            parameters: value.get("parameters")?.as_str()?.to_owned(),
+            source_digest: value.get("source_digest")?.as_str()?.to_owned(),
+            toolchain: value.get("toolchain")?.as_str()?.to_owned(),
+            platform: value.get("platform")?.as_str()?.to_owned(),
+            env_digest: value.get("env_digest")?.as_str()?.to_owned(),
+        },
+        verified: true,
+        resources,
+        observers: value.get("observers").and_then(Value::as_u64).unwrap_or(1) as u32,
+    })
+}
+
+fn add_observer(supervisor_dir: &Path, run_id: &str) {
+    let path = coalesce_path(supervisor_dir, run_id);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(mut value) = serde_json::from_str::<Value>(&text) else {
+        return;
+    };
+    let observers = value
+        .get("observers")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .saturating_add(1);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("observers".to_owned(), json!(observers));
+        let _ = std::fs::write(path, value.to_string());
+    }
+}
+
+/// A cancel from one of several observers only detaches.
+fn detach_observer(supervisor_dir: &Path, run_id: &str) -> bool {
+    let Some(run) = read_active_run(supervisor_dir, run_id) else {
+        return false;
+    };
+    match nxr_task::coalesce::observer_cancel(run.observers) {
+        Ok("detach") => {
+            let path = coalesce_path(supervisor_dir, run_id);
+            if let Ok(text) = std::fs::read_to_string(&path)
+                && let Ok(mut value) = serde_json::from_str::<Value>(&text)
+                && let Some(object) = value.as_object_mut()
+            {
+                let next = run.observers.saturating_sub(1).max(1);
+                object.insert("observers".to_owned(), json!(next));
+                let _ = std::fs::write(path, value.to_string());
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+fn reused_qualification(
+    supervisor_dir: &Path,
+    workspace_root: &Path,
+    operation_id: &str,
+    source_digest: &str,
+    parameters: &str,
+) -> Option<Value> {
+    let path = supervisor_dir.join("qualifications").join(format!(
+        "{}.json",
+        nxr_core::digest_bytes(operation_id.as_bytes())
+    ));
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let previous = qualification_record(&value)?;
+    let toolchain = run_probe(child_probe_script(), workspace_root)
+        .map(|observation| observation.rustc_version)
+        .unwrap_or_default();
+    let current = nxr_task::qualification::QualificationRecord {
+        status: "passed".to_owned(),
+        coverage: "complete".to_owned(),
+        source_digest: source_digest.to_owned(),
+        test_digest: source_digest.to_owned(),
+        toolchain,
+        parameters: parameters.to_owned(),
+        tests_ran: true,
+    };
+    match nxr_task::qualification::reuse_passing_qualification(Some(&previous), &current) {
+        nxr_task::qualification::ReuseDecision::Reuse => Some(json!({
+            "run_id": value.get("run_id").and_then(Value::as_str).unwrap_or(""),
+            "started": false,
+            "replayed": true,
+            "status": "reused"
+        })),
+        _ => None,
+    }
+}
+
+fn qualification_record(value: &Value) -> Option<nxr_task::qualification::QualificationRecord> {
+    Some(nxr_task::qualification::QualificationRecord {
+        status: value.get("status")?.as_str()?.to_owned(),
+        coverage: value.get("coverage")?.as_str()?.to_owned(),
+        source_digest: value.get("source_digest")?.as_str()?.to_owned(),
+        test_digest: value.get("test_digest")?.as_str()?.to_owned(),
+        toolchain: value.get("toolchain")?.as_str()?.to_owned(),
+        parameters: value.get("parameters")?.as_str()?.to_owned(),
+        tests_ran: value.get("tests_ran")?.as_bool()?,
+    })
+}
+
+fn persist_child_observation(
+    supervisor_dir: &Path,
+    run_id: &str,
+    operation_id: &str,
+    workspace_id: &str,
+) {
+    let probe_path = supervisor_dir
+        .join("provenance")
+        .join(format!("{run_id}.probe"));
+    let Ok(text) = std::fs::read_to_string(probe_path) else {
+        return;
+    };
+    let Ok(observation) = parse_child_probe(&text) else {
+        return;
+    };
+    let mut receipt = StoredReceipt {
+        state: "planned".to_owned(),
+        operation_id: operation_id.to_owned(),
+        workspace_id: workspace_id.to_owned(),
+        run_id: run_id.to_owned(),
+        source_digest: String::new(),
+        attempt: 1,
+        observation: Some(observation),
+    };
+    for next in ["admitted", "started", "environment-verified"] {
+        receipt = match transition(&receipt, next) {
+            Ok(advanced) => advanced,
+            Err(_) => return,
+        };
+    }
+    let dir = supervisor_dir.join("provenance");
+    let _ = write_receipt(&dir, &receipt);
+}
+
+fn stored_child_observation(supervisor_dir: &Path, run_id: &str) -> Option<ChildObservation> {
+    let receipt = read_receipt(&supervisor_dir.join("provenance"), run_id, 1).ok()?;
+    match receipt.state.as_str() {
+        "environment-verified" | "completed" | "artifact-verified" | "qualified" => {
+            receipt.observation
+        }
+        _ => None,
+    }
+}
+
+fn shell_probe_from_observation(observation: &ChildObservation) -> ShellProbe {
+    ShellProbe {
+        rustc_path: observation.rustc_path.clone(),
+        rustc_version: observation.rustc_version.clone(),
+        cargo_path: observation.cargo_path.clone(),
+        cargo_version: observation.cargo_version.clone(),
+        wrapper_path: observation.wrapper_path.clone(),
+        linker_path: observation.linker_path.clone(),
+        target_directory: observation.target_directory.clone(),
+        cache_identity: observation.cache_identity.clone(),
+    }
+}
+
 /// A cargo argv, or an explicit `--target-dir`, owns one output directory.
 /// `echo`, `sleep`, and `nxr task` do not lock the supervisor's `CARGO_TARGET_DIR`.
 fn command_locks_cargo_target(command: &[String]) -> bool {
@@ -933,6 +1361,14 @@ fn cancel_run(
     if owned.is_none() {
         return Ok(json!({
             "cancellation_requested": false,
+            "process_cancelled": false,
+            "process_terminal": false,
+            "reservation_cancelled": false
+        }));
+    }
+    if detach_observer(supervisor_dir, run_id) {
+        return Ok(json!({
+            "cancellation_requested": true,
             "process_cancelled": false,
             "process_terminal": false,
             "reservation_cancelled": false
@@ -1413,6 +1849,86 @@ mod tests {
             &Launch::Task,
         );
         assert!(receipt.unwrap_err().contains("does not match"));
+        forget_run(run_id);
+    }
+
+    #[test]
+    fn receipt_uses_the_child_observation_stored_for_that_run() {
+        let records = records();
+        let dir = tempfile::tempdir().unwrap();
+        let supervisor = dir.path().join("supervisor");
+        std::fs::create_dir_all(&supervisor).unwrap();
+        let true_bin = if std::path::Path::new("/usr/bin/true").exists() {
+            "/usr/bin/true"
+        } else {
+            "/bin/true"
+        };
+        let started = nxr_core::execution_owner::start(
+            &supervisor,
+            &json!({
+                "command": [true_bin],
+                "label": "observed",
+                "operation_id": "lattice:task:test",
+                "workspace_id": "lattice"
+            }),
+        )
+        .unwrap();
+        let run_id = started["id"].as_str().unwrap();
+        let observation = nxr_task::ChildObservation {
+            rustc_path: "/nix/store/rustc".into(),
+            rustc_version: "rustc 1.80.0".into(),
+            cargo_path: "/nix/store/cargo".into(),
+            cargo_version: "cargo 1.80.0".into(),
+            wrapper_path: String::new(),
+            linker_path: String::new(),
+            target_directory: "/tmp/nxr-q-target".into(),
+            cache_identity: String::new(),
+        };
+        let mut stored = nxr_task::StoredReceipt {
+            state: "planned".into(),
+            operation_id: "lattice:task:test".into(),
+            workspace_id: "lattice".into(),
+            run_id: run_id.into(),
+            source_digest: "src".into(),
+            attempt: 1,
+            observation: Some(observation),
+        };
+        for next in ["admitted", "started", "environment-verified"] {
+            stored = nxr_task::transition(&stored, next).unwrap();
+        }
+        let provenance = supervisor.join("provenance");
+        nxr_task::write_receipt(&provenance, &stored).unwrap();
+        let receipt = invoke(
+            &json!({
+                "name": "runs_get_receipt",
+                "arguments": {"id": "lattice:task:test", "run_id": run_id}
+            }),
+            &records,
+            std::path::Path::new("/tmp/lattice"),
+            dir.path(),
+            &dir.path().join("nxrd.sock"),
+            true,
+            &Launch::Task,
+        )
+        .unwrap();
+        assert_eq!(receipt["shell_entered"], true);
+        assert_eq!(receipt["rustc"]["status"], "entered");
+        assert_eq!(receipt["rustc"]["version"], "rustc 1.80.0");
+        assert_eq!(receipt["wrapper"]["status"], "not entered");
+        assert_ne!(receipt["cache_reason"], "context_unverified");
+        let wrong = invoke(
+            &json!({
+                "name": "runs_get_receipt",
+                "arguments": {"id": "lattice:task:reset-db", "run_id": run_id}
+            }),
+            &records,
+            std::path::Path::new("/tmp/lattice"),
+            dir.path(),
+            &dir.path().join("nxrd.sock"),
+            true,
+            &Launch::Task,
+        );
+        assert!(wrong.unwrap_err().contains("does not match"));
         forget_run(run_id);
     }
 

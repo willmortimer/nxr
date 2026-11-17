@@ -1,6 +1,7 @@
 //! Shared models, schema versions, diagnostics, and policy types.
 
 pub mod action;
+pub mod admission_budget;
 pub mod cas;
 pub mod config;
 pub mod daemon;
@@ -8,6 +9,7 @@ pub mod dev_env_cache;
 pub mod diagnostics;
 pub mod digest_cache;
 pub mod disk_cache_status;
+pub mod disk_preflight;
 pub mod durable_run;
 pub mod ecosystem;
 pub mod env_policy;
@@ -20,11 +22,13 @@ pub mod model;
 pub mod operation;
 pub mod operation_ir;
 pub mod osc52;
+pub mod output_resource;
 pub mod perf;
 pub mod plan;
 pub mod plan_cache;
 pub mod projects;
 pub mod repo_path;
+pub mod resource_guard;
 pub mod run_binding;
 pub mod run_history;
 pub mod sanitize;

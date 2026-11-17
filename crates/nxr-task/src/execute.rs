@@ -671,6 +671,7 @@ fn spawn_argv(
     args: &[String],
     ctx: &ExecContext,
 ) -> Result<OperationResult, ExecuteError> {
+    let (leaf_paths, leaf_admissions) = admit_cargo_leaf(program, args, ctx)?;
     let mut command = Command::new(program);
     command.args(args);
     command.env_clear();
@@ -689,15 +690,102 @@ fn spawn_argv(
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
-    let output = command.output().map_err(|error| ExecuteError::Spawn {
-        detail: format!("failed to spawn {}: {error}", program.display()),
-    })?;
+    if !leaf_paths.is_empty() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+    }
+    let output = if leaf_paths.is_empty() {
+        drop(leaf_admissions);
+        command.output().map_err(|error| ExecuteError::Spawn {
+            detail: format!("failed to spawn {}: {error}", program.display()),
+        })?
+    } else {
+        let child = command.spawn().map_err(|error| ExecuteError::Spawn {
+            detail: format!("failed to spawn {}: {error}", program.display()),
+        })?;
+        let pid = child.id();
+        for path in &leaf_paths {
+            let _ = nxr_core::resource_guard::spawn_guardian(&path.join(".nxr-target.lock"), pid);
+        }
+        let output = child
+            .wait_with_output()
+            .map_err(|error| ExecuteError::Spawn {
+                detail: format!("failed to wait {}: {error}", program.display()),
+            })?;
+        release_leaf_when_stopped(pid, leaf_admissions);
+        output
+    };
     let code = output.status.code().unwrap_or(exit::CHILD_FAILED);
     Ok(OperationResult::Exited {
         code,
         stdout: decode_output(&output.stdout),
         stderr: decode_output(&output.stderr),
     })
+}
+
+fn admit_cargo_leaf(
+    program: &Path,
+    args: &[String],
+    ctx: &ExecContext,
+) -> Result<(Vec<PathBuf>, Vec<nxr_core::target_lock::TargetAdmission>), ExecuteError> {
+    let mut command = vec![program.display().to_string()];
+    command.extend(args.iter().cloned());
+    let name = program.file_name().and_then(|name| name.to_str());
+    let locks_cargo = name == Some("cargo")
+        || args
+            .iter()
+            .any(|arg| arg == "--target-dir" || arg.starts_with("--target-dir="));
+    let nix = matches!(name, Some("nix" | "nix-build"));
+    if !locks_cargo && !nix {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let root = ctx.cwd.clone().unwrap_or_else(|| PathBuf::from("."));
+    let resources = nxr_core::output_resource::resolve_output_resources(
+        &root,
+        &command,
+        std::env::var("CARGO_TARGET_DIR").ok().as_deref(),
+        None,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        "local",
+    )
+    .map_err(|detail| ExecuteError::Spawn { detail })?;
+    if resources.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    for resource in &resources {
+        let decision = nxr_core::disk_preflight::disk_preflight(&resource.path, 1024 * 1024);
+        if !decision.allowed {
+            return Err(ExecuteError::Spawn {
+                detail: decision.reason,
+            });
+        }
+    }
+    let paths: Vec<PathBuf> = resources
+        .into_iter()
+        .map(|resource| resource.path)
+        .collect();
+    let admissions = nxr_core::resource_guard::acquire_ordered(&paths)
+        .map_err(|detail| ExecuteError::Spawn { detail })?;
+    Ok((paths, admissions))
+}
+
+fn release_leaf_when_stopped(pid: u32, admissions: Vec<nxr_core::target_lock::TargetAdmission>) {
+    std::thread::spawn(move || {
+        loop {
+            match nxr_core::resource_guard::writer_group_alive(pid, None) {
+                nxr_core::resource_guard::GroupLiveness::Dead => break,
+                nxr_core::resource_guard::GroupLiveness::Alive
+                | nxr_core::resource_guard::GroupLiveness::Uncertain => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+        }
+        drop(admissions);
+    });
 }
 
 fn decode_output(bytes: &[u8]) -> String {
