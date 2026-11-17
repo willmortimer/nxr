@@ -16,6 +16,7 @@ pub struct ValidationPlanInput<'a> {
     pub changed_paths: &'a [String],
     pub unknown_nodes: &'a [String],
     pub operations: &'a [OperationRecord],
+    pub undeclared_members: &'a [String],
 }
 
 /// One operation the batch would consider. Effect is descriptive.
@@ -48,6 +49,8 @@ pub struct ValidationPlan {
     pub coverage: PlanCoverage,
     pub operations: Vec<PlannedOperation>,
     pub execution: PlanExecution,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<String>,
 }
 
 /// Build a plan whose execution gate is not a grant of authority.
@@ -66,7 +69,7 @@ pub fn validation_plan(input: &ValidationPlanInput<'_>) -> ValidationPlan {
     if input.dirty {
         unresolved.extend(empty_inputs.iter().cloned());
     }
-    let status = if input.discovery_failed
+    let mut status = if input.discovery_failed
         || (input.dirty && !empty_inputs.is_empty())
         || (!input.changed_paths.is_empty() && input.operations.is_empty())
     {
@@ -78,6 +81,12 @@ pub fn validation_plan(input: &ValidationPlanInput<'_>) -> ValidationPlan {
     } else {
         "complete"
     };
+    if !input.undeclared_members.is_empty() {
+        unresolved.extend(input.undeclared_members.iter().cloned());
+        if status == "complete" {
+            status = "partial";
+        }
+    }
     ValidationPlan {
         schema: VALIDATION_PLAN_SCHEMA.to_owned(),
         intent: "integration".to_owned(),
@@ -100,6 +109,7 @@ pub fn validation_plan(input: &ValidationPlanInput<'_>) -> ValidationPlan {
             requires_authorization: true,
             deploy_allowed: false,
         },
+        members: Vec::new(),
     }
 }
 
@@ -129,10 +139,12 @@ mod tests {
             changed_paths: &paths,
             unknown_nodes: &[],
             operations: &operations,
+            undeclared_members: &[],
         });
         assert_eq!(plan.schema, VALIDATION_PLAN_SCHEMA);
         assert_eq!(plan.coverage.status, "complete");
         assert!(plan.coverage.unresolved_inputs.is_empty());
+        assert!(plan.members.is_empty());
         assert!(!plan.execution.authorized);
         assert!(!plan.execution.deploy_allowed);
         assert!(plan.execution.requires_authorization);
@@ -149,6 +161,7 @@ mod tests {
             changed_paths: &[],
             unknown_nodes: &unknown,
             operations: &operations,
+            undeclared_members: &[],
         });
         assert_eq!(partial.coverage.status, "partial");
         let dirty = validation_plan(&ValidationPlanInput {
@@ -157,6 +170,7 @@ mod tests {
             changed_paths: &[],
             unknown_nodes: &unknown,
             operations: &operations,
+            undeclared_members: &[],
         });
         assert_eq!(dirty.coverage.status, "unknown");
         assert!(
@@ -171,6 +185,7 @@ mod tests {
             changed_paths: &["flake.nix".to_owned()],
             unknown_nodes: &[],
             operations: &[],
+            undeclared_members: &[],
         });
         assert_eq!(failed.coverage.status, "unknown");
         assert_eq!(failed.coverage.unresolved_inputs, ["discovery"]);
@@ -185,6 +200,7 @@ mod tests {
             changed_paths: &[],
             unknown_nodes: &[],
             operations: &[],
+            undeclared_members: &[],
         });
         assert_eq!(empty.coverage.status, "empty");
         assert!(!empty.execution.authorized);
@@ -195,8 +211,29 @@ mod tests {
             changed_paths: &paths,
             unknown_nodes: &[],
             operations: &[],
+            undeclared_members: &[],
         });
         assert_eq!(unknown.coverage.status, "unknown");
         assert!(!unknown.execution.authorized);
+    }
+
+    #[test]
+    fn undeclared_members_make_a_mapped_clean_plan_partial() {
+        let operations = [operation("test", vec!["crates/nxr-task".into()])];
+        let paths = ["crates/nxr-task/src/lib.rs".to_owned()];
+        let undeclared = ["stargate".to_owned()];
+        let plan = validation_plan(&ValidationPlanInput {
+            discovery_failed: false,
+            dirty: false,
+            changed_paths: &paths,
+            unknown_nodes: &[],
+            operations: &operations,
+            undeclared_members: &undeclared,
+        });
+        assert_eq!(plan.coverage.status, "partial");
+        assert_eq!(plan.coverage.unresolved_inputs, ["stargate"]);
+        assert!(plan.members.is_empty());
+        assert!(!plan.execution.authorized);
+        assert!(!plan.execution.deploy_allowed);
     }
 }

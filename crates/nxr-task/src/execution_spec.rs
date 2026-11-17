@@ -18,7 +18,8 @@ use serde_json::Value;
 
 use crate::identity::{
     BindingDestination, EXECUTION_SPEC_V2, ExecutionEnvironment, ExecutionResources,
-    OperationIdentity, SourceSetV1, WorkingDirectoryPolicy, operation_id, source_set_digest,
+    OperationIdentity, SourceSetV1, SourceSetV2, WorkingDirectoryPolicy, operation_id,
+    source_set_digest, source_set_digest_v2,
 };
 use crate::run_journal::{JournalEvent, RunJournal};
 use crate::workflows::{WorkflowDocument, WorkflowPlatform, WorkflowTask};
@@ -146,6 +147,64 @@ pub struct RunEventV2 {
 pub struct SpecRun {
     pub operation_id: String,
     pub exit_code: i32,
+}
+
+/// Declared source-set members bound against a required name list.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceBinding {
+    pub source_set_id: String,
+    pub members: Vec<String>,
+    pub coverage: String,
+    pub unresolved: Vec<String>,
+}
+
+/// Bind required member names to a validated SourceSet v2 identity.
+///
+/// # Errors
+///
+/// Returns a validation error from [`source_set_digest_v2`] and produces no binding.
+pub fn bind_source_members(
+    set: &SourceSetV2,
+    required: &[&str],
+) -> Result<SourceBinding, String> {
+    let source_set_id = source_set_digest_v2(set)?;
+    let mut members: Vec<String> = set
+        .members
+        .iter()
+        .map(|member| member.name.clone())
+        .collect();
+    members.sort();
+    let mut unresolved: Vec<String> = required
+        .iter()
+        .filter(|name| !members.iter().any(|member| member == *name))
+        .map(|name| (*name).to_owned())
+        .collect();
+    unresolved.sort();
+    let coverage = if unresolved.is_empty() {
+        "complete"
+    } else {
+        "partial"
+    };
+    Ok(SourceBinding {
+        source_set_id,
+        members,
+        coverage: coverage.to_owned(),
+        unresolved,
+    })
+}
+
+/// Attach a SourceSet v2 digest and recompute the operation id.
+///
+/// # Errors
+///
+/// Returns a validation error from [`source_set_digest_v2`].
+pub fn spec_with_source_set(
+    mut spec: ExecutionSpecV2,
+    set: &SourceSetV2,
+) -> Result<ExecutionSpecV2, String> {
+    spec.source_set_id = source_set_digest_v2(set)?;
+    spec.operation_id = spec.recomputed_operation_id();
+    Ok(spec)
 }
 
 /// Emit one spec per task. Order follows the document's sorted task names.
@@ -1512,5 +1571,73 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp");
         let error = execute_spec_locally(&spec, dir.path(), "run_missing").expect_err("output");
         assert!(error.contains("missing"));
+    }
+
+    fn member(name: &str, logical_path: &str, commit: &str) -> crate::identity::SourceMemberV2 {
+        crate::identity::SourceMemberV2 {
+            name: name.to_owned(),
+            logical_path: logical_path.to_owned(),
+            kind: "git".to_owned(),
+            commit: commit.to_owned(),
+            submodules: Vec::new(),
+            lockfiles: Vec::new(),
+            dirty_snapshot_id: None,
+        }
+    }
+
+    fn lattice_set(stargate_commit: &str) -> SourceSetV2 {
+        SourceSetV2 {
+            schema_version: crate::identity::SOURCE_SET_V2.to_owned(),
+            primary: "lattice".to_owned(),
+            members: vec![
+                member("lattice", "lattice", "aaa"),
+                member("stargate", "deps/stargate", stargate_commit),
+            ],
+        }
+    }
+
+    #[test]
+    fn a_complete_source_set_binds_the_v2_digest() {
+        let set = lattice_set("bbb");
+        let binding = bind_source_members(&set, &["lattice", "stargate"]).expect("bind");
+        assert_eq!(binding.coverage, "complete");
+        assert!(binding.unresolved.is_empty());
+        assert_eq!(
+            binding.source_set_id,
+            "src2_501f07df541ef192dad7831f68372b7ee9105a55fe1f0c2657913f618783ab7f"
+        );
+    }
+
+    #[test]
+    fn a_dependency_revision_changes_the_operation_id() {
+        let first = spec_with_source_set(fixture_spec("base"), &lattice_set("bbb")).expect("bbb");
+        let second = spec_with_source_set(fixture_spec("base"), &lattice_set("ccc")).expect("ccc");
+        assert_ne!(first.source_set_id, second.source_set_id);
+        assert_ne!(first.operation_id, second.operation_id);
+        assert_eq!(
+            second.source_set_id,
+            "src2_2386048beda35c5fc6ca878a72f1851a2450218b6ff41d2624bb5c609630b724"
+        );
+    }
+
+    #[test]
+    fn member_order_does_not_change_the_bound_operation() {
+        let mut reversed = lattice_set("bbb");
+        reversed.members.reverse();
+        let forward = spec_with_source_set(fixture_spec("base"), &lattice_set("bbb")).expect("fwd");
+        let backward = spec_with_source_set(fixture_spec("base"), &reversed).expect("back");
+        assert_eq!(forward.operation_id, backward.operation_id);
+    }
+
+    #[test]
+    fn a_missing_member_is_partial_and_keeps_the_declared_digest() {
+        let set = lattice_set("bbb");
+        let binding = bind_source_members(&set, &["lattice", "missing"]).expect("bind");
+        assert_eq!(binding.coverage, "partial");
+        assert_eq!(binding.unresolved, ["missing"]);
+        assert_eq!(
+            binding.source_set_id,
+            source_set_digest_v2(&set).expect("digest")
+        );
     }
 }

@@ -1624,6 +1624,7 @@ fn plan_batch(
             changed_paths: &paths,
             unknown_nodes: &[],
             operations: &[],
+            undeclared_members: &[],
         }),
         Ok(selection) => {
             let unknown: Vec<String> = selection
@@ -1650,6 +1651,7 @@ fn plan_batch(
                 changed_paths: &selection.analysis.changed_paths,
                 unknown_nodes: &unknown,
                 operations: &operations,
+                undeclared_members: &[],
             })
         }
     };

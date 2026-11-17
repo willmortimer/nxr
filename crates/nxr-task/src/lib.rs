@@ -87,9 +87,10 @@ pub use execute::{
     execute_operation, run_operation_plan,
 };
 pub use execution_spec::{
-    AdmissionPolicy, CiIdentity, ExecutionSpecV2, OutputDecl, RunEventV2, SpecRun,
-    execute_spec_locally, execution_spec_for_task, execution_specs_for_document,
-    source_set_from_repo, workflow_definition_digest,
+    AdmissionPolicy, CiIdentity, ExecutionSpecV2, OutputDecl, RunEventV2, SourceBinding, SpecRun,
+    bind_source_members, execute_spec_locally, execution_spec_for_task,
+    execution_specs_for_document, source_set_from_repo, spec_with_source_set,
+    workflow_definition_digest,
 };
 pub use failure::{FailureSummary, failure_summary};
 pub use graph::{GraphError, TaskGraph, render_dot, render_mermaid, render_text};
