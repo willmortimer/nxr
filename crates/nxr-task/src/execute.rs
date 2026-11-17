@@ -270,6 +270,9 @@ pub fn run_operation_plan_with(
 
 /// Same as [`run_operation_plan_with`], and remote leaves go to `remote`.
 ///
+/// `remote` receives the operation, the node context, and the plan node being
+/// placed. Local nodes are not passed to it.
+///
 /// # Errors
 ///
 /// Returns [`ExecuteError`] from scheduling, native spawn, `nix`, or `remote`.
@@ -282,7 +285,11 @@ pub fn run_operation_plan_callbacks(
         &mut dyn FnMut(&Operation, &ExecContext) -> Result<OperationResult, ExecuteError>,
     >,
     mut remote: Option<
-        &mut dyn FnMut(&Operation, &ExecContext) -> Result<OperationResult, ExecuteError>,
+        &mut dyn FnMut(
+            &Operation,
+            &ExecContext,
+            &PlanNode,
+        ) -> Result<OperationResult, ExecuteError>,
     >,
 ) -> Result<OperationRun, ExecuteError> {
     let mut scheduler = Scheduler::new(plan, jobs)?;
@@ -340,7 +347,7 @@ pub fn run_operation_plan_callbacks(
             emit(sink.as_mut(), Event::node_started(id.clone()));
             let executed = if matches!(operation, Operation::Remote { .. }) {
                 match remote.as_mut() {
-                    Some(dispatch) => dispatch(operation, &node_ctx),
+                    Some(dispatch) => dispatch(operation, &node_ctx, node),
                     None => Err(ExecuteError::unavailable(
                         ExecutorName::Remote,
                         "remote executor is not available".to_owned(),

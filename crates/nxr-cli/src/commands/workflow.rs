@@ -291,7 +291,59 @@ fn print_plan(plan: &ExecutionPlan, json: bool) -> Result<(), WorkflowError> {
     Ok(())
 }
 
-fn remote_run(operation: &Operation, _ctx: &ExecContext) -> Result<OperationResult, ExecuteError> {
+fn remote_run(
+    operation: &Operation,
+    ctx: &ExecContext,
+    node: &nxr_task::PlanNode,
+) -> Result<OperationResult, ExecuteError> {
+    if nxr_task::workflows::remote_leaf_path(node)
+        == nxr_task::workflows::RemoteLeafPath::LinuxAttempt
+    {
+        return place_linux_attempt(ctx, node);
+    }
+    native_build_remote(operation)
+}
+
+/// Place one Linux leaf with `execution submit` and `execution fetch`.
+fn place_linux_attempt(
+    ctx: &ExecContext,
+    node: &nxr_task::PlanNode,
+) -> Result<OperationResult, ExecuteError> {
+    let checkout = ctx.cwd.clone().ok_or_else(|| ExecuteError::Invalid {
+        detail: "linux leaf has no checkout".to_owned(),
+    })?;
+    let root =
+        nxr_task::workflows::find_workflow_root(&checkout).unwrap_or_else(|| checkout.clone());
+    let source =
+        nxr_task::source_set_from_repo(&root).map_err(|detail| ExecuteError::Invalid { detail })?;
+    let path = nxr_task::workflows::workflow_path(&root);
+    let bytes = std::fs::read(&path).map_err(|error| ExecuteError::Invalid {
+        detail: format!("read {}: {error}", path.display()),
+    })?;
+    let digest = nxr_task::workflow_definition_digest(&bytes);
+    let bin = std::env::var("NIXPLANE").unwrap_or_else(|_| "nixplane".to_owned());
+    let state_dir = std::env::var("NIXPLANE_STATE_DIR").ok();
+    let transport = crate::commands::nixplane_transport::NixplaneCliTransport { bin, state_dir };
+    nxr_task::workflows::place_linux_leaf(
+        node,
+        &checkout,
+        &source,
+        &digest,
+        &transport,
+        |transport, attempt_id, name, out| transport.fetch_output(attempt_id, name, out),
+    )
+    .map_err(|detail| ExecuteError::UnavailableExecutor {
+        executor: nxr_task::execute::ExecutorName::Remote,
+        detail,
+    })?;
+    Ok(OperationResult::Exited {
+        code: exit::SUCCESS,
+        stdout: String::new(),
+        stderr: String::new(),
+    })
+}
+
+fn native_build_remote(operation: &Operation) -> Result<OperationResult, ExecuteError> {
     let Operation::Remote {
         target,
         task,

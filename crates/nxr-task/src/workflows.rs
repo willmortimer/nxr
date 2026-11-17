@@ -35,12 +35,15 @@ use std::path::{Path, PathBuf};
 
 use nxr_core::Operation;
 use serde::Deserialize;
+use serde_json::Value;
 use thiserror::Error;
 
 use crate::events::{Event, EventSink};
 use crate::graph::{GraphError, TaskGraph};
+use crate::identity::SourceSetV1;
 use crate::plan_exec::{ArgumentForwarding, ExecutionPlan, FailurePolicy, PlanNode};
 use crate::planner::plan_serial_union;
+use crate::remote_execution::{ExecutionTransport, submit_execution};
 use crate::resources::NodeResources;
 use crate::schema::{TaskDefinition, TaskResources};
 
@@ -1020,18 +1023,383 @@ struct WorkflowRemoteFile {
     manifest: String,
 }
 
+/// Where one remote workflow leaf is placed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemoteLeafPath {
+    /// Linux leaf: `submit_execution`, then fetch each declared artifact.
+    LinuxAttempt,
+    /// Existing `nixplane native-build` command.
+    NativeBuild,
+}
+
+/// Linux remote leaves use the execution contract. Every other remote leaf
+/// stays on the native-build command.
+#[must_use]
+pub fn remote_leaf_path(node: &PlanNode) -> RemoteLeafPath {
+    if node.platform.as_deref() == Some("linux")
+        && matches!(node.operation, Some(Operation::Remote { .. }))
+    {
+        RemoteLeafPath::LinuxAttempt
+    } else {
+        RemoteLeafPath::NativeBuild
+    }
+}
+
+/// Submit body for one Linux workflow leaf.
+///
+/// The object has two fields:
+/// - `spec`: the execution spec for this leaf. `outputs` lists only
+///   `node.artifacts`.
+/// - `source_set`: the leaf source set passed by the caller.
+///
+/// The body has no dirty manifest, no source locator, and no sibling member
+/// list. Preparation and verification paths are not added.
+///
+/// # Errors
+///
+/// Returns an error when the node has no operation or the spec cannot be built.
+pub fn linux_leaf_submit_body(
+    node: &PlanNode,
+    source: &SourceSetV1,
+    workflow_digest: &str,
+) -> Result<Value, String> {
+    let task = workflow_task_from_node(node)?;
+    let spec =
+        crate::execution_spec::execution_spec_for_task(source, workflow_digest, &node.id, &task)?;
+    let spec_value = serde_json::to_value(&spec).map_err(|err| format!("execution spec: {err}"))?;
+    let source_value = serde_json::to_value(source).map_err(|err| format!("source set: {err}"))?;
+    Ok(serde_json::json!({
+        "spec": spec_value,
+        "source_set": source_value,
+    }))
+}
+
+/// Submit one Linux leaf, then fetch each declared artifact under `checkout`.
+///
+/// A failed submit returns before any fetch. `fetch` is `NixplaneCliTransport::fetch_output`
+/// in the CLI and a recording writer in tests. The artifact `name` is the
+/// declared name; the file is `checkout.join(name)`.
+///
+/// # Errors
+///
+/// Returns an error when the node is not a Linux remote leaf, the spec cannot
+/// be built, submit fails, the attempt id is missing, or a fetch fails.
+pub fn place_linux_leaf<T, F>(
+    node: &PlanNode,
+    checkout: &Path,
+    source: &SourceSetV1,
+    workflow_digest: &str,
+    transport: &T,
+    mut fetch: F,
+) -> Result<String, String>
+where
+    T: ExecutionTransport,
+    F: FnMut(&T, &str, &str, &Path) -> Result<String, String>,
+{
+    if remote_leaf_path(node) != RemoteLeafPath::LinuxAttempt {
+        return Err("only a linux remote leaf is placed on the execution contract".to_owned());
+    }
+    let body = linux_leaf_submit_body(node, source, workflow_digest)?;
+    let response = submit_execution(transport, &body)?;
+    let attempt_id = response
+        .get("attempt_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "submit did not return an attempt id".to_owned())?
+        .to_owned();
+    for name in &node.artifacts {
+        let destination = artifact_destination(checkout, name)?;
+        if let Some(parent) = destination.parent()
+            && parent != checkout
+        {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("create artifact directory {}: {err}", parent.display()))?;
+        }
+        fetch(transport, &attempt_id, name, &destination)?;
+    }
+    Ok(attempt_id)
+}
+
+fn workflow_task_from_node(node: &PlanNode) -> Result<WorkflowTask, String> {
+    let operation = node
+        .operation
+        .clone()
+        .ok_or_else(|| format!("task `{}` has no operation", node.id))?;
+    let platform = match node.platform.as_deref() {
+        None | Some("any") => WorkflowPlatform::Any,
+        Some("unix") => WorkflowPlatform::Unix,
+        Some("macos") => WorkflowPlatform::Macos,
+        Some("linux") => WorkflowPlatform::Linux,
+        Some("windows") => WorkflowPlatform::Windows,
+        Some(other) => {
+            return Err(format!("task `{}` platform `{other}` is unknown", node.id));
+        }
+    };
+    Ok(WorkflowTask {
+        depends_on: node.depends_on.clone(),
+        platform,
+        architecture: node.architecture.clone(),
+        resources: node.resources.clone(),
+        environment: node.environment.clone(),
+        working_directory: node.working_directory.clone(),
+        artifacts: node.artifacts.clone(),
+        inputs: node.inputs.clone(),
+        operation,
+        source_member: node.source_member.clone(),
+        remote_eligible: node.remote_eligible,
+    })
+}
+
+fn artifact_destination(checkout: &Path, name: &str) -> Result<PathBuf, String> {
+    if name.is_empty()
+        || name.starts_with('/')
+        || name.starts_with('\\')
+        || name
+            .split(['/', '\\'])
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(format!("artifact `{name}` escapes the leaf checkout"));
+    }
+    Ok(checkout.join(name))
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(not(windows))]
+    use std::path::Path;
     use std::path::PathBuf;
+    #[cfg(not(windows))]
+    use std::sync::Mutex;
 
     use nxr_core::Operation;
     use nxr_core::diagnostics::exit;
+    #[cfg(not(windows))]
+    use serde_json::{Value, json};
 
     use super::*;
     use crate::events::{RecordingSink, event_kind};
     use crate::execute::{
         ExecContext, ExecuteError, run_operation_plan, run_operation_plan_callbacks,
     };
+    #[cfg(not(windows))]
+    use crate::execute::{ExecutorName, OperationResult, OperationRun};
+    #[cfg(not(windows))]
+    use crate::identity::SourceSetV1;
+    #[cfg(not(windows))]
+    use crate::remote_execution::ExecutionTransport;
+
+    #[cfg(not(windows))]
+    struct RecordingTransport {
+        submits: Mutex<Vec<Value>>,
+        fail_submit: bool,
+    }
+
+    #[cfg(not(windows))]
+    impl ExecutionTransport for RecordingTransport {
+        fn call(&self, method: &str, body: &Value) -> Result<Value, String> {
+            if method != "submit" {
+                return Err(format!("unexpected execution method `{method}`"));
+            }
+            self.submits.lock().expect("submits").push(body.clone());
+            if self.fail_submit {
+                return Err("submit refused".to_owned());
+            }
+            Ok(json!({ "attempt_id": "att_linux_1", "accepted": true }))
+        }
+    }
+
+    #[cfg(unix)]
+    struct FourNodeRun {
+        root: tempfile::TempDir,
+        result: Result<OperationRun, ExecuteError>,
+        submits: Vec<Value>,
+        fetches: Vec<(String, String)>,
+    }
+
+    #[cfg(unix)]
+    fn four_node_document() -> WorkflowDocument {
+        parse(
+            r#"
+schema_version = 1
+
+[tasks.prep-a]
+executor = { native = ["/bin/sh", "-c", "mkdir -p preparation && printf '%s' 'alpha-prep-bytes' > preparation/alpha.txt"] }
+
+[tasks.prep-b]
+executor = { native = ["/bin/sh", "-c", "mkdir -p preparation && printf '%s' 'beta-prep-bytes' > preparation/beta.txt"] }
+
+[tasks.linux-test]
+platform = "linux"
+depends_on = ["prep-a", "prep-b"]
+artifacts = ["linux-result.txt"]
+executor = { remote = { target = "linux-worker", task = "test", source_url = "https://example.invalid/repo.git", source_revision = "0123456789abcdef0123456789abcdef01234567", lock_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }
+
+[tasks.verify]
+depends_on = ["linux-test"]
+executor = { native = ["/bin/sh", "-c", "mkdir -p verification && cp linux-result.txt verification/consumer.txt"] }
+"#,
+        )
+    }
+
+    #[cfg(unix)]
+    fn run_four_node(fail_submit: bool) -> FourNodeRun {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::create_dir(root.path().join("sibling-workspace")).expect("sibling");
+        std::fs::write(
+            root.path().join("sibling-workspace/upload.txt"),
+            "sibling-upload-bytes",
+        )
+        .expect("sibling bytes");
+        let document = four_node_document();
+        let plan = plan_workflow_document(
+            &document,
+            &WorkflowPlanMode::Explicit {
+                root: Some("verify".to_owned()),
+            },
+            FailurePolicy::FailFast,
+            None,
+        )
+        .expect("plan");
+        let mut remote_ids: Vec<_> = plan
+            .nodes
+            .iter()
+            .filter(|node| node.remote_eligible)
+            .map(|node| node.id.as_str())
+            .collect();
+        remote_ids.sort_unstable();
+        assert_eq!(plan.nodes.len(), 4);
+        assert_eq!(remote_ids, ["linux-test"]);
+        let transport = RecordingTransport {
+            submits: Mutex::new(Vec::new()),
+            fail_submit,
+        };
+        let source = SourceSetV1::fixture("linux-leaf");
+        let fetches = Mutex::new(Vec::new());
+        let ctx = ExecContext {
+            path: std::env::var("PATH").unwrap_or_default(),
+            nix_override: None,
+            cwd: Some(root.path().to_path_buf()),
+            env: BTreeMap::new(),
+            member_roots: BTreeMap::new(),
+        };
+        let result = run_operation_plan_callbacks(
+            &plan,
+            &ctx,
+            2,
+            None,
+            None,
+            Some(&mut |_operation, ctx, node| {
+                let checkout = ctx.cwd.clone().expect("checkout");
+                match remote_leaf_path(node) {
+                    RemoteLeafPath::NativeBuild => Err(ExecuteError::UnavailableExecutor {
+                        executor: ExecutorName::Remote,
+                        detail: "linux graph reached native-build".to_owned(),
+                    }),
+                    RemoteLeafPath::LinuxAttempt => {
+                        place_linux_leaf(
+                            node,
+                            &checkout,
+                            &source,
+                            "wf_linux_test",
+                            &transport,
+                            |_transport, attempt, name, out| {
+                                fetches
+                                    .lock()
+                                    .expect("fetches")
+                                    .push((attempt.to_owned(), name.to_owned()));
+                                std::fs::write(out, "returned-linux-artifact")
+                                    .map_err(|err| format!("write artifact: {err}"))?;
+                                Ok("returned-linux-artifact".to_owned())
+                            },
+                        )
+                        .map_err(|detail| {
+                            ExecuteError::UnavailableExecutor {
+                                executor: ExecutorName::Remote,
+                                detail,
+                            }
+                        })?;
+                        Ok(OperationResult::Exited {
+                            code: 0,
+                            stdout: String::new(),
+                            stderr: String::new(),
+                        })
+                    }
+                }
+            }),
+        );
+        let submits = transport.submits.lock().expect("submits").clone();
+        let fetches = fetches.lock().expect("fetches").clone();
+        FourNodeRun {
+            root,
+            result,
+            submits,
+            fetches,
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_linux_submit_body(body: &Value) {
+        let mut keys = body
+            .as_object()
+            .expect("body")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort();
+        assert_eq!(keys, ["source_set".to_owned(), "spec".to_owned()]);
+        assert_eq!(body["spec"]["task_id"], "linux-test");
+        assert_eq!(body["spec"]["platform"], "linux");
+        assert_eq!(body["spec"]["workflow_definition_digest"], "wf_linux_test");
+        assert_eq!(
+            body["spec"]["outputs"],
+            json!([{ "name": "linux-result.txt" }])
+        );
+        assert_eq!(body["spec"]["leaf"]["kind"], "remote");
+        assert!(body["spec"]["leaf"].get("argv").is_none());
+        assert_eq!(body["source_set"]["schema_version"], "source-set-v1");
+        assert_eq!(body["source_set"]["kind"], "fixture");
+        assert_eq!(body["source_set"]["commit"], "linux-leaf");
+        assert!(body["source_set"].get("members").is_none());
+        assert!(body["source_set"].get("files").is_none());
+        assert!(body["source_set"].get("dirty_snapshot_id").is_none());
+        assert!(body.get("dirty_manifest").is_none());
+        assert!(body.get("source_locator").is_none());
+        let text = body.to_string();
+        for absent in [
+            "preparation",
+            "verification",
+            "alpha-prep-bytes",
+            "beta-prep-bytes",
+            "sibling-workspace",
+            "sibling-upload-bytes",
+            "prep-a",
+            "prep-b",
+            "verify",
+        ] {
+            assert!(
+                !text.contains(absent),
+                "{absent} leaked into the submit body"
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn assert_windows_native_build(
+        seen: Option<(String, String, String, String, String, String, String)>,
+    ) {
+        let (target, task, source_url, source_revision, lock_digest, build_root, manifest) =
+            seen.expect("native-build shape");
+        assert_eq!(target, "windows-pc");
+        assert_eq!(task, "fixture");
+        assert_eq!(source_url, "https://example.invalid/repo.git");
+        assert_eq!(source_revision, "0123456789abcdef0123456789abcdef01234567");
+        assert_eq!(
+            lock_digest,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert!(build_root.is_empty());
+        assert!(manifest.is_empty());
+    }
 
     fn parse(text: &str) -> WorkflowDocument {
         parse_workflow_str(text, "workflows.toml").expect("parse workflows")
@@ -1541,14 +1909,56 @@ executor = { remote = { target = "windows-pc", task = "fixture", source_url = "h
         ));
         let ctx = ExecContext::isolated("");
         let mut sink = RecordingSink::new();
+        let transport = RecordingTransport {
+            submits: Mutex::new(Vec::new()),
+            fail_submit: false,
+        };
+        let mut native_build = None;
         let run = run_operation_plan_callbacks(
             &plan,
             &ctx,
             1,
             Some(&mut sink),
             None,
-            Some(&mut |_operation, _ctx| {
-                Ok(crate::execute::OperationResult::Exited {
+            Some(&mut |operation, _ctx, node| {
+                match remote_leaf_path(node) {
+                    RemoteLeafPath::LinuxAttempt => {
+                        let source = SourceSetV1::fixture("unused");
+                        place_linux_leaf(
+                            node,
+                            Path::new("."),
+                            &source,
+                            "wf_unused",
+                            &transport,
+                            |_, _, _, _| Err("windows leaf must not fetch".to_owned()),
+                        )
+                        .expect("windows leaf must not submit");
+                    }
+                    RemoteLeafPath::NativeBuild => match operation {
+                        Operation::Remote {
+                            target,
+                            task,
+                            source_url,
+                            source_revision,
+                            lock_digest,
+                            build_root,
+                            manifest,
+                            ..
+                        } => {
+                            native_build = Some((
+                                target.clone(),
+                                task.clone(),
+                                source_url.clone(),
+                                source_revision.clone(),
+                                lock_digest.clone(),
+                                build_root.clone(),
+                                manifest.clone(),
+                            ));
+                        }
+                        other => panic!("native-build callback received {other:?}"),
+                    },
+                }
+                Ok(OperationResult::Exited {
                     code: 0,
                     stdout:
                         "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
@@ -1558,11 +1968,86 @@ executor = { remote = { target = "windows-pc", task = "fixture", source_url = "h
             }),
         )
         .expect("run");
+        assert!(transport.submits.lock().expect("submits").is_empty());
+        assert_windows_native_build(native_build);
         assert_eq!(run.exit_code, 0);
         assert_eq!(run.order, vec!["win".to_owned()]);
         assert!(!sink.events().iter().any(|event| {
             matches!(event, Event::Diagnostic { message } if message.contains("does not match host"))
         }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linux_leaf_is_the_only_submitted_node() {
+        let ran = run_four_node(false);
+        let run = ran.result.expect("run");
+        assert_eq!(run.exit_code, 0);
+        assert_eq!(
+            run.order,
+            vec![
+                "prep-a".to_owned(),
+                "prep-b".to_owned(),
+                "linux-test".to_owned(),
+                "verify".to_owned()
+            ]
+        );
+        assert_eq!(ran.submits.len(), 1);
+        assert_linux_submit_body(&ran.submits[0]);
+        assert_eq!(
+            ran.fetches,
+            vec![("att_linux_1".to_owned(), "linux-result.txt".to_owned())]
+        );
+        assert_eq!(
+            std::fs::read_to_string(ran.root.path().join("preparation/alpha.txt")).expect("alpha"),
+            "alpha-prep-bytes"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ran.root.path().join("preparation/beta.txt")).expect("beta"),
+            "beta-prep-bytes"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ran.root.path().join("linux-result.txt")).expect("artifact"),
+            "returned-linux-artifact"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ran.root.path().join("verification/consumer.txt"))
+                .expect("consumer"),
+            "returned-linux-artifact"
+        );
+        assert_eq!(
+            run.order
+                .iter()
+                .filter(|id| id.as_str() == "verify")
+                .count(),
+            1
+        );
+
+        let failed = run_four_node(true);
+        let error = failed.result.expect_err("failed submit");
+        assert!(error.to_string().contains("submit refused"), "{error}");
+        assert_eq!(failed.submits.len(), 1);
+        assert_linux_submit_body(&failed.submits[0]);
+        assert!(failed.fetches.is_empty());
+        assert!(!failed.root.path().join("linux-result.txt").exists());
+        assert!(!failed.root.path().join("verification").exists());
+        assert!(
+            !failed
+                .root
+                .path()
+                .join("verification/consumer.txt")
+                .exists()
+        );
+        assert_eq!(
+            std::fs::read_to_string(failed.root.path().join("preparation/alpha.txt"))
+                .expect("alpha still ran"),
+            "alpha-prep-bytes"
+        );
+        assert_eq!(
+            std::fs::read_to_string(failed.root.path().join("preparation/beta.txt"))
+                .expect("beta still ran"),
+            "beta-prep-bytes"
+        );
     }
 
     #[test]
