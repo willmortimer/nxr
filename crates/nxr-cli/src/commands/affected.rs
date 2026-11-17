@@ -248,10 +248,10 @@ fn resolve_member_dependency<'a>(
         return None;
     }
 
-    if let Some(task) = document.tasks.get(task_name) {
-        if task.source_member.as_deref() == Some(member) {
-            return Some((member.to_owned(), Some(task)));
-        }
+    if let Some(task) = document.tasks.get(task_name)
+        && task.source_member.as_deref() == Some(member)
+    {
+        return Some((member.to_owned(), Some(task)));
     }
 
     // Unknown source member (or missing task): still emit an edge for coverage.
