@@ -163,10 +163,7 @@ pub struct SourceBinding {
 /// # Errors
 ///
 /// Returns a validation error from [`source_set_digest_v2`] and produces no binding.
-pub fn bind_source_members(
-    set: &SourceSetV2,
-    required: &[&str],
-) -> Result<SourceBinding, String> {
+pub fn bind_source_members(set: &SourceSetV2, required: &[&str]) -> Result<SourceBinding, String> {
     let source_set_id = source_set_digest_v2(set)?;
     let mut members: Vec<String> = set
         .members

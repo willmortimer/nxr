@@ -164,10 +164,7 @@ pub fn source_set_v2(set: &SourceSetV2) -> Result<(), String> {
         validate_logical_path(&member.logical_path)?;
     }
     if !primary_found {
-        return Err(format!(
-            "primary `{}` is not a member name",
-            set.primary
-        ));
+        return Err(format!("primary `{}` is not a member name", set.primary));
     }
     Ok(())
 }
@@ -177,13 +174,19 @@ fn validate_logical_path(logical_path: &str) -> Result<(), String> {
         return Err("logical_path is empty".to_owned());
     }
     if logical_path.starts_with('/') || logical_path.starts_with('\\') {
-        return Err(format!("logical_path `{logical_path}` must not be absolute"));
+        return Err(format!(
+            "logical_path `{logical_path}` must not be absolute"
+        ));
     }
     if logical_path.contains("..") {
-        return Err(format!("logical_path `{logical_path}` must not contain `..`"));
+        return Err(format!(
+            "logical_path `{logical_path}` must not contain `..`"
+        ));
     }
     if logical_path.contains(':') {
-        return Err(format!("logical_path `{logical_path}` must not contain `:`"));
+        return Err(format!(
+            "logical_path `{logical_path}` must not contain `:`"
+        ));
     }
     Ok(())
 }
