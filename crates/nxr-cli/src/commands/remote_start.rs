@@ -1,11 +1,11 @@
 //! Separately authorized remote start through an [`ExecutionTransport`].
 
-#[cfg(test)]
-use nxr_task::{ExecutionTransport, submit_execution};
 use nxr_task::{
     ExecutionSpecV2, ProjectExecutionPolicy, SourceSetV1, SourceSetV2, source_set_digest,
     source_set_digest_v2,
 };
+#[cfg(test)]
+use nxr_task::{ExecutionTransport, submit_execution};
 use serde_json::{Value, json};
 
 /// Refuse when `[[remote_operation]]` does not list `operation_id`.
@@ -24,6 +24,7 @@ pub fn authorize_remote_start(
 }
 
 /// Authorized remote submission bound to the executable spec and source digest.
+#[derive(Debug)]
 pub struct ValidatedRemote {
     pub operation_id: String,
     pub source_set_id: String,
@@ -104,10 +105,7 @@ pub fn validate_remote_submission(
 
     let mut out_spec = spec.clone();
     if let Some(object) = out_spec.as_object_mut() {
-        object.insert(
-            "source_set_id".to_owned(),
-            json!(source_set_id.clone()),
-        );
+        object.insert("source_set_id".to_owned(), json!(source_set_id.clone()));
     }
 
     Ok(ValidatedRemote {
@@ -133,31 +131,6 @@ pub fn start_remote_authorized(
     submit_execution(transport, body)
 }
 
-/// Operation id and source digest from an authorized request.
-///
-/// # Errors
-///
-/// Returns an error when the spec or source set cannot be identified.
-pub fn remote_identity(spec: &Value, source_set: &Value) -> Result<(String, String), String> {
-    let operation_id = spec
-        .get("operation_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| "execution spec is required".to_owned())?;
-    let source_set_id = if source_set.get("schema_version").and_then(Value::as_str)
-        == Some(nxr_task::SOURCE_SET_V2)
-    {
-        let parsed: SourceSetV2 = serde_json::from_value(source_set.clone())
-            .map_err(|err| format!("source set: {err}"))?;
-        source_set_digest_v2(&parsed)?
-    } else {
-        let parsed: SourceSetV1 = serde_json::from_value(source_set.clone())
-            .map_err(|err| format!("source set: {err}"))?;
-        source_set_digest(&parsed)
-    };
-    Ok((operation_id.to_owned(), source_set_id))
-}
-
 /// Copy `idempotency_key` into the spec object that Hub will admit.
 #[must_use]
 pub fn spec_with_idempotency(spec: &Value, idempotency_key: &str) -> Value {
@@ -172,7 +145,7 @@ pub fn spec_with_idempotency(spec: &Value, idempotency_key: &str) -> Value {
 mod tests {
     use std::sync::Mutex;
 
-    use nxr_task::{ExecutionTransport, SourceMemberV2, SOURCE_SET_V2};
+    use nxr_task::{ExecutionTransport, SOURCE_SET_V2, SourceMemberV2};
     use serde_json::{Value, json};
 
     use super::*;
@@ -328,7 +301,10 @@ mod tests {
             &source_json,
         )
         .expect_err("digest mismatch");
-        assert_eq!(error, "source set digest does not match the admitted manifest");
+        assert_eq!(
+            error,
+            "source set digest does not match the admitted manifest"
+        );
         assert!(transport.calls.lock().expect("calls").is_empty());
     }
 }

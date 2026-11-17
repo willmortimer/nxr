@@ -191,6 +191,7 @@ pub fn record_fetched_receipt(
     let stored_lease = nxr_task::remote_attempt_for_run(dir, &attempt.run_id)?
         .and_then(|row| row.lease_generation)
         .or(attempt.lease_generation);
+    nxr_task::artifact_is_authoritative(journal, stored_lease, &output_digest)?;
     let receipt = nxr_task::RemoteReceipt {
         source_set_id: attempt.source_set_id.clone(),
         operation_id: attempt.operation_id.clone(),

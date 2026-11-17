@@ -482,7 +482,14 @@ pub fn call_tool(
             launch,
             reload,
         ),
-        "operations_start_remote" => start_remote(&arguments, workspace_root, run_dir),
+        "operations_start_remote" => start_remote(
+            &arguments,
+            records,
+            workspace_id,
+            workspace_root,
+            run_dir,
+            trusted,
+        ),
         "runs_cancel" => cancel_run(
             run_dir,
             supervisor_dir,
@@ -760,7 +767,14 @@ fn start(
     }
 }
 
-fn start_remote(arguments: &Value, workspace_root: &Path, run_dir: &Path) -> Result<Value, String> {
+fn start_remote(
+    arguments: &Value,
+    records: &[OperationRecord],
+    workspace_id: &str,
+    workspace_root: &Path,
+    run_dir: &Path,
+    trusted: bool,
+) -> Result<Value, String> {
     let id = required_id(arguments)?;
     let key = arguments
         .get("idempotency_key")
@@ -770,7 +784,6 @@ fn start_remote(arguments: &Value, workspace_root: &Path, run_dir: &Path) -> Res
         return Err("idempotency_key is required".to_owned());
     }
     let gate = policy_gate(workspace_root)?;
-    crate::commands::remote_start::authorize_remote_start(&gate.applied, id)?;
     let Some(spec) = arguments.get("spec").filter(|value| value.is_object()) else {
         return Err("execution spec is required".to_owned());
     };
@@ -780,10 +793,23 @@ fn start_remote(arguments: &Value, workspace_root: &Path, run_dir: &Path) -> Res
     else {
         return Err("execution spec is required".to_owned());
     };
-    let (operation_id, source_set_id) =
-        crate::commands::remote_start::remote_identity(spec, source_set)?;
+    let visible = policy_view(records, workspace_root, trusted)?;
+    let record =
+        nxr_task::describe(&visible, id).ok_or_else(|| format!("unknown operation {id}"))?;
+    let validated = crate::commands::remote_start::validate_remote_submission(
+        &gate.applied,
+        id,
+        &record.operation_id,
+        &record.workspace_id,
+        workspace_id,
+        spec,
+        source_set,
+    )?;
+    if validated.operation_id.is_empty() {
+        return Err("remote execution is not authorized".to_owned());
+    }
     let mut body = json!({
-        "spec": crate::commands::remote_start::spec_with_idempotency(spec, key),
+        "spec": crate::commands::remote_start::spec_with_idempotency(&validated.spec, key),
         "source_set": source_set,
     });
     if let Some(dirty) = arguments.get("dirty_manifest") {
@@ -799,8 +825,8 @@ fn start_remote(arguments: &Value, workspace_root: &Path, run_dir: &Path) -> Res
         run_dir,
         key,
         &nxr_task::remote_run_id(key),
-        &operation_id,
-        &source_set_id,
+        &record.operation_id,
+        &validated.source_set_id,
         &transport,
         &body,
     )
@@ -824,6 +850,9 @@ fn run_receipt(
     let visible = policy_view(records, workspace_root, trusted)?;
     let record =
         nxr_task::describe(&visible, id).ok_or_else(|| format!("unknown operation {id}"))?;
+    if let Some(remote) = nxr_task::remote_attempt_for_run(run_dir, run_id)? {
+        return remote_run_receipt(arguments, run_dir, workspace_id, &record, remote);
+    }
     let stored_run = nxr_core::execution_owner::inspect(supervisor_dir, run_id)?;
     let stored_operation = stored_run
         .get("operation_id")
@@ -921,32 +950,80 @@ fn run_receipt(
             let _ = std::fs::write(&economics_path, report.to_string());
             object.insert("economics_report".to_owned(), report);
         }
-        if let Some(output_name) = arguments
-            .get("output_name")
-            .and_then(Value::as_str)
-            .filter(|name| !name.is_empty())
-            && let Some(remote) = nxr_task::remote_attempt_for_run(run_dir, run_id)?
-            && let Some(attempt_id) = remote.attempt_id.clone()
-        {
-            let bin = std::env::var("NIXPLANE").unwrap_or_else(|_| "nixplane".to_owned());
-            let state_dir = std::env::var("NIXPLANE_STATE_DIR").ok();
-            let transport =
-                crate::commands::nixplane_transport::NixplaneCliTransport { bin, state_dir };
-            let journal = transport.replay_journal(&attempt_id)?;
-            crate::commands::nixplane_transport::record_fetched_receipt(
-                &transport,
-                run_dir,
-                &remote,
-                output_name,
-                &journal,
-            )?;
-        }
         if let Some(remote) = nxr_task::read_remote_receipt(run_dir, run_id)? {
             object.insert(
                 "remote_receipt".to_owned(),
                 serde_json::to_value(remote).map_err(|err| err.to_string())?,
             );
         }
+    }
+    Ok(value)
+}
+
+fn remote_run_receipt(
+    arguments: &Value,
+    run_dir: &Path,
+    workspace_id: &str,
+    record: &OperationRecord,
+    remote: nxr_task::RemoteAttempt,
+) -> Result<Value, String> {
+    if remote.operation_id != record.operation_id || record.workspace_id != workspace_id {
+        return Err("remote attempt does not match the operation".to_owned());
+    }
+    if let Some(source_set_id) = arguments.get("source_set_id").and_then(Value::as_str)
+        && source_set_id != remote.source_set_id
+    {
+        return Err("remote attempt does not match the source set".to_owned());
+    }
+    if let Some(lease) = arguments.get("lease_generation").and_then(Value::as_u64)
+        && remote.lease_generation != Some(lease)
+    {
+        return Err("lease does not match the attempt".to_owned());
+    }
+    let run_id = remote.run_id.clone();
+    if let Some(output_name) = arguments
+        .get("output_name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+        && let Some(attempt_id) = remote.attempt_id.clone()
+    {
+        let bin = std::env::var("NIXPLANE").unwrap_or_else(|_| "nixplane".to_owned());
+        let state_dir = std::env::var("NIXPLANE_STATE_DIR").ok();
+        let transport =
+            crate::commands::nixplane_transport::NixplaneCliTransport { bin, state_dir };
+        let journal = match remote.last_sequence {
+            None | Some(0) => transport.replay_journal(&attempt_id)?,
+            Some(after) => transport.replay_from(&attempt_id, after)?,
+        };
+        nxr_task::observe_replay(run_dir, &remote.idempotency_key, &journal)?;
+        let stored = nxr_task::remote_attempt_for_run(run_dir, &run_id)?.unwrap_or(remote);
+        crate::commands::nixplane_transport::record_fetched_receipt(
+            &transport,
+            run_dir,
+            &stored,
+            output_name,
+            &journal,
+        )?;
+    }
+    let stored = nxr_task::remote_attempt_for_run(run_dir, &run_id)?
+        .ok_or_else(|| "remote attempt is missing".to_owned())?;
+    let mut value = json!({
+        "schema": "remote-execution-receipt-v1",
+        "run_id": stored.run_id,
+        "operation_id": stored.operation_id,
+        "source_set_id": stored.source_set_id,
+        "attempt_id": stored.attempt_id,
+        "lease_generation": stored.lease_generation,
+        "last_sequence": stored.last_sequence,
+        "phase": stored.phase,
+    });
+    if let Some(receipt) = nxr_task::read_remote_receipt(run_dir, &run_id)?
+        && let Some(object) = value.as_object_mut()
+    {
+        object.insert(
+            "remote_receipt".to_owned(),
+            serde_json::to_value(receipt).map_err(|err| err.to_string())?,
+        );
     }
     Ok(value)
 }
@@ -1570,7 +1647,13 @@ fn known_arguments(name: &str) -> Option<&'static [&'static str]> {
         "operations_describe" | "operations_plan" => &["id"],
         "operations_plan_batch" => &["paths"],
         "runs_inspect" | "runs_cancel" => &["run_id"],
-        "runs_get_receipt" => &["id", "run_id", "output_name"],
+        "runs_get_receipt" => &[
+            "id",
+            "run_id",
+            "output_name",
+            "source_set_id",
+            "lease_generation",
+        ],
         "runs_get_diagnostics" => &["run_id"],
         "workspace_affected" => &["paths"],
         "operations_start" => &["id", "idempotency_key", "parameters"],
