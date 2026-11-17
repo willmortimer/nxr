@@ -244,9 +244,7 @@ pub fn observe_replay(
             continue;
         };
         let event_type = event.get("event_type").and_then(Value::as_str);
-        if is_terminal_event_type(event_type)
-            && existing.last_sequence == Some(sequence)
-        {
+        if is_terminal_event_type(event_type) && existing.last_sequence == Some(sequence) {
             // Same terminal event at the stored sequence is not a new event.
             continue;
         }
