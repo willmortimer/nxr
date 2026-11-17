@@ -109,10 +109,10 @@ pub fn normalize_cancel_response(value: &Value) -> Value {
     let mut out = value.clone();
     let status_cancelled = value.get("status").and_then(Value::as_str) == Some("cancelled");
     let already = value.get("cancelled").and_then(Value::as_bool) == Some(true);
-    if let Some(object) = out.as_object_mut() {
-        if status_cancelled || already {
-            object.insert("cancelled".to_owned(), json!(true));
-        }
+    if let Some(object) = out.as_object_mut()
+        && (status_cancelled || already)
+    {
+        object.insert("cancelled".to_owned(), json!(true));
     }
     out
 }

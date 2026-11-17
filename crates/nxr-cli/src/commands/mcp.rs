@@ -851,7 +851,7 @@ fn run_receipt(
     let record =
         nxr_task::describe(&visible, id).ok_or_else(|| format!("unknown operation {id}"))?;
     if let Some(remote) = nxr_task::remote_attempt_for_run(run_dir, run_id)? {
-        return remote_run_receipt(arguments, run_dir, workspace_id, &record, remote);
+        return remote_run_receipt(arguments, run_dir, workspace_id, record, remote);
     }
     let stored_run = nxr_core::execution_owner::inspect(supervisor_dir, run_id)?;
     let stored_operation = stored_run
@@ -1903,7 +1903,7 @@ mod tests {
                 "source_set": source_set.clone(),
                 "source_locator": locator.trim(),
             }),
-            &[record.clone()],
+            std::slice::from_ref(&record),
             "lattice",
             root.path(),
             root.path(),
@@ -1918,7 +1918,7 @@ mod tests {
                 "source_set": source_set.clone(),
                 "source_locator": locator.trim(),
             }),
-            &[record.clone()],
+            std::slice::from_ref(&record),
             "lattice",
             root.path(),
             root.path(),
@@ -1968,7 +1968,7 @@ mod tests {
                 "run_id": run_id,
                 "output_name": "out.txt",
             }),
-            &[record.clone()],
+            std::slice::from_ref(&record),
             "lattice",
             root.path(),
             root.path(),
@@ -1988,7 +1988,7 @@ mod tests {
                 "run_id": run_id,
                 "lease_generation": 99,
             }),
-            &[record.clone()],
+            std::slice::from_ref(&record),
             "lattice",
             root.path(),
             root.path(),
@@ -2007,7 +2007,7 @@ mod tests {
                 "source_set": source_set.clone(),
                 "source_locator": locator.trim(),
             }),
-            &[record.clone()],
+            std::slice::from_ref(&record),
             "lattice",
             root.path(),
             root.path(),
