@@ -29,6 +29,10 @@ Accepted foundational ADRs are listed in [docs/adr/README.md](docs/adr/README.md
 Active roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) (shipped through 3.5.x;
 next V4+ / [docs/vision/V4_EXECUTION_PROTOCOL.md](docs/vision/V4_EXECUTION_PROTOCOL.md)).
 
+## External diagnostic artifacts
+
+A task log line `lattice: diagnostic-artifact {json}` is a reference to a recording stored by the caller. `runs_get_diagnostics` classifies it as `diagnostic_artifact` and returns the digest and object path. NXR does not diagnose the recording. Pinned `v3.9.1` keeps the same line in the task log and does not have this classifier.
+
 ## Working agreements
 
 - Prefer the stack and repo shape in [docs/TECH_STACK_AND_REPO_SHAPE.md](docs/TECH_STACK_AND_REPO_SHAPE.md).

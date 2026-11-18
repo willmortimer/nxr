@@ -1058,12 +1058,19 @@ fn run_diagnostics(arguments: &Value, supervisor_dir: &Path) -> Result<Value, St
     let items = diagnostics
         .iter()
         .map(|item| {
-            json!({
+            let mut body = json!({
                 "category": item.category,
                 "file": item.file,
                 "line": item.line,
                 "excerpt": item.excerpt,
-            })
+            });
+            if let Some(digest) = &item.digest {
+                body["digest"] = json!(digest);
+            }
+            if let Some(object) = &item.object {
+                body["object"] = json!(object);
+            }
+            body
         })
         .collect::<Vec<_>>();
     Ok(json!({

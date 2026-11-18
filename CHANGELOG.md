@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An execution receipt marks a toolchain that was not entered as `not entered`. A verified shell probe uses `command -v` and `--version`. An absent wrapper stays `not entered`.
 - MCP `runs_get_receipt` returns that receipt only when the stored operation and workspace match the request, then copies the supervisor events already served by `nxr session events`.
 - MCP `runs_get_diagnostics` classifies the existing run log. It does not call a model or create a second store.
+- A `lattice: diagnostic-artifact` log line is classified as `diagnostic_artifact` and carries the recording digest and object path. NXR does not interpret the diagnosis.
 - `operations_plan_batch` reports coverage as `empty`, `complete`, `partial`, or `unknown` without authorizing execution.
 - MCP `operations_start` uses the process local budget and takes an `fs2` lock on the operation's effective Cargo target directory.
 

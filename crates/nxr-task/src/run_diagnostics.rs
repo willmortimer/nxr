@@ -10,6 +10,8 @@ pub struct RunDiagnostic {
     pub file: Option<String>,
     pub line: Option<u32>,
     pub excerpt: String,
+    pub digest: Option<String>,
+    pub object: Option<String>,
 }
 
 /// Parse a bounded slice of diagnostic signals from a supervisor log.
@@ -60,6 +62,8 @@ pub fn parse_run_log(log: &str) -> Vec<RunDiagnostic> {
             file: None,
             line: None,
             excerpt: truncate_excerpt(line),
+            digest: None,
+            object: None,
         }];
     }
 
@@ -87,6 +91,9 @@ fn is_secret_line(line: &str) -> bool {
 }
 
 fn classify_line(line: &str) -> Option<RunDiagnostic> {
+    if let Some(diagnostic) = classify_diagnostic_artifact(line) {
+        return Some(diagnostic);
+    }
     if let Some(diagnostic) = classify_cargo_json(line) {
         return Some(diagnostic);
     }
@@ -99,6 +106,8 @@ fn classify_line(line: &str) -> Option<RunDiagnostic> {
             file: None,
             line: None,
             excerpt,
+            digest: None,
+            object: None,
         });
     }
 
@@ -108,6 +117,8 @@ fn classify_line(line: &str) -> Option<RunDiagnostic> {
             file: Some(file),
             line: Some(line_no),
             excerpt,
+            digest: None,
+            object: None,
         });
     }
 
@@ -117,6 +128,8 @@ fn classify_line(line: &str) -> Option<RunDiagnostic> {
             file: None,
             line: None,
             excerpt,
+            digest: None,
+            object: None,
         });
     }
 
@@ -126,6 +139,8 @@ fn classify_line(line: &str) -> Option<RunDiagnostic> {
             file: None,
             line: None,
             excerpt,
+            digest: None,
+            object: None,
         });
     }
 
@@ -135,6 +150,8 @@ fn classify_line(line: &str) -> Option<RunDiagnostic> {
             file: None,
             line: None,
             excerpt,
+            digest: None,
+            object: None,
         });
     }
 
@@ -145,10 +162,39 @@ fn classify_line(line: &str) -> Option<RunDiagnostic> {
             file: None,
             line: None,
             excerpt,
+            digest: None,
+            object: None,
         });
     }
 
     None
+}
+
+fn classify_diagnostic_artifact(line: &str) -> Option<RunDiagnostic> {
+    let payload = line.trim().strip_prefix("lattice: diagnostic-artifact ")?;
+    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    if value.get("schema")?.as_str()? != "lattice.diagnostic.artifact.v1" {
+        return None;
+    }
+    if value.get("kind")?.as_str()? != "stargate-recording" {
+        return None;
+    }
+    let digest = value.get("sha256")?.as_str()?;
+    let object = value.get("object")?.as_str()?;
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    if !object.starts_with("objects/") || object.contains("..") || object.contains('\\') {
+        return None;
+    }
+    Some(RunDiagnostic {
+        category: "diagnostic_artifact".into(),
+        file: None,
+        line: None,
+        excerpt: truncate_excerpt(line),
+        digest: Some(digest.to_owned()),
+        object: Some(object.to_owned()),
+    })
 }
 
 fn classify_cargo_json(line: &str) -> Option<RunDiagnostic> {
@@ -185,6 +231,8 @@ fn classify_cargo_json(line: &str) -> Option<RunDiagnostic> {
         file,
         line: line_no,
         excerpt: truncate_excerpt(line),
+        digest: None,
+        object: None,
     })
 }
 
@@ -317,6 +365,19 @@ mod tests {
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].category, "unknown");
         assert!(!diags[0].excerpt.contains("TOKEN"));
+    }
+
+    #[test]
+    fn diagnostic_artifact_carries_digest_and_object() {
+        let digest = "a".repeat(64);
+        let object = format!("objects/{digest}/recording.json");
+        let line = format!(
+            "lattice: diagnostic-artifact {{\"schema\":\"lattice.diagnostic.artifact.v1\",\"kind\":\"stargate-recording\",\"sha256\":\"{digest}\",\"object\":\"{object}\"}}"
+        );
+        let diag = first(&line);
+        assert_eq!(diag.category, "diagnostic_artifact");
+        assert_eq!(diag.digest.as_deref(), Some(digest.as_str()));
+        assert_eq!(diag.object.as_deref(), Some(object.as_str()));
     }
 
     #[test]
