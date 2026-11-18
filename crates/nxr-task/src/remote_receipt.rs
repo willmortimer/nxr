@@ -3,6 +3,7 @@
 //! An artifact digest is not a test qualification. Source reuse and an
 //! existing artifact stay separate labels.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -18,6 +19,8 @@ pub struct RemoteReceipt {
     pub attempt_id: String,
     pub lease_generation: Option<u64>,
     pub output_digest: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub outputs: BTreeMap<String, String>,
     pub source_disposition: String,
     pub execution_disposition: String,
     pub artifact_verified: bool,
@@ -258,7 +261,8 @@ mod tests {
             run_id: "run-once".to_owned(),
             attempt_id: "att_1".to_owned(),
             lease_generation: Some(2),
-            output_digest: digest,
+            output_digest: digest.clone(),
+            outputs: BTreeMap::from([("marker.txt".to_owned(), digest)]),
             source_disposition: "fetched".to_owned(),
             execution_disposition: "fresh".to_owned(),
             artifact_verified: true,

@@ -608,7 +608,14 @@ fn record_artifacts(
     let mut artifact_digests = BTreeMap::new();
     for artifact in &node.artifacts {
         let path = match &ctx.cwd {
-            Some(cwd) => resolve_member_artifact(cwd, artifact)?,
+            Some(cwd) => {
+                let published = cwd.join(".nxr/current").join(artifact);
+                if published.is_file() {
+                    published
+                } else {
+                    resolve_member_artifact(cwd, artifact)?
+                }
+            }
             None => {
                 let relative = PathBuf::from(artifact);
                 if artifact.split(['/', '\\']).any(|part| part == "..") {

@@ -44,10 +44,13 @@ use crate::graph::{GraphError, TaskGraph};
 use crate::identity::{SOURCE_SET_V1, SOURCE_SET_V2, SourceMemberV2, SourceSetV1, SourceSetV2};
 use crate::plan_exec::{ArgumentForwarding, ExecutionPlan, FailurePolicy, PlanNode};
 use crate::planner::plan_serial_union;
-use crate::remote_execution::{ExecutionTransport, execution_status, submit_execution};
-use crate::remote_journal::{begin_remote, record_admitted, record_lease, remote_run_id};
+use crate::remote_execution::{ExecutionTransport, replay_execution, submit_execution};
+use crate::remote_journal::{
+    begin_remote, record_admitted, record_lease, record_replay_cursor, remote_run_id,
+};
 use crate::remote_receipt::{
-    RemoteReceipt, artifact_is_authoritative, read_remote_receipt, verify_artifact,
+    RemoteReceipt, artifact_is_authoritative, read_remote_receipt, store_remote_receipt,
+    verify_artifact,
 };
 use crate::resources::NodeResources;
 use crate::schema::{TaskDefinition, TaskResources};
@@ -1163,24 +1166,46 @@ where
         .as_str()
         .unwrap_or_default()
         .to_owned();
-    let response = submit_execution(transport, &body)?;
-    let attempt_id = response
-        .get("attempt_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| "submit did not return an attempt id".to_owned())?
-        .to_owned();
     let journal_dir = checkout.join(".nxr");
     let key = format!("linux-leaf:{}:{source_set_id}", node.id);
-    begin_remote(
+    let row = begin_remote(
         &journal_dir,
         &key,
         &remote_run_id(&key),
         &node.id,
         &source_set_id,
     )?;
-    record_admitted(&journal_dir, &key, &attempt_id)?;
-    let status = execution_status(transport, &attempt_id)?;
+    let stored_sequence = row.last_sequence.unwrap_or(0);
+    let attempt_id = if let Some(existing) = row.attempt_id.filter(|id| !id.is_empty()) {
+        existing
+    } else {
+        let response = submit_execution(transport, &body)?;
+        let admitted = response
+            .get("attempt_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| "submit did not return an attempt id".to_owned())?
+            .to_owned();
+        record_admitted(&journal_dir, &key, &admitted)?;
+        admitted
+    };
+    let generation_dir = journal_dir.join("generations").join(&attempt_id);
+    if generation_dir.is_dir() {
+        let current = journal_dir.join("current");
+        if !current.exists() {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&generation_dir, &current)
+                .map_err(|err| format!("link generation: {err}"))?;
+        }
+        return Ok(attempt_id);
+    }
+    let status = await_remote_terminal(
+        transport,
+        &journal_dir,
+        &key,
+        &attempt_id,
+        stored_sequence,
+    )?;
     let terminal = status.get("status").and_then(Value::as_str).unwrap_or("");
     if terminal != "succeeded" {
         return Err(format!("attempt is not successful: {terminal}"));
@@ -1190,24 +1215,44 @@ where
         .and_then(Value::as_u64)
         .ok_or_else(|| "status did not return a lease".to_owned())?;
     record_lease(&journal_dir, &key, generation)?;
-    let run_id = status
-        .get("run_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| "status did not return a run id".to_owned())?;
-    let receipt = read_remote_receipt(&journal_dir, run_id)?
-        .ok_or_else(|| "remote receipt is missing".to_owned())?;
-    if receipt.lease_generation != Some(generation) {
-        return Err("lease does not match the attempt".to_owned());
+    let outputs = output_map(&status)?;
+    for name in &node.artifacts {
+        if !outputs.contains_key(name) {
+            return Err(format!("remote receipt has no digest for {name}"));
+        }
     }
+    let run_id = remote_run_id(&key);
+    let (source_disposition, execution_disposition) =
+        crate::remote_receipt::dispositions_from_journal(&status);
+    let receipt = RemoteReceipt {
+        source_set_id: source_set_id.clone(),
+        operation_id: node.id.clone(),
+        run_id: run_id.clone(),
+        attempt_id: attempt_id.clone(),
+        lease_generation: Some(generation),
+        output_digest: status
+            .get("output_digest")
+            .and_then(Value::as_str)
+            .filter(|digest| !digest.is_empty())
+            .unwrap_or_else(|| outputs.values().next().map(String::as_str).unwrap_or(""))
+            .to_owned(),
+        outputs,
+        source_disposition,
+        execution_disposition,
+        artifact_verified: true,
+    };
+    store_remote_receipt(&journal_dir, &receipt)?;
+    let receipt = read_remote_receipt(&journal_dir, &run_id)?
+        .ok_or_else(|| "remote receipt is missing".to_owned())?;
     accept_remote_receipt(&receipt, &source_set_id, &attempt_id)?;
     let incoming = journal_dir.join("incoming").join(&attempt_id);
     let _ = fs::remove_dir_all(&incoming);
     fs::create_dir_all(&incoming).map_err(|err| format!("create download directory: {err}"))?;
     let published = publish_downloaded(
         node,
-        checkout,
         &incoming,
+        &generation_dir,
+        &journal_dir,
         &attempt_id,
         &receipt,
         &status,
@@ -1219,14 +1264,61 @@ where
         let _ = fs::remove_dir_all(&incoming);
         return Err(detail);
     }
-    let _ = fs::remove_dir_all(&incoming);
     Ok(attempt_id)
+}
+
+fn output_map(status: &Value) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let Some(object) = status.get("outputs").and_then(Value::as_object) else {
+        return Err("remote receipt outputs are missing".to_owned());
+    };
+    let mut outputs = std::collections::BTreeMap::new();
+    for (name, digest) in object {
+        let Some(digest) = digest.as_str().filter(|digest| !digest.is_empty()) else {
+            return Err(format!("remote receipt digest for {name} is empty"));
+        };
+        outputs.insert(name.clone(), digest.to_owned());
+    }
+    if outputs.is_empty() {
+        return Err("remote receipt outputs are missing".to_owned());
+    }
+    Ok(outputs)
+}
+
+fn await_remote_terminal<T: ExecutionTransport>(
+    transport: &T,
+    journal_dir: &Path,
+    key: &str,
+    attempt_id: &str,
+    mut after: u64,
+) -> Result<Value, String> {
+    for _ in 0..8 {
+        let page = replay_execution(transport, attempt_id, after)?;
+        if let Some(sequence) = page
+            .get("events")
+            .and_then(Value::as_array)
+            .and_then(|events| {
+                events
+                    .iter()
+                    .filter_map(|event| event.get("sequence").and_then(Value::as_u64))
+                    .max()
+            })
+        {
+            record_replay_cursor(journal_dir, key, sequence)?;
+            after = sequence;
+        }
+        let status = page.get("status").and_then(Value::as_str).unwrap_or("");
+        if matches!(status, "succeeded" | "failed" | "cancelled") {
+            return Ok(page);
+        }
+    }
+    Err("attempt did not finish".to_owned())
 }
 
 fn publish_downloaded<T, F>(
     node: &PlanNode,
-    checkout: &Path,
     incoming: &Path,
+    generation_dir: &Path,
+    journal_dir: &Path,
     attempt_id: &str,
     receipt: &RemoteReceipt,
     status: &Value,
@@ -1238,9 +1330,8 @@ where
     T: ExecutionTransport,
     F: FnMut(&T, &str, &str, &Path) -> Result<String, String>,
 {
-    let mut staged = Vec::new();
     for name in &node.artifacts {
-        let destination = incoming.join(name);
+        let destination = artifact_destination(incoming, name)?;
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)
                 .map_err(|err| format!("create download directory {}: {err}", parent.display()))?;
@@ -1248,25 +1339,30 @@ where
         fetch(transport, attempt_id, name, &destination)?;
         let bytes = fs::read(&destination)
             .map_err(|err| format!("read download {}: {err}", destination.display()))?;
-        let digest = verify_artifact(&bytes, &receipt.output_digest)?;
+        let expected = receipt
+            .outputs
+            .get(name)
+            .ok_or_else(|| format!("remote receipt has no digest for {name}"))?;
+        let digest = verify_artifact(&bytes, expected)?;
         artifact_is_authoritative(status, Some(generation), &digest)?;
-        staged.push((name.clone(), destination));
     }
-    for (name, staged_path) in staged {
-        let final_path = artifact_destination(checkout, &name)?;
-        if let Some(parent) = final_path.parent()
-            && parent != checkout
-        {
-            fs::create_dir_all(parent)
-                .map_err(|err| format!("create artifact directory {}: {err}", parent.display()))?;
-        }
-        fs::rename(&staged_path, &final_path).map_err(|err| {
-            format!(
-                "publish {} to {}: {err}",
-                staged_path.display(),
-                final_path.display()
-            )
-        })?;
+    if let Some(parent) = generation_dir.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("create generation directory: {err}"))?;
+    }
+    fs::rename(incoming, generation_dir).map_err(|err| format!("publish generation: {err}"))?;
+    let current = journal_dir.join("current");
+    let next = journal_dir.join("current.next");
+    let _ = fs::remove_file(&next);
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(generation_dir, &next)
+            .map_err(|err| format!("link generation: {err}"))?;
+        fs::rename(&next, &current).map_err(|err| format!("publish current generation: {err}"))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (generation_dir, next, current);
     }
     Ok(())
 }
@@ -1379,6 +1475,10 @@ mod tests {
             attempt_id: "att_linux_1".to_owned(),
             lease_generation: Some(1),
             output_digest: format!("sha256:{}", digest_hex(b"returned-linux-artifact")),
+            outputs: std::collections::BTreeMap::from([(
+                "linux-result.txt".to_owned(),
+                format!("sha256:{}", digest_hex(b"returned-linux-artifact")),
+            )]),
             source_disposition: "fetched".to_owned(),
             execution_disposition: "fresh".to_owned(),
             artifact_verified: true,
@@ -1389,16 +1489,49 @@ mod tests {
     struct RecordingTransport {
         submits: Mutex<Vec<Value>>,
         fail_submit: bool,
+        replays: Mutex<u32>,
+        queue_first: u32,
+        drop_outputs: bool,
     }
 
     #[cfg(not(windows))]
     impl ExecutionTransport for RecordingTransport {
         fn call(&self, method: &str, body: &Value) -> Result<Value, String> {
-            if method == "status" {
+            if method == "replay" {
+                let after = body
+                    .get("after_sequence")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let mut seen = self.replays.lock().expect("replays");
+                *seen += 1;
+                let sequence = after + u64::from(*seen);
+                if *seen <= self.queue_first {
+                    return Ok(json!({
+                        "status": "queued",
+                        "events": [{"sequence": sequence, "event_type": "queued"}],
+                    }));
+                }
+                if self.drop_outputs {
+                    return Ok(json!({
+                        "status": "succeeded",
+                        "lease_generation": 1,
+                        "source": "fetched",
+                        "existing_artifact": false,
+                        "cache_hit": false,
+                        "events": [{"sequence": sequence, "event_type": "succeeded", "failure": false}],
+                    }));
+                }
                 return Ok(json!({
                     "status": "succeeded",
                     "lease_generation": 1,
-                    "run_id": "run",
+                    "source": "fetched",
+                    "existing_artifact": false,
+                    "cache_hit": false,
+                    "outputs": {
+                        "linux-result.txt": format!("sha256:{}", digest_hex(b"returned-linux-artifact")),
+                        "linux-meta.txt": format!("sha256:{}", digest_hex(b"returned-linux-meta")),
+                    },
+                    "events": [{"sequence": sequence, "event_type": "succeeded", "failure": false}],
                 }));
             }
             if method != "submit" {
@@ -1444,18 +1577,18 @@ executor = { native = ["/bin/sh", "-c", "mkdir -p preparation && printf '%s' 'be
 [tasks.linux-test]
 platform = "linux"
 depends_on = ["prep-a", "prep-b"]
-artifacts = ["linux-result.txt"]
+artifacts = ["linux-result.txt", "linux-meta.txt"]
 executor = { remote = { target = "linux-worker", task = "test", source_url = "https://example.invalid/repo.git", source_revision = "0123456789abcdef0123456789abcdef01234567", lock_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }
 
 [tasks.verify]
 depends_on = ["linux-test"]
-executor = { native = ["/bin/sh", "-c", "mkdir -p verification && cp linux-result.txt verification/consumer.txt"] }
+executor = { native = ["/bin/sh", "-c", "mkdir -p verification && cp .nxr/current/linux-result.txt verification/consumer.txt"] }
 "#,
         )
     }
 
     #[cfg(unix)]
-    fn run_four_node(fail_submit: bool) -> FourNodeRun {
+    fn run_four_node(fail_submit: bool, tamper: bool, drop_outputs: bool) -> FourNodeRun {
         let root = tempfile::tempdir().expect("root");
         std::fs::create_dir(root.path().join("sibling-workspace")).expect("sibling");
         std::fs::write(
@@ -1485,9 +1618,12 @@ executor = { native = ["/bin/sh", "-c", "mkdir -p verification && cp linux-resul
         let transport = RecordingTransport {
             submits: Mutex::new(Vec::new()),
             fail_submit,
+            replays: Mutex::new(0),
+            queue_first: 1,
+            drop_outputs,
         };
         let source = single_member_source_set("primary", SourceSetV1::fixture("linux-leaf"));
-        let receipt = authoritative_receipt(&source);
+        let _ = authoritative_receipt(&source);
         let fetches = Mutex::new(Vec::new());
         let ctx = ExecContext {
             path: std::env::var("PATH").unwrap_or_default(),
@@ -1510,25 +1646,42 @@ executor = { native = ["/bin/sh", "-c", "mkdir -p verification && cp linux-resul
                         detail: "linux graph reached native-build".to_owned(),
                     }),
                     RemoteLeafPath::LinuxAttempt => {
-                        crate::remote_receipt::store_remote_receipt(
-                            &checkout.join(".nxr"),
-                            &receipt,
-                        )
-                        .expect("store receipt");
+                        let fetch = |_transport: &RecordingTransport, attempt: &str, name: &str, out: &Path| {
+                            fetches
+                                .lock()
+                                .expect("fetches")
+                                .push((attempt.to_owned(), name.to_owned()));
+                            let bytes = match name {
+                                "linux-meta.txt" if tamper => "returned-linux-meta-changed",
+                                "linux-meta.txt" => "returned-linux-meta",
+                                _ => "returned-linux-artifact",
+                            };
+                            std::fs::write(out, bytes)
+                                .map_err(|err| format!("write artifact: {err}"))?;
+                            Ok(bytes.to_owned())
+                        };
                         place_linux_leaf(
                             node,
                             &checkout,
                             &source,
                             "wf_linux_test",
                             &transport,
-                            |_transport, attempt, name, out| {
-                                fetches
-                                    .lock()
-                                    .expect("fetches")
-                                    .push((attempt.to_owned(), name.to_owned()));
-                                std::fs::write(out, "returned-linux-artifact")
-                                    .map_err(|err| format!("write artifact: {err}"))?;
-                                Ok("returned-linux-artifact".to_owned())
+                            fetch,
+                        )
+                        .map_err(|detail| {
+                            ExecuteError::UnavailableExecutor {
+                                executor: ExecutorName::Remote,
+                                detail,
+                            }
+                        })?;
+                        place_linux_leaf(
+                            node,
+                            &checkout,
+                            &source,
+                            "wf_linux_test",
+                            &transport,
+                            |_transport, _attempt, _name, _out| {
+                                Err("restart must not download again".to_owned())
                             },
                         )
                         .map_err(|detail| {
@@ -1571,7 +1724,7 @@ executor = { native = ["/bin/sh", "-c", "mkdir -p verification && cp linux-resul
         assert_eq!(body["spec"]["workflow_definition_digest"], "wf_linux_test");
         assert_eq!(
             body["spec"]["outputs"],
-            json!([{ "name": "linux-result.txt" }])
+            json!([{ "name": "linux-result.txt" }, { "name": "linux-meta.txt" }])
         );
         assert_eq!(body["spec"]["leaf"]["kind"], "remote");
         assert!(body["spec"]["leaf"].get("argv").is_none());
@@ -2139,6 +2292,9 @@ executor = { remote = { target = "windows-pc", task = "fixture", source_url = "h
         let transport = RecordingTransport {
             submits: Mutex::new(Vec::new()),
             fail_submit: false,
+            replays: Mutex::new(0),
+            queue_first: 0,
+            drop_outputs: false,
         };
         let mut native_build = None;
         let run = run_operation_plan_callbacks(
@@ -2208,9 +2364,9 @@ executor = { remote = { target = "windows-pc", task = "fixture", source_url = "h
     #[cfg(unix)]
     #[test]
     fn linux_leaf_is_the_only_submitted_node() {
-        let ran = run_four_node(false);
+        let ran = run_four_node(false, false, false);
         let run = ran.result.expect("run");
-        assert_eq!(run.exit_code, 0);
+        assert_eq!(run.exit_code, 0, "{}", run.stdout);
         assert_eq!(
             run.order,
             vec![
@@ -2224,7 +2380,10 @@ executor = { remote = { target = "windows-pc", task = "fixture", source_url = "h
         assert_linux_submit_body(&ran.submits[0]);
         assert_eq!(
             ran.fetches,
-            vec![("att_linux_1".to_owned(), "linux-result.txt".to_owned())]
+            vec![
+                ("att_linux_1".to_owned(), "linux-result.txt".to_owned()),
+                ("att_linux_1".to_owned(), "linux-meta.txt".to_owned())
+            ]
         );
         assert_eq!(
             std::fs::read_to_string(ran.root.path().join("preparation/alpha.txt")).expect("alpha"),
@@ -2235,8 +2394,14 @@ executor = { remote = { target = "windows-pc", task = "fixture", source_url = "h
             "beta-prep-bytes"
         );
         assert_eq!(
-            std::fs::read_to_string(ran.root.path().join("linux-result.txt")).expect("artifact"),
+            std::fs::read_to_string(ran.root.path().join(".nxr/current/linux-result.txt"))
+                .expect("artifact"),
             "returned-linux-artifact"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ran.root.path().join(".nxr/current/linux-meta.txt"))
+                .expect("meta"),
+            "returned-linux-meta"
         );
         assert_eq!(
             std::fs::read_to_string(ran.root.path().join("verification/consumer.txt"))
@@ -2251,7 +2416,7 @@ executor = { remote = { target = "windows-pc", task = "fixture", source_url = "h
             1
         );
 
-        let failed = run_four_node(true);
+        let failed = run_four_node(true, false, false);
         let error = failed.result.expect_err("failed submit");
         assert!(error.to_string().contains("submit refused"), "{error}");
         assert_eq!(failed.submits.len(), 1);
@@ -2276,6 +2441,22 @@ executor = { remote = { target = "windows-pc", task = "fixture", source_url = "h
                 .expect("beta still ran"),
             "beta-prep-bytes"
         );
+
+        let tampered = run_four_node(false, true, false);
+        let tamper_error = tampered.result.expect_err("changed byte");
+        assert!(
+            tamper_error.to_string().contains("does not match"),
+            "{tamper_error}"
+        );
+        assert!(!tampered.root.path().join(".nxr/current").exists());
+
+        let invalid = run_four_node(false, false, true);
+        let invalid_error = invalid.result.expect_err("invalid receipt");
+        assert!(
+            invalid_error.to_string().contains("outputs are missing"),
+            "{invalid_error}"
+        );
+        assert!(!invalid.root.path().join(".nxr/current").exists());
     }
 
     #[test]
