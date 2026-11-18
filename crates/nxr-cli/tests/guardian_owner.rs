@@ -9,6 +9,18 @@ fn nxr() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_nxr"))
 }
 
+fn host_tool(name: &str) -> String {
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return candidate.to_string_lossy().into_owned();
+            }
+        }
+    }
+    panic!("test tool {name} is not on PATH");
+}
+
 fn wait_for_file(path: &std::path::Path) -> bool {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
@@ -34,12 +46,14 @@ fn a_dead_supervisor_leaves_the_writer_lock_held() {
     let root = tempfile::tempdir().expect("root");
     let target = tempfile::tempdir().expect("target");
     let result = root.path().join("writer.pid");
+    let sleep_argv = serde_json::to_string(&[host_tool("sleep"), "30".to_owned()]).expect("argv");
+    let echo_argv = serde_json::to_string(&[host_tool("echo"), "done".to_owned()]).expect("argv");
     let supervisor = Command::new(nxr())
         .env("NXR_GUARDIAN_SUPERVISOR_ONCE", "1")
         .env("NXR_GUARDIAN_DIRS", target.path())
         .env(
             "NXR_GUARDIAN_ARGV",
-            serde_json::to_string(&["/bin/sleep", "30"]).expect("argv"),
+            sleep_argv.clone(),
         )
         .env("NXR_GUARDIAN_RESULT", &result)
         .stdout(Stdio::null())
@@ -59,7 +73,7 @@ fn a_dead_supervisor_leaves_the_writer_lock_held() {
         .env("NXR_GUARDIAN_DIRS", target.path())
         .env(
             "NXR_GUARDIAN_ARGV",
-            serde_json::to_string(&["/bin/sleep", "30"]).expect("argv"),
+            sleep_argv.clone(),
         )
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -80,7 +94,7 @@ fn a_dead_supervisor_leaves_the_writer_lock_held() {
             .env("NXR_GUARDIAN_DIRS", target.path())
             .env(
                 "NXR_GUARDIAN_ARGV",
-                serde_json::to_string(&["/bin/echo", "done"]).expect("argv"),
+                echo_argv.clone(),
             )
             .stdout(Stdio::null())
             .stderr(Stdio::null())

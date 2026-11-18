@@ -1866,6 +1866,22 @@ mod tests {
     use super::*;
     use nxr_task::{Declaration, OperationKind, WorkspaceInstance, operation_record};
 
+    fn host_tool(name: &str) -> String {
+        if let Some(path) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&path) {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return candidate.to_string_lossy().into_owned();
+                }
+            }
+        }
+        panic!("test tool {name} is not on PATH");
+    }
+
+    fn host_command(name: &str, arg: &str) -> Vec<String> {
+        vec![host_tool(name), arg.to_owned()]
+    }
+
     #[test]
     #[ignore = "disposable hub"]
     fn disposable_hub_receipt_binds_the_attempt() {
@@ -2177,7 +2193,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = boot(dir.path());
         let root = dir.path();
-        let launch = Launch::Command(vec!["/bin/echo".into(), "ok".into()]);
+        let launch = Launch::Command(host_command("echo", "ok"));
         let started = invoke(
             &json!({"name": "operations_start", "arguments": {"id": "lattice:task:test", "idempotency_key": "once"}}),
             &records,
@@ -2625,7 +2641,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = boot(dir.path());
         let root = dir.path();
-        let launch = Launch::Command(vec!["/bin/sleep".into(), "30".into()]);
+        let launch = Launch::Command(host_command("sleep", "30"));
         let started = invoke(
             &json!({"name": "operations_start", "arguments": {"id": "lattice:task:test", "idempotency_key": "sleep"}}),
             &records,
@@ -2700,7 +2716,7 @@ mod tests {
         assert_ne!(command[0], "nxr");
         let dir = tempfile::tempdir().unwrap();
         let socket = boot(dir.path());
-        let launch = Launch::Command(vec!["/bin/echo".into(), "ok".into()]);
+        let launch = Launch::Command(host_command("echo", "ok"));
         let started = invoke(
             &json!({"name": "operations_start", "arguments": {"id": "lattice:app:test", "idempotency_key": "app"}}),
             &records,
@@ -2982,7 +2998,7 @@ executor = {{ native = ["true"] }}
         let socket = boot(daemon.path());
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
-        let launch = Launch::Command(vec!["/bin/echo".into(), "ok".into()]);
+        let launch = Launch::Command(host_command("echo", "ok"));
         let start_one = |root: &std::path::Path| {
             let workspace = WorkspaceInstance {
                 workspace_id: "lattice".to_owned(),
@@ -3026,7 +3042,7 @@ executor = {{ native = ["true"] }}
         let dir = tempfile::tempdir().unwrap();
         let socket = boot(dir.path());
         let records = records();
-        let launch = Launch::Command(vec!["/bin/sleep".into(), "30".into()]);
+        let launch = Launch::Command(host_command("sleep", "30"));
         let started = invoke(
             &json!({"name": "operations_start", "arguments": {"id": "lattice:task:test", "idempotency_key": "live"}}),
             &records,
@@ -3086,7 +3102,7 @@ executor = {{ native = ["true"] }}
             &workspace,
             &Declaration::named(OperationKind::Task, "test", "flake.nix"),
         )];
-        let launch = Launch::Command(vec!["/bin/echo".into(), "ok".into()]);
+        let launch = Launch::Command(host_command("echo", "ok"));
         let started = invoke(
             &json!({"name": "operations_start", "arguments": {"id": "lattice:task:test", "idempotency_key": "same"}}),
             &records,

@@ -1232,6 +1232,18 @@ mod tests {
     use crate::identity::workflow_definition_digest;
     use crate::resources::NodeResources;
 
+    fn host_tool(name: &str) -> String {
+        if let Some(path) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&path) {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return candidate.to_string_lossy().into_owned();
+                }
+            }
+        }
+        panic!("test tool {name} is not on PATH");
+    }
+
     fn fixture_task() -> WorkflowTask {
         let mut environment = BTreeMap::new();
         environment.insert(
@@ -1316,9 +1328,12 @@ mod tests {
             fs::create_dir_all(&journal).expect("journal");
             fs::write(journal.join("out.txt"), b"present").expect("output");
         }
+        let mut running = parsed.clone();
+        running.leaf["argv"][0] = serde_json::json!(host_tool("true"));
+        running.operation_id = running.recomputed_operation_id();
         let first =
-            execute_spec_locally(&parsed, &dir.path().join("local"), "run_local").expect("first");
-        let again = execute_spec_locally(&parsed, &dir.path().join("remote"), "run_remote")
+            execute_spec_locally(&running, &dir.path().join("local"), "run_local").expect("first");
+        let again = execute_spec_locally(&running, &dir.path().join("remote"), "run_remote")
             .expect("second");
         assert_eq!(first.operation_id, again.operation_id);
         assert_eq!(first.exit_code, 0);
@@ -1510,7 +1525,7 @@ mod tests {
         let mut spec = fixture_spec("fixture-commit");
         spec.leaf = serde_json::json!({
             "kind": "native_command",
-            "argv": ["/bin/echo", "wave4"]
+            "argv": [host_tool("echo"), "wave4"]
         });
         spec.outputs.clear();
         spec.operation_id = spec.recomputed_operation_id();
@@ -1561,7 +1576,7 @@ mod tests {
         let mut spec = fixture_spec("fixture-commit");
         spec.leaf = serde_json::json!({
             "kind": "native_command",
-            "argv": ["/usr/bin/true"]
+            "argv": [host_tool("true")]
         });
         spec.outputs = vec![OutputDecl {
             name: "missing.txt".to_owned(),

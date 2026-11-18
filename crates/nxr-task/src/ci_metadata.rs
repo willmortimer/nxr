@@ -78,6 +78,18 @@ mod tests {
     use crate::resources::NodeResources;
     use crate::workflows::{WorkflowPlatform, WorkflowTask};
 
+    fn host_tool(name: &str) -> String {
+        if let Some(path) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&path) {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return candidate.to_string_lossy().into_owned();
+                }
+            }
+        }
+        panic!("test tool {name} is not on PATH");
+    }
+
     #[test]
     fn local_run_and_action_writer_share_metadata_shape() {
         let task = WorkflowTask {
@@ -90,7 +102,7 @@ mod tests {
             artifacts: Vec::new(),
             inputs: Vec::new(),
             operation: Operation::NativeCommand {
-                argv: vec!["/usr/bin/true".to_owned()],
+                argv: vec![host_tool("true")],
             },
             source_member: None,
             remote_eligible: false,

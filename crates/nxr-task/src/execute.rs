@@ -1336,7 +1336,7 @@ mod tests {
     fn write_trap(dir: &std::path::Path, name: &str, marker: &std::path::Path) {
         use std::os::unix::fs::PermissionsExt;
         let program = dir.join(name);
-        let script = format!("#!/bin/sh\n/usr/bin/touch '{}'\n", marker.display());
+        let script = format!("#!/bin/sh\n: > '{}'\n", marker.display());
         std::fs::write(&program, script).expect("write trap");
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
             .expect("chmod trap");

@@ -1069,6 +1069,18 @@ fn stop_group(pid: u32) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn host_tool(name: &str) -> String {
+        if let Some(path) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&path) {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return candidate.to_string_lossy().into_owned();
+                }
+            }
+        }
+        panic!("test tool {name} is not on PATH");
+    }
+
     struct IsolatedDurableRuns {
         _dir: tempfile::TempDir,
     }
@@ -1323,7 +1335,7 @@ mod tests {
             root.path(),
             &json!({
                 "label": "local",
-                "command": ["/bin/echo", "after-lost"],
+                "command": [host_tool("echo"), "after-lost"],
                 "cpu": 1,
                 "memory_mib": 16,
                 "cpu_budget": 1,
@@ -1377,7 +1389,7 @@ mod tests {
             root.path(),
             &json!({
                 "label": "probe",
-                "command": ["/bin/echo", "probe-child"],
+                "command": [host_tool("echo"), "probe-child"],
                 "cpu": 0,
                 "probe_script": "printf '%s\\n' rustc_path=/usr/bin/rustc rustc_version=rustc-test cargo_path=/usr/bin/cargo cargo_version=cargo-test wrapper_path= linker_path= target_directory=/tmp/nxr-q-target cache_identity="
             }),
@@ -1414,7 +1426,7 @@ mod tests {
             root.path(),
             &json!({
                 "label": "leaf",
-                "command": ["/bin/echo", "ok"],
+                "command": [host_tool("echo"), "ok"],
                 "cpu": 0,
                 "memory_budget": 4096,
                 "target_dir": target.path(),
@@ -1453,7 +1465,7 @@ mod tests {
             root.path(),
             &json!({
                 "label": "build",
-                "command": ["/bin/echo", "built"],
+                "command": [host_tool("echo"), "built"],
                 "cpu": 0,
                 "memory_budget": 4096,
                 "operation_id": "workspace:task:build",
