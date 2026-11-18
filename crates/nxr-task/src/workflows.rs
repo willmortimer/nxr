@@ -39,11 +39,13 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::events::{Event, EventSink};
+use crate::execution_spec::{bind_source_members, spec_with_source_set};
 use crate::graph::{GraphError, TaskGraph};
-use crate::identity::SourceSetV1;
+use crate::identity::{SOURCE_SET_V1, SOURCE_SET_V2, SourceMemberV2, SourceSetV1, SourceSetV2};
 use crate::plan_exec::{ArgumentForwarding, ExecutionPlan, FailurePolicy, PlanNode};
 use crate::planner::plan_serial_union;
 use crate::remote_execution::{ExecutionTransport, submit_execution};
+use crate::remote_receipt::{RemoteReceipt, artifact_is_authoritative};
 use crate::resources::NodeResources;
 use crate::schema::{TaskDefinition, TaskResources};
 
@@ -1060,18 +1062,69 @@ pub fn remote_leaf_path(node: &PlanNode) -> RemoteLeafPath {
 /// Returns an error when the node has no operation or the spec cannot be built.
 pub fn linux_leaf_submit_body(
     node: &PlanNode,
-    source: &SourceSetV1,
+    source: &SourceSetV2,
     workflow_digest: &str,
 ) -> Result<Value, String> {
+    let member = node
+        .source_member
+        .as_deref()
+        .unwrap_or(source.primary.as_str());
+    let binding = bind_source_members(source, &[member])?;
+    if binding.coverage != "complete" {
+        return Err(format!("source member `{member}` is unresolved"));
+    }
     let task = workflow_task_from_node(node)?;
-    let spec =
-        crate::execution_spec::execution_spec_for_task(source, workflow_digest, &node.id, &task)?;
+    let projected = member_source_v1(source, member)?;
+    let spec = crate::execution_spec::execution_spec_for_task(
+        &projected,
+        workflow_digest,
+        &node.id,
+        &task,
+    )?;
+    let spec = spec_with_source_set(spec, source)?;
+    if spec.source_set_id != binding.source_set_id {
+        return Err("source set id does not match the bound member".to_owned());
+    }
     let spec_value = serde_json::to_value(&spec).map_err(|err| format!("execution spec: {err}"))?;
     let source_value = serde_json::to_value(source).map_err(|err| format!("source set: {err}"))?;
     Ok(serde_json::json!({
         "spec": spec_value,
         "source_set": source_value,
     }))
+}
+
+/// One v1 checkout as the primary member of a v2 source set.
+#[must_use]
+pub fn single_member_source_set(name: &str, source: SourceSetV1) -> SourceSetV2 {
+    SourceSetV2 {
+        schema_version: SOURCE_SET_V2.to_owned(),
+        primary: name.to_owned(),
+        members: vec![SourceMemberV2 {
+            name: name.to_owned(),
+            logical_path: ".".to_owned(),
+            kind: source.kind,
+            commit: source.commit,
+            submodules: source.submodules,
+            lockfiles: source.lockfiles,
+            dirty_snapshot_id: source.dirty_snapshot_id,
+        }],
+    }
+}
+
+fn member_source_v1(source: &SourceSetV2, member: &str) -> Result<SourceSetV1, String> {
+    let member = source
+        .members
+        .iter()
+        .find(|item| item.name == member)
+        .ok_or_else(|| format!("source member `{member}` is not in the source set"))?;
+    Ok(SourceSetV1 {
+        schema_version: SOURCE_SET_V1.to_owned(),
+        kind: member.kind.clone(),
+        commit: member.commit.clone(),
+        submodules: member.submodules.clone(),
+        lockfiles: member.lockfiles.clone(),
+        dirty_snapshot_id: member.dirty_snapshot_id.clone(),
+    })
 }
 
 /// Submit one Linux leaf, then fetch each declared artifact under `checkout`.
@@ -1087,7 +1140,8 @@ pub fn linux_leaf_submit_body(
 pub fn place_linux_leaf<T, F>(
     node: &PlanNode,
     checkout: &Path,
-    source: &SourceSetV1,
+    source: &SourceSetV2,
+    receipt: &RemoteReceipt,
     workflow_digest: &str,
     transport: &T,
     mut fetch: F,
@@ -1100,6 +1154,10 @@ where
         return Err("only a linux remote leaf is placed on the execution contract".to_owned());
     }
     let body = linux_leaf_submit_body(node, source, workflow_digest)?;
+    let source_set_id = body["spec"]["source_set_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
     let response = submit_execution(transport, &body)?;
     let attempt_id = response
         .get("attempt_id")
@@ -1107,6 +1165,7 @@ where
         .filter(|id| !id.is_empty())
         .ok_or_else(|| "submit did not return an attempt id".to_owned())?
         .to_owned();
+    let mut written = Vec::new();
     for name in &node.artifacts {
         let destination = artifact_destination(checkout, name)?;
         if let Some(parent) = destination.parent()
@@ -1116,8 +1175,44 @@ where
                 .map_err(|err| format!("create artifact directory {}: {err}", parent.display()))?;
         }
         fetch(transport, &attempt_id, name, &destination)?;
+        written.push(destination);
+    }
+    if let Err(detail) = accept_remote_receipt(receipt, &source_set_id, &attempt_id) {
+        for path in &written {
+            let _ = fs::remove_file(path);
+        }
+        return Err(detail);
     }
     Ok(attempt_id)
+}
+
+fn accept_remote_receipt(
+    receipt: &RemoteReceipt,
+    source_set_id: &str,
+    attempt_id: &str,
+) -> Result<(), String> {
+    if !receipt.artifact_verified {
+        return Err("remote receipt artifact is not verified".to_owned());
+    }
+    if receipt.source_set_id != source_set_id {
+        return Err("remote receipt source set does not match".to_owned());
+    }
+    if receipt.attempt_id != attempt_id {
+        return Err("remote receipt attempt does not match".to_owned());
+    }
+    if receipt.execution_disposition != "fresh"
+        && receipt.execution_disposition != "existing_artifact"
+    {
+        return Err("remote receipt execution is not authoritative".to_owned());
+    }
+    let journal = serde_json::json!({
+        "status": "succeeded",
+        "lease_generation": receipt.lease_generation,
+        "source": receipt.source_disposition,
+        "existing_artifact": receipt.execution_disposition == "existing_artifact",
+        "cache_hit": receipt.execution_disposition == "existing_artifact",
+    });
+    artifact_is_authoritative(&journal, receipt.lease_generation, &receipt.output_digest)
 }
 
 fn workflow_task_from_node(node: &PlanNode) -> Result<WorkflowTask, String> {
@@ -1184,9 +1279,26 @@ mod tests {
     #[cfg(not(windows))]
     use crate::execute::{ExecutorName, OperationResult, OperationRun};
     #[cfg(not(windows))]
-    use crate::identity::SourceSetV1;
+    use crate::identity::{SourceSetV1, SourceSetV2, source_set_digest_v2};
     #[cfg(not(windows))]
     use crate::remote_execution::ExecutionTransport;
+    #[cfg(not(windows))]
+    use crate::remote_receipt::RemoteReceipt;
+
+    #[cfg(not(windows))]
+    fn authoritative_receipt(source: &SourceSetV2) -> RemoteReceipt {
+        RemoteReceipt {
+            source_set_id: source_set_digest_v2(source).expect("source set"),
+            operation_id: "op".to_owned(),
+            run_id: "run".to_owned(),
+            attempt_id: "att_linux_1".to_owned(),
+            lease_generation: Some(1),
+            output_digest: "sha256:0123456789abcdef".to_owned(),
+            source_disposition: "fetched".to_owned(),
+            execution_disposition: "fresh".to_owned(),
+            artifact_verified: true,
+        }
+    }
 
     #[cfg(not(windows))]
     struct RecordingTransport {
@@ -1273,7 +1385,8 @@ executor = { native = ["/bin/sh", "-c", "mkdir -p verification && cp linux-resul
             submits: Mutex::new(Vec::new()),
             fail_submit,
         };
-        let source = SourceSetV1::fixture("linux-leaf");
+        let source = single_member_source_set("primary", SourceSetV1::fixture("linux-leaf"));
+        let receipt = authoritative_receipt(&source);
         let fetches = Mutex::new(Vec::new());
         let ctx = ExecContext {
             path: std::env::var("PATH").unwrap_or_default(),
@@ -1300,6 +1413,7 @@ executor = { native = ["/bin/sh", "-c", "mkdir -p verification && cp linux-resul
                             node,
                             &checkout,
                             &source,
+                            &receipt,
                             "wf_linux_test",
                             &transport,
                             |_transport, attempt, name, out| {
@@ -1356,10 +1470,18 @@ executor = { native = ["/bin/sh", "-c", "mkdir -p verification && cp linux-resul
         );
         assert_eq!(body["spec"]["leaf"]["kind"], "remote");
         assert!(body["spec"]["leaf"].get("argv").is_none());
-        assert_eq!(body["source_set"]["schema_version"], "source-set-v1");
-        assert_eq!(body["source_set"]["kind"], "fixture");
-        assert_eq!(body["source_set"]["commit"], "linux-leaf");
-        assert!(body["source_set"].get("members").is_none());
+        assert_eq!(body["source_set"]["schema_version"], "source-set-v2");
+        assert_eq!(body["source_set"]["primary"], "primary");
+        assert_eq!(body["source_set"]["members"][0]["commit"], "linux-leaf");
+        assert_eq!(body["source_set"]["members"][0]["name"], "primary");
+        assert_eq!(
+            body["spec"]["source_set_id"],
+            source_set_digest_v2(&single_member_source_set(
+                "primary",
+                SourceSetV1::fixture("linux-leaf")
+            ))
+            .expect("digest")
+        );
         assert!(body["source_set"].get("files").is_none());
         assert!(body["source_set"].get("dirty_snapshot_id").is_none());
         assert!(body.get("dirty_manifest").is_none());
@@ -1923,11 +2045,14 @@ executor = { remote = { target = "windows-pc", task = "fixture", source_url = "h
             Some(&mut |operation, _ctx, node| {
                 match remote_leaf_path(node) {
                     RemoteLeafPath::LinuxAttempt => {
-                        let source = SourceSetV1::fixture("unused");
+                        let source =
+                            single_member_source_set("primary", SourceSetV1::fixture("unused"));
+                        let receipt = authoritative_receipt(&source);
                         place_linux_leaf(
                             node,
                             Path::new("."),
                             &source,
+                            &receipt,
                             "wf_unused",
                             &transport,
                             |_, _, _, _| Err("windows leaf must not fetch".to_owned()),

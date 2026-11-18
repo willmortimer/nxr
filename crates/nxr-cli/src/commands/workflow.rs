@@ -316,11 +316,25 @@ fn place_linux_attempt(
         nxr_task::workflows::find_workflow_root(&checkout).unwrap_or_else(|| checkout.clone());
     let source =
         nxr_task::source_set_from_repo(&root).map_err(|detail| ExecuteError::Invalid { detail })?;
+    let member = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("primary");
+    let source = nxr_task::workflows::single_member_source_set(member, source);
     let path = nxr_task::workflows::workflow_path(&root);
     let bytes = std::fs::read(&path).map_err(|error| ExecuteError::Invalid {
         detail: format!("read {}: {error}", path.display()),
     })?;
     let digest = nxr_task::workflow_definition_digest(&bytes);
+    let receipt_path = root.join(".nxr/remote-receipt.json");
+    let receipt_bytes = std::fs::read(&receipt_path).map_err(|_| ExecuteError::Invalid {
+        detail: "remote receipt is missing".to_owned(),
+    })?;
+    let receipt: nxr_task::remote_receipt::RemoteReceipt =
+        serde_json::from_slice(&receipt_bytes).map_err(|error| ExecuteError::Invalid {
+            detail: format!("remote receipt is unreadable: {error}"),
+        })?;
     let bin = std::env::var("NIXPLANE").unwrap_or_else(|_| "nixplane".to_owned());
     let state_dir = std::env::var("NIXPLANE_STATE_DIR").ok();
     let transport = crate::commands::nixplane_transport::NixplaneCliTransport { bin, state_dir };
@@ -328,6 +342,7 @@ fn place_linux_attempt(
         node,
         &checkout,
         &source,
+        &receipt,
         &digest,
         &transport,
         |transport, attempt_id, name, out| transport.fetch_output(attempt_id, name, out),
