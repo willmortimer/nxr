@@ -506,7 +506,10 @@ fn observed_revision_key(member: &str) -> String {
     format!("NXR_OBSERVED_REVISION_{member}")
 }
 
-fn verify_source_revision(member: &str, env: &BTreeMap<String, String>) -> Result<(), ExecuteError> {
+fn verify_source_revision(
+    member: &str,
+    env: &BTreeMap<String, String>,
+) -> Result<(), ExecuteError> {
     let expected_key = expected_revision_key(member);
     let Some(expected) = env.get(&expected_key) else {
         return Ok(());
@@ -514,10 +517,7 @@ fn verify_source_revision(member: &str, env: &BTreeMap<String, String>) -> Resul
     let observed_key = observed_revision_key(member);
     match env.get(&observed_key) {
         Some(observed) if observed == expected => Ok(()),
-        _ => Err(source_unresolved(
-            member,
-            "source revision does not match",
-        )),
+        _ => Err(source_unresolved(member, "source revision does not match")),
     }
 }
 
