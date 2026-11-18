@@ -44,8 +44,11 @@ use crate::graph::{GraphError, TaskGraph};
 use crate::identity::{SOURCE_SET_V1, SOURCE_SET_V2, SourceMemberV2, SourceSetV1, SourceSetV2};
 use crate::plan_exec::{ArgumentForwarding, ExecutionPlan, FailurePolicy, PlanNode};
 use crate::planner::plan_serial_union;
-use crate::remote_execution::{ExecutionTransport, submit_execution};
-use crate::remote_receipt::{RemoteReceipt, artifact_is_authoritative};
+use crate::remote_execution::{ExecutionTransport, execution_status, submit_execution};
+use crate::remote_journal::{begin_remote, record_admitted, record_lease, remote_run_id};
+use crate::remote_receipt::{
+    RemoteReceipt, artifact_is_authoritative, read_remote_receipt, verify_artifact,
+};
 use crate::resources::NodeResources;
 use crate::schema::{TaskDefinition, TaskResources};
 
@@ -1127,21 +1130,23 @@ fn member_source_v1(source: &SourceSetV2, member: &str) -> Result<SourceSetV1, S
     })
 }
 
-/// Submit one Linux leaf, then fetch each declared artifact under `checkout`.
+/// Submit one Linux leaf, then publish its artifacts only after the receipt
+/// and the downloaded bytes agree.
 ///
-/// A failed submit returns before any fetch. `fetch` is `NixplaneCliTransport::fetch_output`
-/// in the CLI and a recording writer in tests. The artifact `name` is the
-/// declared name; the file is `checkout.join(name)`.
+/// Order: submit, persist the attempt and lease, observe terminal success,
+/// read the stored receipt, download into a temporary directory, hash every
+/// file, then rename into `checkout`. A failed check deletes the temporary
+/// files and leaves an existing output in place.
 ///
 /// # Errors
 ///
-/// Returns an error when the node is not a Linux remote leaf, the spec cannot
-/// be built, submit fails, the attempt id is missing, or a fetch fails.
+/// Returns an error when the node is not a Linux remote leaf, submit or status
+/// fails, the receipt is missing or does not match, or a downloaded file does
+/// not match the receipt digest.
 pub fn place_linux_leaf<T, F>(
     node: &PlanNode,
     checkout: &Path,
     source: &SourceSetV2,
-    receipt: &RemoteReceipt,
     workflow_digest: &str,
     transport: &T,
     mut fetch: F,
@@ -1165,25 +1170,105 @@ where
         .filter(|id| !id.is_empty())
         .ok_or_else(|| "submit did not return an attempt id".to_owned())?
         .to_owned();
-    let mut written = Vec::new();
+    let journal_dir = checkout.join(".nxr");
+    let key = format!("linux-leaf:{}:{source_set_id}", node.id);
+    begin_remote(
+        &journal_dir,
+        &key,
+        &remote_run_id(&key),
+        &node.id,
+        &source_set_id,
+    )?;
+    record_admitted(&journal_dir, &key, &attempt_id)?;
+    let status = execution_status(transport, &attempt_id)?;
+    let terminal = status.get("status").and_then(Value::as_str).unwrap_or("");
+    if terminal != "succeeded" {
+        return Err(format!("attempt is not successful: {terminal}"));
+    }
+    let generation = status
+        .get("lease_generation")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "status did not return a lease".to_owned())?;
+    record_lease(&journal_dir, &key, generation)?;
+    let run_id = status
+        .get("run_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "status did not return a run id".to_owned())?;
+    let receipt = read_remote_receipt(&journal_dir, run_id)?
+        .ok_or_else(|| "remote receipt is missing".to_owned())?;
+    if receipt.lease_generation != Some(generation) {
+        return Err("lease does not match the attempt".to_owned());
+    }
+    accept_remote_receipt(&receipt, &source_set_id, &attempt_id)?;
+    let incoming = journal_dir.join("incoming").join(&attempt_id);
+    let _ = fs::remove_dir_all(&incoming);
+    fs::create_dir_all(&incoming).map_err(|err| format!("create download directory: {err}"))?;
+    let published = publish_downloaded(
+        node,
+        checkout,
+        &incoming,
+        &attempt_id,
+        &receipt,
+        &status,
+        generation,
+        transport,
+        &mut fetch,
+    );
+    if let Err(detail) = published {
+        let _ = fs::remove_dir_all(&incoming);
+        return Err(detail);
+    }
+    let _ = fs::remove_dir_all(&incoming);
+    Ok(attempt_id)
+}
+
+fn publish_downloaded<T, F>(
+    node: &PlanNode,
+    checkout: &Path,
+    incoming: &Path,
+    attempt_id: &str,
+    receipt: &RemoteReceipt,
+    status: &Value,
+    generation: u64,
+    transport: &T,
+    fetch: &mut F,
+) -> Result<(), String>
+where
+    T: ExecutionTransport,
+    F: FnMut(&T, &str, &str, &Path) -> Result<String, String>,
+{
+    let mut staged = Vec::new();
     for name in &node.artifacts {
-        let destination = artifact_destination(checkout, name)?;
-        if let Some(parent) = destination.parent()
+        let destination = incoming.join(name);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("create download directory {}: {err}", parent.display()))?;
+        }
+        fetch(transport, attempt_id, name, &destination)?;
+        let bytes = fs::read(&destination)
+            .map_err(|err| format!("read download {}: {err}", destination.display()))?;
+        let digest = verify_artifact(&bytes, &receipt.output_digest)?;
+        artifact_is_authoritative(status, Some(generation), &digest)?;
+        staged.push((name.clone(), destination));
+    }
+    for (name, staged_path) in staged {
+        let final_path = artifact_destination(checkout, &name)?;
+        if let Some(parent) = final_path.parent()
             && parent != checkout
         {
             fs::create_dir_all(parent)
                 .map_err(|err| format!("create artifact directory {}: {err}", parent.display()))?;
         }
-        fetch(transport, &attempt_id, name, &destination)?;
-        written.push(destination);
+        fs::rename(&staged_path, &final_path).map_err(|err| {
+            format!(
+                "publish {} to {}: {err}",
+                staged_path.display(),
+                final_path.display()
+            )
+        })?;
     }
-    if let Err(detail) = accept_remote_receipt(receipt, &source_set_id, &attempt_id) {
-        for path in &written {
-            let _ = fs::remove_file(path);
-        }
-        return Err(detail);
-    }
-    Ok(attempt_id)
+    Ok(())
 }
 
 fn accept_remote_receipt(
@@ -1293,7 +1378,7 @@ mod tests {
             run_id: "run".to_owned(),
             attempt_id: "att_linux_1".to_owned(),
             lease_generation: Some(1),
-            output_digest: "sha256:0123456789abcdef".to_owned(),
+            output_digest: format!("sha256:{}", digest_hex(b"returned-linux-artifact")),
             source_disposition: "fetched".to_owned(),
             execution_disposition: "fresh".to_owned(),
             artifact_verified: true,
@@ -1309,6 +1394,13 @@ mod tests {
     #[cfg(not(windows))]
     impl ExecutionTransport for RecordingTransport {
         fn call(&self, method: &str, body: &Value) -> Result<Value, String> {
+            if method == "status" {
+                return Ok(json!({
+                    "status": "succeeded",
+                    "lease_generation": 1,
+                    "run_id": "run",
+                }));
+            }
             if method != "submit" {
                 return Err(format!("unexpected execution method `{method}`"));
             }
@@ -1318,6 +1410,15 @@ mod tests {
             }
             Ok(json!({ "attempt_id": "att_linux_1", "accepted": true }))
         }
+    }
+
+    #[cfg(not(windows))]
+    fn digest_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
     }
 
     #[cfg(unix)]
@@ -1409,11 +1510,15 @@ executor = { native = ["/bin/sh", "-c", "mkdir -p verification && cp linux-resul
                         detail: "linux graph reached native-build".to_owned(),
                     }),
                     RemoteLeafPath::LinuxAttempt => {
+                        crate::remote_receipt::store_remote_receipt(
+                            &checkout.join(".nxr"),
+                            &receipt,
+                        )
+                        .expect("store receipt");
                         place_linux_leaf(
                             node,
                             &checkout,
                             &source,
-                            &receipt,
                             "wf_linux_test",
                             &transport,
                             |_transport, attempt, name, out| {
@@ -2047,12 +2152,10 @@ executor = { remote = { target = "windows-pc", task = "fixture", source_url = "h
                     RemoteLeafPath::LinuxAttempt => {
                         let source =
                             single_member_source_set("primary", SourceSetV1::fixture("unused"));
-                        let receipt = authoritative_receipt(&source);
                         place_linux_leaf(
                             node,
                             Path::new("."),
                             &source,
-                            &receipt,
                             "wf_unused",
                             &transport,
                             |_, _, _, _| Err("windows leaf must not fetch".to_owned()),

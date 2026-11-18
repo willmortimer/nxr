@@ -327,14 +327,6 @@ fn place_linux_attempt(
         detail: format!("read {}: {error}", path.display()),
     })?;
     let digest = nxr_task::workflow_definition_digest(&bytes);
-    let receipt_path = root.join(".nxr/remote-receipt.json");
-    let receipt_bytes = std::fs::read(&receipt_path).map_err(|_| ExecuteError::Invalid {
-        detail: "remote receipt is missing".to_owned(),
-    })?;
-    let receipt: nxr_task::remote_receipt::RemoteReceipt =
-        serde_json::from_slice(&receipt_bytes).map_err(|error| ExecuteError::Invalid {
-            detail: format!("remote receipt is unreadable: {error}"),
-        })?;
     let bin = std::env::var("NIXPLANE").unwrap_or_else(|_| "nixplane".to_owned());
     let state_dir = std::env::var("NIXPLANE_STATE_DIR").ok();
     let transport = crate::commands::nixplane_transport::NixplaneCliTransport { bin, state_dir };
@@ -342,7 +334,6 @@ fn place_linux_attempt(
         node,
         &checkout,
         &source,
-        &receipt,
         &digest,
         &transport,
         |transport, attempt_id, name, out| transport.fetch_output(attempt_id, name, out),
