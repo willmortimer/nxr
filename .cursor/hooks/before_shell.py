@@ -9,7 +9,7 @@ import json
 import re
 import sys
 
-LOCAL_TASKS = ("fmt-check", "test", "fmt", "lint", "ci", "deny")
+LOCAL_TASKS = ("fmt-check", "test", "rust-test-pkgs", "fmt", "lint", "ci", "deny")
 DISCOVERY = {
     "nxr",
     "nxr list",
