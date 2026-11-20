@@ -9,7 +9,18 @@ import json
 import re
 import sys
 
-LOCAL_TASKS = ("fmt-check", "test", "rust-test-pkgs", "fmt", "lint", "ci", "deny")
+LOCAL_TASKS = (
+    "fmt-check",
+    "test",
+    "rust-test-pkgs",
+    "fmt",
+    "lint",
+    "ci",
+    "deny",
+    "nxi-f-matrix",
+    "host-fundamentals",
+    "install-contract",
+)
 DISCOVERY = {
     "nxr",
     "nxr list",
@@ -40,7 +51,8 @@ def ask(agent_message: str) -> dict:
 
 
 def fleet_activation(text: str) -> bool:
-    if re.search(r"hub-update|fabric-sync|sys-?5", text, re.IGNORECASE):
+    """Deny a fleet switch. Naming SYS-5 in a path, check, or SSH target is not one."""
+    if re.search(r"hub-update|fabric-sync", text, re.IGNORECASE):
         return True
     return bool(
         re.search(r"\bnixos-rebuild\b|\bdeploy-rs\b|\bdeploy\b", text)
@@ -96,6 +108,19 @@ def local_nxr_task(text: str) -> bool:
     return bool(match and match.group(1) in LOCAL_TASKS)
 
 
+def confirms_nix(text: str) -> bool:
+    """nix develop asks. nix build asks unless every output is a flake check."""
+    if re.search(r"(^|[;&|`(]\s*)nix\s+develop\b", text):
+        return True
+    for segment in re.split(r"&&|\|\||[;|]", text):
+        if not re.search(r"(?:^|\s)nix\s+build\b", segment):
+            continue
+        outputs = re.findall(r"\S+#\S+", segment)
+        if not outputs or any("#checks." not in output for output in outputs):
+            return True
+    return False
+
+
 def decide(command: str) -> dict:
     text = command.strip()
     if re.search(r"(^|[;&|`(]\s*)rustup\b", text) or re.search(
@@ -122,9 +147,7 @@ def decide(command: str) -> dict:
         return ask(
             "This nxr command is not a known local check. Confirm it before it changes local or remote state."
         )
-    if re.search(r"(^|[;&|`(\s])\s*cargo\b", text) or re.search(
-        r"(^|[;&|`(\s])\s*nix\s+(build|develop)\b", text
-    ):
+    if re.search(r"(^|[;&|`(\s])\s*cargo\b", text) or confirms_nix(text):
         return ask(
             "Prefer nxr list and nxr task. cargo, nix build, and nix develop need confirmation."
         )
