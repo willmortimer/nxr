@@ -14,6 +14,8 @@ lib.fileset.toSource {
     (root + "/Cargo.toml")
     (root + "/Cargo.lock")
     (root + "/deny.toml")
+    # ci_metadata's parity test executes the shared action writer at runtime.
+    (root + "/.github/actions/nxr-workflow/write-metadata.sh")
     (root + "/crates")
     (root + "/fixtures")
     (root + "/schemas")

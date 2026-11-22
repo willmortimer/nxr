@@ -303,7 +303,8 @@
                 pkgs.rustc
                 pkgs.git
                 pkgs.python3
-              ] ++ nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.procps ];
+              ] ++ nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.procps ]
+                ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.ps ];
               text = ''
                 ${hermeticRunnerEnv}
                 # Use the ambient flakes-capable `nix` (Determinate on GHA /
@@ -319,7 +320,8 @@
               name = "nxr-rust-test-pkgs";
               description = "Run targeted package tests with the pinned toolchain";
               runtimeInputs = [ pkgs.cargo pkgs.cargo-nextest pkgs.rustc pkgs.git pkgs.python3 ]
-                ++ nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.procps ];
+                ++ nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.procps ]
+                ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.ps ];
               text = ''
                 ${hermeticRunnerEnv}
                 exec cargo nextest run --no-fail-fast "$@"

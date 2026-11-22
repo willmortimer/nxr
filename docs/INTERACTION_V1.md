@@ -7,7 +7,10 @@ authorization and evidence verification.
 
 ## CLI and MCP
 
-Use the operation ID returned by `nxr op search`:
+Use the operation ID returned by `nxr op search`. Keep the same workspace
+selection (`--flake` when supplied) for input collection and all interaction
+commands. Canonical local `path:` references retain their checkout identity
+across resume, even when the caller is in another directory:
 
 ```sh
 nxr --json op inputs <operation-id>
