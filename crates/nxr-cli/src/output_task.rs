@@ -13,6 +13,9 @@ use tempfile::NamedTempFile;
 
 use crate::output_options::{ResolvedOutputPolicy, Verbosity};
 
+#[path = "present.rs"]
+pub(crate) mod present;
+
 /// Multiplexed stdout/stderr presentation for parallel task runs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum TaskOutputMode {
@@ -694,8 +697,14 @@ impl<'a> TaskOutputRenderer<'a> {
                         compact_text(&node),
                         outcome.as_str()
                     );
-                    if let Some(reason) = reason {
-                        let _ = writeln!(self.stderr, "  {}", compact_text(&reason));
+                    let reason_text = reason.as_deref();
+                    for line in present::causal_failure_lines(&node, reason_text, None) {
+                        let _ = writeln!(self.stderr, "{line}");
+                    }
+                    if let Some(reason) = reason.as_ref().filter(|text| {
+                        present::causal_failure_lines(&node, Some(text.as_str()), None).is_empty()
+                    }) {
+                        let _ = writeln!(self.stderr, "  {}", compact_text(reason));
                     }
                 }
                 if failed && self.state.verbosity < Verbosity::Logs && !entry.tail.is_empty() {
@@ -753,12 +762,28 @@ impl<'a> TaskOutputRenderer<'a> {
                     );
                 }
             }
-            Event::Phase { node, phase, .. } => {
+            Event::Phase {
+                node,
+                phase,
+                detail,
+                ..
+            } => {
                 let entry = self.state.compact.nodes.entry(node.clone()).or_default();
                 if entry.phase.as_deref() == Some(phase.as_str()) {
                     return;
                 }
                 entry.phase = Some(phase.clone());
+                if let Some(detail) = detail.as_deref()
+                    && let Some(progress) = present::parse_progress_json(detail)
+                {
+                    let line = present::format_progress_line(&progress);
+                    let _ = present::write_informative_line(
+                        self.stderr,
+                        &line,
+                        io::stderr().is_terminal(),
+                    );
+                    return;
+                }
                 if !quiet && (verbose || phase != "terminal") {
                     let _ = writeln!(
                         self.stderr,
@@ -769,7 +794,22 @@ impl<'a> TaskOutputRenderer<'a> {
                 }
             }
             Event::Diagnostic { message } => {
-                let _ = writeln!(self.stderr, "[nxr] {}", compact_text(&message));
+                if let Some(progress) = present::parse_progress_json(&message) {
+                    let line = present::format_progress_line(&progress);
+                    let _ = present::write_informative_line(
+                        self.stderr,
+                        &line,
+                        io::stderr().is_terminal(),
+                    );
+                }
+                let causal = present::causal_failure_lines("run", None, Some(message.as_str()));
+                if causal.is_empty() {
+                    let _ = writeln!(self.stderr, "[nxr] {}", compact_text(&message));
+                } else {
+                    for line in causal {
+                        let _ = writeln!(self.stderr, "{line}");
+                    }
+                }
             }
             Event::RunCompleted {
                 success,
@@ -1820,6 +1860,51 @@ mod tests {
             !stderr.contains("att"),
             "the status line is not the journal"
         );
+    }
+
+    #[test]
+    fn compact_phase_progress_renders_plain_line() {
+        let progress = serde_json::json!({
+            "schema_version":"nxr-progress-v1",
+            "node_id":"ci",
+            "stage_id":"test",
+            "stage_label":"unit tests",
+            "completed":4,
+            "total":10,
+            "unit":"tests",
+            "state":"running"
+        });
+        let events = vec![Event::Phase {
+            run_id: "run".into(),
+            node: "ci".into(),
+            attempt_id: None,
+            phase: "running".into(),
+            source: "local".into(),
+            sequence: 1,
+            detail: Some(progress.to_string()),
+        }];
+        let (_, stderr) = render_output(TaskOutputMode::Compact, &events);
+        assert!(stderr.contains("ci") && stderr.contains("4/10 tests"));
+        assert!(!stderr.contains('%'));
+    }
+
+    #[test]
+    fn compact_failure_emits_distinct_causal_lines() {
+        let events = vec![
+            Event::node_finished(
+                "remote",
+                None,
+                nxr_task::NodeOutcome::Failed,
+                Some("digest mismatch on receipt".into()),
+            ),
+            Event::Diagnostic {
+                message: "admission denied: queue saturated".into(),
+            },
+        ];
+        let (_, stderr) = render_output(TaskOutputMode::Compact, &events);
+        assert!(stderr.contains("digest mismatch"));
+        assert!(stderr.contains("admission refused"));
+        assert!(!stderr.contains("remote build failed"));
     }
 
     #[test]
