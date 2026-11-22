@@ -33,6 +33,7 @@ pub mod memory;
 pub mod parameters;
 pub mod plan_exec;
 pub mod planner;
+pub mod planning;
 pub mod process;
 pub mod qualification;
 pub mod receipt;
@@ -124,6 +125,11 @@ pub use plan_exec::{
     build_execution_plan, build_execution_plan_roots, build_serial_plan,
 };
 pub use planner::{PlanError, plan_mermaid, plan_serial, plan_serial_union, plan_text};
+pub use planning::{
+    ConditionalBranch, DISCOVERY_SCHEMA, DependentQuestion, Discovery, DiscoverySource,
+    FROZEN_PLAN_SCHEMA, FrozenPlan, NullDiscovery, PlanRequest, PlanningError, discovery_digest,
+    evaluate_condition, plan_after_answers,
+};
 pub use process::{
     ProcessDefinition, ProcessNameError, ProcessReadiness, ProcessRestart, ReadinessHttp,
     ReadinessTcp, dependency_base_name, parse_processes, sanitize_process_log_name,
