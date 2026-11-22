@@ -94,7 +94,42 @@
           "type": "boolean",
           "default": false,
           "description": "The projection retained only its first 64 unique artifact references. The cursor-indexed artifact API remains complete; verification failures remain in the causal summary."
+        },
+        "stages": {
+          "type": "object",
+          "default": {},
+          "description": "Latest nxr-progress-v1 stage per stage id. Absent when the node has no progress events.",
+          "additionalProperties": { "$ref": "#/$defs/stage" }
+        },
+        "progress_truncated": {
+          "type": "boolean",
+          "default": false,
+          "description": "Older distinct progress snapshots for this node were dropped. The latest retained stages remain."
         }
+      }
+    },
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage_id", "stage_label", "unit", "state", "indeterminate"],
+      "properties": {
+        "stage_id": { "type": "string", "minLength": 1 },
+        "stage_label": { "type": "string", "minLength": 1 },
+        "completed": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "unit": {
+          "oneOf": [
+            { "enum": ["steps", "tests", "files", "bytes", "artifacts", "samples", "operations"] },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["custom"],
+              "properties": { "custom": { "type": "string", "minLength": 1 } }
+            }
+          ]
+        },
+        "state": { "enum": ["pending", "running", "succeeded", "failed", "skipped", "indeterminate"] },
+        "indeterminate": { "type": "boolean" }
       }
     },
     "attempt": {
