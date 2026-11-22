@@ -463,6 +463,9 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             coverage,
             benchmark,
             set,
+            inputs: _,
+            interactive: _,
+            non_interactive: _,
             args,
         }) => {
             let report_options = TaskReportOptions {
@@ -800,6 +803,13 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
                 Ok(exit::SUCCESS)
             }
         },
+        Some(Command::Interaction { action }) => {
+            crate::commands::interaction::run_cli(cli.flake.as_deref(), action, runner)
+                .map_err(RunError::Message)
+        }
+        Some(Command::Runs { action }) => {
+            crate::commands::runs::run(action, cli.json).map_err(RunError::Message)
+        }
         Some(Command::Session { action }) => match action {
             SessionSubcommand::Start {
                 label,
@@ -1471,9 +1481,10 @@ fn task_request_in_shell<'a>(
         events_format: cli.events,
         reports: report_paths_from_cli(cli, &TaskReportOptions::default())?,
         nix_flags,
-        context_override: None,
+        context_override: cli.execution_context.clone(),
         refresh_discovery: cli.refresh_discovery,
         param_sets: BTreeMap::new(),
+        input_options: task_input_options_from_cli(cli),
         log_dir: cli.log_dir.clone(),
     })
 }
@@ -1714,6 +1725,34 @@ fn script_request_in_shell<'a>(
     })
 }
 
+fn task_input_options_from_cli(cli: &Cli) -> commands::task_params::TaskInputOptions {
+    if let Some(Command::Task {
+        inputs,
+        interactive,
+        non_interactive,
+        ..
+    }) = &cli.command
+    {
+        commands::task_params::TaskInputOptions {
+            file: inputs.clone(),
+            context_override: cli.execution_context.clone(),
+            invocation_directory: None,
+            interactive: if *non_interactive {
+                Some(false)
+            } else if *interactive {
+                Some(true)
+            } else {
+                None
+            },
+        }
+    } else {
+        commands::task_params::TaskInputOptions {
+            context_override: cli.execution_context.clone(),
+            ..Default::default()
+        }
+    }
+}
+
 fn task_request<'a>(
     cli: &'a Cli,
     nix_flags: &'a nxr_nix::OptionalNixFlags,
@@ -1740,9 +1779,10 @@ fn task_request<'a>(
         events_format: cli.events,
         reports: report_paths_from_cli(cli, report_options)?,
         nix_flags,
-        context_override: None,
+        context_override: cli.execution_context.clone(),
         refresh_discovery: cli.refresh_discovery,
         param_sets,
+        input_options: task_input_options_from_cli(cli),
         log_dir: cli.log_dir.clone(),
     })
 }
@@ -2023,6 +2063,7 @@ fn watch_task_request<'a>(
             events_format: cli.events,
             reports,
             param_sets,
+            input_options: task_input_options_from_cli(cli),
             log_dir: cli.log_dir.clone(),
         }),
         force_app: false,

@@ -33,6 +33,9 @@ Product and architecture contract for `nxr`. Prefer these docs over inventing st
 | [SECURITY_REVIEW_V1.md](SECURITY_REVIEW_V1.md) | V1.0 security review vs ARCHITECTURE §8 |
 | [APP_AUTHORING.md](APP_AUTHORING.md) | Conventions for robust flake apps |
 | [TASKS.md](TASKS.md) | Declaring tasks and the `nxr.<system>` discovery attr |
+| [TASK_SCHEMA_V3.md](TASK_SCHEMA_V3.md) | Typed node-scoped inputs and reference security classes |
+| [RUN_OBSERVATION.md](RUN_OBSERVATION.md) | Durable run views, bounded logs, diagnostics and artifact verification |
+| [INTERACTION_V1.md](INTERACTION_V1.md) | Resumable input sessions and frontend adapters |
 | [TASK_SCHEMA_V2.md](TASK_SCHEMA_V2.md) | Draft task schema v2 (inputs, outputs, cache, resources) |
 | [plans/2026-09-03-compiler-cache-and-cargo-graph.md](plans/2026-09-03-compiler-cache-and-cargo-graph.md) | Lattice demand: `compilerCache`, cargo `cohort`, cargo-metadata affected |
 | [MONOREPO_VIEWS.md](MONOREPO_VIEWS.md) | Category/namespace filters; optional non-authoritative projects file |

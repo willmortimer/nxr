@@ -137,7 +137,14 @@ pub fn build_workspace_cache_plan(
             .and_then(|cache| cache.secret_policy),
         Some(TaskCacheSecretPolicy::IgnoreValues)
     );
-    if (has_secret_env || has_context_secrets) && !ignore_secret_values {
+    if (has_secret_env
+        || has_context_secrets
+        || definition
+            .parameters
+            .values()
+            .any(crate::typed_inputs::parameter_contains_secret_reference))
+        && !ignore_secret_values
+    {
         return Ok(disabled_plan(
             tier,
             outputs,
@@ -1306,6 +1313,7 @@ mod tests {
             "mode".to_owned(),
             TaskParameter {
                 param_type: TaskParameterType::Choice,
+                constraints: None,
                 default: Some(json!("fast")),
                 values: Some(vec!["fast".to_owned(), "slow".to_owned()]),
             },
@@ -1441,6 +1449,7 @@ mod tests {
             "mode".to_owned(),
             TaskParameter {
                 param_type: TaskParameterType::Choice,
+                constraints: None,
                 default: None,
                 values: Some(vec!["fast".to_owned(), "slow".to_owned()]),
             },

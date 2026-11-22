@@ -37,6 +37,9 @@ nxr graph <task>
 nxr script <path-or-name> [--] [args...]
 nxr attach [RUN]
 nxr ui
+nxr runs inspect|diagnostics|logs|artifacts <run-id>
+nxr op inputs|resolve <operation-id>
+nxr interaction inspect|answer|resume|cancel <session-id>
 ```
 
 V1 implements the app-oriented subset. V2 activates task-oriented commands. Flake output commands (`list` filters, `build`, `check`, `shell`) map to native Nix operations without inventing a second authority.
@@ -161,7 +164,14 @@ V2 / upcoming orchestration options:
     --debounce <DURATION>  Watch debounce
 ```
 
-Task-only: `task --set NAME=VALUE` (repeatable) for typed parameters.
+Task-only: `task --set NAME=VALUE` (repeatable) for typed parameters. V3 also
+accepts `--set NODE.NAME=VALUE`, `--inputs <values.json>`, `--interactive`, and
+`--non-interactive` before task names. Resolution is per node, with strict typed
+validation and explicit provenance. See [TASK_SCHEMA_V3.md](TASK_SCHEMA_V3.md).
+Missing non-TTY inputs return a structured request rather than reading stdin.
+Operation input collection and resumable sessions are specified in
+[INTERACTION_V1.md](INTERACTION_V1.md); answering a prompt never grants domain
+authorization.
 ## 5. Argument forwarding
 
 ### 5.1 Direct form
@@ -270,6 +280,7 @@ are not corrupted.
 --output grouped    Buffer per node; flush on exit
 --output failures   Buffer per node; emit only on nonzero exit
 --output raw        Single-job foreground child inherits stdio (no pipe mux)
+--output compact    Quiet successful nodes; bounded progress/failure previews on stderr
 --output summary    Per-node status/duration table after the run
 --output tui        Ratatui one-screen DAG watch (node table + log tail)
 ```
@@ -278,6 +289,18 @@ are not corrupted.
 bypasses line-oriented event conversion so binary and interactive child I/O
 pass through unchanged. Multiplexed modes (`live` / `grouped` / `failures` /
 `tui`) close caller stdin for supervised children.
+
+`--output compact` is opt-in and independent of verbosity, capture, terminal
+ownership, and retention. It keeps a bounded 16 KiB preview per node, preserves
+exit codes, and directs its human output to stderr. `--quiet` hides successful
+human output, `-v` adds transitions, and `-vv` adds labelled child logs. Use raw
+when child stdout is application data. Default output selection is unchanged.
+
+Foreground DAG evidence is journaled before rendering; persistence failure stops
+further admission and cannot be reported as success. `nxr runs` and the MCP
+`runs_*` tools expose bounded, byte-safe logs, causal summaries, diagnostics,
+and independently verified artifact references. See
+[RUN_OBSERVATION.md](RUN_OBSERVATION.md) for query bounds and capture limits.
 
 `--output summary` prints a per-node status/duration table (shipped in 2.4).
 

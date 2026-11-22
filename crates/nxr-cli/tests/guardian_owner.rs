@@ -51,10 +51,7 @@ fn a_dead_supervisor_leaves_the_writer_lock_held() {
     let supervisor = Command::new(nxr())
         .env("NXR_GUARDIAN_SUPERVISOR_ONCE", "1")
         .env("NXR_GUARDIAN_DIRS", target.path())
-        .env(
-            "NXR_GUARDIAN_ARGV",
-            sleep_argv.clone(),
-        )
+        .env("NXR_GUARDIAN_ARGV", sleep_argv.clone())
         .env("NXR_GUARDIAN_RESULT", &result)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -71,10 +68,7 @@ fn a_dead_supervisor_leaves_the_writer_lock_held() {
     let blocked = Command::new(nxr())
         .env("NXR_GUARDIAN_SUPERVISOR_ONCE", "1")
         .env("NXR_GUARDIAN_DIRS", target.path())
-        .env(
-            "NXR_GUARDIAN_ARGV",
-            sleep_argv.clone(),
-        )
+        .env("NXR_GUARDIAN_ARGV", sleep_argv.clone())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
@@ -92,10 +86,7 @@ fn a_dead_supervisor_leaves_the_writer_lock_held() {
         let again = Command::new(nxr())
             .env("NXR_GUARDIAN_SUPERVISOR_ONCE", "1")
             .env("NXR_GUARDIAN_DIRS", target.path())
-            .env(
-                "NXR_GUARDIAN_ARGV",
-                echo_argv.clone(),
-            )
+            .env("NXR_GUARDIAN_ARGV", echo_argv.clone())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .output()

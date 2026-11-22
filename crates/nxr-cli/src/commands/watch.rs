@@ -78,6 +78,7 @@ pub struct TaskWatchSettings {
     pub events_format: Option<EventsFormat>,
     pub reports: ReportPaths,
     pub param_sets: std::collections::BTreeMap<String, String>,
+    pub input_options: super::task_params::TaskInputOptions,
     pub log_dir: Option<std::path::PathBuf>,
 }
 
@@ -710,9 +711,17 @@ fn run_task_generation(
         events_format,
         reports,
         nix_flags: request.nix_flags,
-        context_override: None,
+        context_override: request
+            .task_settings
+            .as_ref()
+            .and_then(|settings| settings.input_options.context_override.clone()),
         refresh_discovery: false,
         param_sets,
+        input_options: request
+            .task_settings
+            .as_ref()
+            .map(|s| s.input_options.clone())
+            .unwrap_or_default(),
         log_dir,
     };
 

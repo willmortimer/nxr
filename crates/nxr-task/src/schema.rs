@@ -22,8 +22,11 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// Schema v2 major version (strict parse; see `docs/TASK_SCHEMA_V2.md`).
 pub const SCHEMA_VERSION_V2: u32 = 2;
 
-/// Highest task document major version this crate can parse.
-pub const MAX_SUPPORTED_SCHEMA_VERSION: u32 = SCHEMA_VERSION_V2;
+/// Schema v3 adds richer typed inputs and constraints.
+pub const SCHEMA_VERSION_V3: u32 = 3;
+
+/// Highest supported task document major, including typed input constraints.
+pub const MAX_SUPPORTED_SCHEMA_VERSION: u32 = SCHEMA_VERSION_V3;
 
 /// Run children in the caller's invocation directory.
 pub const WORKING_DIRECTORY_INVOCATION: &str = "invocation";
@@ -212,12 +215,24 @@ impl TaskDocument {
                 }
             })?;
         }
-        if self.schema_version == SCHEMA_VERSION_V2 {
+        if self.schema_version >= SCHEMA_VERSION_V2 {
             for (context_name, context) in &self.contexts {
                 validate_execution_context(context_name, context)?;
             }
         }
         for (task, definition) in &self.tasks {
+            if self.schema_version < SCHEMA_VERSION_V3
+                && definition
+                    .parameters
+                    .values()
+                    .any(|p| !p.param_type.is_legacy() || p.constraints.is_some())
+            {
+                return Err(SchemaError::InvalidDocument {
+                    message: format!(
+                        "task {task}: richer parameter types and constraints require task schema v3"
+                    ),
+                });
+            }
             if let Some(context) = &definition.context
                 && !self.contexts.contains_key(context)
             {
@@ -226,7 +241,7 @@ impl TaskDocument {
                     context: context.clone(),
                 });
             }
-            if self.schema_version == SCHEMA_VERSION_V2 {
+            if self.schema_version >= SCHEMA_VERSION_V2 {
                 validate_task_v2_semantics(task, definition)?;
             }
             if let Some(working_directory) = &definition.working_directory {
@@ -258,7 +273,7 @@ impl TaskDocument {
                 })?;
             }
         }
-        if self.schema_version == SCHEMA_VERSION_V2 {
+        if self.schema_version >= SCHEMA_VERSION_V2 {
             crate::matrix::validate_matrix_instance_collisions(&self.tasks)?;
         }
         for process in self.processes.keys() {
@@ -493,6 +508,57 @@ pub struct TaskParameter {
     pub default: Option<JsonValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub values: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<ParameterConstraints>,
+}
+
+/// Constraints are explicit, strict metadata; unsupported combinations are rejected.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ParameterConstraints {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum: Option<serde_json::Number>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum: Option<serde_json::Number>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<serde_json::Number>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_items: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_items: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<ParameterPathConstraints>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub properties: BTreeMap<String, TaskParameter>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required: Vec<String>,
+}
+
+/// Local path checks are relative to the invocation directory, never a remote host.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParameterPathConstraints {
+    #[serde(default)]
+    pub kind: ParameterPathKind,
+    #[serde(default)]
+    pub exists: bool,
+    #[serde(default)]
+    pub absolute: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ParameterPathKind {
+    #[default]
+    Any,
+    File,
+    Directory,
 }
 
 /// Supported typed parameter kinds (schema v2).
@@ -502,6 +568,35 @@ pub enum TaskParameterType {
     String,
     Choice,
     Boolean,
+    Integer,
+    Number,
+    Multichoice,
+    Path,
+    Duration,
+    Object,
+    #[serde(rename = "artifact_ref")]
+    ArtifactRef,
+    #[serde(rename = "secret_ref")]
+    SecretRef,
+    #[serde(rename = "observed_fact")]
+    ObservedFact,
+    #[serde(rename = "authorization_ref")]
+    AuthorizationRef,
+}
+
+impl TaskParameterType {
+    #[must_use]
+    pub const fn is_legacy(&self) -> bool {
+        matches!(self, Self::String | Self::Choice | Self::Boolean)
+    }
+
+    #[must_use]
+    pub const fn is_security_reference(&self) -> bool {
+        matches!(
+            self,
+            Self::SecretRef | Self::ObservedFact | Self::AuthorizationRef
+        )
+    }
 }
 
 /// Declared inputs for cache-key fingerprinting and structured wiring (schema v2).
@@ -889,9 +984,9 @@ pub fn validate_working_directory(task: &str, value: &str) -> Result<(), SchemaE
 ///
 /// # Errors
 ///
-/// Returns [`SchemaError::UnsupportedVersion`] when `version` is not 1 or 2.
+/// Returns [`SchemaError::UnsupportedVersion`] when `version` is not 1, 2, or 3.
 pub fn validate_schema_version(version: u32) -> Result<(), SchemaError> {
-    if version == SCHEMA_VERSION || version == SCHEMA_VERSION_V2 {
+    if (SCHEMA_VERSION..=MAX_SUPPORTED_SCHEMA_VERSION).contains(&version) {
         Ok(())
     } else {
         Err(SchemaError::UnsupportedVersion {
@@ -933,8 +1028,10 @@ pub fn parse_task_document(value: &JsonValue) -> Result<TaskDocument, SchemaErro
                         message: source.to_string(),
                     }
                 })?;
-            strict.into()
+            let doc: TaskDocument = strict.into();
+            doc
         }
+        SCHEMA_VERSION_V3 => parse_task_document_v3(value)?,
         _ => {
             return Err(SchemaError::UnsupportedVersion {
                 found: version,
@@ -944,6 +1041,72 @@ pub fn parse_task_document(value: &JsonValue) -> Result<TaskDocument, SchemaErro
     };
     doc.validate()?;
     Ok(doc)
+}
+
+fn validate_v3_parameter_shape(value: &JsonValue) -> Result<(), SchemaError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| SchemaError::InvalidDocument {
+            message: "parameter declaration must be an object".to_owned(),
+        })?;
+    if object
+        .keys()
+        .any(|key| !["type", "default", "values", "constraints"].contains(&key.as_str()))
+    {
+        return Err(SchemaError::InvalidDocument {
+            message: "unknown parameter declaration field".to_owned(),
+        });
+    }
+    if let Some(properties) = object
+        .get("constraints")
+        .and_then(|constraints| constraints.get("properties"))
+        .and_then(JsonValue::as_object)
+    {
+        for parameter in properties.values() {
+            validate_v3_parameter_shape(parameter)?;
+        }
+    }
+    Ok(())
+}
+
+fn parse_task_document_v3(value: &JsonValue) -> Result<TaskDocument, SchemaError> {
+    let mut shell = value.clone();
+    let mut parameters = BTreeMap::new();
+    if let Some(tasks) = shell.get_mut("tasks").and_then(JsonValue::as_object_mut) {
+        for (name, task) in tasks {
+            if let Some(raw) = task.get_mut("parameters") {
+                if let Some(declarations) = raw.as_object() {
+                    for parameter in declarations.values() {
+                        validate_v3_parameter_shape(parameter)?;
+                    }
+                }
+                let parsed: BTreeMap<String, TaskParameter> = serde_json::from_value(raw.clone())
+                    .map_err(|source| {
+                    SchemaError::InvalidDocument {
+                        message: format!("task {name}: {source}"),
+                    }
+                })?;
+                *raw = JsonValue::Object(
+                    parsed
+                        .keys()
+                        .map(|key| (key.clone(), serde_json::json!({"type":"string"})))
+                        .collect(),
+                );
+                parameters.insert(name.clone(), parsed);
+            }
+        }
+    }
+    let strict: TaskDocumentV2Strict =
+        serde_json::from_value(shell).map_err(|source| SchemaError::InvalidDocument {
+            message: source.to_string(),
+        })?;
+    let mut document: TaskDocument = strict.into();
+    for (name, values) in parameters {
+        if let Some(task) = document.tasks.get_mut(&name) {
+            task.parameters = values;
+        }
+    }
+    Ok(document)
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1206,6 +1369,7 @@ impl From<TaskParameterV2Strict> for TaskParameter {
             param_type: strict.param_type,
             default: strict.default,
             values: strict.values,
+            constraints: None,
         }
     }
 }
@@ -1464,9 +1628,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_schema_version_accepts_v1_and_v2() {
+    fn validate_schema_version_accepts_v1_v2_and_v3() {
         validate_schema_version(1).expect("v1 supported");
         validate_schema_version(2).expect("v2 supported");
+        validate_schema_version(3).expect("v3 supported");
         TaskDocument::new(BTreeMap::new())
             .validate()
             .expect("new document is valid");
@@ -2265,5 +2430,46 @@ mod tests {
         });
         let err = parse_task_document(&value).expect_err("input escape rejected");
         assert!(matches!(err, SchemaError::InvalidInputPath { .. }));
+    }
+    #[test]
+    fn v3_accepts_richer_types_but_v2_still_refuses_them() {
+        let mut value = json!({"schema_version":3,"tasks":{"prepare":{"app":"prepare","parameters":{"count":{"type":"integer","default":4,"constraints":{"minimum":2,"maximum":8,"step":2}}}}}});
+        let document = parse_task_document(&value).expect("v3 integer");
+        assert_eq!(
+            document.tasks["prepare"].parameters["count"].param_type,
+            TaskParameterType::Integer
+        );
+        value["schema_version"] = json!(2);
+        assert!(parse_task_document(&value).is_err());
+    }
+
+    #[test]
+    fn v3_is_strict_at_document_task_parameter_and_nested_constraint_levels() {
+        for value in [
+            json!({"schema_version":3,"unknown":true}),
+            json!({"schema_version":3,"tasks":{"t":{"app":"t","unknown":true}}}),
+            json!({"schema_version":3,"tasks":{"t":{"app":"t","parameters":{"x":{"type":"string","unknown":true}}}}}),
+            json!({"schema_version":3,"tasks":{"t":{"app":"t","parameters":{"x":{"type":"string","constraints":{"unknown":true}}}}}}),
+        ] {
+            assert!(
+                parse_task_document(&value).is_err(),
+                "unknown field accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn v3_rejects_incompatible_constraints_and_implicit_security_defaults() {
+        for parameter in [
+            json!({"type":"boolean","constraints":{"minimum":0}}),
+            json!({"type":"integer","constraints":{"step":0}}),
+            json!({"type":"integer","constraints":{"minimum":1.5}}),
+            json!({"type":"secret_ref","default":{"ref":"TOKEN"}}),
+            json!({"type":"string","constraints":{"pattern":"["}}),
+        ] {
+            let value =
+                json!({"schema_version":3,"tasks":{"t":{"app":"t","parameters":{"x":parameter}}}});
+            assert!(parse_task_document(&value).is_err());
+        }
     }
 }

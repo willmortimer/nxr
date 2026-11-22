@@ -74,3 +74,6 @@ Thumbs.db
 # --- Local TUI attach sidecars / log tees (not source) ---
 .nxr/attach-runs/
 .nxr/logs/
+
+# Separate Linux container compiler output from the host target.
+.nxr/ci-linux-target/

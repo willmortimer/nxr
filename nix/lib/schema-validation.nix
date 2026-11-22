@@ -29,7 +29,7 @@
     let
       version = document.schema_version or 1;
     in
-    version == 1 || version == 2;
+    version == 1 || version == 2 || version == 3;
 
   taskContextExists =
     task: document:

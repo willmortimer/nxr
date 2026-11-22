@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/interaction-v1.schema.json",
+  "title": "NXR resumable typed interaction v1",
+  "$ref": "#/$defs/session",
+  "$defs": {
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "nxr-interaction-v1"
+        },
+        "session_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "caller_authority": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "plan_digest": {
+          "type": "string",
+          "pattern": "^(sha256:)?[a-f0-9]{64}$"
+        },
+        "state": {
+          "enum": [
+            "collecting_inputs",
+            "waiting_for_input",
+            "resolving",
+            "plan_ready",
+            "waiting_for_authorization",
+            "ready_to_execute",
+            "executing",
+            "completed",
+            "cancelled",
+            "expired",
+            "uncertain"
+          ]
+        },
+        "pending_requests": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/request"
+          }
+        },
+        "accepted_answers": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": {
+            "$ref": "#/$defs/acceptedAnswer"
+          }
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expires_at": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "execution_lease": {
+          "$ref": "#/$defs/executionLease"
+        },
+        "completion_outcome": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "cancelled"
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "session_id",
+        "operation_id",
+        "caller_authority",
+        "state",
+        "pending_requests",
+        "accepted_answers",
+        "revision",
+        "created_at",
+        "expires_at"
+      ]
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "node_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "parameter_name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "declaration": {
+          "$ref": "task-v3.schema.json#/$defs/taskParameter"
+        },
+        "observation_digest": {
+          "type": "string",
+          "pattern": "^(sha256:)?[a-f0-9]{64}$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "request_id",
+        "node_id",
+        "parameter_name",
+        "declaration",
+        "revision"
+      ]
+    },
+    "answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "caller_authority": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "value": {},
+        "observation_digest": {
+          "type": "string",
+          "pattern": "^(sha256:)?[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "session_id",
+        "request_id",
+        "revision",
+        "caller_authority",
+        "value"
+      ]
+    },
+    "acceptedAnswer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/request"
+        },
+        "caller_authority": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "value": {}
+      },
+      "required": [
+        "request",
+        "caller_authority",
+        "value"
+      ]
+    },
+    "executionLease": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lease_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "reserved_at": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "supervisor_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      },
+      "required": [
+        "lease_id",
+        "reserved_at"
+      ]
+    }
+  }
+}

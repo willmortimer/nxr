@@ -90,6 +90,7 @@ run_orb() {
     . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || true
     unset NXR_DEV_SHELL || true
     export NXR_CI_LINUX=1
+    export CARGO_TARGET_DIR=\"$root/.nxr/ci-linux-target\"
     export GIT_CONFIG_GLOBAL=/dev/null
     export GIT_CONFIG_SYSTEM=/dev/null
     cd $(printf '%q' "$root")
@@ -149,14 +150,26 @@ run_docker() {
   "$DOCKER" build --platform "$platform" -t "$image" -f "$dockerfile" "$root/nix/ci"
   "$DOCKER" volume create "$nix_volume" >/dev/null
 
+  # A linked worktree's .git file points outside the source mount. Preserve that
+  # absolute path read-only so Git and Nix can resolve the checkout in Linux.
+  local git_mounts=()
+  if [[ -f "$root/.git" ]]; then
+    local common_git_dir
+    common_git_dir="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)"
+    git_mounts=(-v "$common_git_dir:$common_git_dir:ro" -v "$root:$root:rw")
+  fi
+
   echo "info: docker run $image → $*" >&2
   "$DOCKER" run --rm --platform "$platform" \
     -v "$root:/src:rw" \
     -v "$nix_volume:/nix" \
+    "${git_mounts[@]}" \
     -w /src \
     -e "NIX_CONFIG=experimental-features = nix-command flakes" \
     -e NXR_DEV_SHELL= \
     -e NXR_CI_LINUX=1 \
+    -e CARGO_TARGET_DIR=/src/.nxr/ci-linux-target \
+    -e GIT_OPTIONAL_LOCKS=0 \
     "$image" "$@"
 }
 

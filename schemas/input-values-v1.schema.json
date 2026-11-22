@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/input-values-v1.schema.json",
+  "title": "NXR typed input values v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "inputs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "nxr-input-values-v1"
+    },
+    "inputs": {
+      "type": "object",
+      "propertyNames": {
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "type": "object",
+        "propertyNames": {
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "additionalProperties": {}
+      }
+    }
+  }
+}

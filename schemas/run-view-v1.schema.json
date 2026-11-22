@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/run-view-v1.schema.json",
+  "title": "NXR read-side run projection v1",
+  "description": "A deterministic projection of authoritative journal evidence. This document does not authorize execution or replace scheduler, supervisor or domain receipts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "plan", "state", "last_sequence", "nodes", "summary", "diagnostics", "diagnostics_truncated", "terminal_receipt_observed", "reported_outcome"],
+  "properties": {
+    "schema_version": { "const": "nxr-run-view-v1" },
+    "plan": { "$ref": "#/$defs/plan" },
+    "state": { "enum": ["pending", "running", "succeeded", "failed", "cancelled", "uncertain"] },
+    "last_sequence": { "$ref": "#/$defs/cursor" },
+    "nodes": {
+      "type": "object",
+      "maxProperties": 100000,
+      "additionalProperties": { "$ref": "#/$defs/node" }
+    },
+    "summary": { "$ref": "#/$defs/summary" },
+    "diagnostics": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/diagnostic" }
+    },
+    "diagnostics_truncated": { "type": "boolean" },
+    "terminal_receipt_observed": { "type": "boolean" },
+    "reported_outcome": {
+      "enum": [null, "succeeded", "failed", "cancelled"],
+      "description": "The authority's reported result; state remains uncertain while required node results are outstanding and failed when known execution or artifact verification fails."
+    }
+  },
+  "$defs": {
+    "cursor": { "type": "integer", "minimum": 0 },
+    "strings": { "type": "array", "items": { "type": "string" } },
+    "nodeOutcome": { "enum": [null, "succeeded", "failed", "cancelled", "skipped", "timed_out"] },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "run_id", "operation_id", "roots", "dependencies", "logs_captured"],
+      "properties": {
+        "schema_version": { "const": "nxr-run-plan-v1" },
+        "run_id": { "type": "string", "minLength": 1 },
+        "operation_id": { "type": "string" },
+        "workspace_root": { "type": "string", "default": "" },
+        "workspace_id": { "type": "string", "default": "" },
+        "input_provenance": {
+          "type": "object",
+          "default": {},
+          "description": "Node and parameter names mapped to input origins. Resolved values are never included.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "enum": ["scoped_cli", "cli", "input_file", "context", "environment", "default", "answer"]
+            }
+          }
+        },
+        "roots": { "$ref": "#/$defs/strings" },
+        "dependencies": {
+          "type": "object",
+          "maxProperties": 100000,
+          "additionalProperties": { "$ref": "#/$defs/strings" }
+        },
+        "logs_captured": { "type": "boolean" },
+        "uncaptured_nodes": {
+          "$ref": "#/$defs/strings",
+          "default": [],
+          "description": "Inherited interactive/raw nodes whose individual output streams were not captured."
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dependencies", "outcome", "attempts", "phase", "reason", "duration_ms", "reused", "detached", "terminal_sequence", "artifacts", "artifacts_truncated"],
+      "properties": {
+        "dependencies": { "$ref": "#/$defs/strings" },
+        "outcome": { "$ref": "#/$defs/nodeOutcome" },
+        "attempts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/attempt" }
+        },
+        "phase": { "type": ["string", "null"] },
+        "reason": { "type": ["string", "null"] },
+        "duration_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "reused": { "type": "boolean" },
+        "detached": { "type": "boolean" },
+        "terminal_sequence": { "type": ["integer", "null"], "minimum": 0 },
+        "artifacts": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "artifact-ref-v1.schema.json" }
+        },
+        "artifacts_truncated": {
+          "type": "boolean",
+          "default": false,
+          "description": "The projection retained only its first 64 unique artifact references. The cursor-indexed artifact API remains complete; verification failures remain in the causal summary."
+        }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ordinal", "attempt_id", "location", "started_sequence", "terminal_sequence", "outcome"],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 1 },
+        "attempt_id": { "type": ["string", "null"] },
+        "location": { "type": "string" },
+        "started_sequence": { "$ref": "#/$defs/cursor" },
+        "terminal_sequence": { "type": ["integer", "null"], "minimum": 0 },
+        "outcome": { "$ref": "#/$defs/nodeOutcome" }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["first_failure", "independent_failures", "dependent_skips", "cancelled", "timed_out", "artifact_failures", "uncertainties", "outstanding_nodes"],
+      "properties": {
+        "first_failure": { "type": ["string", "null"] },
+        "independent_failures": { "$ref": "#/$defs/strings" },
+        "dependent_skips": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/strings" }
+        },
+        "cancelled": { "$ref": "#/$defs/strings" },
+        "timed_out": { "$ref": "#/$defs/strings" },
+        "artifact_failures": { "type": "object", "additionalProperties": { "type": "string" } },
+        "uncertainties": { "type": "array", "maxItems": 128, "items": { "type": "string" } },
+        "outstanding_nodes": { "$ref": "#/$defs/strings" }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "severity", "message", "node_id", "location", "evidence", "fingerprint"],
+      "properties": {
+        "code": { "type": "string" },
+        "severity": { "enum": ["error", "warning", "info"] },
+        "message": { "type": "string" },
+        "node_id": { "type": "string" },
+        "location": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["file", "line"],
+              "properties": {
+                "file": { "type": "string" },
+                "line": { "type": ["integer", "null"], "minimum": 0 }
+              }
+            }
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "reference"],
+            "properties": {
+              "kind": { "type": "string" },
+              "reference": { "type": "string" }
+            }
+          }
+        },
+        "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

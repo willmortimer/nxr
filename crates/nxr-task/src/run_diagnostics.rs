@@ -1,12 +1,22 @@
 //! Bounded parse of supervisor run logs into coarse failure categories.
 
+use std::io::{self, BufRead};
+
+use serde::{Deserialize, Serialize};
+
 const MAX_DIAGNOSTICS: usize = 8;
 const MAX_EXCERPT: usize = 240;
+const MAX_LINE_BYTES: usize = 64 * 1024;
+const MAX_SCAN_BYTES: usize = 4 * 1024 * 1024;
 
 /// Coarse diagnostic derived from supervisor log lines.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RunDiagnostic {
     pub category: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<Severity>,
     pub file: Option<String>,
     pub line: Option<u32>,
     pub excerpt: String,
@@ -14,94 +24,210 @@ pub struct RunDiagnostic {
     pub object: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    Error,
+    Warning,
+    Info,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SourceLocation {
+    pub file: String,
+    pub line: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EvidenceRef {
+    pub kind: String,
+    pub reference: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Diagnostic {
+    pub code: String,
+    pub severity: Severity,
+    pub message: String,
+    pub node_id: String,
+    pub location: Option<SourceLocation>,
+    pub evidence: Vec<EvidenceRef>,
+    pub fingerprint: String,
+}
+
+impl RunDiagnostic {
+    /// Stable normalized adapter; original log bytes remain in the journal.
+    #[must_use]
+    pub fn normalized(&self, node: &str) -> Diagnostic {
+        use sha2::{Digest, Sha256};
+        let location = self.file.as_ref().map(|file| SourceLocation {
+            file: file.clone(),
+            line: self.line,
+        });
+        let preimage = serde_json::json!([self.category, self.code, node, location, self.excerpt]);
+        let fingerprint = format!(
+            "sha256:{:x}",
+            Sha256::digest(preimage.to_string().as_bytes())
+        );
+        let mut evidence = Vec::new();
+        if let Some(object) = &self.object {
+            evidence.push(EvidenceRef {
+                kind: "artifact-declaration".into(),
+                reference: object.clone(),
+            });
+        }
+        Diagnostic {
+            code: self.code.clone().unwrap_or_else(|| self.category.clone()),
+            severity: self
+                .severity
+                .unwrap_or(if self.category == "diagnostic_artifact" {
+                    Severity::Info
+                } else {
+                    Severity::Error
+                }),
+            message: self.excerpt.clone(),
+            node_id: node.into(),
+            location,
+            evidence,
+            fingerprint,
+        }
+    }
+}
+
 /// Parse a bounded slice of diagnostic signals from a supervisor log.
 #[must_use]
 pub fn parse_run_log(log: &str) -> Vec<RunDiagnostic> {
-    if log.trim().is_empty() {
-        return Vec::new();
-    }
+    parse_run_log_reader(io::Cursor::new(log.as_bytes())).unwrap_or_default()
+}
 
-    let lines: Vec<&str> = log.lines().collect();
+/// Scan without collecting a log or allocating an unbounded physical line.
+/// Oversized lines are discarded; inspect raw byte slices for their evidence.
+pub fn parse_run_log_reader(mut reader: impl BufRead) -> io::Result<Vec<RunDiagnostic>> {
     let mut out = Vec::new();
-    let mut index = 0;
-
-    while index < lines.len() && out.len() < MAX_DIAGNOSTICS {
-        let line = lines[index];
-        if is_secret_line(line) {
-            index += 1;
-            continue;
+    let mut fallback = None;
+    let mut line = Vec::new();
+    let mut oversized = false;
+    let mut scanned = 0;
+    while scanned < MAX_SCAN_BYTES && out.len() < MAX_DIAGNOSTICS {
+        let buffer = reader.fill_buf()?;
+        if buffer.is_empty() {
+            break;
         }
-
-        let Some(mut diagnostic) = classify_line(line) else {
-            index += 1;
-            continue;
-        };
-
-        if diagnostic.category == "compile_error"
-            && diagnostic.file.is_none()
-            && index + 1 < lines.len()
-        {
-            let next = lines[index + 1];
-            if !is_secret_line(next)
-                && let Some((file, line_no)) = parse_rustc_arrow(next)
-            {
-                diagnostic.file = Some(file);
-                diagnostic.line = Some(line_no);
+        let available = buffer.len().min(MAX_SCAN_BYTES - scanned);
+        let consumed = buffer[..available]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available, |position| position + 1);
+        let complete = buffer[consumed - 1] == b'\n';
+        if !oversized && line.len() + consumed <= MAX_LINE_BYTES {
+            line.extend_from_slice(&buffer[..consumed]);
+        } else {
+            line.clear();
+            oversized = true;
+        }
+        reader.consume(consumed);
+        scanned += consumed;
+        if complete {
+            if !oversized {
+                process_diagnostic_line(&String::from_utf8_lossy(&line), &mut out, &mut fallback);
             }
+            line.clear();
+            oversized = false;
         }
-
-        out.push(diagnostic);
-        index += 1;
     }
-
+    if !line.is_empty() && !oversized && scanned < MAX_SCAN_BYTES && out.len() < MAX_DIAGNOSTICS {
+        process_diagnostic_line(&String::from_utf8_lossy(&line), &mut out, &mut fallback);
+    }
     if out.is_empty()
-        && let Some(line) = first_meaningful_line(log)
+        && let Some(excerpt) = fallback
     {
-        return vec![RunDiagnostic {
+        out.push(RunDiagnostic {
+            code: None,
+            severity: None,
             category: "unknown".into(),
             file: None,
             line: None,
-            excerpt: truncate_excerpt(line),
+            excerpt,
             digest: None,
             object: None,
-        }];
+        });
     }
-
-    out
+    Ok(out)
 }
 
-fn first_meaningful_line(log: &str) -> Option<&str> {
-    log.lines()
-        .find(|line| !line.trim().is_empty() && !is_secret_line(line))
+fn process_diagnostic_line(
+    line: &str,
+    out: &mut Vec<RunDiagnostic>,
+    fallback: &mut Option<String>,
+) {
+    if line.trim().is_empty() || is_secret_line(line) {
+        return;
+    }
+    if fallback.is_none() {
+        *fallback = Some(truncate_excerpt(line));
+    }
+    if let Some(previous) = out.last_mut()
+        && previous.category == "compile_error"
+        && previous.file.is_none()
+        && let Some((file, line_no)) = parse_rustc_arrow(line)
+    {
+        previous.file = Some(file);
+        previous.line = Some(line_no);
+    }
+    if let Some(diagnostic) = classify_line(line)
+        && !out.contains(&diagnostic)
+    {
+        out.push(diagnostic);
+    }
 }
 
 fn truncate_excerpt(text: &str) -> String {
     let trimmed = text.trim();
-    if trimmed.len() <= MAX_EXCERPT {
-        return trimmed.to_owned();
-    }
-    trimmed[..MAX_EXCERPT].to_owned()
+    trimmed.chars().take(MAX_EXCERPT).collect()
 }
 
 fn is_secret_line(line: &str) -> bool {
     let trimmed = line.trim();
+    let lower = trimmed.to_ascii_lowercase();
     trimmed.contains("KEY=")
         || trimmed.contains("TOKEN=")
-        || trimmed.to_ascii_lowercase().contains("sops")
+        || lower.contains("sops")
+        || lower.contains("password=")
+        || lower.contains("secret=")
+        || lower.contains("token=")
+        || lower.contains("authorization:")
+        || lower.contains("private key-----")
 }
 
 fn classify_line(line: &str) -> Option<RunDiagnostic> {
-    if let Some(diagnostic) = classify_diagnostic_artifact(line) {
-        return Some(diagnostic);
-    }
-    if let Some(diagnostic) = classify_cargo_json(line) {
-        return Some(diagnostic);
+    // Structured adapters precede coarse text fallback. Adding another domain
+    // format does not let child records become execution authority.
+    const STRUCTURED: &[fn(&str) -> Option<RunDiagnostic>] = &[
+        classify_diagnostic_artifact,
+        classify_cargo_json,
+        classify_nix_json,
+        classify_test_result,
+        classify_domain_error,
+    ];
+    for adapter in STRUCTURED {
+        if let Some(diagnostic) = adapter(line) {
+            return Some(diagnostic);
+        }
     }
 
     let excerpt = truncate_excerpt(line);
 
+    if line.contains("hub request failed at ") {
+        return Some(diagnostic("nixplane_transport", line));
+    }
+    if line.contains("submit refused") || line.contains("admission denied") {
+        return Some(diagnostic("admission_refusal", line));
+    }
+
     if is_plain_rustc_error(line) {
         return Some(RunDiagnostic {
+            code: None,
+            severity: None,
             category: "compile_error".into(),
             file: None,
             line: None,
@@ -113,6 +239,8 @@ fn classify_line(line: &str) -> Option<RunDiagnostic> {
 
     if let Some((file, line_no)) = parse_panic_location(line) {
         return Some(RunDiagnostic {
+            code: None,
+            severity: None,
             category: "test_assertion".into(),
             file: Some(file),
             line: Some(line_no),
@@ -124,6 +252,8 @@ fn classify_line(line: &str) -> Option<RunDiagnostic> {
 
     if is_test_assertion_text(line) {
         return Some(RunDiagnostic {
+            code: None,
+            severity: None,
             category: "test_assertion".into(),
             file: None,
             line: None,
@@ -135,6 +265,8 @@ fn classify_line(line: &str) -> Option<RunDiagnostic> {
 
     if is_missing_toolchain(line) {
         return Some(RunDiagnostic {
+            code: None,
+            severity: None,
             category: "missing_toolchain".into(),
             file: None,
             line: None,
@@ -146,6 +278,8 @@ fn classify_line(line: &str) -> Option<RunDiagnostic> {
 
     if line.contains("policy approval required") || line.contains("policy refusal") {
         return Some(RunDiagnostic {
+            code: None,
+            severity: None,
             category: "policy_refusal".into(),
             file: None,
             line: None,
@@ -158,6 +292,8 @@ fn classify_line(line: &str) -> Option<RunDiagnostic> {
     if line.contains("local budget exceeded") || line.contains("already has a running local build")
     {
         return Some(RunDiagnostic {
+            code: None,
+            severity: None,
             category: "resource_refusal".into(),
             file: None,
             line: None,
@@ -170,24 +306,36 @@ fn classify_line(line: &str) -> Option<RunDiagnostic> {
     None
 }
 
-fn classify_diagnostic_artifact(line: &str) -> Option<RunDiagnostic> {
-    let payload = line.trim().strip_prefix("lattice: diagnostic-artifact ")?;
+fn classify_nix_json(line: &str) -> Option<RunDiagnostic> {
+    let payload = line.trim().strip_prefix("@nix ")?;
     let value: serde_json::Value = serde_json::from_str(payload).ok()?;
-    if value.get("schema")?.as_str()? != "lattice.diagnostic.artifact.v1" {
+    if value.get("action")?.as_str()? != "msg" || value.get("level")?.as_u64()? > 1 {
         return None;
     }
-    if value.get("kind")?.as_str()? != "stargate-recording" {
-        return None;
-    }
-    let digest = value.get("sha256")?.as_str()?;
-    let object = value.get("object")?.as_str()?;
-    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    if !object.starts_with("objects/") || object.contains("..") || object.contains('\\') {
-        return None;
-    }
+    let message = value.get("msg")?.as_str()?;
     Some(RunDiagnostic {
+        code: None,
+        severity: Some(if value.get("level")?.as_u64()? == 1 {
+            Severity::Warning
+        } else {
+            Severity::Error
+        }),
+        category: "nix_error".into(),
+        file: None,
+        line: None,
+        excerpt: truncate_excerpt(message),
+        digest: None,
+        object: None,
+    })
+}
+
+fn classify_diagnostic_artifact(line: &str) -> Option<RunDiagnostic> {
+    let reference = crate::artifact_ref::ArtifactRef::parse_declaration(line).ok()?;
+    let digest = reference.digest.strip_prefix("sha256:")?;
+    let crate::artifact_ref::ArtifactLocation::LocalCas { object } = &reference.location;
+    Some(RunDiagnostic {
+        code: None,
+        severity: None,
         category: "diagnostic_artifact".into(),
         file: None,
         line: None,
@@ -209,7 +357,8 @@ fn classify_cargo_json(line: &str) -> Option<RunDiagnostic> {
     }
 
     let message = value.get("message")?;
-    if message.get("level")?.as_str()? != "error" {
+    let level = message.get("level")?.as_str()?;
+    if !matches!(level, "error" | "warning") {
         return None;
     }
 
@@ -227,13 +376,102 @@ fn classify_cargo_json(line: &str) -> Option<RunDiagnostic> {
     }
 
     Some(RunDiagnostic {
-        category: "compile_error".into(),
+        code: message
+            .pointer("/code/code")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        severity: Some(if level == "warning" {
+            Severity::Warning
+        } else {
+            Severity::Error
+        }),
+        category: if level == "warning" {
+            "compile_warning"
+        } else {
+            "compile_error"
+        }
+        .into(),
         file,
         line: line_no,
-        excerpt: truncate_excerpt(line),
+        excerpt: truncate_excerpt(message.get("message")?.as_str()?),
         digest: None,
         object: None,
     })
+}
+
+fn diagnostic(category: &str, message: &str) -> RunDiagnostic {
+    RunDiagnostic {
+        category: category.into(),
+        code: None,
+        severity: None,
+        file: None,
+        line: None,
+        excerpt: truncate_excerpt(message),
+        digest: None,
+        object: None,
+    }
+}
+
+fn classify_test_result(line: &str) -> Option<RunDiagnostic> {
+    let trimmed = line.trim();
+    if trimmed.starts_with('{') {
+        let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+        if value.get("type")?.as_str()? == "test" && value.get("event")?.as_str()? == "failed" {
+            // Libtest JSON and Nextest's compatible JSON output. Do not copy
+            // arbitrary captured test stdout into a compact diagnostic.
+            return Some(diagnostic("test_failure", value.get("name")?.as_str()?));
+        }
+        return None;
+    }
+    if ["FAIL ", "TIMEOUT "]
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+    {
+        return Some(diagnostic("test_failure", trimmed));
+    }
+    // Recognize bounded JUnit failure elements in the queried log bytes. This
+    // is not a report loader: no paths, entities, or external XML are opened.
+    for tag in ["failure", "error"] {
+        let marker = format!("<{tag}");
+        let Some(start) = trimmed.find(&marker) else {
+            continue;
+        };
+        let rest = &trimmed[start + marker.len()..];
+        if rest.starts_with(|c: char| c.is_whitespace() || c == '>' || c == '/') {
+            return Some(diagnostic("junit_failure", &trimmed[start..]));
+        }
+    }
+    None
+}
+
+fn classify_domain_error(line: &str) -> Option<RunDiagnostic> {
+    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    let class = value.get("error_class")?.as_str()?;
+    // These are NxiError's published classes, not an assertion that an
+    // installation grant, disk observation, or domain receipt is trustworthy.
+    const NXI_CLASSES: &[&str] = &[
+        "invalid-plan",
+        "target-identity-mismatch",
+        "missing-artifact",
+        "untrusted-installer",
+        "destructive-authorization-required",
+        "approval-mismatch",
+        "device-busy",
+        "unsafe-existing-data",
+        "interrupted-operation",
+        "state-uncertain",
+        "manual-recovery",
+        "boot-verification-failed",
+        "recovery-provider-failed",
+        "hub-unavailable",
+        "handoff-rejected",
+    ];
+    if !NXI_CLASSES.contains(&class) {
+        return None;
+    }
+    let mut result = diagnostic("nxi_error", value.get("message")?.as_str()?);
+    result.code = Some(format!("nxi.{class}"));
+    Some(result)
 }
 
 fn is_plain_rustc_error(line: &str) -> bool {
@@ -313,6 +551,8 @@ mod tests {
         assert_eq!(diag.category, "compile_error");
         assert_eq!(diag.file.as_deref(), Some("src/lib.rs"));
         assert_eq!(diag.line, Some(9));
+        assert_eq!(diag.excerpt, "expected `;`, found `}`");
+        assert_eq!(diag.normalized("compile").code, "E0308");
     }
 
     #[test]
@@ -387,5 +627,112 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert_eq!(parse_run_log(&log).len(), MAX_DIAGNOSTICS);
+    }
+
+    #[test]
+    fn unicode_excerpt_truncation_never_splits_a_codepoint() {
+        let log = format!("error: {}", "🪐".repeat(300));
+        let diagnostics = parse_run_log(&log);
+        assert_eq!(diagnostics[0].excerpt.chars().count(), MAX_EXCERPT);
+    }
+
+    #[test]
+    fn streaming_handles_short_buffers_and_unterminated_final_line() {
+        let input = b"error: first\n --> src/lib.rs:7:1\nerror: final";
+        let reader = io::BufReader::with_capacity(3, io::Cursor::new(input));
+        let diagnostics = parse_run_log_reader(reader).expect("stream");
+        assert_eq!(diagnostics.len(), 2);
+        assert_eq!(diagnostics[0].file.as_deref(), Some("src/lib.rs"));
+        assert_eq!(diagnostics[0].line, Some(7));
+        assert_eq!(diagnostics[1].excerpt, "error: final");
+    }
+
+    #[test]
+    fn oversized_physical_lines_are_discarded_without_hiding_later_errors() {
+        let log = format!("{}\nerror: actual failure", "x".repeat(MAX_LINE_BYTES * 3));
+        let diagnostics = parse_run_log(&log);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].excerpt, "error: actual failure");
+    }
+
+    #[test]
+    fn repeated_identical_diagnostics_do_not_consume_the_limit() {
+        let log = format!("{}error: independent", "error: repeated\n".repeat(30));
+        let diagnostics = parse_run_log(&log);
+        assert_eq!(diagnostics.len(), 2);
+        let first = diagnostics[0].normalized("compile");
+        assert_eq!(
+            first.fingerprint,
+            diagnostics[0].normalized("compile").fingerprint
+        );
+        assert_ne!(
+            first.fingerprint,
+            diagnostics[0].normalized("other-node").fingerprint
+        );
+    }
+
+    #[test]
+    fn nix_structured_failure_uses_its_domain_category() {
+        let diagnostics =
+            parse_run_log("@nix {\"action\":\"msg\",\"level\":0,\"msg\":\"builder failed\"}\n");
+        assert_eq!(diagnostics[0].category, "nix_error");
+        assert_eq!(diagnostics[0].excerpt, "builder failed");
+    }
+
+    #[test]
+    fn cargo_warning_preserves_severity_and_primary_message() {
+        let diagnostic = first(
+            r#"{"reason":"compiler-message","message":{"level":"warning","message":"unused import","code":{"code":"unused_imports"},"spans":[]}}"#,
+        );
+        let normalized = diagnostic.normalized("compile");
+        assert_eq!(normalized.severity, Severity::Warning);
+        assert_eq!(normalized.message, "unused import");
+        assert_eq!(normalized.code, "unused_imports");
+    }
+
+    #[test]
+    fn test_adapters_classify_failures_without_promoting_test_output_to_authority() {
+        assert_eq!(first("FAIL [0.1s] package::test").category, "test_failure");
+        assert_eq!(
+            first("TIMEOUT [60s] package::test").category,
+            "test_failure"
+        );
+        let diagnostic = first(
+            r#"{"type":"test","event":"failed","name":"crate::failure","stdout":"run_completed"}"#,
+        );
+        assert_eq!(diagnostic.excerpt, "crate::failure");
+        assert_eq!(diagnostic.category, "test_failure");
+        assert_eq!(
+            first(r#"<testcase name="failure"><failure message="assertion"/></testcase>"#).category,
+            "junit_failure"
+        );
+        assert_eq!(first("<failures>0</failures>").category, "unknown");
+        assert_eq!(first("XFAIL [0.1s] expected_failure").category, "unknown");
+    }
+
+    #[test]
+    fn nxi_error_classes_preserve_domain_code_and_bounded_message() {
+        let diagnostic = first(r#"{"error_class":"destructive-authorization-required","message":"destructive authorization required: no signed grant"}"#).normalized("install");
+        assert_eq!(diagnostic.code, "nxi.destructive-authorization-required");
+        assert_eq!(diagnostic.severity, Severity::Error);
+        assert_eq!(
+            first(r#"{"error_class":"caller-invented","message":"allowed"}"#).category,
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn remote_refusals_and_nix_warnings_keep_their_meaning() {
+        assert_eq!(
+            first("error: hub request failed at https://hub/v1: connection refused").category,
+            "nixplane_transport"
+        );
+        assert_eq!(first("error: submit refused").category, "admission_refusal");
+        assert_eq!(
+            first(r#"@nix {"action":"msg","level":1,"msg":"evaluation warning"}"#)
+                .normalized("build")
+                .severity,
+            Severity::Warning
+        );
     }
 }

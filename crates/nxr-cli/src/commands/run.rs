@@ -67,7 +67,9 @@ pub fn execute(
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
     let started = std::time::Instant::now();
-    let mut phases = crate::output_task::PhaseStatus::detect();
+    let policy = runner.direct_output_policy();
+    let runner = runner.with_policy(&policy);
+    let mut phases = crate::output_task::PhaseStatus::from_policy(&policy);
     phases.show(request.app, "resolving", false);
 
     if let LiveFastPathOutcome::Hit(live) =
