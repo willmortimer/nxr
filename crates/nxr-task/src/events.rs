@@ -437,6 +437,11 @@ impl Event {
 pub trait EventSink {
     /// Receive one event.
     fn emit(&mut self, event: Event);
+
+    /// Sticky authoritative recording failure; renderer failures remain separate.
+    fn failure(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Sink that records every event in order (useful in tests and dry-runs).

@@ -1199,13 +1199,8 @@ where
         }
         return Ok(attempt_id);
     }
-    let status = await_remote_terminal(
-        transport,
-        &journal_dir,
-        &key,
-        &attempt_id,
-        stored_sequence,
-    )?;
+    let status =
+        await_remote_terminal(transport, &journal_dir, &key, &attempt_id, stored_sequence)?;
     let terminal = status.get("status").and_then(Value::as_str).unwrap_or("");
     if terminal != "succeeded" {
         return Err(format!("attempt is not successful: {terminal}"));
@@ -1347,8 +1342,7 @@ where
         artifact_is_authoritative(status, Some(generation), &digest)?;
     }
     if let Some(parent) = generation_dir.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|err| format!("create generation directory: {err}"))?;
+        fs::create_dir_all(parent).map_err(|err| format!("create generation directory: {err}"))?;
     }
     fs::rename(incoming, generation_dir).map_err(|err| format!("publish generation: {err}"))?;
     let current = journal_dir.join("current");
@@ -1646,7 +1640,10 @@ executor = { native = ["/bin/sh", "-c", "mkdir -p verification && cp .nxr/curren
                         detail: "linux graph reached native-build".to_owned(),
                     }),
                     RemoteLeafPath::LinuxAttempt => {
-                        let fetch = |_transport: &RecordingTransport, attempt: &str, name: &str, out: &Path| {
+                        let fetch = |_transport: &RecordingTransport,
+                                     attempt: &str,
+                                     name: &str,
+                                     out: &Path| {
                             fetches
                                 .lock()
                                 .expect("fetches")

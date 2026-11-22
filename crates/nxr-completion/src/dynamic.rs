@@ -110,7 +110,7 @@ pub fn task_parameter_name_candidates(
 pub fn task_parameter_value_candidates(parameter: &TaskParameter) -> Vec<String> {
     match parameter.param_type {
         TaskParameterType::Boolean => vec!["false".to_owned(), "true".to_owned()],
-        TaskParameterType::Choice => {
+        TaskParameterType::Choice | TaskParameterType::Multichoice => {
             let mut values = parameter.values.clone().unwrap_or_default();
             values.sort();
             values
@@ -121,6 +121,7 @@ pub fn task_parameter_value_candidates(parameter: &TaskParameter) -> Vec<String>
             .and_then(|value| value.as_str())
             .map(|default| vec![default.to_owned()])
             .unwrap_or_default(),
+        _ => Vec::new(),
     }
 }
 
@@ -172,13 +173,17 @@ fn parameter_description(parameter: &TaskParameter) -> String {
                 .unwrap_or_else(|| "false".to_owned());
             format!("boolean (default: {default})")
         }
-        TaskParameterType::Choice => {
+        TaskParameterType::Choice | TaskParameterType::Multichoice => {
             if let Some(values) = &parameter.values {
                 format!("choice: {}", values.join(", "))
             } else {
                 "choice".to_owned()
             }
         }
+        ref kind => serde_json::to_value(kind)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "typed input".to_owned()),
     }
 }
 
@@ -334,6 +339,7 @@ mod tests {
                 "mode".to_owned(),
                 TaskParameter {
                     param_type: TaskParameterType::Choice,
+                    constraints: None,
                     default: Some(json!("fast")),
                     values: Some(vec!["fast".to_owned(), "slow".to_owned()]),
                 },
@@ -342,6 +348,7 @@ mod tests {
                 "verbose".to_owned(),
                 TaskParameter {
                     param_type: TaskParameterType::Boolean,
+                    constraints: None,
                     default: Some(json!(false)),
                     values: None,
                 },
@@ -350,6 +357,7 @@ mod tests {
                 "label".to_owned(),
                 TaskParameter {
                     param_type: TaskParameterType::String,
+                    constraints: None,
                     default: Some(json!("fixture")),
                     values: None,
                 },

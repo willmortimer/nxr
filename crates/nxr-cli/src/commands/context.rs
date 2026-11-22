@@ -241,6 +241,7 @@ fn run_with_context(
         context_override: Some(context_name.to_owned()),
         refresh_discovery: request.refresh_discovery,
         param_sets: std::collections::BTreeMap::new(),
+        input_options: Default::default(),
         log_dir: None,
     };
     let _ = adapter;

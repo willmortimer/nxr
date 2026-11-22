@@ -1,7 +1,7 @@
 //! `nxr task` execution (serial inherit or parallel supervised).
 
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -31,7 +31,7 @@ use crate::commands::secrets::{
     SpawnSecrets, load_runtime_secret_config, prepare_spawn_secrets, project_identity,
 };
 use crate::commands::store_exe::{ResolvedAppSpawn, resolve_app_spawn_with_prewarm};
-use crate::commands::task_params::resolve_plan_parameters;
+use crate::commands::task_params::resolve_plan_inputs;
 use crate::commands::trust;
 use crate::commands::workspace_cache::{
     explain_workspace_cache, save_workspace_cache, try_workspace_cache_restore,
@@ -39,7 +39,8 @@ use crate::commands::workspace_cache::{
 use crate::flake::FlakeResolveError;
 use crate::log_dir::LogDirTee;
 use crate::osc52::Osc52Collector;
-use crate::output_task::{EventsFormat, TaskOutputMode, build_task_event_sink};
+use crate::output_options::{OutputPolicyContext, ResolvedOutputPolicy, TerminalCapabilities};
+use crate::output_task::{EventsFormat, TaskOutputMode, build_task_event_sink_with_policy};
 use crate::reports::{ReportCollector, ReportPaths, ReportWriteError, write_all_reports};
 use crate::runner_output::RunnerOutput;
 use crate::tui::TuiEventSink;
@@ -90,6 +91,7 @@ pub struct TaskRequest<'a> {
     pub refresh_discovery: bool,
     /// Typed task parameter overrides from `--set name=value` (param name keys).
     pub param_sets: BTreeMap<String, String>,
+    pub input_options: super::task_params::TaskInputOptions,
     /// Tee per-node stdout/stderr under this directory when set.
     pub log_dir: Option<PathBuf>,
 }
@@ -260,7 +262,8 @@ pub struct PreparedTaskGeneration {
     /// Workspace snapshot retained for lazy node prepare (ADR-0158).
     pub snapshot: Option<WorkspaceSnapshot>,
     /// Pre-resolved `NXR_PARAM_*` for this generation (`--set` / TTY / defaults).
-    pub param_env: BTreeMap<String, String>,
+    pub param_env: BTreeMap<String, BTreeMap<String, String>>,
+    pub input_provenance: BTreeMap<String, BTreeMap<String, nxr_task::InputProvenance>>,
 }
 
 /// Like [`execute`], but polls `control` during the scheduler loop.
@@ -293,7 +296,7 @@ pub fn execute_with_control(
         return Err(TaskError::RawConflictsWithMultiplex);
     }
 
-    let prepared_bundle = if reuse_from_cache {
+    let prepared_bundle = if reuse_from_cache && request.input_options.file.is_none() {
         cache
             .as_ref()
             .and_then(|cached| cached.as_ref())
@@ -342,7 +345,49 @@ pub fn execute_with_control(
 
         let plan = build_execution_plan_roots(&document.tasks, &root_refs, failure_policy, None)?;
         validate_interactive_run(&plan, request)?;
-        let param_env = resolve_plan_parameters(&document, &plan, &request.param_sets)?;
+        let resolved_inputs = match resolve_plan_inputs(
+            &document,
+            &plan,
+            &request.param_sets,
+            &request.input_options,
+        ) {
+            Ok(values) => values,
+            Err(error @ nxr_task::ParameterError::Missing { .. }) if !dry_run => {
+                runner.error(error.to_string()).map_err(TaskError::Io)?;
+                let session = super::interaction::create_pending_for_task(
+                    snapshot, &document, &plan, request,
+                )
+                .map_err(|message| TaskError::Io(io::Error::other(message)))?;
+                let value = super::interaction::input_required(&session);
+                if json
+                    || request.events_format.is_some()
+                    || request.input_options.interactive == Some(false)
+                {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&value)
+                            .map_err(|error| TaskError::Io(io::Error::other(error)))?
+                    );
+                } else {
+                    runner
+                        .error(format!(
+                            "input required: interaction {} (use nxr interaction inspect)",
+                            session.session_id
+                        ))
+                        .map_err(TaskError::Io)?;
+                }
+                return Ok(exit::EVALUATION);
+            }
+            Err(error) => return Err(TaskError::Parameter(error)),
+        };
+        let param_env = resolved_inputs
+            .iter()
+            .map(|(node, inputs)| (node.clone(), inputs.environment()))
+            .collect();
+        let input_provenance = resolved_inputs
+            .iter()
+            .map(|(node, inputs)| (node.clone(), inputs.provenance()))
+            .collect();
         snapshot
             .validate_task_apps(&document)
             .map_err(PrepareError::NotFound)?;
@@ -398,6 +443,7 @@ pub fn execute_with_control(
             canonical_roots,
             snapshot: retained_snapshot,
             param_env,
+            input_provenance,
         };
         if let Some(cache) = cache {
             *cache = Some(bundle.clone());
@@ -412,6 +458,7 @@ pub fn execute_with_control(
         canonical_roots,
         snapshot: lazy_snapshot,
         param_env,
+        input_provenance,
     } = prepared_bundle;
 
     let failure_policy = if request.keep_going {
@@ -423,13 +470,41 @@ pub fn execute_with_control(
     // Parallel runs without an explicit --output still need a labeled renderer so
     // piped child stdout is not discarded by NullSink.
     let mut stderr = io::stderr().lock();
-    let effective_output = crate::tui::resolve_task_output_mode(request.output_mode, &mut stderr)
-        .or(if request.jobs > 1 {
-            Some(TaskOutputMode::Live)
-        } else {
-            None
-        });
+    let resolved_mode = crate::tui::resolve_task_output_mode(request.output_mode, &mut stderr);
     drop(stderr);
+    let policy = ResolvedOutputPolicy::resolve(
+        runner.options(),
+        OutputPolicyContext {
+            requested: resolved_mode,
+            events: request.events_format,
+            jobs: request.jobs,
+            interactive: plan.has_interactive_nodes(),
+            stdout_data: false,
+            durable: request.events_format.is_some()
+                || request.jobs > 1
+                || request
+                    .output_mode
+                    .is_some_and(TaskOutputMode::uses_piped_stdio),
+            background: false,
+            ci: std::env::var_os("CI").is_some(),
+            terminal: TerminalCapabilities {
+                stdin_tty: io::stdin().is_terminal(),
+                stdout_tty: io::stdout().is_terminal(),
+                stderr_tty: io::stderr().is_terminal(),
+                color: runner.options().color_enabled(),
+                unicode: !runner.options().plain,
+                fullscreen: io::stdin().is_terminal() && io::stderr().is_terminal(),
+            },
+        },
+    )
+    .map_err(|error| {
+        TaskError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            error.to_string(),
+        ))
+    })?;
+    let runner = runner.with_policy(&policy);
+    let effective_output = policy.task_output_mode();
 
     let waves = parallel_ready_waves(&plan, request.jobs);
     let pipe_stdio = plan_uses_piped_stdio(&plan, request, effective_output);
@@ -474,6 +549,23 @@ pub fn execute_with_control(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(super::remote::unique_run_id);
 
+    let journal = super::run_store::open(
+        &run_id,
+        std::path::Path::new(preparer.flake_root().as_str()),
+        &plan,
+        pipe_stdio,
+        input_provenance,
+    )
+    .map_err(|message| TaskError::Io(io::Error::other(message)))?;
+    if matches!(
+        effective_output,
+        Some(TaskOutputMode::Compact | TaskOutputMode::Summary | TaskOutputMode::Tui)
+    ) {
+        runner
+            .info(format!("run: {run_id}"))
+            .map_err(TaskError::Io)?;
+    }
+
     if pipe_stdio {
         let target = format_task_roots(&canonical_roots);
         if matches!(effective_output, Some(TaskOutputMode::Tui)) {
@@ -482,7 +574,13 @@ pub fn execute_with_control(
                 target,
                 request.log_dir.clone(),
             );
-            let mut sink = wrap_run_sink(inner, &request.reports, request.log_dir.clone());
+            let mut sink = wrap_run_sink(
+                inner,
+                &request.reports,
+                request.log_dir.clone(),
+                journal,
+                &run_id,
+            )?;
             sink.emit(Event::plan_created(
                 plan.root.clone(),
                 if plan.roots.is_empty() {
@@ -503,21 +601,27 @@ pub fn execute_with_control(
                 control,
                 watch_prewarm,
             );
-            report_sink_error(&sink)?;
+            let result = finish_sink_result(&sink, result, runner);
             if let Ok(code) = &result {
-                let _ = sink.inner().maybe_emit_on_exit(*code);
+                let _ = sink.inner().inner().maybe_emit_on_exit(*code);
             }
             result
         } else {
             let mut stdout = io::stdout().lock();
             let mut stderr = io::stderr().lock();
-            let inner = build_task_event_sink(
-                effective_output,
+            let inner = build_task_event_sink_with_policy(
+                &policy,
                 request.events_format,
                 &mut stdout,
                 &mut stderr,
             );
-            let mut sink = wrap_run_sink(inner, &request.reports, request.log_dir.clone());
+            let mut sink = wrap_run_sink(
+                inner,
+                &request.reports,
+                request.log_dir.clone(),
+                journal,
+                &run_id,
+            )?;
             sink.emit(Event::plan_created(
                 plan.root.clone(),
                 if plan.roots.is_empty() {
@@ -538,16 +642,22 @@ pub fn execute_with_control(
                 control,
                 watch_prewarm,
             );
-            report_sink_error(&sink)?;
+            let result = finish_sink_result(&sink, result, runner);
             if let Ok(code) = &result {
-                let _ = sink.inner().maybe_emit_on_exit(*code);
+                let _ = sink.inner().inner().maybe_emit_on_exit(*code);
             }
             result
         }
     } else {
         // Inherit stdio for interactivity / --output raw: do not hold stdout/stderr locks.
         let inner = nxr_task::NullSink;
-        let mut sink = wrap_run_sink(inner, &request.reports, request.log_dir.clone());
+        let mut sink = wrap_run_sink(
+            inner,
+            &request.reports,
+            request.log_dir.clone(),
+            journal,
+            &run_id,
+        )?;
         let result = run_plan(
             request,
             &plan,
@@ -559,9 +669,9 @@ pub fn execute_with_control(
             control,
             watch_prewarm,
         );
-        report_sink_error(&sink)?;
+        let result = finish_sink_result(&sink, result, runner);
         if let Ok(code) = &result {
-            let _ = sink.inner().maybe_emit_on_exit(*code);
+            let _ = sink.inner().inner().maybe_emit_on_exit(*code);
         }
         result
     }
@@ -571,7 +681,14 @@ fn wrap_run_sink<S: EventSink>(
     inner: S,
     reports: &ReportPaths,
     log_dir: Option<PathBuf>,
-) -> RunEventDecorator<Osc52Collector<ReportCollector<LogDirTee<S>>>> {
+    journal: nxr_task::run_journal::RunJournal,
+    run_id: &str,
+) -> Result<
+    super::run_store::RecordedSink<
+        RunEventDecorator<Osc52Collector<ReportCollector<LogDirTee<S>>>>,
+    >,
+    TaskError,
+> {
     let inner = LogDirTee::new(inner, log_dir);
     let inner = if reports.is_empty() {
         ReportCollector::new(inner, ReportPaths::default())
@@ -579,12 +696,47 @@ fn wrap_run_sink<S: EventSink>(
         ReportCollector::new(inner, reports.clone())
     };
     let inner = Osc52Collector::new(inner);
-    RunEventDecorator::new(inner)
+    super::run_store::RecordedSink::new(
+        RunEventDecorator::new(inner).with_run_id(run_id),
+        journal,
+        run_id,
+    )
+    .map_err(|message| TaskError::Io(io::Error::other(message)))
 }
 
-fn report_sink_error<S>(
-    sink: &RunEventDecorator<Osc52Collector<ReportCollector<LogDirTee<S>>>>,
+fn finish_sink_result<S: EventSink>(
+    sink: &super::run_store::RecordedSink<
+        RunEventDecorator<Osc52Collector<ReportCollector<LogDirTee<S>>>>,
+    >,
+    result: Result<i32, TaskError>,
+    runner: RunnerOutput,
+) -> Result<i32, TaskError> {
+    match report_sink_error(sink) {
+        Ok(()) => result,
+        Err(error) => {
+            if let Some(code) = sink.first_child_failure() {
+                runner
+                    .error(format!(
+                        "child exit code {code} retained; evidence uncertainty: {error}"
+                    ))
+                    .map_err(TaskError::Io)?;
+                Ok(code)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+fn report_sink_error<S: EventSink>(
+    sink: &super::run_store::RecordedSink<
+        RunEventDecorator<Osc52Collector<ReportCollector<LogDirTee<S>>>>,
+    >,
 ) -> Result<(), TaskError> {
+    if let Some(message) = sink.failure() {
+        return Err(TaskError::Io(io::Error::other(message.to_owned())));
+    }
+    let sink = sink.inner();
     if let Some(message) = sink.inner().inner().write_error() {
         return Err(TaskError::Report(ReportWriteError::Serialize(
             message.to_owned(),
@@ -922,6 +1074,13 @@ fn run_plan(
     let mut to_start = scheduler.schedule_ready();
     emit_reuses(&mut scheduler, sink, run_id);
     loop {
+        if let Some(message) = sink.failure() {
+            let message = message.to_owned();
+            supervisor
+                .shutdown_all(SHUTDOWN_GRACE)
+                .map_err(TaskError::Supervision)?;
+            return Err(TaskError::Io(io::Error::other(message)));
+        }
         if let Some(codes) = supervisor
             .handle_interrupt(&interrupts, SHUTDOWN_GRACE)
             .map_err(TaskError::Supervision)?
@@ -1083,6 +1242,9 @@ fn run_plan(
         let mut spawn_queue = Vec::new();
         let mut inflight_spawn_plans = Vec::new();
         for node_id in ready {
+            if let Some(message) = sink.failure() {
+                return Err(TaskError::Io(io::Error::other(message.to_owned())));
+            }
             preparer
                 .ensure_stage(&node_id, NodePrepStage::CasInputs)
                 .map_err(TaskError::Prepare)?;
@@ -1442,6 +1604,9 @@ fn spawn_node(
         .map_err(TaskError::Io)?;
 
     sink.emit(Event::node_started(node_id.to_owned()));
+    if let Some(message) = sink.failure() {
+        return Err(TaskError::Io(io::Error::other(message.to_owned())));
+    }
 
     let spawn = resolve_prepared_task_spawn(prepared, watch_prewarm);
     let program = spawn.program.as_std_path();
@@ -2002,6 +2167,7 @@ mod tests {
             context_override: None,
             refresh_discovery: false,
             param_sets: BTreeMap::new(),
+            input_options: Default::default(),
             log_dir: None,
         };
         assert!(plan_uses_piped_stdio(

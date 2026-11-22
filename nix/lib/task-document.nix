@@ -75,6 +75,9 @@ let
     }
     // lib.optionalAttrs (param.values != [ ]) {
       values = param.values;
+    }
+    // lib.optionalAttrs ((param.constraints or null) != null) {
+      constraints = param.constraints;
     };
 
   taskMatrixToJson =
@@ -266,6 +269,13 @@ let
       }
     );
 
+  taskUsesSchemaV3 =
+    task:
+    lib.any (param:
+      !(builtins.elem param.type [ "string" "choice" "boolean" ])
+      || (param.constraints or null) != null
+    ) (lib.attrValues (task.parameters or { }));
+
   taskUsesSchemaV2 =
     task:
     (task.shell or null) != null
@@ -278,7 +288,7 @@ let
     || (task.matrix or null) != null;
 in
 {
-  inherit taskUsesSchemaV2 taskInputsPresent;
+  inherit taskUsesSchemaV2 taskUsesSchemaV3 taskInputsPresent;
 
   nxrDocument =
     cfg:
@@ -291,9 +301,14 @@ in
         contextsJson != { }
         || cfg.nxr.processes != { }
         || lib.any taskUsesSchemaV2 (lib.attrValues cfg.nxr.tasks);
+      hasV3Fields = lib.any taskUsesSchemaV3 (lib.attrValues cfg.nxr.tasks);
       forcedVersion = cfg.nxr.schemaVersion;
       schema_version =
-        if forcedVersion == 2 then
+        if forcedVersion != null && forcedVersion < 3 && hasV3Fields then
+          throw "nxr.schemaVersion is older than required schema v3 typed parameters or constraints."
+        else if forcedVersion == 3 || hasV3Fields then
+          3
+        else if forcedVersion == 2 then
           2
         else if forcedVersion == 1 && hasV2Fields then
           throw "nxr.schemaVersion = 1 but the nxr document uses schema v2 fields (contexts, processes, task.shell, task.context, task.inputs, task.outputs, task.cache, task.resources, task.parameters, task.matrix, …). Set schemaVersion = 2 or remove v2 fields."

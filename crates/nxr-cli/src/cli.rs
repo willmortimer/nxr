@@ -202,6 +202,16 @@ pub enum OpCommand {
         /// Portable operation id
         id: String,
     },
+    /// Discover typed inputs without starting the operation
+    Inputs { id: String },
+    /// Resolve typed inputs and create a resumable interaction
+    Resolve {
+        id: String,
+        #[arg(long = "inputs", value_name = "PATH")]
+        inputs: Option<PathBuf>,
+        #[arg(long = "set", value_name = "NODE.PARAMETER=VALUE")]
+        sets: Vec<String>,
+    },
 }
 
 /// `nxr env` sub-targets.
@@ -324,6 +334,47 @@ pub enum SessionSubcommand {
     Cancel {
         /// Run id.
         run: String,
+    },
+}
+
+/// Answer and resume durable typed input sessions in the selected workspace.
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum InteractionCommand {
+    /// Inspect outstanding inputs and session state
+    Inspect { session: String },
+    /// Answer one request using a JSON value or reference envelope
+    Answer {
+        session: String,
+        #[arg(long)]
+        request: String,
+        #[arg(long)]
+        revision: u64,
+        #[arg(
+            long,
+            conflicts_with = "value_file",
+            required_unless_present = "value_file"
+        )]
+        value: Option<String>,
+        #[arg(
+            long = "value-file",
+            conflicts_with = "value",
+            required_unless_present = "value"
+        )]
+        value_file: Option<PathBuf>,
+        #[arg(long = "observation-digest")]
+        observation_digest: Option<String>,
+    },
+    /// Validate the frozen source and start the existing supervisor once
+    Resume {
+        session: String,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Cancel input collection or request cancellation of its supervisor run
+    Cancel {
+        session: String,
+        #[arg(long)]
+        revision: u64,
     },
 }
 
@@ -577,6 +628,15 @@ pub enum Command {
         /// Write benchmark JSON stub to PATH after the run
         #[arg(long = "benchmark", value_name = "PATH")]
         benchmark: Option<String>,
+        /// Read node-scoped typed values from an nxr-input-values-v1 document
+        #[arg(long = "inputs", value_name = "FILE")]
+        inputs: Option<std::path::PathBuf>,
+        /// Request terminal input collection (requires stdin and stderr TTYs)
+        #[arg(long = "interactive", conflicts_with = "non_interactive")]
+        interactive: bool,
+        /// Never prompt for missing task inputs
+        #[arg(long = "non-interactive", conflicts_with = "interactive")]
+        non_interactive: bool,
         /// Set a typed task parameter (`NAME=VALUE`, repeatable; fail-closed when required)
         #[arg(long = "set", value_name = "NAME=VALUE")]
         set: Vec<String>,
@@ -636,6 +696,16 @@ pub enum Command {
     Session {
         #[command(subcommand)]
         action: SessionSubcommand,
+    },
+    /// Inspect durable run evidence
+    Runs {
+        #[command(subcommand)]
+        action: crate::commands::runs::RunsCommand,
+    },
+    /// Inspect, answer, resume, or cancel typed input collection
+    Interaction {
+        #[command(subcommand)]
+        action: InteractionCommand,
     },
     /// Reopen the TUI watch for a recorded run
     Attach {

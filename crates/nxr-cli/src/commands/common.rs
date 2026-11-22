@@ -989,7 +989,7 @@ impl WorkspaceSnapshot {
         environment_policy: &EnvironmentPolicy,
         nix_flags: &OptionalNixFlags,
         context_override: Option<&str>,
-        resolved_parameter_env: &BTreeMap<String, String>,
+        resolved_parameter_env: &BTreeMap<String, BTreeMap<String, String>>,
     ) -> Result<BTreeMap<String, PreparedTaskNode>, PrepareError> {
         let mut preparer = TaskNodePreparer::new(
             self,
@@ -1124,7 +1124,7 @@ struct LivePrep<'a> {
     context_hits: u64,
     context_misses: u64,
     /// Pre-resolved `NXR_PARAM_*` from CLI `--set` / TTY prompts (empty = env/defaults only).
-    resolved_parameter_env: BTreeMap<String, String>,
+    resolved_parameter_env: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 /// In-flight SpawnPlan work that can be cancelled on CAS hit.
@@ -1212,7 +1212,10 @@ impl<'a> TaskNodePreparer<'a> {
 
     /// Attach pre-resolved task parameter env (`NXR_PARAM_*`) from CLI/`--set`/TTY.
     #[must_use]
-    pub fn with_resolved_parameter_env(mut self, env: BTreeMap<String, String>) -> Self {
+    pub fn with_resolved_parameter_env(
+        mut self,
+        env: BTreeMap<String, BTreeMap<String, String>>,
+    ) -> Self {
         if let PrepMode::Live(live) = &mut self.mode {
             live.resolved_parameter_env = env;
         }
@@ -1858,15 +1861,15 @@ impl<'a> TaskNodePreparer<'a> {
         let (parameter_values, parameter_env) = if definition.parameters.is_empty() {
             (Some(BTreeMap::new()), BTreeMap::new())
         } else {
-            let resolved = &live.resolved_parameter_env;
-            let values =
+            let values = if let Some(values) = live.resolved_parameter_env.get(task_id) {
+                values.clone()
+            } else {
                 resolve_task_parameter_env_with(task_id, &definition.parameters, |env_name| {
-                    resolved.get(env_name).cloned().or_else(|| {
-                        std::env::var(env_name)
-                            .ok()
-                            .filter(|value| !value.is_empty())
-                    })
-                })?;
+                    std::env::var(env_name)
+                        .ok()
+                        .filter(|value| !value.is_empty())
+                })?
+            };
             let parameter_values =
                 nxr_task::parameter_values_from_env(&definition.parameters, &values);
             (Some(parameter_values), values)
@@ -2455,7 +2458,13 @@ fn metadata_workspace_cache_likely_enabled(
     if ignore_secret_values {
         return true;
     }
-    if task_has_secret_env_input(definition) || !context_secrets.is_empty() {
+    if task_has_secret_env_input(definition)
+        || !context_secrets.is_empty()
+        || definition
+            .parameters
+            .values()
+            .any(nxr_task::parameter_contains_secret_reference)
+    {
         return false;
     }
     true

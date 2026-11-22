@@ -21,6 +21,9 @@ pkgs.runCommand "workspace-src-includes"
     simple = re.compile(r"""include_(?:str|bytes)!\(\s*"([^"]+)"\s*\)""")
 
     missing = []
+    # Runtime fixture dependency (not an include_str!/include_bytes! macro).
+    if not (src / ".github/actions/nxr-workflow/write-metadata.sh").is_file():
+        missing.append("ci_metadata: missing shared action metadata writer")
     scanned = 0
     for path in crates.rglob("*.rs"):
         text = path.read_text(encoding="utf-8")

@@ -31,6 +31,6 @@ in
     ];
   };
 
-  # `nxr.<system>` → { schema_version = 1|2; tasks = { ... }; apps?; contexts?; processes?; discoveryInputs?; }
+  # `nxr.<system>` → { schema_version = 1|2|3; tasks = { ... }; apps?; contexts?; processes?; discoveryInputs?; }
   flake.nxr = lib.mapAttrs (_system: cfg: nxrDocument cfg) config.allSystems;
 }

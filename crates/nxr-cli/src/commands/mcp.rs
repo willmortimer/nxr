@@ -277,6 +277,18 @@ fn tools() -> Vec<Value> {
             json!({"run_id": {"type": "string", "description": "Supervisor run id"}}),
         ),
         tool(
+            "runs_get_summary",
+            "Read a causal summary from committed run evidence",
+            &["run_id"],
+            json!({"run_id":{"type":"string"}}),
+        ),
+        tool(
+            "runs_get_artifacts",
+            "Read bounded declared and independently verified artifact references",
+            &["run_id"],
+            json!({"run_id":{"type":"string"},"node":{"type":"string"},"after":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":256}}),
+        ),
+        tool(
             "runs_get_receipt",
             "Read the execution receipt and the stored supervisor events for one run",
             &["id", "run_id"],
@@ -292,13 +304,50 @@ fn tools() -> Vec<Value> {
             json!({"paths": {"type": "array", "items": {"type": "string"}, "description": "Repository-relative paths"}}),
         ),
         tool(
+            "operations_inputs",
+            "Discover typed node inputs for one task operation",
+            &["id"],
+            json!({"id":{"type":"string"}}),
+        ),
+        tool(
+            "operations_resolve",
+            "Validate inputs and return a resumable session without starting execution",
+            &["id"],
+            json!({"id":{"type":"string"},"inputs":{"type":"object"},"parameters":{"type":"object"},"idempotency_key":{"type":"string"}}),
+        ),
+        tool(
+            "interactions_get",
+            "Read a typed input session in this workspace",
+            &["session_id"],
+            json!({"session_id":{"type":"string"}}),
+        ),
+        tool(
+            "interactions_answer",
+            "Answer a typed input request at its current revision",
+            &["session_id", "request_id", "revision", "value"],
+            json!({"session_id":{"type":"string"},"request_id":{"type":"string"},"revision":{"type":"integer","minimum":1},"value":{},"observation_digest":{"type":"string"}}),
+        ),
+        tool(
+            "interactions_resume",
+            "Validate source and resume a permitted session through the existing supervisor once",
+            &["session_id", "revision"],
+            json!({"session_id":{"type":"string"},"revision":{"type":"integer","minimum":1}}),
+        ),
+        tool(
+            "interactions_cancel",
+            "Cancel input collection or request supervisor cancellation",
+            &["session_id", "revision"],
+            json!({"session_id":{"type":"string"},"revision":{"type":"integer","minimum":1}}),
+        ),
+        tool(
             "operations_start",
             "Start an allowlisted local operation",
             &["id", "idempotency_key"],
             json!({
                 "id": {"type": "string", "description": "Portable operation id"},
                 "idempotency_key": {"type": "string", "description": "Caller key for this attempt"},
-                "parameters": {"type": "object", "description": "Parameter names listed for this operation id"}
+                "parameters": {"type": "object", "description": "Parameter names listed for this operation id"},
+                "inputs": {"type": "object", "description": "Typed node-scoped input values"}
             }),
         ),
         tool(
@@ -317,9 +366,9 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "runs_get_diagnostics",
-            "Classify an existing run log. This does not call a model or create a second store",
+            "Read bounded normalized run diagnostics with optional node filter",
             &["run_id"],
-            json!({"run_id": {"type": "string", "description": "Supervisor run id"}}),
+            json!({"run_id": {"type": "string"},"node":{"type":"string"}}),
         ),
         tool(
             "runs_get_logs",
@@ -327,6 +376,8 @@ fn tools() -> Vec<Value> {
             &["run_id"],
             json!({
                 "run_id": {"type": "string"},
+                "node": {"type":"string","description":"Required for foreground DAG streams"},
+                "stream": {"type":"string","enum":["stdout","stderr"]},
                 "offset": {"type": "integer", "description": "Byte offset"},
                 "limit": {"type": "integer", "description": "Maximum bytes, at most 65536"}
             }),
@@ -390,6 +441,31 @@ pub fn call_tool(
     {
         return Err("unknown argument".to_owned());
     }
+    if matches!(
+        name,
+        "runs_inspect"
+            | "runs_get_summary"
+            | "runs_get_artifacts"
+            | "runs_get_diagnostics"
+            | "runs_get_logs"
+    ) {
+        let run_id = arguments
+            .get("run_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if crate::commands::runs::has_dag(run_id) {
+            let value = crate::commands::runs::query(name, &arguments, Some(workspace_root))?;
+            if name == "runs_inspect" {
+                let mut existing = inspect(run_dir, run_id, workspace_id)
+                    .ok()
+                    .and_then(|record| serde_json::to_value(record).ok())
+                    .unwrap_or_else(|| json!({"run_id":run_id}));
+                existing["run_view"] = value;
+                return Ok(existing);
+            }
+            return Ok(value);
+        }
+    }
     match name {
         "operations_search" => {
             let query = arguments.get("query").and_then(Value::as_str).unwrap_or("");
@@ -432,6 +508,31 @@ pub fn call_tool(
                 .ok_or_else(|| format!("unknown operation {id}"))?;
             Ok(json!(nxr_task::plan(record)))
         }
+        "operations_inputs" | "operations_resolve" => {
+            let id = required_id(&arguments)?;
+            let visible = policy_view(records, workspace_root, trusted)?;
+            let record = nxr_task::describe(&visible, id).ok_or_else(|| format!("unknown operation {id}"))?;
+            if record.workspace_id != workspace_id { return Err("operation is not in the bound workspace".to_owned()); }
+            if name == "operations_inputs" {
+                crate::commands::interaction::operation_inputs(workspace_root, record, nix_override, nix_flags)
+            } else {
+                let sets = parameter_map(&arguments)?;
+                let key = arguments.get("idempotency_key").and_then(Value::as_str);
+                let session = crate::commands::interaction::resolve_operation(workspace_root, record, arguments.get("inputs"), &sets, key, nix_override, nix_flags)?;
+                Ok(crate::commands::interaction::input_required(&session))
+            }
+        }
+        "interactions_get" => crate::commands::interaction::inspect_session(workspace_root, required_string(&arguments, "session_id")?),
+        "interactions_answer" => crate::commands::interaction::answer_session(
+            workspace_root, required_string(&arguments, "session_id")?, required_string(&arguments, "request_id")?, required_revision(&arguments)?,
+            arguments.get("value").cloned().ok_or_else(|| "value is required".to_owned())?,
+            arguments.get("observation_digest").map(|value| value.as_str().map(str::to_owned).ok_or_else(|| "observation_digest must be a string".to_owned())).transpose()?,
+        ),
+        "interactions_resume" => {
+            if !trusted { return Err("workspace is not trusted".to_owned()); }
+            crate::commands::interaction::resume_session(workspace_root, required_string(&arguments,"session_id")?, required_revision(&arguments)?, supervisor_socket, runner)
+        }
+        "interactions_cancel" => crate::commands::interaction::cancel_session(workspace_root, required_string(&arguments,"session_id")?, required_revision(&arguments)?, supervisor_socket),
         "operations_plan_batch" => plan_batch(
             &arguments,
             records,
@@ -457,6 +558,8 @@ pub fn call_tool(
                 .unwrap_or("");
             Ok(json!(inspect(run_dir, run_id, workspace_id)?))
         }
+        "runs_get_summary" => Ok(json!({"run_id":required_string(&arguments,"run_id")?,"source":"supervisor-receipt","receipt":inspect(run_dir, required_string(&arguments,"run_id")?,workspace_id)?})),
+        "runs_get_artifacts" => Err("this run has no foreground artifact index; use runs_get_receipt for its authoritative outputs".to_owned()),
         "runs_get_receipt" => run_receipt(
             &arguments,
             records,
@@ -560,6 +663,37 @@ fn start(
     }
     let parameters = parameter_map(arguments)?;
     validate_policy_parameters(&gate.applied, &record.operation_id, &parameters)?;
+    if reload
+        && matches!(launch, Launch::Task)
+        && record.kind == OperationKind::Task
+        && (arguments.get("inputs").is_some()
+            || crate::commands::interaction::operation_has_inputs(
+                workspace_root,
+                &record,
+                nix_override,
+                nix_flags,
+            )?)
+    {
+        let session = crate::commands::interaction::resolve_operation(
+            workspace_root,
+            &record,
+            arguments.get("inputs"),
+            &parameters,
+            Some(key),
+            nix_override,
+            nix_flags,
+        )?;
+        if !session.pending_requests.is_empty() {
+            return Ok(crate::commands::interaction::input_required(&session));
+        }
+        return crate::commands::interaction::resume_session(
+            workspace_root,
+            &session.session_id,
+            session.revision,
+            supervisor_socket,
+            runner,
+        );
+    }
     let positional = gate
         .applied
         .ordered_arguments(&record.operation_id, &parameters);
@@ -1079,7 +1213,7 @@ fn run_diagnostics(arguments: &Value, supervisor_dir: &Path) -> Result<Value, St
     }))
 }
 
-fn policy_view(
+pub(crate) fn policy_view(
     records: &[OperationRecord],
     root: &Path,
     trusted: bool,
@@ -1126,13 +1260,13 @@ fn search_records_for_arguments(
     }
 }
 
-struct PolicyGate {
-    applied: ProjectExecutionPolicy,
+pub(crate) struct PolicyGate {
+    pub(crate) applied: ProjectExecutionPolicy,
     file: ProjectExecutionPolicy,
     approved: bool,
 }
 
-fn policy_gate(root: &Path) -> Result<PolicyGate, String> {
+pub(crate) fn policy_gate(root: &Path) -> Result<PolicyGate, String> {
     let file = ProjectExecutionPolicy::load(root)?;
     if file.is_empty() {
         return Ok(PolicyGate {
@@ -1679,6 +1813,21 @@ fn read_log_slice(path: &Path, offset: u64, limit: usize) -> Result<(String, u64
     ))
 }
 
+fn required_string<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, String> {
+    arguments
+        .get(name)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{name} is required"))
+}
+fn required_revision(arguments: &Value) -> Result<u64, String> {
+    arguments
+        .get("revision")
+        .and_then(Value::as_u64)
+        .filter(|revision| *revision > 0)
+        .ok_or_else(|| "revision must be a positive integer".to_owned())
+}
+
 fn required_id(arguments: &Value) -> Result<&str, String> {
     arguments
         .get("id")
@@ -1691,7 +1840,17 @@ fn known_arguments(name: &str) -> Option<&'static [&'static str]> {
     Some(match name {
         "operations_search" => &["query", "source_set", "locators"],
         "operations_suggest" => &["query", "paths"],
-        "operations_describe" | "operations_plan" => &["id"],
+        "operations_describe" | "operations_plan" | "operations_inputs" => &["id"],
+        "operations_resolve" => &["id", "inputs", "parameters", "idempotency_key"],
+        "interactions_get" => &["session_id"],
+        "interactions_answer" => &[
+            "session_id",
+            "request_id",
+            "revision",
+            "value",
+            "observation_digest",
+        ],
+        "interactions_resume" | "interactions_cancel" => &["session_id", "revision"],
         "operations_plan_batch" => &["paths"],
         "runs_inspect" | "runs_cancel" => &["run_id"],
         "runs_get_receipt" => &[
@@ -1701,9 +1860,11 @@ fn known_arguments(name: &str) -> Option<&'static [&'static str]> {
             "source_set_id",
             "lease_generation",
         ],
-        "runs_get_diagnostics" => &["run_id"],
+        "runs_get_summary" => &["run_id"],
+        "runs_get_artifacts" => &["run_id", "node", "after", "limit"],
+        "runs_get_diagnostics" => &["run_id", "node"],
         "workspace_affected" => &["paths"],
-        "operations_start" => &["id", "idempotency_key", "parameters"],
+        "operations_start" => &["id", "idempotency_key", "parameters", "inputs"],
         "operations_start_remote" => &[
             "id",
             "idempotency_key",
@@ -1713,7 +1874,7 @@ fn known_arguments(name: &str) -> Option<&'static [&'static str]> {
             "source_locator",
             "parameters",
         ],
-        "runs_get_logs" => &["run_id", "offset", "limit"],
+        "runs_get_logs" => &["run_id", "node", "stream", "offset", "limit"],
         _ => return None,
     })
 }
@@ -1856,7 +2017,7 @@ fn reservation_dir(workspace_id: &str, workspace_root: &Path) -> Result<PathBuf,
         .join(&digest[..32]))
 }
 
-fn workspace_trusted(root: &Path) -> bool {
+pub(crate) fn workspace_trusted(root: &Path) -> bool {
     if nxr_core::trust_project_env_enabled() {
         return true;
     }
@@ -2263,11 +2424,7 @@ mod tests {
         let records = records();
         let dir = tempfile::tempdir().unwrap();
         let supervisor = dir.path().join("supervisor");
-        let true_bin = if std::path::Path::new("/usr/bin/true").exists() {
-            "/usr/bin/true"
-        } else {
-            "/bin/true"
-        };
+        let true_bin = host_tool("true");
         let started = nxr_core::execution_owner::start(
             &supervisor,
             &json!({
@@ -2320,11 +2477,7 @@ mod tests {
         let records = records();
         let dir = tempfile::tempdir().unwrap();
         let supervisor = dir.path().join("supervisor");
-        let true_bin = if std::path::Path::new("/usr/bin/true").exists() {
-            "/usr/bin/true"
-        } else {
-            "/bin/true"
-        };
+        let true_bin = host_tool("true");
         let started = nxr_core::execution_owner::start(
             &supervisor,
             &json!({
@@ -2358,11 +2511,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let supervisor = dir.path().join("supervisor");
         std::fs::create_dir_all(&supervisor).unwrap();
-        let true_bin = if std::path::Path::new("/usr/bin/true").exists() {
-            "/usr/bin/true"
-        } else {
-            "/bin/true"
-        };
+        let true_bin = host_tool("true");
         let started = nxr_core::execution_owner::start(
             &supervisor,
             &json!({
@@ -3134,5 +3283,27 @@ executor = {{ native = ["true"] }}
         assert_eq!(again["started"], false);
         assert_eq!(list_on(&socket).unwrap().as_array().unwrap().len(), 1);
         forget_run(started["run_id"].as_str().unwrap());
+    }
+    #[test]
+    fn interaction_tools_have_typed_schemas_and_reject_caller_identity_arguments() {
+        let definitions = tools();
+        for name in [
+            "operations_inputs",
+            "operations_resolve",
+            "interactions_get",
+            "interactions_answer",
+            "interactions_resume",
+            "interactions_cancel",
+        ] {
+            let definition = definitions
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .expect("interaction tool");
+            assert_eq!(definition["inputSchema"]["additionalProperties"], false);
+            assert!(known_arguments(name).is_some());
+        }
+        let records = records();
+        let refused = invoke(&json!({"name":"interactions_answer","arguments":{"session_id":"session-x","request_id":"input-x","revision":1,"value":true,"caller_authority":"admin"}}),&records,Path::new("/tmp/unused"),Path::new("/tmp/unused"),Path::new("/tmp/unused.sock"),false,&Launch::Task).unwrap_err();
+        assert_eq!(refused, "unknown argument");
     }
 }

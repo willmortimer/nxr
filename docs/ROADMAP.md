@@ -32,6 +32,20 @@ Detailed phase write-ups through V2.0 live in git history (see tags `v1.0.0`, `v
 | **V3.9** | Journal-first durable runs | Supervisor sync is journal-first (JSONL then `{run_id}.json` projection) with per-run locks. Truncate-vs-corrupt repair, atomic rewrite, and immutable attempt `transition_id` so terminal snapshot retries do not duplicate events. Local/in-process worker scheduling is **stable**; distributed workers stay **experimental**. `v3.9.0-rc.1` stays immutable; ship as `v3.9.0`. |
 | **V3.3–3.4** | Workspace scripting + materialized envs | Scripts/file-backed apps, print-dev-env snapshots, one-shell DAG, params/matrix, nom-style progress — `v3.4.0` (ADR-0169–0172). |
 
+## Current implementation additions (not yet tagged)
+
+- Orthogonal output policy and opt-in compact progress/failure previews.
+- Strict typed task inputs in schema v3, per-node delivery, provenance, and
+  versioned input documents. V1/v2 behavior remains supported.
+- Journal-first foreground evidence with bounded CLI/MCP run queries, causal
+  summaries, and independently verified artifact references.
+- Resumable terminal/headless input sessions with stale-answer checks,
+  revalidation, and one-time supervisor launch reservations.
+
+Contracts: [typed inputs](TASK_SCHEMA_V3.md),
+[run observation](RUN_OBSERVATION.md), [input sessions](INTERACTION_V1.md).
+These additions do not upgrade downstream pins or grant domain authority.
+
 ## Active roadmap
 
 Design: [EXECUTION_CONTEXT.md](EXECUTION_CONTEXT.md). ADRs: [adr/README.md](adr/README.md)

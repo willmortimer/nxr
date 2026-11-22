@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use serde_json::Value as JsonValue;
 
 use crate::schema::{SchemaError, TaskParameter, TaskParameterType};
+pub use crate::typed_inputs::*;
 
 /// Prefix for spawn-time task parameter environment variables.
 pub const PARAM_ENV_PREFIX: &str = "NXR_PARAM_";
@@ -190,6 +191,8 @@ fn json_default_to_string(
             JsonValue::Bool(value) => Ok(if *value { "true" } else { "false" }.to_owned()),
             _ => Err(parameter_invalid(task, name, "default must be a boolean")),
         },
+        _ => normalize_parameter_json(task, name, definition, default)
+            .map(|value| input_environment_value(&value)),
     }
 }
 
@@ -199,6 +202,13 @@ fn normalize_parameter_value(
     definition: &TaskParameter,
     value: &str,
 ) -> Result<String, ParameterError> {
+    if definition.constraints.is_some() || !definition.param_type.is_legacy() {
+        let parsed = parse_parameter_text(task, name, definition, value)?;
+        let normalized = normalize_parameter_json(task, name, definition, &parsed)?;
+        let invocation = std::env::current_dir().ok();
+        validate_local_paths(task, name, definition, &normalized, invocation.as_deref())?;
+        return Ok(input_environment_value(&normalized));
+    }
     match definition.param_type {
         TaskParameterType::String => Ok(value.to_owned()),
         TaskParameterType::Choice => {
@@ -224,6 +234,7 @@ fn normalize_parameter_value(
                 message,
             })
         }
+        _ => unreachable!("richer parameters normalize through the typed path"),
     }
 }
 
@@ -280,6 +291,13 @@ pub fn validate_task_parameters(
                 message: "name must match [a-z][a-z0-9_]*".to_owned(),
             });
         }
+        validate_parameter_constraints(task, name, definition).map_err(|error| {
+            SchemaError::InvalidParameter {
+                task: task.to_owned(),
+                name: name.to_owned(),
+                message: error.to_string(),
+            }
+        })?;
         match definition.param_type {
             TaskParameterType::Choice => {
                 let values = definition
@@ -358,6 +376,27 @@ pub fn validate_task_parameters(
                     });
                 }
             }
+            _ => {
+                if definition.values.is_some()
+                    && definition.param_type != TaskParameterType::Multichoice
+                {
+                    return Err(SchemaError::InvalidParameter {
+                        task: task.to_owned(),
+                        name: name.clone(),
+                        message: "values is only allowed for choice and multichoice parameters"
+                            .to_owned(),
+                    });
+                }
+                if let Some(default) = &definition.default {
+                    normalize_parameter_json(task, name, definition, default).map_err(|error| {
+                        SchemaError::InvalidParameter {
+                            task: task.to_owned(),
+                            name: name.clone(),
+                            message: error.to_string(),
+                        }
+                    })?;
+                }
+            }
         }
     }
     Ok(())
@@ -374,6 +413,7 @@ mod tests {
             "mode".to_owned(),
             TaskParameter {
                 param_type: TaskParameterType::Choice,
+                constraints: None,
                 default: Some(json!("fast")),
                 values: Some(vec!["fast".to_owned(), "slow".to_owned()]),
             },
@@ -441,6 +481,7 @@ mod tests {
             "reason".to_owned(),
             TaskParameter {
                 param_type: TaskParameterType::String,
+                constraints: None,
                 default: None,
                 values: None,
             },
@@ -472,6 +513,7 @@ mod tests {
             "reason".to_owned(),
             TaskParameter {
                 param_type: TaskParameterType::String,
+                constraints: None,
                 default: None,
                 values: None,
             },
@@ -494,6 +536,7 @@ mod tests {
                 "foo".to_owned(),
                 TaskParameter {
                     param_type: TaskParameterType::String,
+                    constraints: None,
                     default: None,
                     values: None,
                 },
@@ -502,6 +545,7 @@ mod tests {
                 "Foo".to_owned(),
                 TaskParameter {
                     param_type: TaskParameterType::String,
+                    constraints: None,
                     default: None,
                     values: None,
                 },
@@ -520,6 +564,7 @@ mod tests {
             "1foo".to_owned(),
             TaskParameter {
                 param_type: TaskParameterType::String,
+                constraints: None,
                 default: None,
                 values: None,
             },
@@ -534,6 +579,7 @@ mod tests {
             "mode".to_owned(),
             TaskParameter {
                 param_type: TaskParameterType::Choice,
+                constraints: None,
                 default: None,
                 values: Some(vec![]),
             },

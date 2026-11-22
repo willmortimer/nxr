@@ -16,46 +16,48 @@ Nix-native flake app runner
 Usage: nxr [OPTIONS] [COMMAND]
 
 Commands:
-  list        List available flake apps (and tasks), or a specific output kind
-  run         Run a flake app
-  script      Run a local workspace script (path or `.nxr/scripts/<name>`)
-  build       Build a flake package (`nix build`)
-  check       Build a flake check, or run `nix flake check` when omitted
-  shell       Enter a development shell (`nix develop`)
-  plan        Show execution plan
-  select      Open interactive selector
-  doctor      Diagnose environment and flake configuration
-  explain     Explain resolution and invocation for an app or task
-  completion  Generate shell completion script
-  op          Discover a declared operation
-  env         Explain the environment a declared operation would use
-  mcp         Serve the local operation catalog over stdio MCP
-  inspect     Inspect flake metadata
-  task        Run a V2 task
-  watch       Watch and rerun on filesystem changes
-  graph       Show task graph
-  cache       Manage nxr discovery cache
-  daemon      Optional local cache/coordination daemon (`nxrd`)
-  history     Show recent run summaries persisted under XDG state
-  catalog     Expire catalog records only when an operator passes an explicit quota
-  session     Start, list, inspect, and cancel local runs
-  attach      Reopen the TUI watch for a recorded run
-  ui          Browse apps, tasks, and workspace scripts; Enter runs the selection
-  affected    Report apps and tasks likely affected by changed paths
-  fmt         Format Nix sources via `nix fmt` / the flake formatter
-  envrc       Generate direnv `.envrc` content (`use flake` / `use flake .#<shell>`)
-  init        Scaffold a minimal nxr flake from a template
-  migrate     Suggest nxr Nix from Justfile or mise.toml (never executes recipes)
-  context     Named execution contexts (list, inspect, run)
-  in          Ergonomic dev-shell prefix: `nxr in <shell> <app|task|…>` (alias of `--shell`)
-  ci          CI planning helpers
-  trust       Manage project trust for secret-bearing and confirmation-gated tasks
-  inventory   List schema-described flake inventory outputs
-  up          Start long-running process nodes
-  status      Show supervised process status
-  logs        Tail logs for a supervised process
-  workflow    Plan and run an optional `.nxr/workflows.toml` graph
-  down        Stop supervised process nodes
+  list         List available flake apps (and tasks), or a specific output kind
+  run          Run a flake app
+  script       Run a local workspace script (path or `.nxr/scripts/<name>`)
+  build        Build a flake package (`nix build`)
+  check        Build a flake check, or run `nix flake check` when omitted
+  shell        Enter a development shell (`nix develop`)
+  plan         Show execution plan
+  select       Open interactive selector
+  doctor       Diagnose environment and flake configuration
+  explain      Explain resolution and invocation for an app or task
+  completion   Generate shell completion script
+  op           Discover a declared operation
+  env          Explain the environment a declared operation would use
+  mcp          Serve the local operation catalog over stdio MCP
+  inspect      Inspect flake metadata
+  task         Run a V2 task
+  watch        Watch and rerun on filesystem changes
+  graph        Show task graph
+  cache        Manage nxr discovery cache
+  daemon       Optional local cache/coordination daemon (`nxrd`)
+  history      Show recent run summaries persisted under XDG state
+  catalog      Expire catalog records only when an operator passes an explicit quota
+  session      Start, list, inspect, and cancel local runs
+  runs         Inspect durable run evidence
+  interaction  Inspect, answer, resume, or cancel typed input collection
+  attach       Reopen the TUI watch for a recorded run
+  ui           Browse apps, tasks, and workspace scripts; Enter runs the selection
+  affected     Report apps and tasks likely affected by changed paths
+  fmt          Format Nix sources via `nix fmt` / the flake formatter
+  envrc        Generate direnv `.envrc` content (`use flake` / `use flake .#<shell>`)
+  init         Scaffold a minimal nxr flake from a template
+  migrate      Suggest nxr Nix from Justfile or mise.toml (never executes recipes)
+  context      Named execution contexts (list, inspect, run)
+  in           Ergonomic dev-shell prefix: `nxr in <shell> <app|task|…>` (alias of `--shell`)
+  ci           CI planning helpers
+  trust        Manage project trust for secret-bearing and confirmation-gated tasks
+  inventory    List schema-described flake inventory outputs
+  up           Start long-running process nodes
+  status       Show supervised process status
+  logs         Tail logs for a supervised process
+  workflow     Plan and run an optional `.nxr/workflows.toml` graph
+  down         Stop supervised process nodes
 
 Options:
   -f, --flake <FLAKE>
@@ -150,6 +152,7 @@ Options:
           Multiplexed task stdout/stderr mode (parallel runs; default: unlabeled)
 
           Possible values:
+          - compact:  Bounded progress and failure details on stderr, without successful logs
           - live:     Prefix each output line with `[node] ` as chunks arrive
           - grouped:  Buffer stdout/stderr per node; flush when the node exits
           - failures: Buffer per node; emit buffered output only on nonzero [`Event::NodeExited`]
@@ -290,20 +293,29 @@ Options:
       --clean-env
           Run with reduced inherited environment
 
+      --inputs <FILE>
+          Read node-scoped typed values from an nxr-input-values-v1 document
+
       --keep-env <NAME>
           Preserve variable in clean mode (repeatable)
 
-      --set <NAME=VALUE>
-          Set a typed task parameter (`NAME=VALUE`, repeatable; fail-closed when required)
+      --interactive
+          Request terminal input collection (requires stdin and stderr TTYs)
 
       --set-env <KEY=VALUE>
           Set or replace a variable (`KEY=VALUE`, repeatable)
+
+      --non-interactive
+          Never prompt for missing task inputs
 
       --unset-env <NAME>
           Remove a variable (repeatable)
 
       --context <NAME>
           Named execution context for script/task runs (schema v2)
+
+      --set <NAME=VALUE>
+          Set a typed task parameter (`NAME=VALUE`, repeatable; fail-closed when required)
 
   -q, --quiet...
           Suppress non-error nxr messages
@@ -333,6 +345,7 @@ Options:
           Multiplexed task stdout/stderr mode (parallel runs; default: unlabeled)
 
           Possible values:
+          - compact:  Bounded progress and failure details on stderr, without successful logs
           - live:     Prefix each output line with `[node] ` as chunks arrive
           - grouped:  Buffer stdout/stderr per node; flush when the node exits
           - failures: Buffer per node; emit buffered output only on nonzero [`Event::NodeExited`]

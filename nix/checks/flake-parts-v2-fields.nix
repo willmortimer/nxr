@@ -94,8 +94,28 @@ let
 
   doc = nxrDocument sampleCfg;
   build = doc.tasks.build;
+  v3Cfg = sampleCfg // {
+    nxr = sampleCfg.nxr // {
+      tasks = sampleCfg.nxr.tasks // {
+        typed = {
+          app = "typed";
+          dependsOn = [ ];
+          parameters.count = {
+            type = "integer";
+            default = 4;
+            values = [ ];
+            constraints = { minimum = 2; maximum = 8; step = 2; };
+          };
+        };
+      };
+    };
+  };
+  v3Doc = nxrDocument v3Cfg;
 in
 assert doc.schema_version == 2;
+assert v3Doc.schema_version == 3;
+assert v3Doc.tasks.typed.parameters.count.constraints.step == 2;
+assert !(builtins.tryEval (nxrDocument (v3Cfg // { nxr = v3Cfg.nxr // { schemaVersion = 2; }; })).schema_version).success;
 assert build.inputs.paths == [ "Cargo.toml" ];
 assert build.inputs.includeGitState == true;
 assert build.inputs.bindings.report.from == "test.junit";

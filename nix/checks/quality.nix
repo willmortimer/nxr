@@ -82,14 +82,19 @@ in
       cargo-nextest
       git
       nix
-    ];
+      python3
+    ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.procps ]
+      ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.ps ];
     command = ''
       export NXR_SKIP_NIX_INTEGRATION=1
       export NXR_SKIP_WATCH_INTEGRATION=1
+      # Supervisor/MCP tests persist durable evidence. The sandbox HOME is
+      # read-only; keep these records inside this derivation's writable temp.
+      export NXR_STATE_DIR="$TMPDIR/nxr-state"
       # Unit tests that probe a real `nix` (capability cache) need flakes/nix-command;
       # the sandbox does not inherit the GitHub Actions NIX_CONFIG.
       export NIX_CONFIG="experimental-features = nix-command flakes"
-      cargo nextest run --workspace
+      cargo nextest run --workspace --no-fail-fast
     '';
   };
 

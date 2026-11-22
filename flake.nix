@@ -160,6 +160,7 @@
             rust-analyzer
             cargo-nextest
             cargo-deny
+            python3
             pkg-config
           ];
         in
@@ -189,6 +190,13 @@
               description = "Run the Rust test suite";
               app = "test";
               dependsOn = [ "lint" ];
+              cargoOutput = true;
+            };
+
+            rust-test-pkgs = {
+              description = "Run selected Rust package tests without compiling unrelated packages";
+              app = "rust-test-pkgs";
+              category = "validation";
               cargoOutput = true;
             };
 
@@ -294,7 +302,9 @@
                 pkgs.cargo-nextest
                 pkgs.rustc
                 pkgs.git
-              ];
+                pkgs.python3
+              ] ++ nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.procps ]
+                ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.ps ];
               text = ''
                 ${hermeticRunnerEnv}
                 # Use the ambient flakes-capable `nix` (Determinate on GHA /
@@ -303,6 +313,18 @@
                 # --no-fail-fast: watch ITs under parallel cancel leave orphans
                 # that poison sibling nix-call budgets; report the full set.
                 exec cargo nextest run --workspace --no-fail-fast "$@"
+              '';
+            };
+
+            rust-test-pkgs = nxrLib.mkRepoApp {
+              name = "nxr-rust-test-pkgs";
+              description = "Run targeted package tests with the pinned toolchain";
+              runtimeInputs = [ pkgs.cargo pkgs.cargo-nextest pkgs.rustc pkgs.git pkgs.python3 ]
+                ++ nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.procps ]
+                ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.ps ];
+              text = ''
+                ${hermeticRunnerEnv}
+                exec cargo nextest run --no-fail-fast "$@"
               '';
             };
 

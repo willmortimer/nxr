@@ -5,6 +5,7 @@
 //! daemon reconciles pid and start time; a recycled pid is not the old run.
 
 use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -207,6 +208,14 @@ pub fn start(dir: &Path, params: &Value) -> Result<Value, String> {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_owned();
+    // Only operation-owned sessions bind task evidence. Generic raw sessions
+    // keep their existing environment behavior. `id` is the supervisor's
+    // validated/generated identity, also stored as OwnedRun.id below; a caller
+    // environment entry must not replace it. Both launch paths share this map.
+    if !operation_id.is_empty() {
+        cache_env.retain(|(name, _)| name != "NXR_RUN_ID");
+        cache_env.push(("NXR_RUN_ID".to_owned(), id.clone()));
+    }
     let workspace_id = params
         .get("workspace_id")
         .and_then(Value::as_str)
@@ -477,9 +486,17 @@ pub fn events(dir: &Path, id: &str, after: u64) -> Result<Value, String> {
 /// Returns an error when the run or the log cannot be read.
 pub fn logs(dir: &Path, id: &str) -> Result<Value, String> {
     let record = load(dir, id)?;
-    let bytes = fs::read(&record.log_path).unwrap_or_default();
-    let start = bytes.len().saturating_sub(256 * 1024);
-    let text = String::from_utf8_lossy(&bytes[start..]).into_owned();
+    const LIMIT: u64 = 256 * 1024;
+    let bytes = File::open(&record.log_path)
+        .and_then(|mut file| {
+            let length = file.metadata()?.len();
+            file.seek(SeekFrom::Start(length.saturating_sub(LIMIT)))?;
+            let mut bytes = Vec::with_capacity(length.min(LIMIT) as usize);
+            file.take(LIMIT).read_to_end(&mut bytes)?;
+            Ok(bytes)
+        })
+        .unwrap_or_default();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
     Ok(json!({ "text": text }))
 }
 
@@ -1483,5 +1500,77 @@ mod tests {
             crate::digest_bytes(b"workspace:task:build")
         ));
         assert!(!build_qual.exists(), "a build without tests writes nothing");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn operation_owned_children_receive_the_actual_supervisor_run_id() {
+        let _durable = IsolatedDurableRuns::install();
+        for requested in ["run-prebound", "../../invalid-caller-id"] {
+            let root = tempfile::tempdir().unwrap();
+            let started = start(
+                root.path(),
+                &json!({
+                    "id": requested,
+                    "label": "correlated-task",
+                    "command": ["/bin/sh", "-c", "printf '%s' \"$NXR_RUN_ID\""],
+                    "operation_id": "workspace:task:test",
+                    "env": {"NXR_RUN_ID":"forged-from-caller-environment"},
+                    "cpu": 0
+                }),
+            )
+            .unwrap();
+            let actual = started["id"].as_str().unwrap();
+            join_test_wait_threads();
+            let text = logs(root.path(), actual).unwrap();
+            assert_eq!(text["text"], actual);
+            if requested == "run-prebound" {
+                assert_eq!(actual, requested);
+            } else {
+                assert_ne!(actual, requested);
+            }
+            assert_eq!(inspect(root.path(), actual).unwrap()["id"], actual);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn raw_sessions_keep_their_explicit_run_id_environment_value() {
+        let _durable = IsolatedDurableRuns::install();
+        let root = tempfile::tempdir().unwrap();
+        let started = start(
+            root.path(),
+            &json!({
+                "label": "raw-env",
+                "command": ["/bin/sh", "-c", "printf '%s' \"$NXR_RUN_ID\""],
+                "env": {"NXR_RUN_ID":"existing-raw-value"}, "cpu": 0
+            }),
+        )
+        .unwrap();
+        join_test_wait_threads();
+        assert_eq!(
+            logs(root.path(), started["id"].as_str().unwrap()).unwrap()["text"],
+            "existing-raw-value"
+        );
+    }
+
+    #[test]
+    fn logs_seek_to_a_bounded_tail_without_reading_the_whole_file() {
+        use std::io::Write;
+        let root = tempfile::tempdir().unwrap();
+        let log_path = root.path().join("large.log");
+        let mut file = File::create(&log_path).unwrap();
+        file.set_len(64 * 1024 * 1024).unwrap();
+        file.seek(SeekFrom::End(-4)).unwrap();
+        file.write_all(b"TAIL").unwrap();
+        let record: OwnedRun = serde_json::from_value(json!({
+            "id":"run-large-log", "label":"large", "status":"exited", "kind":"local",
+            "command":[], "log_path":log_path.display().to_string(), "events":[]
+        }))
+        .unwrap();
+        store(root.path(), &record).unwrap();
+        let response = logs(root.path(), "run-large-log").unwrap();
+        let text = response["text"].as_str().unwrap();
+        assert_eq!(text.len(), 256 * 1024);
+        assert!(text.ends_with("TAIL"));
     }
 }

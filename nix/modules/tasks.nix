@@ -200,12 +200,22 @@ let
           "string"
           "choice"
           "boolean"
+          "integer"
+          "number"
+          "multichoice"
+          "path"
+          "duration"
+          "object"
+          "artifact_ref"
+          "secret_ref"
+          "observed_fact"
+          "authorization_ref"
         ];
-        description = "Typed parameter kind (schema v2).";
+        description = "Typed parameter kind; richer kinds require schema v3.";
       };
 
       default = lib.mkOption {
-        type = types.nullOr (types.either types.bool types.str);
+        type = types.nullOr types.anything;
         default = null;
         description = ''
           Default value when the caller does not set `NXR_PARAM_<NAME>` at spawn.
@@ -215,7 +225,18 @@ let
       values = lib.mkOption {
         type = types.listOf types.str;
         default = [ ];
-        description = "Allowed values for choice parameters.";
+        description = "Allowed values for choice and multichoice parameters.";
+      };
+
+      constraints = lib.mkOption {
+        type = types.nullOr (types.attrsOf types.anything);
+        default = null;
+        description = ''
+          Schema v3 constraints: minLength/maxLength/pattern, minimum/maximum/step,
+          minItems/maxItems, local path kind/exists/absolute, or strict object
+          properties/required. The runner rejects unknown or incompatible fields.
+          Reference envelopes never establish domain authority.
+        '';
       };
     };
   };
@@ -452,14 +473,14 @@ in
     type = lib.types.nullOr (lib.types.enum [
       1
       2
+      3
     ]);
     default = null;
     description = ''
       Force the emitted `nxr.<system>.schema_version`. When unset, nxr
-      auto-selects `2` when contexts, processes, or task v2 fields are present,
-      otherwise
-      `1`. Setting `1` while v2 fields are present fails evaluation; setting
-      `2` always emits schema version 2.
+      auto-selects `3` for richer parameter kinds or constraints, `2` for
+      contexts, processes, or task v2 fields, and otherwise `1`. Forcing an
+      older schema while newer fields are present fails evaluation.
     '';
   };
 

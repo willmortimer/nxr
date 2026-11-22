@@ -94,6 +94,20 @@ fn flake_selection_from_context(context: &WorkspaceContext) -> FlakeSelection {
 }
 
 fn resolve_explicit_selection(reference: &str, invocation_cwd: &Utf8Path) -> FlakeSelection {
+    // Internal frozen invocations use canonical path: references. Keep their
+    // local identity so catalog IDs, trust, and working directories stay bound
+    // to that checkout rather than falling back to the caller's directory.
+    if let Some(path) = reference.strip_prefix("path:")
+        && !path.is_empty()
+        && !path.contains(['?', '#'])
+    {
+        let absolute = resolve_explicit_flake_path(path, invocation_cwd);
+        return FlakeSelection {
+            display: reference.to_owned(),
+            nix_ref: FlakeRef::local_path(absolute.as_str()).into_string(),
+            local_root: Some(absolute),
+        };
+    }
     if is_flake_uri(reference) {
         return FlakeSelection {
             display: reference.to_owned(),
@@ -158,6 +172,26 @@ mod tests {
         let selection = resolve_explicit_selection("github:owner/repo", Utf8Path::new("/tmp"));
         assert_eq!(selection.nix_ref, "github:owner/repo");
         assert!(selection.local_root.is_none());
+    }
+
+    #[test]
+    fn canonical_path_reference_keeps_its_local_workspace_binding() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = utf8_path(&temp).canonicalize_utf8().expect("canonical");
+        let reference = format!("path:{root}");
+        let selection = resolve_explicit_selection(&reference, Utf8Path::new("/different"));
+        assert_eq!(selection.local_root.as_deref(), Some(root.as_path()));
+        assert_eq!(selection.nix_ref, reference);
+        assert_eq!(selection.display, reference);
+        // Complex URI identity remains owned by Nix.
+        assert!(
+            resolve_explicit_selection(
+                &format!("{reference}?narHash=value"),
+                Utf8Path::new("/different")
+            )
+            .local_root
+            .is_none()
+        );
     }
 
     #[test]

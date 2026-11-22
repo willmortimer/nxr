@@ -11,9 +11,13 @@ use clap::ValueEnum;
 use nxr_task::{ChunkEncoding, Event, EventSink, NullSink, OutputPayload};
 use tempfile::NamedTempFile;
 
+use crate::output_options::{ResolvedOutputPolicy, Verbosity};
+
 /// Multiplexed stdout/stderr presentation for parallel task runs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum TaskOutputMode {
+    /// Bounded progress and failure details on stderr, without successful logs.
+    Compact,
     /// Prefix each output line with `[node] ` as chunks arrive.
     Live,
     /// Buffer stdout/stderr per node; flush when the node exits.
@@ -36,7 +40,7 @@ impl TaskOutputMode {
     pub const fn is_multiplexed(self) -> bool {
         matches!(
             self,
-            Self::Live | Self::Grouped | Self::Failures | Self::Summary
+            Self::Compact | Self::Live | Self::Grouped | Self::Failures | Self::Summary
         )
     }
 
@@ -65,6 +69,7 @@ pub enum EventsFormat {
 /// When both options are `None`, returns a [`NullSink`] (no forced labeling).
 /// [`TaskOutputMode::Raw`] is not rendered here — callers must inherit stdio.
 #[must_use]
+#[cfg(test)]
 pub fn build_task_event_sink<'a>(
     output: Option<TaskOutputMode>,
     events: Option<EventsFormat>,
@@ -72,6 +77,24 @@ pub fn build_task_event_sink<'a>(
     stderr: &'a mut dyn Write,
 ) -> TaskEventSink<'a> {
     TaskEventSink::new(output, events, stdout, stderr)
+}
+
+/// Build the same sink with centrally resolved presentation and verbosity.
+#[must_use]
+pub fn build_task_event_sink_with_policy<'a>(
+    policy: &ResolvedOutputPolicy,
+    events: Option<EventsFormat>,
+    stdout: &'a mut dyn Write,
+    stderr: &'a mut dyn Write,
+) -> TaskEventSink<'a> {
+    let mut sink = TaskEventSink::new(policy.task_output_mode(), events, stdout, stderr);
+    match &mut sink.inner {
+        TaskEventSinkInner::OutputOnly { state, .. } | TaskEventSinkInner::Both { state, .. } => {
+            state.verbosity = policy.verbosity
+        }
+        TaskEventSinkInner::Null | TaskEventSinkInner::EventsOnly { .. } => {}
+    }
+    sink
 }
 
 /// Composite sink for task output renderers and optional JSONL event logging.
@@ -193,6 +216,8 @@ struct TaskOutputRenderer<'a> {
 
 #[derive(Default)]
 struct TaskOutputRendererState {
+    verbosity: Verbosity,
+    compact: CompactState,
     live_stdout: BTreeMap<String, StreamState>,
     live_stderr: BTreeMap<String, StreamState>,
     grouped: BTreeMap<String, NodeBuffers>,
@@ -200,6 +225,44 @@ struct TaskOutputRendererState {
     watch: WatchStatusState,
     executed: BTreeSet<String>,
     reused: BTreeSet<String>,
+}
+
+/// Compact retains only a bounded tail for each active node; successful tails
+/// are discarded on exit. Its storage does not grow with the amount of output.
+const COMPACT_TAIL_CAPACITY: usize = 16 * 1024;
+
+#[derive(Default)]
+struct CompactState {
+    nodes: BTreeMap<String, CompactNode>,
+    total: usize,
+    run_id: Option<String>,
+}
+
+#[derive(Default)]
+struct CompactNode {
+    outcome: Option<nxr_task::NodeOutcome>,
+    tail: Vec<u8>,
+    phase: Option<String>,
+    reused: bool,
+    detached: bool,
+}
+
+impl CompactNode {
+    fn append(&mut self, bytes: &[u8]) {
+        if bytes.len() >= COMPACT_TAIL_CAPACITY {
+            self.tail.clear();
+            self.tail
+                .extend_from_slice(&bytes[bytes.len() - COMPACT_TAIL_CAPACITY..]);
+            return;
+        }
+        let excess = self
+            .tail
+            .len()
+            .saturating_add(bytes.len())
+            .saturating_sub(COMPACT_TAIL_CAPACITY);
+        self.tail.drain(..excess);
+        self.tail.extend_from_slice(bytes);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -228,6 +291,7 @@ struct WatchStatusState {
 /// `force_text` so a captured log still records the phase change.
 pub struct PhaseStatus {
     tty: bool,
+    enabled: bool,
     last: Option<String>,
 }
 
@@ -237,12 +301,25 @@ impl PhaseStatus {
     pub fn detect() -> Self {
         Self {
             tty: io::stderr().is_terminal(),
+            enabled: true,
+            last: None,
+        }
+    }
+
+    #[must_use]
+    pub fn from_policy(policy: &ResolvedOutputPolicy) -> Self {
+        Self {
+            tty: policy.terminal.stderr_tty,
+            enabled: policy.verbosity != Verbosity::Quiet,
             last: None,
         }
     }
 
     /// Record a phase. A repeat of the same phase does not write again.
     pub fn show(&mut self, node: &str, phase: &str, force_text: bool) {
+        if !self.enabled {
+            return;
+        }
         if self.last.as_deref() == Some(phase) {
             return;
         }
@@ -270,7 +347,7 @@ impl PhaseStatus {
     /// Clear the sticky line and leave one newline when stderr is a terminal.
     pub fn finish(&mut self, node: &str, phase: &str) {
         self.clear();
-        if self.tty {
+        if self.tty && self.enabled {
             eprintln!("[nxr] {node} {phase}");
         }
     }
@@ -550,6 +627,259 @@ impl<'a> TaskOutputRenderer<'a> {
         flush_stream_on_exit(self.stdout, node, &mut self.state.live_stdout);
         flush_stream_on_exit(self.stderr, node, &mut self.state.live_stderr);
     }
+
+    fn emit_compact(&mut self, event: Event) {
+        let verbose = self.state.verbosity >= Verbosity::Verbose;
+        let quiet = self.state.verbosity == Verbosity::Quiet;
+        match event {
+            Event::PlanCreated {
+                root,
+                node_count,
+                run_id,
+                ..
+            } => {
+                self.state.compact = CompactState {
+                    total: node_count,
+                    run_id,
+                    ..CompactState::default()
+                };
+                if !quiet {
+                    let _ = writeln!(
+                        self.stderr,
+                        "[nxr] {} · {node_count} tasks",
+                        compact_text(&root)
+                    );
+                }
+            }
+            Event::StdoutChunk { node, payload } => self.ingest_compact(true, &node, &payload),
+            Event::StderrChunk { node, payload } => self.ingest_compact(false, &node, &payload),
+            Event::NodeQueued { node, .. } => {
+                self.state.compact.nodes.entry(node.clone()).or_default();
+                if verbose {
+                    let _ = writeln!(self.stderr, "[nxr] {} queued", compact_text(&node));
+                }
+            }
+            Event::NodeStarted { node, .. } => {
+                self.state.compact.nodes.entry(node.clone()).or_default();
+                if !quiet {
+                    let _ = writeln!(self.stderr, "[nxr] {} running", compact_text(&node));
+                }
+            }
+            Event::NodeExited {
+                node,
+                code,
+                status,
+                reason,
+                ..
+            } => {
+                let outcome = status.unwrap_or(if code == Some(0) {
+                    nxr_task::NodeOutcome::Succeeded
+                } else {
+                    nxr_task::NodeOutcome::Failed
+                });
+                let entry = self.state.compact.nodes.entry(node.clone()).or_default();
+                // Replayed duplicate terminal events do not repeat failure logs.
+                if entry.outcome == Some(outcome) {
+                    return;
+                }
+                entry.outcome = Some(outcome);
+                let failed = matches!(
+                    outcome,
+                    nxr_task::NodeOutcome::Failed | nxr_task::NodeOutcome::TimedOut
+                );
+                if failed || verbose {
+                    let _ = writeln!(
+                        self.stderr,
+                        "[nxr] {} {}",
+                        compact_text(&node),
+                        outcome.as_str()
+                    );
+                    if let Some(reason) = reason {
+                        let _ = writeln!(self.stderr, "  {}", compact_text(&reason));
+                    }
+                }
+                if failed && self.state.verbosity < Verbosity::Logs && !entry.tail.is_empty() {
+                    let tail = String::from_utf8_lossy(&entry.tail);
+                    // The retained suffix may start mid-codepoint. Lossy decode
+                    // is appropriate for a diagnostic preview, never raw data.
+                    let sanitized =
+                        nxr_core::sanitize::sanitize_terminal_text(&tail).replace('\r', "");
+                    for line in sanitized.lines() {
+                        let _ = writeln!(self.stderr, "  | {line}");
+                    }
+                }
+                entry.tail.clear();
+                flush_stream_on_exit(
+                    self.stderr,
+                    &compact_text(&node),
+                    &mut self.state.live_stdout,
+                );
+                flush_stream_on_exit(
+                    self.stderr,
+                    &compact_text(&node),
+                    &mut self.state.live_stderr,
+                );
+            }
+            Event::ArtifactReused { node, .. } => {
+                let entry = self.state.compact.nodes.entry(node.clone()).or_default();
+                if entry.reused {
+                    return;
+                }
+                entry.reused = true;
+                entry.tail.clear();
+                if !quiet {
+                    let _ = writeln!(
+                        self.stderr,
+                        "[nxr] {} reused (verified)",
+                        compact_text(&node)
+                    );
+                }
+            }
+            Event::ClientDetached {
+                node, attempt_id, ..
+            } => {
+                self.state
+                    .compact
+                    .nodes
+                    .entry(node.clone())
+                    .or_default()
+                    .detached = true;
+                if !quiet {
+                    let _ = writeln!(
+                        self.stderr,
+                        "[nxr] {} detached · remote attempt {} still requires a result",
+                        compact_text(&node),
+                        compact_text(&attempt_id)
+                    );
+                }
+            }
+            Event::Phase { node, phase, .. } => {
+                let entry = self.state.compact.nodes.entry(node.clone()).or_default();
+                if entry.phase.as_deref() == Some(phase.as_str()) {
+                    return;
+                }
+                entry.phase = Some(phase.clone());
+                if !quiet && (verbose || phase != "terminal") {
+                    let _ = writeln!(
+                        self.stderr,
+                        "[nxr] {} {}",
+                        compact_text(&node),
+                        compact_text(&phase)
+                    );
+                }
+            }
+            Event::Diagnostic { message } => {
+                let _ = writeln!(self.stderr, "[nxr] {}", compact_text(&message));
+            }
+            Event::RunCompleted {
+                success,
+                status,
+                duration_ms,
+                run_id,
+                ..
+            } => {
+                let nodes = &self.state.compact.nodes;
+                let complete = nodes
+                    .values()
+                    .filter(|node| {
+                        node.outcome == Some(nxr_task::NodeOutcome::Succeeded) || node.reused
+                    })
+                    .count();
+                let failed = nodes
+                    .values()
+                    .filter(|node| {
+                        matches!(
+                            node.outcome,
+                            Some(nxr_task::NodeOutcome::Failed | nxr_task::NodeOutcome::TimedOut)
+                        )
+                    })
+                    .count();
+                let skipped = nodes
+                    .values()
+                    .filter(|node| node.outcome == Some(nxr_task::NodeOutcome::Skipped))
+                    .count();
+                let cancelled = nodes
+                    .values()
+                    .filter(|node| node.outcome == Some(nxr_task::NodeOutcome::Cancelled))
+                    .count();
+                let reused = nodes.values().filter(|node| node.reused).count();
+                let detached = nodes
+                    .values()
+                    .filter(|node| node.detached && node.outcome.is_none())
+                    .count();
+                if quiet && success && detached == 0 {
+                    return;
+                }
+                let label = if detached > 0 {
+                    "awaiting remote results"
+                } else if status == Some(nxr_task::RunOutcome::Cancelled) {
+                    "cancelled"
+                } else if success {
+                    "succeeded"
+                } else {
+                    "failed"
+                };
+                let duration = duration_ms
+                    .map(|ms| {
+                        format!(
+                            " · {}",
+                            nxr_task::format_duration(std::time::Duration::from_millis(ms))
+                        )
+                    })
+                    .unwrap_or_default();
+                let _ = writeln!(
+                    self.stderr,
+                    "[nxr] {label}{duration} · {}/{} complete · {reused} reused · {failed} failed · {skipped} skipped · {cancelled} cancelled",
+                    complete,
+                    self.state.compact.total.max(nodes.len())
+                );
+                if let Some(id) = run_id.as_ref().or(self.state.compact.run_id.as_ref()) {
+                    let _ = writeln!(self.stderr, "[nxr] run {}", compact_text(id));
+                }
+            }
+        }
+    }
+
+    fn ingest_compact(&mut self, is_stdout: bool, node: &str, payload: &OutputPayload) {
+        self.state
+            .compact
+            .nodes
+            .entry(node.to_owned())
+            .or_default()
+            .append(payload.as_bytes());
+        if self.state.verbosity >= Verbosity::Logs {
+            // Both child streams remain diagnostic output in compact mode.
+            // Decode independently so interleaved partial UTF-8 stays valid.
+            let streams = if is_stdout {
+                &mut self.state.live_stdout
+            } else {
+                &mut self.state.live_stderr
+            };
+            let stream = streams.entry(node.to_owned()).or_default();
+            let decoded = stream.decoder.push(payload.as_bytes());
+            let mut batch = WriteBatch::new(self.stderr);
+            let _ = write_labeled_lines(
+                &mut batch,
+                &compact_text(node),
+                &nxr_core::sanitize::sanitize_terminal_text(&decoded),
+                &mut stream.pending,
+            );
+        }
+    }
+}
+
+fn compact_text(text: &str) -> String {
+    nxr_core::sanitize::sanitize_terminal_text(text)
+        .chars()
+        .map(|ch| {
+            if matches!(ch, '\n' | '\r' | '\t') {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .take(1024)
+        .collect()
 }
 
 fn flush_stream_on_exit(
@@ -574,20 +904,30 @@ fn flush_stream_on_exit(
 
 impl EventSink for TaskOutputRenderer<'_> {
     fn emit(&mut self, event: Event) {
+        if self.mode == TaskOutputMode::Compact || self.state.verbosity == Verbosity::Quiet {
+            self.emit_compact(event);
+            return;
+        }
         match event {
             Event::StdoutChunk { node, payload } => match self.mode {
                 TaskOutputMode::Live => self.ingest_live(true, &node, &payload),
                 TaskOutputMode::Grouped | TaskOutputMode::Failures => {
                     self.ingest_buffered(true, &node, &payload);
                 }
-                TaskOutputMode::Raw | TaskOutputMode::Summary | TaskOutputMode::Tui => {}
+                TaskOutputMode::Compact
+                | TaskOutputMode::Raw
+                | TaskOutputMode::Summary
+                | TaskOutputMode::Tui => {}
             },
             Event::StderrChunk { node, payload } => match self.mode {
                 TaskOutputMode::Live => self.ingest_live(false, &node, &payload),
                 TaskOutputMode::Grouped | TaskOutputMode::Failures => {
                     self.ingest_buffered(false, &node, &payload);
                 }
-                TaskOutputMode::Raw | TaskOutputMode::Summary | TaskOutputMode::Tui => {}
+                TaskOutputMode::Compact
+                | TaskOutputMode::Raw
+                | TaskOutputMode::Summary
+                | TaskOutputMode::Tui => {}
             },
             Event::NodeExited {
                 node,
@@ -601,7 +941,8 @@ impl EventSink for TaskOutputRenderer<'_> {
                 }
 
                 let should_flush = match self.mode {
-                    TaskOutputMode::Live
+                    TaskOutputMode::Compact
+                    | TaskOutputMode::Live
                     | TaskOutputMode::Raw
                     | TaskOutputMode::Summary
                     | TaskOutputMode::Tui => false,
@@ -911,6 +1252,202 @@ mod tests {
             String::from_utf8(stdout).expect("utf-8 stdout"),
             String::from_utf8(stderr).expect("utf-8 stderr"),
         )
+    }
+
+    #[test]
+    fn compact_hides_successful_logs_and_keeps_stdout_empty() {
+        let events = vec![
+            Event::plan_created("ci", None, 1),
+            Event::node_started("compile"),
+            Event::StdoutChunk {
+                node: "compile".into(),
+                payload: OutputPayload::utf8("compiler noise\n".repeat(1000)),
+            },
+            Event::node_exited("compile", Some(0)),
+            Event::run_completed(true),
+        ];
+        let (stdout, stderr) = render_output(TaskOutputMode::Compact, &events);
+        assert!(stdout.is_empty());
+        assert!(!stderr.contains("compiler noise"));
+        assert!(stderr.contains("1/1 complete"));
+        assert!(stderr.contains("0 failed"));
+        assert!(stderr.len() < 200);
+    }
+
+    #[test]
+    fn compact_failure_preserves_cause_and_distinguishes_skipped_nodes() {
+        let events = vec![
+            Event::plan_created("ci", None, 2),
+            Event::StderrChunk {
+                node: "compile".into(),
+                payload: OutputPayload::utf8("error: missing symbol\n"),
+            },
+            Event::node_finished("compile", Some(1), nxr_task::NodeOutcome::Failed, None),
+            Event::node_finished(
+                "dependent",
+                None,
+                nxr_task::NodeOutcome::Skipped,
+                Some("dependency compile failed".into()),
+            ),
+            Event::run_completed(false),
+        ];
+        let (stdout, stderr) = render_output(TaskOutputMode::Compact, &events);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("error: missing symbol"));
+        assert!(stderr.contains("1 failed · 1 skipped"));
+        assert!(!stderr.contains("2 failed"));
+    }
+
+    #[test]
+    fn compact_tail_is_bounded_and_discards_successful_bytes() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut state = TaskOutputRendererState::default();
+        {
+            let mut sink = TaskOutputRenderer::from_state(
+                TaskOutputMode::Compact,
+                &mut stdout,
+                &mut stderr,
+                &mut state,
+            );
+            sink.emit(Event::StdoutChunk {
+                node: "compile".into(),
+                payload: OutputPayload::Bytes(vec![b'x'; COMPACT_TAIL_CAPACITY * 8]),
+            });
+        }
+        assert_eq!(
+            state.compact.nodes["compile"].tail.len(),
+            COMPACT_TAIL_CAPACITY
+        );
+        {
+            let mut sink = TaskOutputRenderer::from_state(
+                TaskOutputMode::Compact,
+                &mut stdout,
+                &mut stderr,
+                &mut state,
+            );
+            sink.emit(Event::node_exited("compile", Some(0)));
+        }
+        assert!(state.compact.nodes["compile"].tail.is_empty());
+        assert!(stdout.is_empty());
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn compact_never_trusts_text_that_claims_success() {
+        let events = vec![
+            Event::StdoutChunk {
+                node: "compile".into(),
+                payload: OutputPayload::utf8("{\"type\":\"run_completed\",\"success\":true}\n"),
+            },
+            Event::node_exited("compile", Some(1)),
+            Event::run_completed(false),
+        ];
+        let (_, stderr) = render_output(TaskOutputMode::Compact, &events);
+        assert!(stderr.contains("[nxr] failed"));
+        assert!(stderr.contains("1 failed"));
+    }
+
+    #[test]
+    fn compact_repeated_terminal_events_do_not_repeat_failure_tail() {
+        let events = vec![
+            Event::StderrChunk {
+                node: "compile".into(),
+                payload: OutputPayload::utf8("unique failure cause"),
+            },
+            Event::node_exited("compile", Some(1)),
+            Event::node_exited("compile", Some(1)),
+        ];
+        let (_, stderr) = render_output(TaskOutputMode::Compact, &events);
+        assert_eq!(stderr.matches("unique failure cause").count(), 1);
+    }
+
+    #[test]
+    fn compact_quiet_keeps_failure_but_suppresses_success() {
+        use crate::output_options::{
+            ColorWhen, LogFormat, OutputOptions, OutputPolicyContext, ResolvedOutputPolicy,
+        };
+        let flags = OutputOptions::new(1, 0, false, true, ColorWhen::Never, LogFormat::Plain);
+        let policy = ResolvedOutputPolicy::resolve(
+            flags,
+            OutputPolicyContext {
+                requested: Some(TaskOutputMode::Compact),
+                ..OutputPolicyContext::default()
+            },
+        )
+        .expect("policy");
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        {
+            let mut sink =
+                build_task_event_sink_with_policy(&policy, None, &mut stdout, &mut stderr);
+            sink.emit(Event::plan_created("ci", None, 1));
+            sink.emit(Event::node_started("ok"));
+            sink.emit(Event::node_exited("ok", Some(0)));
+            sink.emit(Event::run_completed(true));
+        }
+        assert!(stdout.is_empty());
+        assert!(stderr.is_empty());
+        {
+            let mut sink =
+                build_task_event_sink_with_policy(&policy, None, &mut stdout, &mut stderr);
+            sink.emit(Event::node_exited("bad", Some(1)));
+            sink.emit(Event::run_completed(false));
+        }
+        let stderr = String::from_utf8(stderr).expect("text");
+        assert!(stderr.contains("bad failed"));
+        assert!(stderr.contains("1 failed"));
+    }
+
+    #[test]
+    fn compact_does_not_count_reused_nodes_twice() {
+        let events = vec![
+            Event::plan_created("ci", None, 1),
+            Event::ArtifactReused {
+                run_id: "run-a".into(),
+                node: "compile".into(),
+                digest: "sha256:a".into(),
+                producer_attempt: "attempt-a".into(),
+                storage_layer: "local".into(),
+                verification_receipt: "receipt-a".into(),
+            },
+            Event::node_exited("compile", Some(0)),
+            Event::run_completed(true),
+        ];
+        let (_, stderr) = render_output(TaskOutputMode::Compact, &events);
+        assert!(stderr.contains("1/1 complete · 1 reused"));
+        assert!(!stderr.contains("2/1"));
+    }
+
+    #[test]
+    fn compact_sanitizes_terminal_control_sequences() {
+        let events = vec![
+            Event::StderrChunk {
+                node: "compile".into(),
+                payload: OutputPayload::utf8("\u{1b}[31merror\u{1b}[0m\r\n"),
+            },
+            Event::node_exited("compile", Some(1)),
+        ];
+        let (_, stderr) = render_output(TaskOutputMode::Compact, &events);
+        assert!(stderr.contains("error"));
+        assert!(!stderr.contains('\u{1b}'));
+        assert!(!stderr.contains('\r'));
+    }
+
+    #[test]
+    fn compact_detached_remote_never_claims_completed_success() {
+        let events = vec![
+            Event::ClientDetached {
+                run_id: "run-a".into(),
+                node: "remote".into(),
+                attempt_id: "attempt-a".into(),
+                sequence: 1,
+            },
+            Event::run_completed(true),
+        ];
+        let (_, stderr) = render_output(TaskOutputMode::Compact, &events);
+        assert!(stderr.contains("awaiting remote results"));
+        assert!(!stderr.contains("[nxr] succeeded"));
     }
 
     #[test]
@@ -1290,6 +1827,7 @@ mod tests {
         let started = std::time::Instant::now();
         let mut status = PhaseStatus {
             tty: false,
+            enabled: true,
             last: None,
         };
         for _ in 0..1_000 {

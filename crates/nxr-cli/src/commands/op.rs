@@ -73,6 +73,50 @@ pub fn run_op(
                 record.operation_id.clone()
             })?;
         }
+        OpCommand::Inputs { id } => {
+            let record = describe(&records, id).ok_or_else(|| format!("unknown operation {id}"))?;
+            let value = crate::commands::interaction::operation_inputs(
+                Path::new(&record.workspace_root),
+                record,
+                nix_override,
+                nix_flags,
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?
+            );
+        }
+        OpCommand::Resolve { id, inputs, sets } => {
+            let record = describe(&records, id).ok_or_else(|| format!("unknown operation {id}"))?;
+            let values = inputs
+                .as_ref()
+                .map(|path| {
+                    std::fs::read(path)
+                        .map_err(|error| error.to_string())
+                        .and_then(|bytes| {
+                            serde_json::from_slice::<Value>(&bytes)
+                                .map_err(|_| "invalid input values document".to_owned())
+                        })
+                })
+                .transpose()?;
+            let sets = crate::commands::task_params::parse_param_sets(sets)?;
+            let session = crate::commands::interaction::resolve_operation(
+                Path::new(&record.workspace_root),
+                record,
+                values.as_ref(),
+                &sets,
+                None,
+                nix_override,
+                nix_flags,
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&crate::commands::interaction::input_required(
+                    &session
+                ))
+                .map_err(|error| error.to_string())?
+            );
+        }
         OpCommand::Plan { id } => {
             let record = describe(&records, id).ok_or_else(|| format!("unknown operation {id}"))?;
             let planned = plan(record);

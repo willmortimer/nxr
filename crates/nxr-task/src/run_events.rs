@@ -34,6 +34,13 @@ impl<S> RunEventDecorator<S> {
         }
     }
 
+    /// Bind transport decoration to the authoritative journal identity.
+    #[must_use]
+    pub fn with_run_id(mut self, run_id: &str) -> Self {
+        self.run_id = run_id.to_owned();
+        self
+    }
+
     /// Borrow the assigned run id.
     #[must_use]
     pub fn run_id(&self) -> &str {

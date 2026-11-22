@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/artifact-ref-v1.schema.json",
+  "title": "NXR diagnostic artifact reference v1",
+  "description": "A declaration or historical verification result. A child-supplied verified=true is discarded; only the trusted verifier publishes verified references after hashing bytes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "name", "producer", "kind", "media_type", "digest", "location"],
+  "properties": {
+    "schema_version": { "const": "nxr-artifact-ref-v1" },
+    "name": { "$ref": "#/$defs/metadata" },
+    "producer": { "$ref": "#/$defs/metadata" },
+    "kind": { "$ref": "#/$defs/metadata" },
+    "media_type": { "$ref": "#/$defs/metadata" },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-fA-F]{64}$"
+    },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "object"],
+      "properties": {
+        "kind": { "const": "local-cas" },
+        "object": {
+          "type": "string",
+          "maxLength": 1024,
+          "pattern": "^objects/[0-9a-fA-F]{64}/[^\\\\]*[^/\\\\]$",
+          "not": { "pattern": "(^|/)\\.{1,2}(/|$)|//|[\\u0000-\\u001f\\u007f-\\u009f]" },
+          "description": "Relative regular-file path below the configured store. Its digest component must exactly match digest without sha256:. Runtime validation rejects traversal, empty components, control characters and symlinks."
+        }
+      }
+    },
+    "verified": {
+      "type": "boolean",
+      "default": false,
+      "description": "A trusted-journal verification result, never authority granted by a declaration."
+    }
+  },
+  "$defs": {
+    "metadata": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "not": { "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]" }
+    }
+  }
+}

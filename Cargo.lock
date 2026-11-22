@@ -1328,6 +1328,7 @@ dependencies = [
  "globset",
  "nxr-core",
  "openat",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

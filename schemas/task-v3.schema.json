@@ -1,0 +1,629 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/task-v3.schema.json",
+  "title": "nxr task document (schema v3)",
+  "description": "Strict task metadata extending v2 with typed node-scoped inputs. Reference envelopes are not domain authorization.",
+  "type": "object",
+  "required": [
+    "schema_version"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 3,
+      "description": "Major schema version. Unsupported majors must be rejected by runners."
+    },
+    "tasks": {
+      "type": "object",
+      "description": "Map of task name to task definition.",
+      "additionalProperties": {
+        "$ref": "#/$defs/task"
+      }
+    },
+    "apps": {
+      "type": "object",
+      "description": "Optional listing metadata for flake app leaf names. Does not define apps; apps remain apps.<system>.* outputs.",
+      "additionalProperties": {
+        "$ref": "#/$defs/appListing"
+      }
+    },
+    "discoveryInputs": {
+      "type": "array",
+      "description": "Optional flake-root-relative paths whose contents are hashed into the discovery cache key (cache schema v3). Declared via perSystem.nxr.discoveryInputs.",
+      "default": [],
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "contexts": {
+      "type": "object",
+      "description": "Named execution contexts (shell, environment policy, secret references, confirm). Secret values never appear in metadata.",
+      "additionalProperties": {
+        "$ref": "#/$defs/context"
+      }
+    }
+  },
+  "$defs": {
+    "appListing": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "category": {
+          "type": "string",
+          "description": "Optional logical category for list/inspect filtering."
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "required": [
+        "app"
+      ],
+      "additionalProperties": false,
+      "description": "Task definition. Unknown execution-affecting fields must be rejected (strict envelope).",
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Optional short description for listings and completion."
+        },
+        "dependsOn": {
+          "type": "array",
+          "description": "Task names that must complete before this task runs. Defaults to [].",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "app": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Flake app leaf name (apps.<system>.<name>) this task runs."
+        },
+        "workingDirectory": {
+          "type": "string",
+          "description": "Optional working-directory policy (`invocation`, `flake-root`) or flake-root-relative path. Absolute paths and parent traversal (`..`) are rejected."
+        },
+        "hidden": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the task is omitted from default listings."
+        },
+        "category": {
+          "type": "string",
+          "description": "Optional logical category for grouping in listings."
+        },
+        "aliases": {
+          "type": "array",
+          "description": "Optional alternate names resolved by explicit task commands (not bare nxr <name>).",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "interactive": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the node requires exclusive terminal access (stdin inherited; cannot run concurrently with peers or multiplexed output). Interactive tasks cannot be cached."
+        },
+        "paths": {
+          "type": "array",
+          "description": "Optional repository-relative path roots for conservative affected analysis.",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "timeout": {
+          "type": "string",
+          "description": "Optional wall-clock timeout for this task's process (e.g. `10m`, `30s`, `500ms`)."
+        },
+        "terminationGracePeriod": {
+          "type": "string",
+          "description": "Optional grace period after timeout/interrupt before SIGKILL (e.g. `5s`)."
+        },
+        "inputs": {
+          "$ref": "#/$defs/taskInputs",
+          "description": "Declared inputs for cache-key fingerprinting and structured upstream bindings."
+        },
+        "outputs": {
+          "type": "array",
+          "description": "Declared workspace outputs that may be restored from a task result cache.",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/taskOutput"
+          }
+        },
+        "cache": {
+          "$ref": "#/$defs/taskCache",
+          "description": "Opt-in task result cache policy for declared workspace outputs."
+        },
+        "resources": {
+          "$ref": "#/$defs/taskResources",
+          "description": "Estimated resource demand and named exclusivity locks for cooperative scheduling."
+        },
+        "shell": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional devShell name for a shell-only execution context."
+        },
+        "context": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional named execution context reference (`contexts.<name>`)."
+        },
+        "parameters": {
+          "type": "object",
+          "description": "Typed task parameters injected as NXR_PARAM_<NAME> at spawn. Values never appear in plans or events.",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/taskParameter"
+          }
+        },
+        "matrix": {
+          "$ref": "#/$defs/taskMatrix",
+          "description": "Matrix include expansion into planned nodes. Attribute values are injected as NXR_MATRIX_<KEY> at spawn and never appear in plans or events."
+        }
+      }
+    },
+    "taskMatrix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "include"
+      ],
+      "properties": {
+        "include": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Each entry expands the task into one planned node.",
+          "items": {
+            "type": "object",
+            "minProperties": 1,
+            "propertyNames": {
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "additionalProperties": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "taskParameter": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "string",
+            "choice",
+            "boolean",
+            "integer",
+            "number",
+            "multichoice",
+            "path",
+            "duration",
+            "object",
+            "artifact_ref",
+            "secret_ref",
+            "observed_fact",
+            "authorization_ref"
+          ],
+          "description": "Parameter kind."
+        },
+        "default": {},
+        "values": {
+          "type": "array",
+          "description": "Allowed values for choice parameters.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "constraints": {
+          "$ref": "#/$defs/parameterConstraints"
+        }
+      }
+    },
+    "taskInputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Inputs that affect task correctness for caching and structured dependency wiring.",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "description": "Repository-relative paths and globs whose content is hashed into the cache key.",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "env": {
+          "type": "array",
+          "description": "Environment variable names (or bindings) included in the cache key. The full inherited environment is never hashed.",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/envInput"
+          }
+        },
+        "includeGitState": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, Git tree/commit state participates in the cache key."
+        },
+        "bindings": {
+          "type": "object",
+          "description": "Named bindings to upstream task outputs (`<task>.<output>`).",
+          "default": {},
+          "additionalProperties": {
+            "$ref": "#/$defs/taskInputBinding"
+          }
+        }
+      }
+    },
+    "envInput": {
+      "description": "Environment variable name or structured binding.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "$ref": "#/$defs/envInputBinding"
+        }
+      ]
+    },
+    "envInputBinding": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Environment variable name."
+        },
+        "required": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the task fails if the variable is unset at execution time."
+        },
+        "secret": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the variable is treated as secret metadata. Secret inputs disable caching by default and must never appear in plans or events."
+        }
+      }
+    },
+    "taskInputBinding": {
+      "type": "object",
+      "required": [
+        "from"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Upstream task output reference (`<task>.<output>`)."
+        }
+      }
+    },
+    "taskOutput": {
+      "type": "object",
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Repository-relative output path contained under the flake root."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "replace",
+            "merge",
+            "verify-only",
+            "report"
+          ],
+          "default": "replace",
+          "description": "How a cached artifact is restored. Initial implementations may support only `replace` and `report`."
+        },
+        "optional": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, a missing output at save time does not fail the task."
+        }
+      }
+    },
+    "taskCache": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Task result cache policy. Disabled by default until runtime support lands.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "local",
+            "shared-read",
+            "shared"
+          ],
+          "default": "disabled",
+          "description": "Cache scope. `shared` means read and write; fork PRs should normally downgrade to `shared-read` or `local`."
+        },
+        "version": {
+          "type": "string",
+          "description": "Author-controlled cache salt incremented when task behavior changes without input changes."
+        },
+        "restore": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, a cache hit restores declared outputs instead of executing the task."
+        },
+        "save": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, successful runs with declared outputs may be written to the cache."
+        },
+        "failures": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, failed runs may be cached. Disabled in initial implementations."
+        },
+        "secretPolicy": {
+          "type": "string",
+          "enum": [
+            "disable",
+            "ignore-values"
+          ],
+          "description": "How secret-bearing tasks interact with workspace caching. Default (omitted or `disable`): disable cache when secret env inputs or context secrets are present. `ignore-values` is an expert override that allows caching while still excluding secret values from the action key."
+        }
+      }
+    },
+    "taskResources": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Resource reservations and exclusivity locks for cooperative job control.",
+      "properties": {
+        "cpu": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Scheduler CPU token demand (not a hard OS quota)."
+        },
+        "memory": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?(B|KiB|MiB|GiB|TiB)$",
+          "description": "Estimated peak memory reservation (e.g. `4GiB`, `512MiB`)."
+        },
+        "io": {
+          "type": "string",
+          "enum": [
+            "light",
+            "normal",
+            "heavy"
+          ],
+          "default": "normal",
+          "description": "Relative I/O intensity for scheduling heuristics."
+        },
+        "network": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the task is expected to use the network (diagnostic and CI policy metadata)."
+        },
+        "exclusive": {
+          "type": "array",
+          "description": "Named mutexes; at most one in-flight task may hold each lock.",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Named execution context bundling shell, environment policy, secret references, and confirmation.",
+      "properties": {
+        "shell": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional devShell name (`devShells.<name>`)."
+        },
+        "environment": {
+          "$ref": "#/$defs/contextEnvironment",
+          "description": "Optional environment policy for this context."
+        },
+        "secrets": {
+          "type": "object",
+          "description": "Secret requirements keyed by slot name. Values are logical references only.",
+          "default": {},
+          "additionalProperties": {
+            "$ref": "#/$defs/contextSecretRef"
+          }
+        },
+        "confirm": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the runner should prompt before execution."
+        }
+      }
+    },
+    "contextEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Environment policy for an execution context.",
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "inherit",
+            "clean"
+          ],
+          "description": "Whether to inherit the caller environment or start from the clean allowlist."
+        },
+        "keep": {
+          "type": "array",
+          "description": "Extra environment variable names retained in `clean` mode.",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "set": {
+          "type": "object",
+          "description": "Non-secret environment values applied in this context.",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "unset": {
+          "type": "array",
+          "description": "Environment variable names removed before spawn in `clean` mode.",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "contextSecretRef": {
+      "type": "object",
+      "required": [
+        "ref"
+      ],
+      "additionalProperties": false,
+      "description": "Logical secret reference (never a secret value).",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Logical secret reference resolved at runtime via user configuration."
+        },
+        "delivery": {
+          "type": "string",
+          "enum": [
+            "env",
+            "file",
+            "stdin"
+          ],
+          "default": "env",
+          "description": "How the secret is delivered to the child process."
+        },
+        "provider": {
+          "type": "string",
+          "enum": [
+            "env",
+            "file",
+            "sops",
+            "sops-nix"
+          ],
+          "default": "env",
+          "description": "Runtime secret provider used to resolve the logical ref."
+        }
+      }
+    },
+    "parameterConstraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "minLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "minItems": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxItems": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number"
+        },
+        "step": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "path": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "any",
+                "file",
+                "directory"
+              ]
+            },
+            "exists": {
+              "type": "boolean"
+            },
+            "absolute": {
+              "type": "boolean"
+            }
+          }
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/taskParameter"
+          }
+        },
+        "required": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

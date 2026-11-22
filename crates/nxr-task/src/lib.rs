@@ -49,6 +49,7 @@ pub mod scheduler;
 pub mod schema;
 pub mod secrets;
 pub mod selectors;
+pub mod typed_inputs;
 pub mod validation_plan;
 pub mod workflows;
 
@@ -158,11 +159,13 @@ pub use scheduler::{NodeState, ScheduleOutcome, Scheduler, SchedulerError};
 pub use schema::{
     AppFastPathMetadata, AppListingMetadata, ContextEnvironment, ContextEnvironmentMode,
     ContextSecretRef, EnvInput, EnvInputBinding, ExecutionContext, IoIntensity,
-    MAX_SUPPORTED_SCHEMA_VERSION, SCHEMA_VERSION, SCHEMA_VERSION_V2, SchemaError, SecretDelivery,
-    SecretProvider, TaskCache, TaskCacheMode, TaskCacheSecretPolicy, TaskDefinition, TaskDocument,
-    TaskInputBinding, TaskInputs, TaskMatrix, TaskOutput, TaskOutputMode, TaskParameter,
-    TaskParameterType, TaskResources, WORKING_DIRECTORY_FLAKE_ROOT, WORKING_DIRECTORY_INVOCATION,
-    parse_task_document, validate_schema_version, validate_working_directory,
+    MAX_SUPPORTED_SCHEMA_VERSION, ParameterConstraints, ParameterPathConstraints,
+    ParameterPathKind, SCHEMA_VERSION, SCHEMA_VERSION_V2, SCHEMA_VERSION_V3, SchemaError,
+    SecretDelivery, SecretProvider, TaskCache, TaskCacheMode, TaskCacheSecretPolicy,
+    TaskDefinition, TaskDocument, TaskInputBinding, TaskInputs, TaskMatrix, TaskOutput,
+    TaskOutputMode, TaskParameter, TaskParameterType, TaskResources, WORKING_DIRECTORY_FLAKE_ROOT,
+    WORKING_DIRECTORY_INVOCATION, parse_task_document, validate_schema_version,
+    validate_working_directory,
 };
 pub use secrets::{
     ResolvedSecrets, SecureTempFile, authorize_secret_refs, resolve_context_secrets,
@@ -183,3 +186,14 @@ pub use workflows::{
     load_workflow_document, plan_workflow_document, plan_workflows, workflow_mode_from_selector,
     workflow_path,
 };
+
+pub use typed_inputs::{
+    INPUT_VALUES_SCHEMA, InputLayers, InputProvenance, InputValuesDocument, ResolvedInput,
+    ResolvedInputs, input_environment_value, normalize_parameter_json,
+    parameter_contains_secret_reference, parse_input_values, parse_parameter_text,
+    resolve_node_inputs, validate_local_paths,
+};
+
+pub mod artifact_ref;
+pub mod interaction;
+pub mod run_view;
