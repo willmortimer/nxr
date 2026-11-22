@@ -1,6 +1,6 @@
 # Dynamic planning v1
 
-Frozen for Pleroma Wave 2. `v3.9.2` documents this contract and does not implement it.
+Frozen for Pleroma Wave 2. `v3.9.2` documents this contract. `v3.9.3` implements it.
 
 Planning order is fixed:
 

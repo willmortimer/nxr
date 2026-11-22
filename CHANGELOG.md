@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.9.3] - 2026-11-22
+
+### Added
+
+- `nxr-progress-v1` journal events. A missing total stays indeterminate, and elapsed time is never turned into a percentage. Replay rebuilds the same stage state. Raw stdout and stderr chunks stay immutable.
+- `nxr-control-v1` child messages for stage updates, diagnostics, and artifact declarations. Exit status and artifact verification stay authoritative.
+- Dynamic planning freezes source identity, input identities, the discovery digest, and selected branches. Conditions are equality, membership, numeric comparison, and boolean all/any. A frozen plan does not grant execution.
+- Compact output renders stage lines and keeps remote failure categories distinct. Effectful resume reviews non-secret answers from the effect stored when the session was resolved.
+
+### Changed
+
+- Workspace and Nix package version **3.9.3**. nix-config and the SYS-5 closure stay on `v3.9.1`.
+
 ## [3.9.2] - 2026-11-22
 
 ### Added

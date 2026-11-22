@@ -1,6 +1,6 @@
 # Progress events v1
 
-Frozen for Pleroma Wave 2. `v3.9.2` documents this contract and does not implement it.
+Frozen for Pleroma Wave 2. `v3.9.2` documents this contract. `v3.9.3` implements it.
 
 Progress is an additive journal event. It does not replace node outcome, exit status, or artifact verification. A missing `total` is indeterminate. Elapsed time never becomes a percentage.
 

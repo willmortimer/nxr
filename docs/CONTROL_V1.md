@@ -1,6 +1,6 @@
 # Child control channel v1
 
-Frozen for Pleroma Wave 2. `v3.9.2` documents this contract and does not implement it.
+Frozen for Pleroma Wave 2. `v3.9.2` documents this contract. `v3.9.3` implements it.
 
 A child opts in by writing `nxr-control-v1` messages. The channel is an inherited descriptor or authenticated Unix socket on Unix, an inherited or named pipe on Windows, and bounded frames on a remote attempt. Each message is bound to the run and node that spawned the child.
 
