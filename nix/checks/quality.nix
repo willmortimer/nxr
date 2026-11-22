@@ -82,7 +82,8 @@ in
       cargo-nextest
       git
       nix
-    ];
+      python3
+    ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.procps ];
     command = ''
       export NXR_SKIP_NIX_INTEGRATION=1
       export NXR_SKIP_WATCH_INTEGRATION=1

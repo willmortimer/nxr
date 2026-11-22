@@ -14,9 +14,12 @@ verify_sha256() {
   local sums="$2"
   local base expected actual
   base="$(basename "$file")"
-  expected="$(awk -v name="$base" '$2 == name { print $1; exit }' "$sums")"
-  if [[ -z "$expected" ]]; then
-    echo "SHA256SUMS has no entry for $base" >&2
+  # Published releases record their build-directory prefix. Match only the
+  # bare asset or that exact prefix; arbitrary paths and duplicate entries
+  # must not silently choose a checksum.
+  expected="$(awk -v name="$base" '$2 == name || $2 == "artifacts/" name { print $1 }' "$sums")"
+  if [[ ! "$expected" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    echo "SHA256SUMS must have one valid entry for $base" >&2
     return 1
   fi
   if command -v sha256sum >/dev/null 2>&1; then

@@ -160,7 +160,7 @@ run_docker() {
   fi
 
   echo "info: docker run $image → $*" >&2
-  "$DOCKER" run --rm --platform "$platform" \
+  "$DOCKER" run --rm --init --platform "$platform" \
     -v "$root:/src:rw" \
     -v "$nix_volume:/nix" \
     "${git_mounts[@]}" \

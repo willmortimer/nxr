@@ -160,6 +160,7 @@
             rust-analyzer
             cargo-nextest
             cargo-deny
+            python3
             pkg-config
           ];
         in
@@ -301,7 +302,8 @@
                 pkgs.cargo-nextest
                 pkgs.rustc
                 pkgs.git
-              ];
+                pkgs.python3
+              ] ++ nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.procps ];
               text = ''
                 ${hermeticRunnerEnv}
                 # Use the ambient flakes-capable `nix` (Determinate on GHA /
@@ -316,7 +318,8 @@
             rust-test-pkgs = nxrLib.mkRepoApp {
               name = "nxr-rust-test-pkgs";
               description = "Run targeted package tests with the pinned toolchain";
-              runtimeInputs = [ pkgs.cargo pkgs.cargo-nextest pkgs.rustc pkgs.git ];
+              runtimeInputs = [ pkgs.cargo pkgs.cargo-nextest pkgs.rustc pkgs.git pkgs.python3 ]
+                ++ nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.procps ];
               text = ''
                 ${hermeticRunnerEnv}
                 exec cargo nextest run --no-fail-fast "$@"
