@@ -156,7 +156,20 @@ impl RunHistoryFile {
         }
         let rendered = serde_json::to_string_pretty(self)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        fs::write(path, rendered)
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let temporary = parent.join(format!(
+            ".{}.{}.{unique}.tmp",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("run-history.json"),
+            std::process::id()
+        ));
+        fs::write(&temporary, rendered)?;
+        fs::rename(&temporary, path)
     }
 }
 

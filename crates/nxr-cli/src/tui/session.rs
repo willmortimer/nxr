@@ -188,7 +188,9 @@ pub fn list_attachable_runs() -> Result<Vec<AttachSession>, AttachSessionError> 
         .map(|session| session.run_id.clone())
         .collect();
 
-    for summary in list_runs()?.into_iter().rev() {
+    // A torn history file must not hide a sidecar that is already on disk.
+    let history = list_runs().unwrap_or_default();
+    for summary in history.into_iter().rev() {
         let session = session_from_history(&summary);
         if sidecar_ids.contains(&session.run_id) {
             continue;
