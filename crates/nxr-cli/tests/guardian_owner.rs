@@ -32,21 +32,23 @@ fn wait_for_file(path: &std::path::Path) -> bool {
     false
 }
 
-fn kill_pid(pid: u32) {
-    #[cfg(unix)]
-    {
-        let _ = Command::new("kill")
-            .args(["-TERM", &pid.to_string()])
-            .status();
-    }
-}
-
 #[test]
 fn a_dead_supervisor_leaves_the_writer_lock_held() {
     let root = tempfile::tempdir().expect("root");
     let target = tempfile::tempdir().expect("target");
     let result = root.path().join("writer.pid");
-    let sleep_argv = serde_json::to_string(&[host_tool("sleep"), "30".to_owned()]).expect("argv");
+    // The Nix Linux sandbox does not let this test signal an unrelated pid.
+    // The writer exits when the stop file appears, which is the same condition
+    // the guardian waits for.
+    let stop = root.path().join("stop");
+    let sleep_argv = serde_json::to_string(&[
+        host_tool("bash"),
+        "-c".to_owned(),
+        "while [ ! -e \"$1\" ]; do sleep 0.05; done".to_owned(),
+        "bash".to_owned(),
+        stop.display().to_string(),
+    ])
+    .expect("argv");
     let echo_argv = serde_json::to_string(&[host_tool("echo"), "done".to_owned()]).expect("argv");
     let supervisor = Command::new(nxr())
         .env("NXR_GUARDIAN_SUPERVISOR_ONCE", "1")
@@ -65,6 +67,7 @@ fn a_dead_supervisor_leaves_the_writer_lock_held() {
         .trim()
         .parse()
         .expect("pid");
+    assert!(writer > 0, "writer pid");
     let blocked = Command::new(nxr())
         .env("NXR_GUARDIAN_SUPERVISOR_ONCE", "1")
         .env("NXR_GUARDIAN_DIRS", target.path())
@@ -79,8 +82,8 @@ fn a_dead_supervisor_leaves_the_writer_lock_held() {
         stderr.contains("already has a running local build") || stderr.contains("guardian"),
         "{stderr}"
     );
-    kill_pid(writer);
-    let released = Instant::now() + Duration::from_secs(5);
+    std::fs::write(&stop, b"stop").expect("stop writer");
+    let released = Instant::now() + Duration::from_secs(10);
     let mut free = false;
     while Instant::now() < released {
         let again = Command::new(nxr())
