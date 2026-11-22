@@ -31,6 +31,7 @@ pub mod idempotency;
 pub mod identity;
 pub mod matrix;
 pub mod memory;
+pub mod onboarding;
 pub mod parameters;
 pub mod plan_exec;
 pub mod planner;
@@ -121,6 +122,10 @@ pub use matrix::{
     validate_matrix_attrs, validate_task_matrix,
 };
 pub use memory::{MemoryParseError, parse_memory};
+pub use onboarding::{
+    ResumeBoundary, destructive_branch_needs_new_grant, headless_interaction, provision_request,
+    recovery_request, resume_boundary,
+};
 pub use parameters::{
     PARAM_ENV_PREFIX, ParameterError, parameter_env_name, parameter_names,
     parameter_values_from_env, resolve_task_parameter_env, resolve_task_parameter_env_layered,

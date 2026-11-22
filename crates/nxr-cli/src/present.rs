@@ -147,6 +147,7 @@ const CAUSAL_RULES: &[CausalRule] = &[
             "result uncertain",
             "status\":\"uncertain",
             "launch acknowledgement unavailable",
+            "lost-disko-ack",
         ],
         label_phrase_only: false,
     },
@@ -179,6 +180,7 @@ pub fn causal_failure_lines(
             lower.contains(rule.label)
         } else {
             rule.phrases.iter().any(|phrase| lower.contains(phrase))
+                || (rule.label == "result uncertain" && uncertain_workflow_token(&lower))
         };
         if !matched {
             continue;
@@ -187,6 +189,15 @@ pub fn causal_failure_lines(
         lines.push(format_causal_line(rule.label, node, detail));
     }
     lines
+}
+
+/// `uncertain` and `lost-disko-ack` are uncertain workflow results.
+///
+/// The token is split on punctuation so `uncertainty` does not match.
+fn uncertain_workflow_token(lower: &str) -> bool {
+    lower
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
+        .any(|token| token == "uncertain" || token == "lost-disko-ack")
 }
 
 fn causal_detail(corpus: &str, phrases: &[&str]) -> String {
