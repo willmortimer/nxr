@@ -1549,7 +1549,7 @@ mod tests {
         spec.leaf = serde_json::json!({
             "kind": "native_command",
             "argv": [
-                "/bin/bash",
+                host_tool("bash"),
                 "-c",
                 "dd if=/dev/zero bs=1000 count=200 status=none >&2; echo out-after-err"
             ]

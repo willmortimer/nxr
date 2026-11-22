@@ -2424,11 +2424,7 @@ mod tests {
         let records = records();
         let dir = tempfile::tempdir().unwrap();
         let supervisor = dir.path().join("supervisor");
-        let true_bin = if std::path::Path::new("/usr/bin/true").exists() {
-            "/usr/bin/true"
-        } else {
-            "/bin/true"
-        };
+        let true_bin = host_tool("true");
         let started = nxr_core::execution_owner::start(
             &supervisor,
             &json!({
@@ -2481,11 +2477,7 @@ mod tests {
         let records = records();
         let dir = tempfile::tempdir().unwrap();
         let supervisor = dir.path().join("supervisor");
-        let true_bin = if std::path::Path::new("/usr/bin/true").exists() {
-            "/usr/bin/true"
-        } else {
-            "/bin/true"
-        };
+        let true_bin = host_tool("true");
         let started = nxr_core::execution_owner::start(
             &supervisor,
             &json!({
@@ -2519,11 +2511,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let supervisor = dir.path().join("supervisor");
         std::fs::create_dir_all(&supervisor).unwrap();
-        let true_bin = if std::path::Path::new("/usr/bin/true").exists() {
-            "/usr/bin/true"
-        } else {
-            "/bin/true"
-        };
+        let true_bin = host_tool("true");
         let started = nxr_core::execution_owner::start(
             &supervisor,
             &json!({
