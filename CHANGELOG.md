@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.9.4] - 2026-11-22
+
+### Added
+
+- Onboarding task graphs select a provision or recovery branch from observed facts. A branch that would format or mutate a disk is marked as needing a new NXI grant. `execution_permit()` stays empty.
+- Resume treats a lost Disko acknowledgement as uncertain and does not retry it. Headless clients receive a record instead of a terminal prompt.
+- Compact output keeps a standalone `uncertain` or `lost-disko-ack` result distinct from an execution failure.
+
+### Changed
+
+- Workspace and Nix package version **3.9.4**. nix-config and the SYS-5 closure stay on `v3.9.1`.
+
 ## [3.9.3] - 2026-11-22
 
 ### Added

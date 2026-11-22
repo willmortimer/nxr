@@ -15,9 +15,9 @@ members = [
 default-members = ["crates/nxr-cli"]
 
 [workspace.package]
-# 3.9.3 publishes progress, dynamic planning, and compact progress rendering.
-# v3.9.2 remains the N1–N4 foundation. nix-config stays on v3.9.1.
-version = "3.9.3"
+# 3.9.4 publishes onboarding branch selection. It does not grant execution.
+# v3.9.3 remains the progress and planning release. nix-config stays on v3.9.1.
+version = "3.9.4"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT"
