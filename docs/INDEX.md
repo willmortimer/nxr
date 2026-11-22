@@ -36,6 +36,10 @@ Product and architecture contract for `nxr`. Prefer these docs over inventing st
 | [TASK_SCHEMA_V3.md](TASK_SCHEMA_V3.md) | Typed node-scoped inputs and reference security classes |
 | [RUN_OBSERVATION.md](RUN_OBSERVATION.md) | Durable run views, bounded logs, diagnostics and artifact verification |
 | [INTERACTION_V1.md](INTERACTION_V1.md) | Resumable input sessions and frontend adapters |
+| [PROGRESS_V1.md](PROGRESS_V1.md) | Frozen stage-progress events |
+| [CONTROL_V1.md](CONTROL_V1.md) | Frozen child progress channel |
+| [PLANNING_V1.md](PLANNING_V1.md) | Frozen dynamic-planning conditions |
+| [PROVISIONING_V1.md](PROVISIONING_V1.md) | Frozen server-tag issuance boundary |
 | [TASK_SCHEMA_V2.md](TASK_SCHEMA_V2.md) | Draft task schema v2 (inputs, outputs, cache, resources) |
 | [plans/2026-09-03-compiler-cache-and-cargo-graph.md](plans/2026-09-03-compiler-cache-and-cargo-graph.md) | Lattice demand: `compilerCache`, cargo `cohort`, cargo-metadata affected |
 | [MONOREPO_VIEWS.md](MONOREPO_VIEWS.md) | Category/namespace filters; optional non-authoritative projects file |

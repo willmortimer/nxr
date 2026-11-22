@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nxr.dev/schemas/control-v1.schema.json",
+  "title": "nxr-control-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "node_id"],
+  "properties": {
+    "schema_version": { "const": "nxr-control-v1" },
+    "kind": {
+      "enum": ["stage_start", "stage_update", "stage_complete", "diagnostic", "artifact_declaration"]
+    },
+    "node_id": { "type": "string", "minLength": 1 },
+    "stage_id": { "type": "string", "minLength": 1 },
+    "stage_label": { "type": "string", "minLength": 1 },
+    "completed": { "type": "integer", "minimum": 0 },
+    "total": { "type": "integer", "minimum": 0 },
+    "unit": {
+      "oneOf": [
+        { "enum": ["steps", "tests", "files", "bytes", "artifacts", "samples", "operations"] },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["custom"],
+          "properties": { "custom": { "type": "string", "minLength": 1 } }
+        }
+      ]
+    },
+    "state": { "enum": ["pending", "running", "succeeded", "failed", "skipped", "indeterminate"] },
+    "severity": { "enum": ["info", "warning", "error"] },
+    "code": { "type": "string" },
+    "message": { "type": "string" },
+    "artifact": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "enum": ["stage_start", "stage_update", "stage_complete"] } } },
+      "then": { "required": ["stage_id", "stage_label", "unit", "state"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "diagnostic" } } },
+      "then": { "required": ["severity", "message"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "artifact_declaration" } } },
+      "then": { "required": ["artifact"] }
+    }
+  ]
+}

@@ -7,14 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.9.2] - 2026-11-22
+
 ### Added
 
+- Typed task schema v3, `nxr-input-values-v1`, and node-scoped input resolution. V1 and v2 declarations are unchanged. V2 rejects v3 types instead of ignoring them.
+- `nxr-run-view-v1` projections, bounded log and diagnostic queries, and digest-verified artifact references. Inherited child streams are reported as uncaptured. Truncation is explicit.
+- `nxr-interaction-v1` sessions for terminal and headless resume. A canonical `path:` reference keeps its local workspace when resumed from another directory.
+- Opt-in compact output. Existing output modes and raw inherited stdio stay the default.
+- Frozen Wave 2 contracts for progress events, child control messages, dynamic conditions, and server-only Tailscale issuance. This tag does not implement those contracts.
 - An execution receipt marks a toolchain that was not entered as `not entered`. A verified shell probe uses `command -v` and `--version`. An absent wrapper stays `not entered`.
 - MCP `runs_get_receipt` returns that receipt only when the stored operation and workspace match the request, then copies the supervisor events already served by `nxr session events`.
 - MCP `runs_get_diagnostics` classifies the existing run log. It does not call a model or create a second store.
 - A `lattice: diagnostic-artifact` log line is classified as `diagnostic_artifact` and carries the recording digest and object path. NXR does not interpret the diagnosis.
 - `operations_plan_batch` reports coverage as `empty`, `complete`, `partial`, or `unknown` without authorizing execution.
 - MCP `operations_start` uses the process local budget and takes an `fs2` lock on the operation's effective Cargo target directory.
+
+### Changed
+
+- Workspace and Nix package version **3.9.2**. NixPlane, Lattice, and nix-config remain pinned to `v3.9.1`. This release does not change the SYS-5 closure.
 
 ## [3.9.1] - 2026-11-16
 
