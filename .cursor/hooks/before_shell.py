@@ -108,6 +108,26 @@ def local_nxr_task(text: str) -> bool:
     return bool(match and match.group(1) in LOCAL_TASKS)
 
 
+def allowed_task_chain(text: str) -> bool:
+    """Every segment is an allowlisted task. A cargo or shell segment still asks."""
+    if any(token in text for token in (";", "||", "|", "`", "$(")):
+        return False
+    parts = [part.strip() for part in text.split("&&")]
+    if len(parts) < 2 or any(not part for part in parts):
+        return False
+    return all(part in DISCOVERY or local_nxr_task(part) for part in parts)
+
+
+def allowed_discovery_page(text: str) -> bool:
+    """nxr list piped to head. A pipe to another command still asks."""
+    return bool(
+        re.fullmatch(
+            r"(?:nxr list|nxr task|nxr --help|nxr -h|nxr --version|nxr -V|nxr)\s*\|\s*head(?:\s+-n)?\s+-?\d+",
+            text,
+        )
+    )
+
+
 def confirms_nix(text: str) -> bool:
     """nix develop asks. nix build asks unless every output is a flake check."""
     if re.search(r"(^|[;&|`(]\s*)nix\s+develop\b", text):
@@ -139,7 +159,12 @@ def decide(command: str) -> dict:
         return ask(
             "This switches a NixOS generation. Confirm the prepared closure before it activates."
         )
-    if text in DISCOVERY or local_nxr_task(text):
+    if (
+        text in DISCOVERY
+        or local_nxr_task(text)
+        or allowed_task_chain(text)
+        or allowed_discovery_page(text)
+    ):
         return {"permission": "allow"}
     if isolated_package_cargo(text):
         return {"permission": "allow"}
