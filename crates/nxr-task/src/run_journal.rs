@@ -16,10 +16,12 @@ pub const RUN_EVENT_V2: &str = "run-event-v2";
 
 use crate::artifact_ref::{ArtifactRef, VerifiedArtifactRef};
 use crate::events::Event;
+use crate::progress::{PROGRESS_EVENT_TYPE, ProgressProjector, ProgressUpdate};
 use crate::run_view::{RunPlanMetadata, RunView};
 
 pub const MAX_LOG_SLICE_BYTES: usize = 64 * 1024;
 pub const MAX_FOREGROUND_PAGE: u64 = 1024;
+const PROGRESS_REPLAY_PAGE: u64 = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -185,6 +187,7 @@ impl RunJournal {
                ON foreground_artifacts(node, sequence);",
         )
         .map_err(|err| format!("migrate journal: {err}"))?;
+        ensure_progress_node_column(&conn)?;
         Ok(Self {
             dir,
             conn,
@@ -518,6 +521,61 @@ impl RunJournal {
         Ok(())
     }
 
+    /// Persist one progress snapshot as journal `event_type` `"progress"`.
+    ///
+    /// The body is the `nxr-progress-v1` document. Log chunk bytes are not
+    /// written or modified. An identical consecutive snapshot for the same
+    /// node is not stored again. The foreground plan must already be frozen,
+    /// and `update.node_id` must be one of its nodes.
+    ///
+    /// Runner hook: `parse_control_message(frame, spawn_node_id)`, then call
+    /// this only for [`crate::control::ControlOutcome::Progress`]. Diagnostics
+    /// and artifact declarations stay untrusted side data.
+    ///
+    /// Returns `Ok(None)` when the snapshot was coalesced.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the snapshot, plan, or commit is invalid.
+    pub fn record_progress(&mut self, update: &ProgressUpdate) -> Result<Option<u64>, String> {
+        update.validate()?;
+        let plan = read_foreground_plan(&self.conn)?;
+        if !plan.dependencies.contains_key(&update.node_id) {
+            let node_id = &update.node_id;
+            return Err(format!("node {node_id} is outside the recorded plan"));
+        }
+        let body = serde_json::to_string(update).map_err(|err| err.to_string())?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| format!("begin progress: {err}"))?;
+        if last_progress_for_node(&tx, &update.node_id)?.as_ref() == Some(update) {
+            return Ok(None);
+        }
+        let sequence = nonnegative_query(&tx, "SELECT COALESCE(MAX(sequence), 0) FROM events", [])?
+            .checked_add(1)
+            .ok_or("event sequence overflow")?;
+        let timestamp = crate::format_rfc3339_utc(std::time::SystemTime::now());
+        tx.execute(
+            "INSERT INTO events (
+                sequence, run_id, operation_id, timestamp, event_type, source, exit_code, log_ref, body, progress_node
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 'progress', NULL, NULL, ?6, ?7)",
+            rusqlite::params![
+                sqlite_i64(sequence)?,
+                plan.run_id,
+                plan.operation_id,
+                timestamp,
+                PROGRESS_EVENT_TYPE,
+                body,
+                update.node_id,
+            ],
+        )
+        .map_err(|err| format!("insert progress: {err}"))?;
+        tx.commit()
+            .map_err(|err| format!("commit progress: {err}"))?;
+        Ok(Some(sequence))
+    }
+
     /// Store a log chunk once, under its content hash.
     ///
     /// A second write of `log_ref` with different bytes is an error.
@@ -612,7 +670,10 @@ impl RunJournal {
     pub fn replay_after(&self, after: u64, limit: u64) -> Result<Vec<JournalEvent>, String> {
         let mut statement = self
             .conn
-            .prepare("SELECT body FROM events WHERE sequence > ?1 ORDER BY sequence ASC LIMIT ?2")
+            .prepare(
+                "SELECT sequence, run_id, operation_id, timestamp, event_type, source, exit_code, log_ref, body
+                 FROM events WHERE sequence > ?1 ORDER BY sequence ASC LIMIT ?2",
+            )
             .map_err(|err| format!("prepare replay: {err}"))?;
         let rows = statement
             .query_map(
@@ -620,13 +681,54 @@ impl RunJournal {
                     i64::try_from(after).unwrap_or(0),
                     i64::try_from(limit).unwrap_or(0)
                 ],
-                |row| row.get::<_, String>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<i32>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, String>(8)?,
+                    ))
+                },
             )
             .map_err(|err| format!("query replay: {err}"))?;
         let mut events = Vec::new();
         for row in rows {
-            let body = row.map_err(|err| format!("read replay row: {err}"))?;
-            events.push(serde_json::from_str(&body).map_err(|err| format!("parse event: {err}"))?);
+            let (
+                sequence,
+                run_id,
+                operation_id,
+                timestamp,
+                event_type,
+                source,
+                exit_code,
+                log_ref,
+                body,
+            ) = row.map_err(|err| format!("read replay row: {err}"))?;
+            if event_type == PROGRESS_EVENT_TYPE {
+                let update: ProgressUpdate = serde_json::from_str(&body)
+                    .map_err(|err| format!("parse progress event: {err}"))?;
+                update.validate()?;
+                events.push(JournalEvent {
+                    schema_version: update.schema_version,
+                    run_id,
+                    operation_id,
+                    sequence: sqlite_u64(sequence)?,
+                    timestamp,
+                    event_type,
+                    source,
+                    exit_code,
+                    log_ref,
+                });
+            } else {
+                events.push(
+                    serde_json::from_str(&body).map_err(|err| format!("parse event: {err}"))?,
+                );
+            }
         }
         Ok(events)
     }
@@ -818,7 +920,35 @@ impl RunJournalReader {
         let (diagnostics, truncated) = self.diagnostics_through(None, through)?;
         view.diagnostics = diagnostics;
         view.diagnostics_truncated = truncated;
+        view.apply_progress_projection(self.progress_projection()?)?;
         Ok(view)
+    }
+
+    /// Latest stage per node after coalescing and bounding the progress journal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a progress body cannot be read.
+    pub fn progress_projection(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, crate::progress::NodeProgressProjection>, String>
+    {
+        let mut projector = ProgressProjector::default();
+        let mut after = 0u64;
+        loop {
+            let page = read_progress_page(&self.conn, after, PROGRESS_REPLAY_PAGE)?;
+            if page.is_empty() {
+                break;
+            }
+            for (sequence, update) in page {
+                if sequence <= after {
+                    return Err("progress replay cursor did not advance".into());
+                }
+                after = sequence;
+                projector.push(update);
+            }
+        }
+        Ok(projector.finish())
     }
 
     /// Bounded normalized diagnostics from each selected node's latest 64 KiB
@@ -1082,6 +1212,91 @@ fn read_foreground_plan(conn: &Connection) -> Result<RunPlanMetadata, String> {
         serde_json::from_str(&body).map_err(|error| format!("invalid foreground plan: {error}"))?;
     plan.validate()?;
     Ok(plan)
+}
+
+fn ensure_progress_node_column(conn: &Connection) -> Result<(), String> {
+    let names = {
+        let mut statement = conn
+            .prepare("PRAGMA table_info(events)")
+            .map_err(|err| format!("inspect journal events: {err}"))?;
+        statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|err| format!("inspect journal events: {err}"))?
+            .collect::<Result<Vec<String>, rusqlite::Error>>()
+            .map_err(|err| format!("inspect journal events: {err}"))?
+    };
+    if !names.iter().any(|name| name == "progress_node") {
+        conn.execute("ALTER TABLE events ADD COLUMN progress_node TEXT", [])
+            .map_err(|err| format!("migrate progress index: {err}"))?;
+    }
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS events_progress_node ON events(progress_node, sequence)",
+        [],
+    )
+    .map_err(|err| format!("index progress events: {err}"))?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS events_type_sequence ON events(event_type, sequence)",
+        [],
+    )
+    .map_err(|err| format!("index journal event types: {err}"))?;
+    Ok(())
+}
+
+fn last_progress_for_node(
+    conn: &Connection,
+    node_id: &str,
+) -> Result<Option<ProgressUpdate>, String> {
+    let body: Option<String> = conn
+        .query_row(
+            "SELECT body FROM events WHERE progress_node = ?1 ORDER BY sequence DESC LIMIT 1",
+            [node_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|err| format!("read latest progress: {err}"))?;
+    let Some(body) = body else {
+        return Ok(None);
+    };
+    let update: ProgressUpdate =
+        serde_json::from_str(&body).map_err(|err| format!("parse progress event: {err}"))?;
+    update.validate()?;
+    if update.node_id != node_id {
+        return Err("progress index does not match its body".into());
+    }
+    Ok(Some(update))
+}
+
+fn read_progress_page(
+    conn: &Connection,
+    after: u64,
+    limit: u64,
+) -> Result<Vec<(u64, ProgressUpdate)>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT sequence, body FROM events
+             WHERE event_type = ?1 AND sequence > ?2
+             ORDER BY sequence ASC LIMIT ?3",
+        )
+        .map_err(|err| format!("prepare progress replay: {err}"))?;
+    let rows = statement
+        .query_map(
+            rusqlite::params![
+                PROGRESS_EVENT_TYPE,
+                sqlite_i64(after)?,
+                sqlite_i64(limit.min(PROGRESS_REPLAY_PAGE))?
+            ],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        )
+        .map_err(|err| format!("query progress replay: {err}"))?;
+    let mut page = Vec::new();
+    for row in rows {
+        let (sequence, body) = row.map_err(|err| format!("read progress replay: {err}"))?;
+        let update: ProgressUpdate =
+            serde_json::from_str(&body).map_err(|err| format!("parse progress event: {err}"))?;
+        update.validate()?;
+        page.push((sqlite_u64(sequence)?, update));
+    }
+    Ok(page)
 }
 
 #[cfg(test)]
@@ -1612,5 +1827,275 @@ mod tests {
             .execute("DELETE FROM foreground_events WHERE sequence = 1", [])
             .expect("remove committed row");
         assert!(reader.view().is_err());
+    }
+
+    fn progress_update(
+        node: &str,
+        stage_id: &str,
+        completed: Option<u64>,
+        total: Option<u64>,
+    ) -> ProgressUpdate {
+        ProgressUpdate {
+            schema_version: crate::progress::PROGRESS_V1.into(),
+            node_id: node.into(),
+            stage_id: stage_id.into(),
+            stage_label: format!("label-{stage_id}"),
+            completed,
+            total,
+            unit: crate::progress::ProgressUnit::Standard(crate::progress::StandardUnit::Tests),
+            state: crate::progress::ProgressState::Running,
+        }
+    }
+
+    fn log_names(dir: &std::path::Path) -> Vec<String> {
+        let mut names = std::fs::read_dir(dir.join("logs"))
+            .expect("logs")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn progress_is_journaled_without_touching_log_bytes() {
+        let dir = tempfile::tempdir().expect("temp");
+        let mut journal = RunJournal::open(dir.path()).expect("open");
+        journal
+            .set_foreground_plan(&foreground_plan())
+            .expect("plan");
+        journal
+            .append(event(1, "started"))
+            .expect("execution event");
+        journal
+            .record_foreground_event(&Event::StdoutChunk {
+                node: "leaf".into(),
+                payload: crate::OutputPayload::utf8("hello-log"),
+            })
+            .expect("stdout");
+        let logs_before = log_names(dir.path());
+        let reader = RunJournalReader::open(dir.path()).expect("reader");
+        let before = reader
+            .read_node_log("leaf", LogStream::Stdout, 0, 100)
+            .expect("stdout bytes")
+            .bytes;
+        let update = progress_update("leaf", "compile", Some(2), Some(5));
+        let sequence = journal
+            .record_progress(&update)
+            .expect("progress")
+            .expect("stored");
+        assert_eq!(sequence, 2);
+        assert_eq!(
+            reader
+                .read_node_log("leaf", LogStream::Stdout, 0, 100)
+                .expect("stdout unchanged")
+                .bytes,
+            before
+        );
+        assert_eq!(log_names(dir.path()), logs_before);
+        assert!(!String::from_utf8_lossy(&before).contains(PROGRESS_EVENT_TYPE));
+        let (event_type, log_ref, body): (String, Option<String>, String) = journal
+            .conn
+            .query_row(
+                "SELECT event_type, log_ref, body FROM events WHERE sequence = 2",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("progress row");
+        assert_eq!(event_type, PROGRESS_EVENT_TYPE);
+        assert!(log_ref.is_none());
+        let stored: ProgressUpdate = serde_json::from_str(&body).expect("body");
+        assert_eq!(stored, update);
+        let chunks: i64 = journal
+            .conn
+            .query_row("SELECT COUNT(*) FROM log_chunks", [], |row| row.get(0))
+            .expect("chunks");
+        assert_eq!(chunks, 1);
+        let replayed = journal.replay_after(0, 10).expect("replay");
+        assert_eq!(replayed[0].event_type, "started");
+        assert_eq!(replayed[1].event_type, PROGRESS_EVENT_TYPE);
+        assert!(replayed[1].log_ref.is_none());
+        assert_eq!(replayed[1].schema_version, crate::progress::PROGRESS_V1);
+        let view = reader.view().expect("view");
+        assert_eq!(view.nodes["leaf"].stages["compile"].completed, Some(2));
+        assert_eq!(view.state, crate::run_view::RunState::Pending);
+        assert!(view.nodes["leaf"].outcome.is_none());
+        drop(reader);
+        drop(journal);
+        let reopened = RunJournalReader::open(dir.path())
+            .expect("reopen")
+            .view()
+            .expect("replayed view");
+        assert_eq!(reopened.nodes["leaf"].stages, view.nodes["leaf"].stages);
+        let mut reduced = crate::run_view::RunView::new(foreground_plan()).expect("reduced");
+        reduced
+            .apply_progress_events([update])
+            .expect("same events");
+        assert_eq!(reduced.nodes["leaf"].stages, reopened.nodes["leaf"].stages);
+    }
+
+    #[test]
+    fn indeterminate_progress_replays_without_a_total() {
+        let dir = tempfile::tempdir().expect("temp");
+        let mut journal = RunJournal::open(dir.path()).expect("open");
+        journal
+            .set_foreground_plan(&foreground_plan())
+            .expect("plan");
+        let update = progress_update("leaf", "compile", Some(7), None);
+        journal.record_progress(&update).expect("progress");
+        let body: String = journal
+            .conn
+            .query_row(
+                "SELECT body FROM events WHERE event_type = 'progress'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("body");
+        assert!(!body.contains("\"total\""));
+        assert!(!body.contains("percent"));
+        assert!(!body.contains("elapsed"));
+        let stage = &RunJournalReader::open(dir.path())
+            .expect("reader")
+            .view()
+            .expect("view")
+            .nodes["leaf"]
+            .stages["compile"];
+        assert!(stage.is_indeterminate());
+        assert_eq!(stage.completed, Some(7));
+        assert_eq!(stage.total, None);
+        assert_eq!(stage.state, crate::progress::ProgressState::Running);
+    }
+
+    #[test]
+    fn progress_coalesce_and_bound_survive_replay() {
+        let dir = tempfile::tempdir().expect("temp");
+        let mut journal = RunJournal::open(dir.path()).expect("open");
+        journal
+            .set_foreground_plan(&foreground_plan())
+            .expect("plan");
+        let repeated = progress_update("leaf", "compile", Some(1), Some(9));
+        assert!(journal.record_progress(&repeated).expect("first").is_some());
+        assert!(
+            journal
+                .record_progress(&repeated)
+                .expect("duplicate")
+                .is_none()
+        );
+        let stored: i64 = journal
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE event_type = 'progress'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(stored, 1);
+        let changed = progress_update("leaf", "compile", Some(2), Some(9));
+        journal.record_progress(&changed).expect("change");
+        let mut events = Vec::new();
+        for index in 0..=crate::progress::MAX_PROGRESS_EVENTS_PER_NODE {
+            let update = progress_update(
+                "leaf",
+                &format!("s{index:04}"),
+                Some(u64::try_from(index).expect("index")),
+                Some(90),
+            );
+            events.push(update.clone());
+            assert!(
+                journal
+                    .record_progress(&update)
+                    .expect("distinct")
+                    .is_some()
+            );
+        }
+        let view = RunJournalReader::open(dir.path())
+            .expect("reader")
+            .view()
+            .expect("view");
+        assert!(view.nodes["leaf"].progress_truncated);
+        assert!(!view.nodes["leaf"].stages.contains_key("compile"));
+        assert!(!view.nodes["leaf"].stages.contains_key("s0000"));
+        assert!(view.nodes["leaf"].stages.contains_key(&format!(
+            "s{:04}",
+            crate::progress::MAX_PROGRESS_EVENTS_PER_NODE
+        )));
+        drop(journal);
+        let replayed = RunJournalReader::open(dir.path())
+            .expect("reopen")
+            .view()
+            .expect("replay");
+        assert_eq!(view.nodes["leaf"].stages, replayed.nodes["leaf"].stages);
+        assert_eq!(
+            view.nodes["leaf"].progress_truncated,
+            replayed.nodes["leaf"].progress_truncated
+        );
+        let mut reduced = crate::run_view::RunView::new(foreground_plan()).expect("reduced");
+        let mut input = vec![repeated, changed];
+        input.extend(events);
+        reduced.apply_progress_events(input).expect("same input");
+        assert_eq!(reduced.nodes["leaf"].stages, replayed.nodes["leaf"].stages);
+        assert_eq!(
+            reduced.nodes["leaf"].progress_truncated,
+            replayed.nodes["leaf"].progress_truncated
+        );
+    }
+
+    #[test]
+    fn a_child_progress_node_outside_the_spawn_plan_is_rejected() {
+        let dir = tempfile::tempdir().expect("temp");
+        let mut journal = RunJournal::open(dir.path()).expect("open");
+        let update = progress_update("leaf", "compile", Some(1), Some(1));
+        assert!(journal.record_progress(&update).is_err());
+        journal
+            .set_foreground_plan(&foreground_plan())
+            .expect("plan");
+        let mismatch = crate::control::parse_control_message(
+            br#"{"schema_version":"nxr-control-v1","kind":"stage_update","node_id":"foreign","stage_id":"compile","stage_label":"compile","completed":1,"total":2,"unit":"tests","state":"running"}"#,
+            "leaf",
+        );
+        assert!(mismatch.is_err());
+        let foreign = progress_update("foreign", "compile", Some(1), Some(2));
+        assert!(journal.record_progress(&foreign).is_err());
+        let accepted = crate::control::parse_control_message(
+            br#"{"schema_version":"nxr-control-v1","kind":"stage_update","node_id":"leaf","stage_id":"compile","stage_label":"compile","completed":1,"total":2,"unit":"tests","state":"running"}"#,
+            "leaf",
+        )
+        .expect("spawn match");
+        let crate::control::ControlOutcome::Progress(update) = accepted else {
+            panic!("stage update was not progress");
+        };
+        journal
+            .record_progress(&update)
+            .expect("record spawn progress");
+        journal
+            .record_foreground_event(&Event::StdoutChunk {
+                node: "leaf".into(),
+                payload: crate::OutputPayload::utf8(
+                    "{\"schema_version\":\"nxr-control-v1\",\"kind\":\"stage_complete\",\"node_id\":\"leaf\",\"stage_id\":\"other\",\"stage_label\":\"other\",\"unit\":\"tests\",\"state\":\"succeeded\"}\n",
+                ),
+            })
+            .expect("child bytes stay logs");
+        let count: i64 = journal
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE event_type = 'progress'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(count, 1);
+        let view = RunJournalReader::open(dir.path())
+            .expect("reader")
+            .view()
+            .expect("view");
+        assert!(view.nodes["leaf"].stages.contains_key("compile"));
+        assert!(!view.nodes["leaf"].stages.contains_key("other"));
+        assert!(view.nodes["leaf"].outcome.is_none());
+        assert!(view.reported_outcome.is_none());
     }
 }

@@ -18,6 +18,7 @@ pub mod ci_metadata;
 pub mod coalesce;
 pub mod compiler_cache;
 pub mod context;
+pub mod control;
 pub mod dirty_freeze;
 pub mod duration;
 pub mod economics;
@@ -33,7 +34,9 @@ pub mod memory;
 pub mod parameters;
 pub mod plan_exec;
 pub mod planner;
+pub mod planning;
 pub mod process;
+pub mod progress;
 pub mod qualification;
 pub mod receipt;
 pub mod remote_execution;
@@ -80,6 +83,10 @@ pub use context::{
     resolve_task_context, secret_delivery_mode, secret_provider_mode,
     serialized_plan_excludes_value,
 };
+pub use control::{
+    CONTROL_V1, ControlOutcome, DiagnosticSeverity, UntrustedArtifactDeclaration,
+    UntrustedDiagnostic, parse_control_message,
+};
 pub use dirty_freeze::{freeze_dirty_manifest, frozen_manifest};
 pub use duration::{format_duration, parse_duration};
 pub use events::{
@@ -124,10 +131,19 @@ pub use plan_exec::{
     build_execution_plan, build_execution_plan_roots, build_serial_plan,
 };
 pub use planner::{PlanError, plan_mermaid, plan_serial, plan_serial_union, plan_text};
+pub use planning::{
+    ConditionalBranch, DISCOVERY_SCHEMA, DependentQuestion, Discovery, DiscoverySource,
+    FROZEN_PLAN_SCHEMA, FrozenPlan, NullDiscovery, PlanRequest, PlanningError, discovery_digest,
+    evaluate_condition, plan_after_answers,
+};
 pub use process::{
     ProcessDefinition, ProcessNameError, ProcessReadiness, ProcessRestart, ReadinessHttp,
     ReadinessTcp, dependency_base_name, parse_processes, sanitize_process_log_name,
     validate_node_id,
+};
+pub use progress::{
+    MAX_PROGRESS_EVENTS_PER_NODE, PROGRESS_EVENT_TYPE, PROGRESS_V1, ProgressState, ProgressUnit,
+    ProgressUpdate, StageProgress, StandardUnit, project_progress,
 };
 pub use receipt::{
     ExecutionReceipt, NOT_ENTERED, RECEIPT_SCHEMA, ReceiptEvent, ShellProbe, ToolObservation,

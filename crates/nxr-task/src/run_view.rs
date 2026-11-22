@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::artifact_ref::{ArtifactRef, VerifiedArtifactRef};
 use crate::events::{Event, NodeOutcome, RunOutcome};
+use crate::progress::{NodeProgressProjection, ProgressUpdate, StageProgress, project_progress};
 
 pub const RUN_VIEW_V1: &str = "nxr-run-view-v1";
 pub const RUN_PLAN_V1: &str = "nxr-run-plan-v1";
@@ -106,6 +107,17 @@ pub struct NodeView {
     pub artifacts: Vec<ArtifactRef>,
     #[serde(default)]
     pub artifacts_truncated: bool,
+    /// Latest stage per `stage_id`. Empty projections omit this field so a
+    /// progress-free view stays compatible with `nxr-run-view-v1`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stages: BTreeMap<String, StageProgress>,
+    /// Older distinct progress snapshots for this node were dropped.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub progress_truncated: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -158,6 +170,8 @@ impl RunView {
                         terminal_sequence: None,
                         artifacts: Vec::new(),
                         artifacts_truncated: false,
+                        stages: BTreeMap::new(),
+                        progress_truncated: false,
                     },
                 )
             })
@@ -363,6 +377,52 @@ impl RunView {
             .insert(node.into(), message.chars().take(1024).collect());
         self.last_sequence = sequence;
         self.refresh_summary();
+        Ok(())
+    }
+
+    /// Replace stage state with a reduction of `events`.
+    ///
+    /// Identical consecutive snapshots coalesce. Each node keeps at most 64
+    /// distinct snapshots, and older ones set [`NodeView::progress_truncated`].
+    /// The latest snapshot wins per `(node_id, stage_id)`. Progress never
+    /// changes node outcome, run outcome, or the execution cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an event names a node outside the plan. Stage
+    /// state is left unchanged in that case.
+    pub fn apply_progress_events<I>(&mut self, events: I) -> Result<(), String>
+    where
+        I: IntoIterator<Item = ProgressUpdate>,
+    {
+        self.apply_progress_projection(project_progress(events))
+    }
+
+    /// Install an already bounded progress projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the projection names a node outside the plan.
+    pub fn apply_progress_projection(
+        &mut self,
+        projection: BTreeMap<String, NodeProgressProjection>,
+    ) -> Result<(), String> {
+        for node_id in projection.keys() {
+            self.node(node_id)?;
+        }
+        for node in self.nodes.values_mut() {
+            node.stages.clear();
+            node.progress_truncated = false;
+        }
+        for (node_id, node_progress) in projection {
+            let node = self.node_mut(&node_id)?;
+            node.progress_truncated = node_progress.truncated;
+            node.stages = node_progress
+                .stages
+                .into_iter()
+                .map(|(stage_id, update)| (stage_id, StageProgress::from_update(&update)))
+                .collect();
+        }
         Ok(())
     }
 
@@ -788,5 +848,143 @@ mod tests {
             replay.summary.artifact_failures["leaf"],
             "unretained artifact failed verification"
         );
+    }
+
+    fn stage(
+        node: &str,
+        stage_id: &str,
+        completed: Option<u64>,
+        total: Option<u64>,
+    ) -> crate::progress::ProgressUpdate {
+        crate::progress::ProgressUpdate {
+            schema_version: crate::progress::PROGRESS_V1.into(),
+            node_id: node.into(),
+            stage_id: stage_id.into(),
+            stage_label: format!("label-{stage_id}"),
+            completed,
+            total,
+            unit: crate::progress::ProgressUnit::Standard(crate::progress::StandardUnit::Tests),
+            state: crate::progress::ProgressState::Running,
+        }
+    }
+
+    #[test]
+    fn progress_replay_matches_and_does_not_decide_the_run() {
+        let mut events = vec![
+            stage("leaf", "compile", Some(1), None),
+            stage("leaf", "compile", Some(2), Some(4)),
+            stage("dependent", "package", Some(1), Some(1)),
+        ];
+        events[2].state = crate::progress::ProgressState::Succeeded;
+        let mut live = RunView::new(plan()).expect("live");
+        let mut replay = RunView::new(plan()).expect("replay");
+        live.apply_progress_events(events.clone()).expect("live");
+        let wire = serde_json::to_string(&events).expect("wire");
+        let decoded: Vec<crate::progress::ProgressUpdate> =
+            serde_json::from_str(&wire).expect("decoded");
+        replay.apply_progress_events(decoded).expect("replay");
+        assert_eq!(live, replay);
+        assert!(live.nodes["leaf"].stages["compile"].total.is_some());
+        assert_eq!(live.state, RunState::Pending);
+        assert!(live.nodes["leaf"].outcome.is_none());
+        assert!(live.reported_outcome.is_none());
+        assert!(!live.terminal_receipt_observed);
+        live.apply(
+            1,
+            &Event::node_finished("leaf", Some(1), NodeOutcome::Failed, None),
+        )
+        .expect("failure");
+        live.apply_progress_events(events)
+            .expect("progress cannot repair");
+        assert_eq!(live.nodes["leaf"].outcome, Some(NodeOutcome::Failed));
+        assert_eq!(live.state, RunState::Failed);
+        assert_eq!(live.reported_outcome, None);
+    }
+
+    #[test]
+    fn log_bytes_do_not_become_stage_progress() {
+        let mut view = RunView::new(plan()).expect("view");
+        view.apply(1, &Event::node_started("leaf")).expect("start");
+        view.apply(
+            2,
+            &Event::StdoutChunk {
+                node: "leaf".into(),
+                payload: crate::OutputPayload::utf8(
+                    "{\"schema_version\":\"nxr-progress-v1\",\"node_id\":\"leaf\",\"stage_id\":\"compile\",\"stage_label\":\"compile\",\"completed\":1,\"total\":2,\"unit\":\"tests\",\"state\":\"succeeded\"}",
+                ),
+            },
+        )
+        .expect("bytes");
+        assert!(view.nodes["leaf"].stages.is_empty());
+        assert!(!view.nodes["leaf"].progress_truncated);
+        assert_eq!(view.state, RunState::Running);
+        assert!(!view.terminal_receipt_observed);
+    }
+
+    #[test]
+    fn indeterminate_progress_has_no_total_and_keeps_its_state() {
+        let mut view = RunView::new(plan()).expect("view");
+        view.apply_progress_events([stage("leaf", "compile", Some(3), None)])
+            .expect("progress");
+        let stage = &view.nodes["leaf"].stages["compile"];
+        assert!(stage.is_indeterminate());
+        assert!(stage.indeterminate);
+        assert_eq!(stage.completed, Some(3));
+        assert_eq!(stage.total, None);
+        assert_eq!(stage.state, crate::progress::ProgressState::Running);
+        let encoded = serde_json::to_value(stage).expect("json");
+        assert!(encoded.get("total").is_none());
+        assert!(encoded.get("percent").is_none());
+        assert!(encoded.get("elapsed_ms").is_none());
+    }
+
+    #[test]
+    fn progress_coalesce_and_bound_keep_the_latest_stages() {
+        let repeated = stage("leaf", "compile", Some(1), Some(9));
+        let mut events = vec![repeated; crate::progress::MAX_PROGRESS_EVENTS_PER_NODE + 8];
+        events.push(stage("leaf", "compile", Some(4), Some(9)));
+        let mut view = RunView::new(plan()).expect("view");
+        view.apply_progress_events(events).expect("coalesced");
+        assert!(!view.nodes["leaf"].progress_truncated);
+        assert_eq!(view.nodes["leaf"].stages["compile"].completed, Some(4));
+
+        let mut distinct = Vec::new();
+        for index in 0..=crate::progress::MAX_PROGRESS_EVENTS_PER_NODE {
+            distinct.push(stage(
+                "leaf",
+                &format!("s{index:04}"),
+                Some(u64::try_from(index).expect("index")),
+                Some(90),
+            ));
+        }
+        let mut bounded = RunView::new(plan()).expect("bounded");
+        let mut again = RunView::new(plan()).expect("again");
+        bounded
+            .apply_progress_events(distinct.clone())
+            .expect("bound");
+        again.apply_progress_events(distinct).expect("replay");
+        assert_eq!(bounded, again);
+        assert!(bounded.nodes["leaf"].progress_truncated);
+        assert_eq!(
+            bounded.nodes["leaf"].stages.len(),
+            crate::progress::MAX_PROGRESS_EVENTS_PER_NODE
+        );
+        assert!(!bounded.nodes["leaf"].stages.contains_key("s0000"));
+        assert!(bounded.nodes["leaf"].stages.contains_key(&format!(
+            "s{:04}",
+            crate::progress::MAX_PROGRESS_EVENTS_PER_NODE
+        )));
+        assert_eq!(bounded.state, RunState::Pending);
+    }
+
+    #[test]
+    fn progress_for_an_unplanned_node_is_rejected() {
+        let mut view = RunView::new(plan()).expect("view");
+        let error = view
+            .apply_progress_events([stage("foreign", "compile", Some(1), Some(1))])
+            .expect_err("foreign");
+        assert!(error.contains("foreign"));
+        assert!(view.nodes["leaf"].stages.is_empty());
+        assert!(!view.nodes["leaf"].progress_truncated);
     }
 }

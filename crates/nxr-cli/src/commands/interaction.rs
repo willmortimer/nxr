@@ -10,6 +10,7 @@ use dialoguer::{Confirm, Input, Select};
 use fs2::FileExt;
 use nxr_core::EnvironmentPolicy;
 use nxr_nix::OptionalNixFlags;
+use nxr_task::catalog::EffectClass;
 use nxr_task::interaction::{
     CreateInteraction, DEFAULT_INTERACTION_TTL_SECS, InputAnswer, InputRequest,
     InteractionCompletion, InteractionError, InteractionFrontend, InteractionSession,
@@ -24,6 +25,7 @@ use crate::commands::common::WorkspaceSnapshot;
 use crate::commands::session::{LocalBudget, SessionStart};
 use crate::commands::task::TaskRequest;
 use crate::commands::task_params::{TaskInputOptions, collect_plan_inputs, resolve_plan_inputs};
+use crate::output_task::present;
 use crate::runner_output::RunnerOutput;
 
 const DESCRIPTOR_SCHEMA: &str = "nxr-interaction-invocation-v1";
@@ -63,6 +65,9 @@ struct FrozenInvocation {
     offline: bool,
     accept_flake_config: bool,
     no_write_lock_file: bool,
+    /// Effect known when the session was resolved. Absent on older descriptors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    effect_class: Option<String>,
 }
 
 impl FrozenInvocation {
@@ -87,10 +92,7 @@ impl InteractionFrontend for TerminalFrontend {
                 "interactive input requires stdin and stderr TTYs".to_owned(),
             ));
         }
-        let prompt = nxr_core::sanitize_terminal_text(&format!(
-            "task {}: parameter {}",
-            request.node_id, request.parameter_name
-        ));
+        let prompt = present::format_parameter_prompt(request);
         let failure =
             |_| InteractionError::Invalid("terminal input failed or was cancelled".to_owned());
         match request.declaration.param_type {
@@ -305,6 +307,9 @@ pub fn create_pending_for_task(
         offline: request.nix_flags.offline,
         accept_flake_config: request.nix_flags.accept_flake_config,
         no_write_lock_file: request.nix_flags.no_write_lock_file,
+        effect_class: roots
+            .first()
+            .map(|name| EffectClass::from_declaration(OperationKind::Task, name).to_string()),
     };
     create_frozen(descriptor, partial.missing, None)
 }
@@ -705,6 +710,12 @@ pub fn resolve_operation(
         offline: flags.offline,
         accept_flake_config: flags.accept_flake_config,
         no_write_lock_file: flags.no_write_lock_file,
+        effect_class: Some(
+            record
+                .authorized_effect
+                .unwrap_or(record.inferred_effect)
+                .to_string(),
+        ),
     };
     create_frozen(descriptor, partial.missing, key)
 }
@@ -847,6 +858,7 @@ pub fn resume_session(
         })
         .collect();
     let digest = resolved_plan_digest(&descriptor, &normalized)?;
+    print_effect_review(&descriptor, document, &session, &normalized);
     if !matches!(session.state, InteractionState::ReadyToExecute) {
         session = store
             .ready(
@@ -892,6 +904,48 @@ pub fn resume_session(
             runner,
         )
     })
+}
+
+fn print_effect_review(
+    descriptor: &FrozenInvocation,
+    document: &TaskDocument,
+    session: &nxr_task::interaction::InteractionSession,
+    normalized: &BTreeMap<String, BTreeMap<String, Value>>,
+) {
+    let Some(raw) = descriptor.effect_class.as_deref() else {
+        return;
+    };
+    let Ok(effect) = serde_json::from_value(Value::String(raw.to_owned())) else {
+        return;
+    };
+    if !present::effect_requires_prelaunch_review(effect) {
+        return;
+    }
+    let Ok(expanded) = nxr_task::expand_matrix_tasks(&document.tasks) else {
+        return;
+    };
+    let mut answers = BTreeMap::new();
+    for (node, values) in normalized {
+        let Some(task) = expanded
+            .tasks
+            .get(node)
+            .or_else(|| document.tasks.get(node))
+        else {
+            continue;
+        };
+        for (name, value) in values {
+            let Some(declaration) = task.parameters.get(name) else {
+                continue;
+            };
+            answers
+                .entry(node.clone())
+                .or_insert_with(BTreeMap::new)
+                .insert(name.clone(), (declaration.clone(), value.clone()));
+        }
+    }
+    for line in present::format_prelaunch_review_lines(&session.operation_id, effect, &answers) {
+        eprintln!("{line}");
+    }
 }
 
 fn nxr_workspace_id(root: &Path) -> String {
@@ -1449,6 +1503,7 @@ mod tests {
             offline: false,
             accept_flake_config: false,
             no_write_lock_file: true,
+            effect_class: None,
         }
     }
     fn ready(store: &InteractionStore) -> InteractionSession {
@@ -1612,6 +1667,27 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[test]
+    fn parameter_prompt_hides_secret_defaults() {
+        use nxr_task::interaction::InputRequest;
+        use nxr_task::{TaskParameter, TaskParameterType};
+        let request = InputRequest {
+            request_id: "r".into(),
+            node_id: "t".into(),
+            parameter_name: "token".into(),
+            declaration: TaskParameter {
+                param_type: TaskParameterType::SecretRef,
+                default: Some(json!("nxr-secret-value")),
+                values: None,
+                constraints: None,
+            },
+            observation_digest: None,
+            revision: 0,
+        };
+        let prompt = present::format_parameter_prompt(&request);
+        assert!(!prompt.contains("nxr-secret"));
     }
 
     #[test]
