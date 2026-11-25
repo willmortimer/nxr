@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.9.5] - 2026-11-24
+
+### Added
+
+- `nxr select` lists apps and tasks and asks for a choice only when stdin and stdout are terminals. A substring filter narrows the list. Non-terminal callers keep the structured command.
+- `nxr interaction prompt` walks outstanding requests, shows required and default values, and lets the operator edit an answer before execute. Cancelling one prompt leaves the session in place.
+- `nxr interaction inbox` lists session id, operation, revision, and waiting, executing, cancelled, or uncertain state. `inbox --resume` reuses the existing lease and does not start a second run.
+
+### Changed
+
+- Workspace and Nix package version **3.9.5**. nix-config and the SYS-5 closure stay on `v3.9.1`. This release does not mint an NXI grant or an NXD activation.
+
 ## [3.9.4] - 2026-11-22
 
 ### Added

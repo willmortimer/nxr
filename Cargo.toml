@@ -15,9 +15,9 @@ members = [
 default-members = ["crates/nxr-cli"]
 
 [workspace.package]
-# 3.9.4 publishes onboarding branch selection. It does not grant execution.
-# v3.9.3 remains the progress and planning release. nix-config stays on v3.9.1.
-version = "3.9.4"
+# 3.9.5 publishes task selection and interaction resume. It does not grant execution.
+# v3.9.4 remains the onboarding release. nix-config stays on v3.9.1.
+version = "3.9.5"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT"
