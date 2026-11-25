@@ -45,7 +45,7 @@ pub struct Cli {
     #[arg(long = "nix", global = true, value_name = "PATH")]
     pub nix: Option<String>,
 
-    /// Open interactive app selector
+    /// Open interactive app/task selector
     #[arg(short = 's', long = "select", global = true)]
     pub select: bool,
 
@@ -364,6 +364,22 @@ pub enum InteractionCommand {
         #[arg(long = "observation-digest")]
         observation_digest: Option<String>,
     },
+    /// Interactively answer outstanding requests (TTY only; never prompts in CI)
+    Prompt {
+        session: String,
+        /// Expected revision; omit to use the current session revision
+        #[arg(long)]
+        revision: Option<u64>,
+    },
+    /// List pending sessions, or resume one without starting a second run
+    Inbox {
+        /// Resume this session after listing identity (uses current revision when omitted)
+        #[arg(long)]
+        resume: Option<String>,
+        /// Expected revision for `--resume`
+        #[arg(long, requires = "resume")]
+        revision: Option<u64>,
+    },
     /// Validate the frozen source and start the existing supervisor once
     Resume {
         session: String,
@@ -494,8 +510,12 @@ pub enum Command {
         #[arg(last = true)]
         args: Vec<String>,
     },
-    /// Open interactive selector
-    Select,
+    /// Open interactive app/task selector
+    Select {
+        /// Case-insensitive substring filter applied before the picker
+        #[arg(long = "filter", value_name = "TEXT")]
+        filter: Option<String>,
+    },
     /// Diagnose environment and flake configuration
     Doctor {
         #[command(subcommand)]
@@ -702,7 +722,7 @@ pub enum Command {
         #[command(subcommand)]
         action: crate::commands::runs::RunsCommand,
     },
-    /// Inspect, answer, resume, or cancel typed input collection
+    /// Inspect, answer, prompt, inbox, resume, or cancel typed input collection
     Interaction {
         #[command(subcommand)]
         action: InteractionCommand,

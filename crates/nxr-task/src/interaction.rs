@@ -329,6 +329,43 @@ impl InteractionStore {
         })
     }
 
+    /// List sessions the caller may see. Unauthorized or corrupt records are skipped.
+    pub fn list(
+        &self,
+        authority: &str,
+        now: u64,
+    ) -> Result<Vec<InteractionSession>, InteractionError> {
+        reject_symlink_components(&self.directory)?;
+        let mut sessions = Vec::new();
+        for entry in fs::read_dir(&self.directory)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let Some(session_id) = name.strip_suffix(".json") else {
+                continue;
+            };
+            if !session_id.starts_with("session-") || session_id.contains('.') {
+                continue;
+            }
+            match self.get(session_id, authority, now) {
+                Ok(session) => sessions.push(session),
+                Err(InteractionError::Unauthorized)
+                | Err(InteractionError::Invalid(_))
+                | Err(InteractionError::Storage(_)) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        sessions.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| left.session_id.cmp(&right.session_id))
+        });
+        Ok(sessions)
+    }
+
     pub fn answer(
         &self,
         answer: InputAnswer,
@@ -1080,6 +1117,35 @@ mod tests {
     }
     fn digest() -> String {
         format!("sha256:{}", "a".repeat(64))
+    }
+
+    #[test]
+    fn list_returns_authorized_sessions_newest_first() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = InteractionStore::new(directory.path()).unwrap();
+        let older = store
+            .create(CreateInteraction {
+                operation_id: "operation:test".to_owned(),
+                caller_authority: AUTHORITY.to_owned(),
+                requests: vec![request("name", "string")],
+                now: 100,
+                ttl_secs: 1000,
+            })
+            .unwrap();
+        let newer = store
+            .create(CreateInteraction {
+                operation_id: "operation:test".to_owned(),
+                caller_authority: AUTHORITY.to_owned(),
+                requests: Vec::new(),
+                now: 150,
+                ttl_secs: 1000,
+            })
+            .unwrap();
+        let listed = store.list(AUTHORITY, 160).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].session_id, newer.session_id);
+        assert_eq!(listed[1].session_id, older.session_id);
+        assert!(store.list("other-authority", 160).unwrap().is_empty());
     }
 
     #[test]

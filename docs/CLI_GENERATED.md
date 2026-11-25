@@ -23,7 +23,7 @@ Commands:
   check        Build a flake check, or run `nix flake check` when omitted
   shell        Enter a development shell (`nix develop`)
   plan         Show execution plan
-  select       Open interactive selector
+  select       Open interactive app/task selector
   doctor       Diagnose environment and flake configuration
   explain      Explain resolution and invocation for an app or task
   completion   Generate shell completion script
@@ -40,7 +40,7 @@ Commands:
   catalog      Expire catalog records only when an operator passes an explicit quota
   session      Start, list, inspect, and cancel local runs
   runs         Inspect durable run evidence
-  interaction  Inspect, answer, resume, or cancel typed input collection
+  interaction  Inspect, answer, prompt, inbox, resume, or cancel typed input collection
   attach       Reopen the TUI watch for a recorded run
   ui           Browse apps, tasks, and workspace scripts; Enter runs the selection
   affected     Report apps and tasks likely affected by changed paths
@@ -79,7 +79,7 @@ Options:
           Override Nix executable
 
   -s, --select
-          Open interactive app selector
+          Open interactive app/task selector
 
       --refresh-discovery
           Ignore nxr discovery cache
@@ -233,7 +233,7 @@ Options:
           Override Nix executable
 
   -s, --select
-          Open interactive app selector
+          Open interactive app/task selector
 
       --working-tree
           Include unstaged, staged, and untracked working-tree paths

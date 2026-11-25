@@ -18,6 +18,9 @@ nxr --json op resolve --inputs values.json <operation-id>
 nxr --json interaction inspect <session-id>
 nxr --json interaction answer --request <request-id> --revision 1 \
   --value '"selected-public-value"' <session-id>
+nxr interaction prompt <session-id>
+nxr --json interaction inbox
+nxr --json interaction inbox --resume <session-id>
 nxr --json interaction resume --revision 2 <session-id>
 ```
 
@@ -25,6 +28,16 @@ nxr --json interaction resume --revision 2 <session-id>
 `--observation-digest` matching the outstanding request. Raw credentials are
 never valid answers to `secret_ref`; provide an authorized logical reference.
 A caller-supplied `verified` flag cannot make facts, artifacts, or grants trusted.
+
+`interaction prompt` walks outstanding typed requests on a TTY, offers
+review/edit before execute, and leaves every session intact when one prompt is
+cancelled. Non-TTY and CI callers keep structured `answer` / `--set` /
+`--inputs` paths and never receive a prompt.
+
+`interaction inbox` lists durable sessions (`session_id`, `operation_id`,
+`revision`, waiting/executing/cancelled/uncertain status). `--resume` reconnects
+through the existing single-use lease path so an already-acknowledged launch is
+never started twice.
 
 The existing MCP server adds `operations_inputs`, `operations_resolve`,
 `interactions_get`, `interactions_answer`, `interactions_resume`, and
@@ -75,8 +88,11 @@ as complete only after supervisor confirmation.
 
 ## Terminal and sensitive invocation limits
 
-Existing Dialoguer widgets implement `InteractionFrontend`. Non-TTY execution
-never waits for stdin. NXR-owned prompts run before child execution.
+Existing Dialoguer widgets implement `InteractionFrontend` with required versus
+default labeling, boolean/choice (and multichoice) widgets, and validation
+retry. Non-TTY execution never waits for stdin. NXR-owned prompts run before
+child execution. `nxr select` / `--select` lists apps and tasks with
+descriptions when stdin and stdout are TTYs; substring `--filter` is optional.
 
 Durable collection refuses arbitrary forwarded leaf arguments, raw environment
 `--set-env` values, and arbitrary Nix option payloads because they have no typed

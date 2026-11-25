@@ -66,7 +66,7 @@ Inline `flake#app` works on bare/`run`/`plan`/`doctor` targets (for example `nxr
 | `nxr shell [name]` | Interactive `nix develop` for `devShells.<system>.<name>` (default when omitted) |
 | `nxr plan <app\|task> [-- args…]` | Show app or task execution plan (apps win when both exist) |
 | `nxr plan --affected [--base\|--working-tree\|--all-changes\|--path…]` | Plan the union DAG of affected tasks |
-| `nxr select` | Interactive fuzzy app picker |
+| `nxr select [--filter TEXT]` | Interactive fuzzy app/task picker (TTY only) |
 | `nxr doctor [app]` | Diagnose environment and flake setup |
 | `nxr doctor --all` | Extra non-destructive findings (descriptions, naming, cache) |
 | `nxr doctor --clean-env [app]` | Clean-environment validation |

@@ -243,18 +243,30 @@ pub fn is_secret_parameter(declaration: &TaskParameter) -> bool {
     )
 }
 
-/// Prompt headline: parameter name, required/optional, constraints or default, origin.
+/// Prompt headline: parameter name, required/default, type, constraints, origin.
 #[must_use]
 pub fn format_parameter_prompt(request: &InputRequest) -> String {
     let required = parameter_required(&request.declaration);
-    let requirement = if required { "required" } else { "optional" };
+    let requirement = if required {
+        "required".to_owned()
+    } else if request.declaration.default.is_some() {
+        "optional · has default".to_owned()
+    } else {
+        "optional".to_owned()
+    };
     let mut parts = vec![
         format!(
             "task {} · parameter {} ({requirement})",
             request.node_id, request.parameter_name
         ),
-        parameter_metadata_line(&request.declaration),
+        parameter_type_line(&request.declaration),
     ];
+    if let Some(line) = parameter_default_line(&request.declaration) {
+        parts.push(line);
+    }
+    if let Some(line) = constraint_summary(&request.declaration) {
+        parts.push(line);
+    }
     if let Some(origin) = answer_origin_line(request) {
         parts.push(origin);
     }
@@ -264,22 +276,41 @@ pub fn format_parameter_prompt(request: &InputRequest) -> String {
     nxr_core::sanitize::sanitize_terminal_text(&parts.join(" · "))
 }
 
-fn parameter_metadata_line(declaration: &TaskParameter) -> String {
+fn parameter_type_line(declaration: &TaskParameter) -> String {
     if is_secret_parameter(declaration) {
         return "type: secret".to_owned();
     }
-    if let Some(line) = constraint_summary(declaration) {
-        return line;
+    match &declaration.param_type {
+        TaskParameterType::Choice => {
+            let choices = declaration
+                .values
+                .as_ref()
+                .map(|values| values.join("|"))
+                .unwrap_or_default();
+            if choices.is_empty() {
+                "type: choice".to_owned()
+            } else {
+                format!("type: choice [{choices}]")
+            }
+        }
+        TaskParameterType::Multichoice => "type: multichoice".to_owned(),
+        TaskParameterType::Boolean => "type: boolean".to_owned(),
+        other => format!("type: {other:?}")
+            .replace("TaskParameterType::", "")
+            .to_ascii_lowercase(),
     }
-    if let Some(default) = &declaration.default {
-        return format!(
+}
+
+fn parameter_default_line(declaration: &TaskParameter) -> Option<String> {
+    if is_secret_parameter(declaration) {
+        return None;
+    }
+    declaration.default.as_ref().map(|default| {
+        format!(
             "default: {}",
             sanitize_one_line(&value_preview(default, declaration))
-        );
-    }
-    format!("type: {:?}", declaration.param_type)
-        .replace("TaskParameterType::", "")
-        .to_ascii_lowercase()
+        )
+    })
 }
 
 fn constraint_summary(declaration: &TaskParameter) -> Option<String> {
@@ -484,7 +515,29 @@ mod tests {
         };
         let prompt = format_parameter_prompt(&request);
         assert!(prompt.contains("required"));
+        assert!(prompt.contains("type: string"));
         assert!(prompt.contains("min_length=3"));
         assert!(prompt.contains("observation sha256:abcd"));
+    }
+
+    #[test]
+    fn prompt_marks_optional_defaults_clearly() {
+        let request = InputRequest {
+            request_id: "r".to_owned(),
+            node_id: "deploy".to_owned(),
+            parameter_name: "dry_run".to_owned(),
+            declaration: TaskParameter {
+                param_type: TaskParameterType::Boolean,
+                default: Some(json!(true)),
+                values: None,
+                constraints: None,
+            },
+            observation_digest: None,
+            revision: 0,
+        };
+        let prompt = format_parameter_prompt(&request);
+        assert!(prompt.contains("optional · has default"));
+        assert!(prompt.contains("type: boolean"));
+        assert!(prompt.contains("default: true"));
     }
 }

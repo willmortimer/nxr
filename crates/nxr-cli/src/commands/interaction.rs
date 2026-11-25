@@ -6,7 +6,7 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use dialoguer::{Confirm, Input, Select};
+use dialoguer::{Confirm, Input, MultiSelect, Select};
 use fs2::FileExt;
 use nxr_core::EnvironmentPolicy;
 use nxr_nix::OptionalNixFlags;
@@ -16,7 +16,10 @@ use nxr_task::interaction::{
     InteractionCompletion, InteractionError, InteractionFrontend, InteractionSession,
     InteractionState, InteractionStore, NewInputRequest, ResumeOutcome,
 };
-use nxr_task::{ExecutionPlan, FailurePolicy, OperationKind, OperationRecord, TaskDocument};
+use nxr_task::{
+    ExecutionPlan, FailurePolicy, OperationKind, OperationRecord, TaskDocument, TaskParameter,
+    TaskParameterType,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -93,49 +96,172 @@ impl InteractionFrontend for TerminalFrontend {
             ));
         }
         let prompt = present::format_parameter_prompt(request);
-        let failure =
-            |_| InteractionError::Invalid("terminal input failed or was cancelled".to_owned());
         match request.declaration.param_type {
-            nxr_task::TaskParameterType::Choice => {
-                let choices = request.declaration.values.as_ref().ok_or_else(|| {
-                    InteractionError::Invalid("choice declaration has no values".to_owned())
-                })?;
-                let labels: Vec<_> = choices
-                    .iter()
-                    .map(|value| nxr_core::sanitize_terminal_text(value))
-                    .collect();
-                let selection = Select::new()
-                    .with_prompt(prompt)
-                    .items(&labels)
-                    .default(0)
-                    .interact_opt()
-                    .map_err(failure)?;
-                Ok(selection.map(|index| json!(choices[index])))
+            TaskParameterType::Choice => prompt_choice(request, &prompt),
+            TaskParameterType::Multichoice => prompt_multichoice(request, &prompt),
+            TaskParameterType::Boolean => prompt_boolean(request, &prompt),
+            _ => prompt_typed_value(request, &prompt),
+        }
+    }
+}
+
+fn prompt_cancelled() -> InteractionError {
+    InteractionError::Invalid("terminal input failed or was cancelled".to_owned())
+}
+
+fn prompt_choice(request: &InputRequest, prompt: &str) -> Result<Option<Value>, InteractionError> {
+    let choices =
+        request.declaration.values.as_ref().ok_or_else(|| {
+            InteractionError::Invalid("choice declaration has no values".to_owned())
+        })?;
+    let labels: Vec<_> = choices
+        .iter()
+        .map(|value| nxr_core::sanitize_terminal_text(value))
+        .collect();
+    let default = request
+        .declaration
+        .default
+        .as_ref()
+        .and_then(Value::as_str)
+        .and_then(|selected| choices.iter().position(|value| value == selected))
+        .unwrap_or(0);
+    let selection = Select::new()
+        .with_prompt(prompt)
+        .items(&labels)
+        .default(default)
+        .interact_opt()
+        .map_err(|_| prompt_cancelled())?;
+    Ok(selection.map(|index| json!(choices[index])))
+}
+
+fn prompt_multichoice(
+    request: &InputRequest,
+    prompt: &str,
+) -> Result<Option<Value>, InteractionError> {
+    let choices = request.declaration.values.as_ref().ok_or_else(|| {
+        InteractionError::Invalid("multichoice declaration has no values".to_owned())
+    })?;
+    let labels: Vec<_> = choices
+        .iter()
+        .map(|value| nxr_core::sanitize_terminal_text(value))
+        .collect();
+    let defaults: Vec<bool> = choices
+        .iter()
+        .map(|choice| {
+            request
+                .declaration
+                .default
+                .as_ref()
+                .and_then(Value::as_array)
+                .is_some_and(|selected| selected.iter().any(|value| value.as_str() == Some(choice)))
+        })
+        .collect();
+    let selection = MultiSelect::new()
+        .with_prompt(prompt)
+        .items(&labels)
+        .defaults(&defaults)
+        .interact_opt()
+        .map_err(|_| prompt_cancelled())?;
+    Ok(selection.map(|indexes| {
+        json!(
+            indexes
+                .into_iter()
+                .map(|index| choices[index].clone())
+                .collect::<Vec<_>>()
+        )
+    }))
+}
+
+fn prompt_boolean(request: &InputRequest, prompt: &str) -> Result<Option<Value>, InteractionError> {
+    let default = request
+        .declaration
+        .default
+        .as_ref()
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok(Confirm::new()
+        .with_prompt(prompt)
+        .default(default)
+        .interact_opt()
+        .map_err(|_| prompt_cancelled())?
+        .map(Value::Bool))
+}
+
+fn prompt_typed_value(
+    request: &InputRequest,
+    prompt: &str,
+) -> Result<Option<Value>, InteractionError> {
+    let required = present::parameter_required(&request.declaration);
+    let default_text = non_secret_default_text(&request.declaration);
+    loop {
+        let mut input = Input::<String>::new().with_prompt(prompt);
+        if let Some(default) = &default_text {
+            input = input.default(default.clone()).show_default(true);
+        }
+        input = input.allow_empty(!required || default_text.is_some());
+        let raw = match input.interact_text() {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        if raw.is_empty() {
+            if let Some(default) = &request.declaration.default
+                && !present::is_secret_parameter(&request.declaration)
+            {
+                return Ok(Some(default.clone()));
             }
-            nxr_task::TaskParameterType::Boolean => Ok(Confirm::new()
-                .with_prompt(prompt)
-                .default(false)
-                .interact_opt()
-                .map_err(failure)?
-                .map(Value::Bool)),
-            _ => {
-                let raw = Input::<String>::new()
-                    .with_prompt(prompt)
-                    .allow_empty(true)
-                    .interact_text()
-                    .map_err(failure)?;
-                nxr_task::parse_parameter_text(
+            if required {
+                eprintln!("value is required");
+                continue;
+            }
+        }
+        match nxr_task::parse_parameter_text(
+            &request.node_id,
+            &request.parameter_name,
+            &request.declaration,
+            &raw,
+        ) {
+            Ok(value) => {
+                if let Err(error) = nxr_task::normalize_parameter_json(
                     &request.node_id,
                     &request.parameter_name,
                     &request.declaration,
-                    &raw,
-                )
-                .map(Some)
-                .map_err(|_| {
-                    InteractionError::Invalid("input does not match its declared type".to_owned())
-                })
+                    &value,
+                ) {
+                    eprintln!("{error}");
+                    continue;
+                }
+                return Ok(Some(value));
+            }
+            Err(error) => {
+                eprintln!("{error}");
             }
         }
+    }
+}
+
+fn non_secret_default_text(declaration: &TaskParameter) -> Option<String> {
+    if present::is_secret_parameter(declaration) {
+        return None;
+    }
+    declaration.default.as_ref().map(|value| match value {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    })
+}
+
+fn operator_inbox_status(state: InteractionState) -> &'static str {
+    match state {
+        InteractionState::WaitingForInput
+        | InteractionState::CollectingInputs
+        | InteractionState::Resolving
+        | InteractionState::PlanReady
+        | InteractionState::WaitingForAuthorization
+        | InteractionState::ReadyToExecute => "waiting",
+        InteractionState::Executing => "executing",
+        InteractionState::Cancelled => "cancelled",
+        InteractionState::Uncertain => "uncertain",
+        InteractionState::Completed => "completed",
+        InteractionState::Expired => "expired",
     }
 }
 
@@ -501,6 +627,212 @@ pub fn inspect_session(root: &Path, session_id: &str) -> Result<Value, String> {
         );
     }
     Ok(input_required(&session))
+}
+
+/// List interaction sessions for the workspace with operator-facing status.
+pub fn inbox_sessions(root: &Path) -> Result<Value, String> {
+    let (store, _, authority) = store_for(root)?;
+    let sessions = store
+        .list(&authority, now_secs())
+        .map_err(|error| error.to_string())?;
+    let entries: Vec<_> = sessions
+        .iter()
+        .map(|session| {
+            json!({
+                "session_id": session.session_id,
+                "operation_id": session.operation_id,
+                "revision": session.revision,
+                "state": session.state,
+                "status": operator_inbox_status(session.state),
+                "pending_requests": session.pending_requests.len(),
+                "execution_lease": session.execution_lease,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "schema_version": "nxr-interaction-inbox-v1",
+        "sessions": entries,
+    }))
+}
+
+/// Interactively answer outstanding requests and optionally edit values before execute.
+///
+/// Cancelling one prompt leaves the session (and every other session) intact.
+pub fn prompt_session(
+    root: &Path,
+    session_id: &str,
+    revision: Option<u64>,
+) -> Result<Value, String> {
+    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+        return Err("interactive prompt requires stdin and stderr TTYs".to_owned());
+    }
+    let (store, _, authority) = store_for(root)?;
+    let mut session = store
+        .get(session_id, &authority, now_secs())
+        .map_err(|error| error.to_string())?;
+    if let Some(expected) = revision
+        && session.revision != expected
+    {
+        return Err(format!(
+            "interaction revision is stale (expected {}, got {expected})",
+            session.revision
+        ));
+    }
+    let mut frontend = TerminalFrontend;
+    while !session.pending_requests.is_empty() {
+        if session.state != InteractionState::WaitingForInput {
+            break;
+        }
+        let request = session.pending_requests[0].clone();
+        let Some(value) = frontend
+            .answer(&request)
+            .map_err(|error| error.to_string())?
+        else {
+            // One cancelled prompt must not delete this or any other session.
+            return Ok(json!({
+                "schema_version": "nxr-interaction-v1",
+                "status": "prompt_cancelled",
+                "session": session,
+            }));
+        };
+        let result = store
+            .answer(
+                InputAnswer {
+                    session_id: session.session_id.clone(),
+                    request_id: request.request_id.clone(),
+                    revision: session.revision,
+                    caller_authority: authority.clone(),
+                    value,
+                    observation_digest: request.observation_digest.clone(),
+                },
+                &authority,
+                now_secs(),
+            )
+            .map_err(|error| error.to_string())?;
+        session = result.session;
+    }
+    session = review_and_edit_answers(&store, &mut frontend, session, &authority)?;
+    Ok(input_required(&session))
+}
+
+fn review_and_edit_answers(
+    store: &InteractionStore,
+    frontend: &mut TerminalFrontend,
+    mut session: InteractionSession,
+    authority: &str,
+) -> Result<InteractionSession, String> {
+    if session.accepted_answers.is_empty()
+        || !matches!(
+            session.state,
+            InteractionState::Resolving
+                | InteractionState::PlanReady
+                | InteractionState::WaitingForAuthorization
+                | InteractionState::ReadyToExecute
+                | InteractionState::WaitingForInput
+        )
+        || session.execution_lease.is_some()
+    {
+        return Ok(session);
+    }
+    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+        return Ok(session);
+    }
+    loop {
+        let mut entries: Vec<AcceptedEditable> = session
+            .accepted_answers
+            .values()
+            .map(|accepted| AcceptedEditable {
+                request_id: accepted.request.request_id.clone(),
+                node_id: accepted.request.node_id.clone(),
+                parameter_name: accepted.request.parameter_name.clone(),
+                declaration: accepted.request.declaration.clone(),
+                observation_digest: accepted.request.observation_digest.clone(),
+                value: accepted.value.clone(),
+            })
+            .collect();
+        entries.sort_by(|left, right| {
+            left.node_id
+                .cmp(&right.node_id)
+                .then_with(|| left.parameter_name.cmp(&right.parameter_name))
+        });
+        let mut labels = vec!["done — keep current values".to_owned()];
+        for entry in &entries {
+            let preview = if present::is_secret_parameter(&entry.declaration) {
+                "(hidden)".to_owned()
+            } else {
+                nxr_core::sanitize_terminal_text(&entry.value.to_string())
+            };
+            labels.push(format!(
+                "edit {}.{} = {preview}",
+                entry.node_id, entry.parameter_name
+            ));
+        }
+        let selection = Select::new()
+            .with_prompt("Review answers before execute")
+            .items(&labels)
+            .default(0)
+            .interact_opt()
+            .map_err(|error| error.to_string())?;
+        let Some(index) = selection else {
+            return Ok(session);
+        };
+        if index == 0 {
+            return Ok(session);
+        }
+        let entry = entries[index - 1].clone();
+        session = store
+            .refresh_request(
+                &session.session_id,
+                session.revision,
+                authority,
+                NewInputRequest {
+                    request_id: entry.request_id.clone(),
+                    node_id: entry.node_id.clone(),
+                    parameter_name: entry.parameter_name.clone(),
+                    declaration: entry.declaration.clone(),
+                    observation_digest: entry.observation_digest.clone(),
+                },
+                now_secs(),
+            )
+            .map_err(|error| error.to_string())?;
+        let request = session
+            .pending_requests
+            .iter()
+            .find(|request| request.request_id == entry.request_id)
+            .cloned()
+            .ok_or_else(|| "edited request disappeared".to_owned())?;
+        let Some(value) = frontend
+            .answer(&request)
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(session);
+        };
+        session = store
+            .answer(
+                InputAnswer {
+                    session_id: session.session_id.clone(),
+                    request_id: request.request_id,
+                    revision: session.revision,
+                    caller_authority: authority.to_owned(),
+                    value,
+                    observation_digest: request.observation_digest,
+                },
+                authority,
+                now_secs(),
+            )
+            .map_err(|error| error.to_string())?
+            .session;
+    }
+}
+
+#[derive(Clone, Debug)]
+struct AcceptedEditable {
+    request_id: String,
+    node_id: String,
+    parameter_name: String,
+    declaration: TaskParameter,
+    observation_digest: Option<String>,
+    value: Value,
 }
 
 pub fn answer_session(
@@ -1447,6 +1779,23 @@ pub fn run_cli(
                 value,
                 observation_digest.clone(),
             )?
+        }
+        InteractionCommand::Prompt { session, revision } => {
+            prompt_session(root.as_std_path(), session, *revision)?
+        }
+        InteractionCommand::Inbox { resume, revision } => {
+            if let Some(session) = resume {
+                let (store, _, authority) = store_for(root.as_std_path())?;
+                let current = store
+                    .get(session, &authority, now_secs())
+                    .map_err(|error| error.to_string())?;
+                let revision = revision.unwrap_or(current.revision);
+                // Reuses the durable lease path: an already-acknowledged launch
+                // returns Existing and never starts a second supervisor run.
+                resume_session(root.as_std_path(), session, revision, &socket, runner)?
+            } else {
+                inbox_sessions(root.as_std_path())?
+            }
         }
         InteractionCommand::Resume { session, revision } => {
             resume_session(root.as_std_path(), session, *revision, &socket, runner)?

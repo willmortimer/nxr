@@ -291,7 +291,7 @@ fn output_options_from_cli(cli: &Cli) -> OutputOptions {
 fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
     let nix_flags = nix_flags_from_cli(cli).map_err(RunError::Usage)?;
     match &cli.command {
-        None if cli.select => run_with_selected_app(cli, &nix_flags, &[], runner),
+        None if cli.select => run_with_selected_target(cli, &nix_flags, None, &[], runner),
         None => run_list(
             cli,
             &nix_flags,
@@ -324,7 +324,9 @@ fn dispatch(cli: &Cli, runner: RunnerOutput) -> Result<i32, RunError> {
             paths,
             runner,
         ),
-        Some(Command::Select) => run_with_selected_app(cli, &nix_flags, &[], runner),
+        Some(Command::Select { filter }) => {
+            run_with_selected_target(cli, &nix_flags, filter.as_deref(), &[], runner)
+        }
         Some(Command::Run {
             app,
             watch,
@@ -1638,15 +1640,34 @@ fn run_inspect(
     Ok(exit::SUCCESS)
 }
 
-fn run_with_selected_app(
+fn run_with_selected_target(
     cli: &Cli,
     nix_flags: &nxr_nix::OptionalNixFlags,
+    filter: Option<&str>,
     args: &[String],
     runner: RunnerOutput,
 ) -> Result<i32, RunError> {
-    let app = select::pick_app_name(discover_request(cli, nix_flags))?;
-    let request = app_request(cli, nix_flags, &app, args)?;
-    run::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+    let target = select::pick_target(discover_request(cli, nix_flags), filter)?;
+    match target {
+        select::SelectedTarget::App(app) => {
+            let request = app_request(cli, nix_flags, &app, args)?;
+            run::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+        }
+        select::SelectedTarget::Task(task) => {
+            let report_options = TaskReportOptions::default();
+            let request = task_request(
+                cli,
+                nix_flags,
+                vec![task],
+                args,
+                1,
+                false,
+                &report_options,
+                BTreeMap::new(),
+            )?;
+            task::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
+        }
+    }
 }
 
 fn discover_request<'a>(
@@ -1943,7 +1964,7 @@ fn dispatch_external(
 ) -> Result<i32, RunError> {
     let (app, forwarded) = split_external(tokens)?;
     if cli.select {
-        run_with_selected_app(cli, nix_flags, forwarded, runner)
+        run_with_selected_target(cli, nix_flags, None, forwarded, runner)
     } else {
         let request = app_request(cli, nix_flags, app, forwarded)?;
         run::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)
@@ -1971,7 +1992,7 @@ fn dispatch_run_command(
         );
     }
     if cli.select {
-        return run_with_selected_app(cli, nix_flags, args, runner);
+        return run_with_selected_target(cli, nix_flags, None, args, runner);
     }
     let request = app_request(cli, nix_flags, app, args)?;
     run::execute(&request, cli.dry_run, cli.json, runner).map_err(RunError::from)

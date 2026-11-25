@@ -18,7 +18,7 @@ nxr list [apps|checks|packages|shells|tasks]
 nxr build [package]
 nxr check [check]
 nxr shell [devShell]
-nxr select
+nxr select [--filter TEXT]
 nxr plan <app-or-task>
 nxr doctor [app]
 nxr doctor determinate [--all] [--refresh]
@@ -39,7 +39,7 @@ nxr attach [RUN]
 nxr ui
 nxr runs inspect|diagnostics|logs|artifacts <run-id>
 nxr op inputs|resolve <operation-id>
-nxr interaction inspect|answer|resume|cancel <session-id>
+nxr interaction inspect|answer|prompt|inbox|resume|cancel <session-id>
 ```
 
 V1 implements the app-oriented subset. V2 activates task-oriented commands. Flake output commands (`list` filters, `build`, `check`, `shell`) map to native Nix operations without inventing a second authority.

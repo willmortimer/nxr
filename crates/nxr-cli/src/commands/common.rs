@@ -76,12 +76,6 @@ pub struct DiscoverRequest<'a> {
     pub nix_flags: &'a OptionalNixFlags,
 }
 
-/// Discovered apps for a selected flake.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiscoveredApps {
-    pub apps: Vec<App>,
-}
-
 /// Prepared execution plan for an app target.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedPlan {
@@ -417,23 +411,6 @@ pub fn strip_one_separator(args: &[String]) -> Vec<String> {
         [first, rest @ ..] if first == "--" => rest.to_vec(),
         other => other.to_vec(),
     }
-}
-
-/// Discover apps for the selected flake without resolving a target name.
-///
-/// # Errors
-///
-/// Returns [`PrepareError`] when directories, flake selection, or discovery fail.
-pub fn discover_apps(request: DiscoverRequest<'_>) -> Result<DiscoveredApps, PrepareError> {
-    let snapshot = WorkspaceSnapshot::load(
-        request.flake_arg,
-        request.nix_override,
-        false,
-        request.nix_flags,
-    )?;
-    Ok(DiscoveredApps {
-        apps: snapshot.apps.into_values().collect(),
-    })
 }
 
 /// Resolve invocation CWD, flake, apps, and build a [`Plan`].

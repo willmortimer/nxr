@@ -92,9 +92,11 @@ nxr --flake-root /path/to/repo test
 ```bash
 nxr --select
 nxr select
+nxr select --filter ci
 ```
 
-The picker shows names and descriptions and returns one selected app.
+The picker shows apps and tasks with descriptions when stdin and stdout are
+TTYs. Non-TTY callers keep structured `nxr run` / `nxr task` invocation.
 
 The core binary should not require a heavy TUI framework merely for selection. A lightweight terminal selector is enough for V1.
 
