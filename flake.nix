@@ -7,14 +7,37 @@
     # branch that still builds Intel macOS until upstream restores support.
     nixpkgsIntelDarwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     flake-parts.url = "github:hercules-ci/flake-parts";
+    # Dev shell and package builds use this compiler. nixpkgs rustc lags it.
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
-    inputs@{ flake-parts, nixpkgs, nixpkgsIntelDarwin, ... }:
+    inputs@{ flake-parts, nixpkgs, nixpkgsIntelDarwin, rust-overlay, ... }:
     let
+      rustToolchainOverlay = final: _prev: {
+        rustToolchain = final.rust-bin.stable."1.100.0".default.override {
+          extensions = [
+            "rustfmt"
+            "clippy"
+            "rust-src"
+            "rust-analyzer"
+          ];
+        };
+        rustc = final.rustToolchain;
+        cargo = final.rustToolchain;
+        rustfmt = final.rustToolchain;
+        clippy = final.rustToolchain;
+      };
       pkgsFor = system:
         import (if system == "x86_64-darwin" then nixpkgsIntelDarwin else nixpkgs) {
           inherit system;
+          overlays = [
+            rust-overlay.overlays.default
+            rustToolchainOverlay
+          ];
         };
     in
     flake-parts.lib.mkFlake { inherit inputs; } {
